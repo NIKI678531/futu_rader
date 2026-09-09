@@ -23,6 +23,11 @@ npm run design   # the untouched .dc.html  → http://localhost:5174
 `npm run design` serves `../design` as static files, so the original design source
 renders side by side with the port for comparison. `npm run build` emits `app/dist`.
 
+The checkout currently lives on the `P:` DFS share, which needs two Vite settings that
+`app/vite.env.js` turns on automatically — see the comment there. Expect a slow first
+start (~40 s) and slow HMR: every module is read over SMB and the watcher has to poll.
+Working from a local disk is noticeably faster and needs no special configuration.
+
 ## Routes
 
 | Route | Design file | Status |
