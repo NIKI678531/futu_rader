@@ -1,0 +1,63 @@
+# 三个服务：clickhouse + backend + worker。前端不在这里 —— P: 网络盘上做容器构建远慢于
+# `cd frontend && npm run dev`，上线前再补多阶段镜像（plan.md Q5）。
+#
+# backend/worker 的 build context 是**仓库根**而不是各自子目录：前端引用仓库根的
+# design/（frontend/src/data/radar.js → ../../../design/radar-data.js），将来把前端也打进
+# 镜像时 context 必须在根上，现在就统一，省得那时再改一遍。
+#
+# 宿主机端口比 ChatInsight（8123/9007/8007）各高一位，两个项目可以同时开着（plan.md Q3）。
+#
+# 不写 version: 字段 —— Compose V2 已废弃，写了只会打告警。
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "8124:8123"   # HTTP
+      - "9008:9000"   # TCP native
+    volumes:
+      # 命名卷而非 bind mount：Windows 上 bind mount 会撞 ClickHouse 的属主检查。
+      - clickhouse-data:/var/lib/clickhouse
+      - ./init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
+    environment:
+      CLICKHOUSE_DB: futu_radar
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8008:8008"
+    environment:
+      APP_ENV: production
+      APP_PORT: 8008
+      ROOT_PATH: ""
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_DB: futu_radar
+      CLICKHOUSE_USER: default
+    depends_on:
+      - clickhouse
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    environment:
+      TZ: Asia/Hong_Kong
+      COLLECT_INTERVAL_SECONDS: 60
+      LOOKBACK_DAYS: 60
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_DB: futu_radar
+      CLICKHOUSE_USER: default
+    depends_on:
+      - clickhouse
+    restart: unless-stopped
+
+volumes:
+  clickhouse-data:

@@ -1,0 +1,9 @@
+flask==3.0.0
+flask-cors==4.0.0
+python-dotenv==1.0.0
+gunicorn==21.2.0
+# 数据访问层：SQLAlchemy Core（不用 ORM）+ PyMySQL，见 ADR-0014、ADR-0002。
+# 原 clickhouse-driver 已删除：存储选型改为 MySQL 8（ADR-0002 推翻 plan.md §6 Q4）。
+SQLAlchemy==2.0.36
+PyMySQL==1.1.1
+pytest==8.3.4

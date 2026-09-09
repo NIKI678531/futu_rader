@@ -3,3 +3,17 @@ dist/
 .vite/
 .DS_Store
 *.log
+
+# Python (backend/, worker/)
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.env
+!.env.example
+
+# 真实数据 dump 与派生库（10GB 量级，含真实用户昵称／IP 归属地／个人简介）
+# 见 docs/adr/0008-dump-import-and-slim-db.md
+*.sql
+!init_db.sql
+*.7z

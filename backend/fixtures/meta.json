@@ -1,0 +1,91 @@
+{
+  "status": "ok",
+  "data": {
+    "defaultRange": "d7",
+    "presets": [
+      {
+        "key": "d1",
+        "days": 1,
+        "label": "昨日",
+        "gran": "hour",
+        "granLabel": "按小时",
+        "bucketCount": 24,
+        "benchLabel": "较昨日同期",
+        "trendTitle": "日内舆情与价格趋势"
+      },
+      {
+        "key": "d2",
+        "days": 2,
+        "label": "近 2 天",
+        "gran": "hour",
+        "granLabel": "按小时",
+        "bucketCount": 48,
+        "benchLabel": "较昨日同期",
+        "trendTitle": "日内舆情与价格趋势"
+      },
+      {
+        "key": "d7",
+        "days": 7,
+        "label": "近 7 天",
+        "gran": "day",
+        "granLabel": "按自然日",
+        "bucketCount": 7,
+        "benchLabel": "较上一等长区间",
+        "trendTitle": "区间舆情与价格趋势"
+      },
+      {
+        "key": "d14",
+        "days": 14,
+        "label": "近 14 天",
+        "gran": "day",
+        "granLabel": "按自然日",
+        "bucketCount": 14,
+        "benchLabel": "较上一等长区间",
+        "trendTitle": "区间舆情与价格趋势"
+      },
+      {
+        "key": "d30",
+        "days": 30,
+        "label": "近 30 天",
+        "gran": "week",
+        "granLabel": "按自然周",
+        "bucketCount": 5,
+        "benchLabel": "较上一等长区间",
+        "trendTitle": "区间舆情与价格趋势"
+      }
+    ],
+    "sectors": [
+      { "key": "hk", "name": "港股", "hue": "#2361AD", "tint": "#EAF1FB" },
+      { "key": "a", "name": "A股", "hue": "#B0483C", "tint": "#FAECEA" },
+      { "key": "us", "name": "美股", "hue": "#4A4E8C", "tint": "#ECEDF6" },
+      { "key": "sgl", "name": "单一股票", "hue": "#7A5C9E", "tint": "#F1ECF7" },
+      { "key": "apac", "name": "亚太及区域", "hue": "#2E8095", "tint": "#E8F2F5" },
+      { "key": "fi", "name": "固收", "hue": "#6B7285", "tint": "#EEF0F3" },
+      { "key": "cm", "name": "商品", "hue": "#A8853C", "tint": "#F7F1E3" },
+      { "key": "va", "name": "虚拟资产", "hue": "#1F7A5C", "tint": "#E6F2ED" }
+    ],
+    "statusLegend": [
+      { "key": "0", "text": "已取得数据，且统计值确实为零。" },
+      { "key": "—", "text": "字段不适用于该产品或该口径。" },
+      { "key": "暂不可用", "text": "字段应有值，但当前数据源未提供或尚未核验。" },
+      { "key": "暂无内容", "text": "范围内已完成检查，没有符合条件的内容。" },
+      { "key": "样本不足", "text": "有效产品态度评论少于 10 条，不输出倾向结论。" },
+      { "key": "待确认", "text": "AI 自动识别的竞品关系、动态分类或重点舆情（需合规关注）信号，尚未人工确认。" }
+    ],
+    "heat": {
+      "formula": "讨论热度 ＝ 评论量 ＋ 0.3 × 点赞 ＋ 1 × 转发",
+      "note": "点赞含帖子获赞与评论获赞，转发为相关帖子的转发数。",
+      "weights": { "like": 0.3, "share": 1 }
+    },
+    "thresholds": {
+      "lowSample": 10,
+      "stageHalfDay": 5,
+      "kolAttitude": 3,
+      "rankBench": 5,
+      "heatmapBench": 20,
+      "lowConfidence": 0.7,
+      "newDays": 30
+    },
+    "updatedAt": "2026-09-02 09:00 HKT"
+  }
+}
