@@ -1,0 +1,290 @@
+/* ==========================================================================
+   CSOP Asset Management — Design Tokens
+   Import this stylesheet at the top of every CSOP HTML file.
+
+   @import url('colors_and_type.css');
+
+   Or as a tag:
+   <link rel="stylesheet" href="colors_and_type.css">
+   ========================================================================== */
+
+/* --- Webfonts -----------------------------------------------------------
+   Noto Sans is shipped locally (brand-supplied file, single weight).
+   Noto Serif, Noto Sans HK, JetBrains Mono are still pulled from Google
+   Fonts as the brand only supplied Latin Noto Sans Regular so far.
+   ------------------------------------------------------------------------ */
+@font-face {
+  font-family: "Noto Sans";
+  src: url("fonts/NotoSans-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif:wght@400;500;600;700&family=Noto+Sans+HK:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  /* ----------------------------------------------------------------------
+     COLOUR — Primary (CSOP sapphire blue, anchored on user-supplied #2361AD)
+     ---------------------------------------------------------------------- */
+  --csop-blue-50:  #EAF1FB;
+  --csop-blue-100: #D2E0F4;
+  --csop-blue-200: #A8C3E8;
+  --csop-blue-300: #7DA5DC;
+  --csop-blue-400: #5288CF;
+  --csop-blue-500: #3674C2;
+  --csop-blue-600: #2361AD;   /* PRIMARY — wordmark + theme */
+  --csop-blue-700: #1B4F8E;
+  --csop-blue-800: #163E73;
+  --csop-blue-900: #0E2A52;
+  --csop-navy-900: #0E2A52;   /* alias for hero washes */
+
+  /* Silver / steel — drawn from the logo's metallic swirl */
+  --csop-silver-100: #ECEFF3;
+  --csop-silver-200: #D9DEE5;
+  --csop-silver-300: #C7CDD7;
+  --csop-silver-400: #B7BFC9;
+  --csop-silver-500: #8B95A3;
+
+  /* ----------------------------------------------------------------------
+     COLOUR — Neutral ink (text) & surfaces
+     ---------------------------------------------------------------------- */
+  --ink-900: #1A1F2B;
+  --ink-800: #2A3140;
+  --ink-700: #4A5568;
+  --ink-600: #5C6678;
+  --ink-500: #6E7A8A;
+  --ink-400: #909AAA;
+  --ink-300: #B6BDC8;
+  --ink-200: #E4E8EE;
+  --ink-100: #F1F3F7;
+
+  --paper:      #FFFFFF;
+  --canvas:     #F6F8FB;
+  --canvas-alt: #EEF2F7;
+
+  /* ----------------------------------------------------------------------
+     COLOUR — Semantic
+     Muted — institutional, not retail-trading fluorescent.
+     ---------------------------------------------------------------------- */
+  --positive-700: #176B47;
+  --positive-600: #1F8A5B;
+  --positive-100: #DFF1E7;
+
+  --negative-700: #9B2424;
+  --negative-600: #C53030;
+  --negative-100: #FBE4E4;
+
+  --warning-700: #95752F;
+  --warning-600: #C9A961;    /* award gold */
+  --warning-100: #F6EFDB;
+
+  --info-700:    #1B4F8E;
+  --info-600:    #2361AD;    /* same as primary */
+  --info-100:    #EAF1FB;
+
+  /* ----------------------------------------------------------------------
+     FOUNDATION — Semantic role tokens
+     Prefer these over raw palette tokens in product code.
+     ---------------------------------------------------------------------- */
+  --fg-1: var(--ink-900);             /* body */
+  --fg-2: var(--ink-700);             /* secondary copy */
+  --fg-3: var(--ink-500);             /* tertiary, captions */
+  --fg-disabled: var(--ink-300);
+  --fg-on-primary: #FFFFFF;
+  --fg-on-dark: #FFFFFF;
+
+  --bg-1: var(--paper);
+  --bg-2: var(--canvas);
+  --bg-3: var(--canvas-alt);
+  --bg-tint: var(--csop-blue-50);
+  --bg-hero-dark: var(--csop-navy-900);
+
+  --border-1: var(--ink-200);
+  --border-2: var(--csop-silver-300);
+  --border-strong: var(--ink-300);
+  --border-focus: var(--csop-blue-600);
+
+  --link: var(--csop-blue-600);
+  --link-hover: var(--csop-blue-800);
+
+  /* ----------------------------------------------------------------------
+     TYPE — families
+     Brand stack (per CSOP practice):
+       • Logo wordmark — MHeiHK (no license purchased; do NOT use in product).
+       • External marketing / web — Noto Sans (safest, freely licensed).
+       • In-use today across docs / decks — Microsoft YaHei + JhengHei + Calibri.
+     The variables below put Noto Sans + Noto Sans HK first (safe default),
+     then fall through to YaHei / JhengHei / Calibri for the in-use stack.
+     ---------------------------------------------------------------------- */
+  --font-sans: "Noto Sans", Calibri, "Microsoft YaHei", "Microsoft JhengHei",
+               -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "Noto Serif", "Times New Roman", Georgia, serif;
+  --font-cjk: "Noto Sans HK", "Microsoft JhengHei", "Microsoft YaHei",
+              "PingFang HK", "Heiti TC", sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, ui-monospace, SFMono-Regular,
+               "SF Mono", Menlo, monospace;
+
+  /* ----------------------------------------------------------------------
+     TYPE — base size ramp (px)
+     ---------------------------------------------------------------------- */
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-15: 15px;
+  --fs-16: 16px;
+  --fs-18: 18px;
+  --fs-20: 20px;
+  --fs-24: 24px;
+  --fs-28: 28px;
+  --fs-32: 32px;
+  --fs-40: 40px;
+  --fs-48: 48px;
+  --fs-56: 56px;
+  --fs-72: 72px;
+
+  --lh-tight: 1.1; /* @kind other */
+  --lh-snug: 1.25; /* @kind other */
+  --lh-base: 1.55; /* @kind other */
+  --lh-loose: 1.7; /* @kind other */
+
+  --tracking-tight: -0.015em;
+  --tracking-base: 0;
+  --tracking-wide: 0.04em;
+  --tracking-allcaps: 0.08em;
+
+  /* ----------------------------------------------------------------------
+     SEMANTIC TYPE TOKENS — apply these directly to elements
+     e.g.  h1 { font: var(--type-display); }
+     ---------------------------------------------------------------------- */
+  --type-display:    600 var(--fs-72)/var(--lh-tight) var(--font-serif);
+  --type-h1:         600 var(--fs-48)/var(--lh-tight) var(--font-serif);
+  --type-h2:         600 var(--fs-32)/var(--lh-snug) var(--font-sans);
+  --type-h3:         600 var(--fs-24)/var(--lh-snug) var(--font-sans);
+  --type-h4:         600 var(--fs-20)/var(--lh-snug) var(--font-sans);
+  --type-eyebrow:    600 var(--fs-13)/1.2 var(--font-sans);   /* + uppercase + wide */
+  --type-body:       400 var(--fs-16)/var(--lh-base) var(--font-sans);
+  --type-body-lg:    400 var(--fs-18)/var(--lh-base) var(--font-sans);
+  --type-body-sm:    400 var(--fs-14)/var(--lh-base) var(--font-sans);
+  --type-caption:    400 var(--fs-12)/1.5 var(--font-sans);
+  --type-mono:       500 var(--fs-13)/1.4 var(--font-mono);
+  --type-mono-lg:    500 var(--fs-16)/1.4 var(--font-mono);
+  --type-label:      600 var(--fs-13)/1.2 var(--font-sans);   /* + uppercase + wide */
+
+  /* ----------------------------------------------------------------------
+     SPACING — 8-point grid (with 4px half-step)
+     ---------------------------------------------------------------------- */
+  --space-0:   0;
+  --space-1:   4px;
+  --space-2:   8px;
+  --space-3:   12px;
+  --space-4:   16px;
+  --space-5:   24px;
+  --space-6:   32px;
+  --space-7:   40px;
+  --space-8:   48px;
+  --space-9:   64px;
+  --space-10:  80px;
+  --space-11:  96px;
+  --space-12:  128px;
+
+  /* ----------------------------------------------------------------------
+     RADII
+     ---------------------------------------------------------------------- */
+  --radius-none: 0;
+  --radius-sm:   4px;
+  --radius-md:   8px;
+  --radius-lg:   12px;
+  --radius-xl:   16px;
+  --radius-pill: 9999px;
+
+  /* ----------------------------------------------------------------------
+     SHADOWS — institutional, restrained
+     ---------------------------------------------------------------------- */
+  --shadow-xs: 0 1px 2px rgba(14, 42, 82, 0.04);
+  --shadow-sm: 0 1px 2px rgba(14, 42, 82, 0.04), 0 2px 6px rgba(14, 42, 82, 0.05);
+  --shadow-md: 0 1px 2px rgba(14, 42, 82, 0.04), 0 4px 12px rgba(14, 42, 82, 0.06);
+  --shadow-lg: 0 4px 16px rgba(14, 42, 82, 0.08), 0 12px 32px rgba(14, 42, 82, 0.10);
+  --shadow-focus: 0 0 0 2px var(--paper), 0 0 0 4px var(--csop-blue-600);
+
+  /* ----------------------------------------------------------------------
+     LAYOUT
+     ---------------------------------------------------------------------- */
+  --container-narrow: 880px;
+  --container:        1200px;
+  --container-wide:   1320px;
+
+  --nav-height:           72px;
+  --nav-height-scrolled:  56px;
+
+  /* ----------------------------------------------------------------------
+     MOTION
+     ---------------------------------------------------------------------- */
+  --ease-standard: cubic-bezier(0.4, 0.0, 0.2, 1); /* @kind other */
+  --ease-enter:    cubic-bezier(0.0, 0.0, 0.2, 1); /* @kind other */
+  --ease-exit:     cubic-bezier(0.4, 0.0, 1, 1); /* @kind other */
+  --dur-hover:   120ms; /* @kind other */
+  --dur-menu:    200ms; /* @kind other */
+  --dur-modal:   320ms; /* @kind other */
+  --dur-hero:    480ms; /* @kind other */
+}
+
+/* ==========================================================================
+   ELEMENT DEFAULTS — apply token system to HTML primitives
+   ========================================================================== */
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  font: var(--type-body);
+  color: var(--fg-1);
+  background: var(--bg-1);
+  font-variant-numeric: oldstyle-nums;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1 { font: var(--type-h1);  letter-spacing: var(--tracking-tight); color: var(--fg-1); margin: 0 0 var(--space-5); }
+h2 { font: var(--type-h2);  letter-spacing: var(--tracking-tight); color: var(--fg-1); margin: 0 0 var(--space-4); }
+h3 { font: var(--type-h3);  color: var(--fg-1); margin: 0 0 var(--space-3); }
+h4 { font: var(--type-h4);  color: var(--fg-1); margin: 0 0 var(--space-3); }
+p  { margin: 0 0 var(--space-4); text-wrap: pretty; }
+
+.eyebrow {
+  font: var(--type-eyebrow);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-allcaps);
+  color: var(--csop-blue-600);
+}
+
+.label {
+  font: var(--type-label);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-allcaps);
+  color: var(--fg-2);
+}
+
+.caption {
+  font: var(--type-caption);
+  color: var(--fg-3);
+}
+
+.mono, .num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+  transition: color var(--dur-hover) var(--ease-standard);
+}
+a:hover { color: var(--link-hover); text-decoration: underline; text-underline-offset: 3px; }
+a:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; border-radius: 2px; }
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--border-1);
+  margin: var(--space-6) 0;
+}
+
+::selection { background: var(--csop-blue-100); color: var(--csop-blue-900); }

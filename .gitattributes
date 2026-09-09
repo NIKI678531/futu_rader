@@ -1,0 +1,4 @@
+# The design/ mirror must stay byte-identical to the Claude Design project, so no
+# end-of-line conversion anywhere in this repo (git's autocrlf is on by default on
+# Windows and would rewrite LF to CRLF on checkout).
+* -text

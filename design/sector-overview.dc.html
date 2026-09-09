@@ -1,0 +1,1295 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/csop-design-system-019e159a-9eb8-740d-9d7d-8a5f9a550a1c/colors_and_type.css">
+<script src="_ds/csop-design-system-019e159a-9eb8-740d-9d7d-8a5f9a550a1c/_ds_bundle.js"></script>
+<script src="radar-data.js"></script>
+<style>
+  :root {
+    --csop-blue-50:#EAF1FB; --csop-blue-100:#D2E0F4; --csop-blue-200:#A8C3E8; --csop-blue-300:#7DA5DC;
+    --csop-blue-400:#5288CF; --csop-blue-500:#3674C2; --csop-blue-600:#2361AD; --csop-blue-700:#1B4F8E;
+    --csop-blue-800:#163E73; --csop-navy-900:#0E2A52;
+    --csop-silver-200:#D9DEE5; --csop-silver-400:#B7BFC9; --csop-silver-500:#8B95A3;
+    --ink-900:#1A1F2B; --ink-800:#2A3140; --ink-700:#4A5568; --ink-600:#5C6678; --ink-500:#6E7A8A;
+    --ink-400:#909AAA; --ink-300:#B6BDC8; --ink-200:#E4E8EE; --ink-100:#F1F3F7;
+    --canvas:#F6F8FB; --canvas-alt:#EEF2F7; --border-1:#E4E8EE; --border-2:#C7CDD7;
+    --positive-50:#F0F8F4; --positive-100:#DFF1E7; --positive-600:#1F8A5B; --positive-700:#176B47;
+    --negative-50:#FDF2F2; --negative-100:#FBE4E4; --negative-600:#C53030; --negative-700:#9B2424;
+    --warning-100:#F6EFDB; --warning-600:#C9A961; --warning-700:#95752F;
+    --font-cjk:"Noto Sans HK","Microsoft JhengHei","Microsoft YaHei","PingFang HK","Heiti TC",sans-serif;
+    --font-mono:"JetBrains Mono",Consolas,ui-monospace,Menlo,monospace;
+  }
+  body { margin:0; background:var(--canvas); font-family:var(--font-cjk); font-variant-numeric:tabular-nums; }
+  a { color:var(--csop-blue-600); text-decoration:none; }
+  a:hover { color:var(--csop-blue-800); text-decoration:underline; text-underline-offset:3px; }
+  canvas { display:block; }
+</style>
+</helmet>
+
+<div data-screen-label="板块总览" style="width:100%;min-width:1200px;min-height:100vh;box-sizing:border-box;background:var(--canvas);font-family:var(--font-cjk);color:var(--ink-900);font-size:14px">
+
+  <div style="position:sticky;top:0;z-index:40;box-shadow:0 1px 0 var(--border-2)">
+    <div style="display:flex;align-items:center;height:54px;padding:0 24px;background:#fff;border-bottom:1px solid var(--border-1)">
+      <a href="sector-overview.dc.html" style="display:flex;align-items:center;gap:10px;flex:none;color:var(--csop-navy-900);text-decoration:none" style-hover="text-decoration:none">
+        <span style="font:600 22px/1.2 var(--font-cjk);letter-spacing:0.02em;white-space:nowrap">舆情雷达</span>
+      </a>
+      <div style="width:1px;height:20px;background:var(--border-2);margin:0 22px 0 20px;flex:none"></div>
+      <div style="display:flex;align-items:center;gap:4px;padding:3px;border-radius:9px;background:var(--ink-100)">
+        <sc-for list="{{ navGroups }}" as="g" hint-placeholder-count="2">
+          <a href="{{ g.href }}" style="display:flex;align-items:center;padding:6px 16px;border-radius:7px;font:{{ g.fw }} 14px/1.2 var(--font-cjk);color:{{ g.fg }};background:{{ g.bg }};box-shadow:{{ g.sh }};text-decoration:none;white-space:nowrap;transition:all 120ms cubic-bezier(.4,0,.2,1)" style-hover="color:var(--csop-navy-900);text-decoration:none">{{ g.name }}</a>
+        </sc-for>
+      </div>
+      <div style="margin-left:auto;flex:none;display:flex;align-items:center;gap:18px;white-space:nowrap">
+        <div style="flex:none;display:flex;align-items:baseline;gap:7px;white-space:nowrap">
+          <span style="font:600 12px/1.4 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)">数据范围</span>
+          <span style="font:600 14px/1.4 var(--font-mono);color:var(--ink-800)">{{ rangeText }}</span>
+          <span style="font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)">HKT 自然日</span>
+        </div>
+        <div style="width:1px;height:15px;background:var(--border-2)"></div>
+        <div style="flex:none;display:flex;align-items:baseline;gap:7px;white-space:nowrap">
+          <span style="font:600 12px/1.4 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)">最近更新</span>
+          <span style="font:600 14px/1.4 var(--font-mono);color:var(--ink-800)">{{ updated }}</span>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:stretch;height:42px;padding:0 24px;background:#fff;border-bottom:1px solid var(--border-1)">
+      <sc-for list="{{ navGroups }}" as="g" hint-placeholder-count="2">
+        <div style="display:{{ g.subDisplay }};align-items:stretch;gap:4px">
+          <sc-for list="{{ g.items }}" as="s" hint-placeholder-count="2">
+            <a href="{{ s.href }}" style="display:flex;align-items:center;padding:0 14px;font:{{ s.fw }} 15px/1.2 var(--font-cjk);color:{{ s.fg }};box-shadow:inset 0 -2px 0 {{ s.bc }};text-decoration:none;white-space:nowrap;transition:color 120ms cubic-bezier(.4,0,.2,1)" style-hover="color:var(--csop-blue-700);text-decoration:none">{{ s.name }}</a>
+          </sc-for>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:14px;min-height:48px;padding:7px 24px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1);flex-wrap:wrap">
+      <div style="display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden;background:#fff">
+        <sc-for list="{{ presets }}" as="p" hint-placeholder-count="5">
+          <div onClick="{{ p.go }}" style="padding:6px 14px;font:{{ p.fw }} 14px/1.4 var(--font-cjk);color:{{ p.fg }};background:{{ p.bg }};cursor:pointer;border-right:1px solid var(--border-1);transition:background 120ms cubic-bezier(.4,0,.2,1)" style-hover="background:var(--csop-blue-50)">{{ p.label }}</div>
+        </sc-for>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 14px/1.4 var(--font-mono);color:var(--ink-700);white-space:nowrap">
+        <span>{{ rangeFrom }}</span><span style="color:var(--ink-300)">→</span><span>{{ rangeTo }}</span>
+      </div>
+      <div style="padding:5px 11px;border-radius:9999px;background:var(--csop-blue-50);font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700)">热力粒度 {{ granLabel }}</div>
+      <div style="padding:5px 11px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 13px/1.4 var(--font-cjk);color:var(--ink-600)">{{ benchLabel }} · 基准 {{ benchText }}</div>
+      <div onClick="{{ toggleNotes }}" style="margin-left:auto;flex:none;display:flex;align-items:center;gap:8px;padding:6px 14px;border:1px solid {{ notesBc }};border-radius:9999px;background:{{ notesBg }};font:500 14px/1.4 var(--font-cjk);color:{{ notesFg }};cursor:pointer;transition:all 120ms cubic-bezier(.4,0,.2,1)" style-hover="background:var(--csop-blue-50)">口径与数据状态<span style="font:400 12px/1.4 var(--font-mono)">{{ notesCaret }}</span></div>
+    </div>
+  </div>
+
+  <sc-if value="{{ loading }}">
+    <div style="position:sticky;top:144px;z-index:30;display:flex;align-items:center;gap:10px;margin:14px 24px 0;padding:9px 15px;border:1px solid var(--csop-blue-200);border-radius:6px;background:var(--csop-blue-50)">
+      <span style="width:8px;height:8px;border-radius:9999px;background:var(--csop-blue-600)"></span>
+      <span style="font:500 14px/1.4 var(--font-cjk);color:var(--csop-blue-800)">数据加载中 — 正在按新的日期范围与板块筛选重新聚合</span>
+    </div>
+  </sc-if>
+
+  <div style="padding:24px 24px 64px;opacity:{{ bodyOpacity }};transition:opacity 200ms cubic-bezier(.4,0,.2,1)">
+
+    <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding-bottom:18px;margin-bottom:20px;border-bottom:1px solid var(--border-2)">
+      <div>
+        <div style="font:600 12px/1.2 var(--font-cjk);letter-spacing:0.18em;color:var(--csop-blue-600);margin-bottom:10px">市场 · 板块总览</div>
+        <div style="font:600 28px/1.2 var(--font-cjk);letter-spacing:-0.015em">全市场活跃 ETF 舆情分布</div>
+      </div>
+      <div style="flex:none;text-align:right">
+        <div style="font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)">数据范围 <span style="font:600 13px/1.6 var(--font-mono);color:var(--ink-800)">{{ rangeText }}</span></div>
+        <div style="font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)">最近更新 <span style="font:600 13px/1.6 var(--font-mono);color:var(--ink-800)">{{ updated }}</span></div>
+      </div>
+    </div>
+
+    <sc-if value="{{ notesOpen }}">
+      <div style="background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);padding:20px;margin-bottom:20px">
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px 26px;margin-bottom:18px">
+          <sc-for list="{{ statusLegend }}" as="l" hint-placeholder-count="6">
+            <div style="display:flex;gap:11px;align-items:flex-start">
+              <span style="flex:none;min-width:30px;padding:3px 9px;border-radius:9999px;background:{{ l.bg }};color:{{ l.fg }};font:600 13px/1.4 var(--font-mono);text-align:center">{{ l.k }}</span>
+              <span style="font:400 14px/1.65 var(--font-cjk);color:var(--ink-600);text-wrap:pretty">{{ l.v }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="padding-top:16px;border-top:1px solid var(--border-1);display:grid;grid-template-columns:repeat(2,1fr);gap:18px 28px">
+          <sc-for list="{{ notesBlocks }}" as="b" hint-placeholder-count="4">
+            <div>
+              <div style="font:600 14px/1.4 var(--font-cjk);margin-bottom:8px">{{ b.title }}</div>
+              <div style="font:400 14px/1.75 var(--font-cjk);color:var(--ink-600);text-wrap:pretty">{{ b.body }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </sc-if>
+
+    <div style="display:grid;grid-template-columns:1fr 1.15fr 1.25fr 1.25fr;align-items:stretch;background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04);margin-bottom:20px;overflow:hidden">
+      <div style="padding:14px 20px;border-right:1px solid var(--border-1);min-width:0">
+        <div style="font:500 13px/1.4 var(--font-cjk);color:var(--ink-500);margin-bottom:8px">CSOP产品讨论热度</div>
+        <div style="display:flex;align-items:baseline;gap:9px">
+          <span style="font:600 26px/1 var(--font-mono);letter-spacing:-0.01em;color:var(--ink-900)">{{ k1.value }}</span>
+          <span style="font:500 13px/1.4 var(--font-mono);color:{{ k1.dfg }}">{{ k1.delta }}</span>
+        </div>
+        <div style="margin-top:7px;font:400 12px/1.5 var(--font-cjk);color:var(--ink-400);text-wrap:pretty">{{ k1.sub }}</div>
+      </div>
+      <div style="padding:14px 20px;border-right:1px solid var(--border-1);min-width:0">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
+          <span style="font:500 13px/1.4 var(--font-cjk);color:var(--ink-500)">舆情管理</span>
+          <span style="font:400 12px/1.4 var(--font-cjk);color:var(--ink-400)">CSOP 自家产品</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div>
+            <div style="display:flex;align-items:baseline;gap:7px">
+              <span style="font:600 26px/1 var(--font-mono);letter-spacing:-0.01em;color:var(--negative-600)">{{ k2.neg }}</span>
+              <span style="font:500 12px/1.4 var(--font-mono);color:{{ k2.negDfg }}">{{ k2.negDelta }}</span>
+            </div>
+            <div style="margin-top:5px;font:500 12px/1.4 var(--font-cjk);color:var(--negative-700)">负面舆情</div>
+          </div>
+          <div>
+            <div style="display:flex;align-items:baseline;gap:7px">
+              <span style="font:600 26px/1 var(--font-mono);letter-spacing:-0.01em;color:var(--positive-700)">{{ k2.pos }}</span>
+              <span style="font:500 12px/1.4 var(--font-mono);color:{{ k2.posDfg }}">{{ k2.posDelta }}</span>
+            </div>
+            <div style="margin-top:5px;font:500 12px/1.4 var(--font-cjk);color:var(--positive-700)">正面好评</div>
+          </div>
+        </div>
+        <div title="{{ k2.barTitle }}" style="display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--ink-100);margin-top:9px">
+          <span style="width:{{ k2.negW }}%;background:var(--negative-600)"></span>
+          <span style="width:{{ k2.posW }}%;background:var(--positive-600)"></span>
+        </div>
+        <div style="margin-top:6px;font:400 12px/1.5 var(--font-cjk);color:var(--ink-400);text-wrap:pretty">{{ k2.sub }}</div>
+      </div>
+      <div style="padding:14px 20px;border-right:1px solid var(--border-1);min-width:0">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
+          <span style="font:500 13px/1.4 var(--font-cjk);color:var(--ink-500);white-space:nowrap">近期热议飙升的CSOP产品</span>
+          <span style="margin-left:auto;font:400 12px/1.4 var(--font-cjk);color:var(--ink-400);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ topNote }}</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:3px">
+          <sc-for list="{{ topOwn }}" as="t" hint-placeholder-count="3">
+            <div onClick="{{ t.go }}" title="{{ t.title }}" style="display:flex;align-items:center;gap:8px;height:24px;padding:0 6px;margin:0 -6px;border-radius:4px;cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)" style-hover="background:var(--csop-blue-50)">
+              <span style="flex:none;width:12px;font:600 12px/1 var(--font-mono);color:var(--ink-400)">{{ t.rank }}</span>
+              <span style="flex:none;font:600 13px/1.4 var(--font-mono);color:var(--ink-900)">{{ t.code }}</span>
+              <span style="flex:1;min-width:0;font:400 13px/1.4 var(--font-cjk);color:var(--ink-700);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ t.name }}</span>
+              <span style="flex:none;font:600 13px/1.4 var(--font-mono);color:var(--positive-700)">{{ t.growth }}</span>
+              <span style="flex:none;font:400 12px/1.4 var(--font-mono);color:var(--ink-400);white-space:nowrap">评论 {{ t.comments }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ topOwnEmpty }}" hint-placeholder-val="{{ false }}">
+          <div style="font:400 12px/1.5 var(--font-cjk);color:var(--ink-400);text-wrap:pretty">暂无相关内容 — 基准期样本不足，暂无可比产品</div>
+        </sc-if>
+      </div>
+      <div style="padding:14px 20px;min-width:0">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
+          <span style="font:500 13px/1.4 var(--font-cjk);color:var(--ink-500);white-space:nowrap">近期热议提升的其他产品</span>
+          <span style="margin-left:auto;font:400 12px/1.4 var(--font-cjk);color:var(--ink-400);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ topNote }}</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:3px">
+          <sc-for list="{{ topPeer }}" as="t" hint-placeholder-count="3">
+            <div onClick="{{ t.go }}" title="{{ t.title }}" style="display:flex;align-items:center;gap:8px;height:24px;padding:0 6px;margin:0 -6px;border-radius:4px;cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)" style-hover="background:var(--csop-blue-50)">
+              <span style="flex:none;width:12px;font:600 12px/1 var(--font-mono);color:var(--ink-400)">{{ t.rank }}</span>
+              <span style="flex:none;font:600 13px/1.4 var(--font-mono);color:var(--ink-900)">{{ t.code }}</span>
+              <span style="flex:1;min-width:0;font:400 13px/1.4 var(--font-cjk);color:var(--ink-700);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ t.name }}</span>
+              <span style="flex:none;font:600 13px/1.4 var(--font-mono);color:var(--positive-700)">{{ t.growth }}</span>
+              <span style="flex:none;font:400 12px/1.4 var(--font-mono);color:var(--ink-400);white-space:nowrap">评论 {{ t.comments }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ topPeerEmpty }}" hint-placeholder-val="{{ false }}">
+          <div style="font:400 12px/1.5 var(--font-cjk);color:var(--ink-400);text-wrap:pretty">暂无相关内容 — 基准期样本不足，暂无可比产品</div>
+        </sc-if>
+      </div>
+    </div>
+
+    <div style="background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:20px">
+      <div style="padding:13px 20px 12px;border-bottom:1px solid var(--border-1)">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:11px">
+          <span style="flex:none;font:600 18px/1.3 var(--font-cjk)">ETF 产品观测</span>
+          <div style="position:relative;flex:none">
+            <input value="{{ q }}" onChange="{{ onSearch }}" placeholder="搜索产品代码或名称" style="width:230px;box-sizing:border-box;padding:7px 28px 7px 31px;border:1px solid {{ qBc }};border-radius:6px;font:400 14px/1.4 var(--font-cjk);color:var(--ink-900);background:#fff">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#909AAA" strokeWidth="1.8" strokeLinecap="round" style="position:absolute;left:9px;top:9px;pointer-events:none"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.6-3.6"></path></svg>
+            <sc-if value="{{ hasQ }}">
+              <div onClick="{{ clearQ }}" style="position:absolute;right:6px;top:6px;width:19px;height:19px;border-radius:4px;display:flex;align-items:center;justify-content:center;font:400 13px/1 var(--font-cjk);color:var(--ink-500);cursor:pointer" style-hover="background:var(--csop-blue-50)">✕</div>
+            </sc-if>
+          </div>
+          <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;min-width:0">
+            <sc-for list="{{ chips }}" as="c" hint-placeholder-count="9">
+              <div onClick="{{ c.go }}" style="display:flex;align-items:center;gap:5px;padding:4px 9px;white-space:nowrap;border:1px solid {{ c.bc }};border-radius:9999px;background:{{ c.bg }};font:{{ c.fw }} 13px/1.4 var(--font-cjk);color:{{ c.fg }};cursor:pointer;transition:all 120ms cubic-bezier(.4,0,.2,1)">
+                <span style="width:7px;height:7px;border-radius:2px;background:{{ c.dot }}"></span>{{ c.name }}
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+          <span style="font:600 12px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)">范围</span>
+          <div style="display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden;background:#fff">
+            <sc-for list="{{ scopeOptions }}" as="m" hint-placeholder-count="3">
+              <div onClick="{{ m.go }}" style="padding:5px 12px;font:{{ m.fw }} 13px/1.4 var(--font-cjk);color:{{ m.fg }};background:{{ m.bg }};cursor:pointer;border-right:1px solid var(--border-1)">{{ m.label }}</div>
+            </sc-for>
+          </div>
+          <sc-for list="{{ toggles }}" as="t" hint-placeholder-count="3">
+            <div onClick="{{ t.go }}" style="display:flex;align-items:center;gap:6px;padding:5px 11px;border:1px solid {{ t.bc }};border-radius:9999px;background:{{ t.bg }};font:{{ t.fw }} 13px/1.4 var(--font-cjk);color:{{ t.fg }};cursor:pointer;transition:all 120ms cubic-bezier(.4,0,.2,1)">
+              <span style="width:6px;height:6px;border-radius:9999px;background:{{ t.dot }}"></span>{{ t.label }}
+              <sc-if value="{{ t.hasN }}" hint-placeholder-val="{{ false }}">
+                <span style="padding:0 6px;border-radius:9999px;background:var(--negative-100);font:600 11px/1.6 var(--font-mono);color:var(--negative-700)">{{ t.n }}</span>
+              </sc-if>
+            </div>
+          </sc-for>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+            <span style="font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)">{{ visibleCount }} 只在筛选内</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:stretch;border-top:1px solid var(--border-1)">
+        <div style="flex:1;min-width:0;box-sizing:border-box;display:flex;flex-direction:column">
+          <div style="flex:none;display:flex;align-items:center;gap:10px;height:44px;padding:0 14px;border-bottom:1px solid var(--border-1)">
+            <span style="flex:none;font:600 14px/1.3 var(--font-cjk);color:var(--ink-900)">产品榜单</span>
+            <span style="flex:none;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)">{{ boardNote }}</span>
+            <sc-if value="{{ listAll }}" hint-placeholder-val="{{ false }}">
+              <div onClick="{{ listToggle }}" style="flex:none;display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:9999px;background:var(--csop-blue-50);font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer" style-hover="background:var(--csop-blue-100)">完整榜单 {{ poolCount }} 只<span style="font:400 12px/1 var(--font-cjk)">✕</span></div>
+            </sc-if>
+            <span style="margin-left:auto;min-width:0;text-align:right;font:400 12px/1.4 var(--font-cjk);color:var(--ink-400);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">热度＝评论量＋0.3×点赞＋转发 · 点表头排序</span>
+          </div>
+          <div style="flex:none;display:flex;align-items:center;gap:8px;height:40px;padding:0 14px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1)">
+            <span style="flex:none;width:36px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-800)">序号</span>
+            <span style="flex:none;width:56px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-800)">代码</span>
+            <span style="flex:1;min-width:120px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-800);white-space:nowrap">产品名称</span>
+            <div onClick="{{ sortComments.go }}" style="flex:none;width:64px;display:flex;align-items:center;justify-content:flex-end;gap:3px;cursor:pointer;font:{{ sortComments.fw }} 14px/1.4 var(--font-cjk);color:{{ sortComments.fg }}" style-hover="color:var(--csop-blue-600)">评论量<span style="font:600 9px/1 var(--font-mono)">{{ sortComments.caret }}</span></div>
+            <div onClick="{{ sortGrowth.go }}" style="flex:none;width:60px;display:flex;align-items:center;justify-content:flex-end;gap:3px;cursor:pointer;font:{{ sortGrowth.fw }} 14px/1.4 var(--font-cjk);color:{{ sortGrowth.fg }}" style-hover="color:var(--csop-blue-600)">环比<span style="font:600 9px/1 var(--font-mono)">{{ sortGrowth.caret }}</span></div>
+            <div onClick="{{ sortHeat.go }}" style="flex:none;width:72px;display:flex;align-items:center;justify-content:flex-end;gap:3px;cursor:pointer;font:{{ sortHeat.fw }} 14px/1.4 var(--font-cjk);color:{{ sortHeat.fg }}" style-hover="color:var(--csop-blue-600)">讨论热度<span style="font:600 9px/1 var(--font-mono)">{{ sortHeat.caret }}</span></div>
+            <div onClick="{{ sortAtt.go }}" style="flex:none;width:120px;display:flex;align-items:center;gap:3px;cursor:pointer;font:{{ sortAtt.fw }} 14px/1.4 var(--font-cjk);color:{{ sortAtt.fg }}" style-hover="color:var(--csop-blue-600)">正面 ／ 负面<span style="font:600 9px/1 var(--font-mono)">{{ sortAtt.caret }}</span></div>
+            <div onClick="{{ sortNeg.go }}" style="flex:none;width:48px;display:flex;align-items:center;justify-content:flex-end;gap:3px;cursor:pointer;font:{{ sortNeg.fw }} 14px/1.4 var(--font-cjk);color:{{ sortNeg.fg }}" style-hover="color:var(--csop-blue-600)">舆情<span style="font:600 9px/1 var(--font-mono)">{{ sortNeg.caret }}</span></div>
+            <span title="{{ hotRule }}" style="flex:1.3;min-width:220px;display:flex;align-items:center;gap:6px;padding-left:10px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-800);white-space:nowrap">热议总结<span style="padding:0 6px;border-radius:9999px;background:var(--csop-blue-50);font:500 11px/1.6 var(--font-cjk);color:var(--csop-blue-700)">AI 生成</span></span>
+          </div>
+          <div style="flex:none;height:540px;overflow-y:auto">
+            <sc-for list="{{ rows }}" as="r" hint-placeholder-count="10">
+              <div onClick="{{ r.go }}" onMouseEnter="{{ r.hoverIn }}" onMouseLeave="{{ r.hoverOut }}" style="display:flex;align-items:center;gap:8px;height:54px;box-sizing:border-box;padding:0 14px;background:{{ r.bg }};border-bottom:1px solid var(--ink-100);cursor:pointer" style-hover="background:var(--csop-blue-50)">
+                <span style="flex:none;width:36px;font:500 13px/1.4 var(--font-mono);color:var(--ink-400)">{{ r.idx }}</span>
+                <span style="flex:none;width:56px;font:600 14px/1.4 var(--font-mono);color:{{ r.codeFg }}">{{ r.code }}</span>
+                <span style="flex:1;min-width:120px;display:flex;align-items:center;gap:8px;overflow:hidden">
+                  <span title="{{ r.name }}" style="flex:1;min-width:0;font:400 14px/1.4 var(--font-cjk);color:var(--ink-700);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.name }}</span>
+                </span>
+                <span style="flex:none;width:64px;text-align:right;font:600 14px/1.4 var(--font-mono);color:var(--ink-900)">{{ r.comments }}</span>
+                <span style="flex:none;width:60px;text-align:right;font:600 13px/1.4 var(--font-mono);color:{{ r.gfg }}">{{ r.growth }}</span>
+                <span style="flex:none;width:72px;text-align:right;font:500 13px/1.4 var(--font-mono);color:var(--ink-700)">{{ r.heat }}</span>
+                <div style="flex:none;width:120px;display:flex;align-items:center;gap:6px">
+                  <sc-if value="{{ r.hasAttitude }}" hint-placeholder-val="{{ true }}">
+                    <span style="flex:none;display:flex;width:56px;height:6px;border-radius:3px;overflow:hidden;background:var(--ink-100)">
+                      <span style="width:{{ r.posW }}%;background:var(--positive-600)"></span>
+                      <span style="width:{{ r.negW }}%;background:var(--negative-600)"></span>
+                    </span>
+                    <span style="flex:none;font:600 12px/1.4 var(--font-mono);color:var(--positive-700)">{{ r.pos }}</span>
+                    <span style="flex:none;font:600 12px/1.4 var(--font-mono);color:var(--negative-700)">{{ r.neg }}</span>
+                  </sc-if>
+                  <sc-if value="{{ r.lowSample }}">
+                    <span style="font:400 12px/1.4 var(--font-cjk);color:var(--ink-400)">样本不足</span>
+                  </sc-if>
+                </div>
+                <span style="flex:none;width:48px;display:flex;justify-content:flex-end">
+                  <sc-if value="{{ r.alert }}" hint-placeholder-val="{{ false }}">
+                    <span title="可归类为需关注问题的内容条数" style="padding:1px 7px;border-radius:9999px;background:var(--negative-100);font:600 12px/1.6 var(--font-mono);color:var(--negative-700)">{{ r.alertN }}</span>
+                  </sc-if>
+                </span>
+                <span title="{{ r.hotTitle }}" style="flex:1.3;min-width:220px;padding-left:10px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;font:400 13px/18px var(--font-cjk);color:{{ r.hotFg }};text-wrap:pretty">{{ r.hot }}</span>
+              </div>
+            </sc-for>
+            <sc-if value="{{ listMore }}" hint-placeholder-val="{{ false }}">
+              <div onClick="{{ listToggle }}" style="display:flex;align-items:center;justify-content:center;height:38px;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);background:var(--canvas);border-bottom:1px solid var(--ink-100);cursor:pointer" style-hover="background:var(--csop-blue-50)">{{ listMoreLabel }}</div>
+            </sc-if>
+            <sc-if value="{{ rowsEmpty }}">
+              <div style="padding:16px;font:400 14px/1.6 var(--font-cjk);color:var(--ink-500)">{{ rowsEmptyText }}</div>
+            </sc-if>
+          </div>
+        </div>
+
+        <div style="flex:0 0 32%;min-width:380px;max-width:640px;box-sizing:border-box;border-left:1px solid var(--border-1);display:flex;flex-direction:column">
+          <div style="flex:none;display:flex;align-items:center;gap:10px;height:44px;padding:0 14px;border-bottom:1px solid var(--border-1)">
+            <span style="flex:none;font:600 14px/1.3 var(--font-cjk);color:var(--ink-900)">热力图</span>
+            <div style="flex:none;display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden;background:#fff">
+              <sc-for list="{{ heatModes }}" as="m" hint-placeholder-count="2">
+                <div onClick="{{ m.go }}" style="padding:5px 11px;font:{{ m.fw }} 13px/1.4 var(--font-cjk);color:{{ m.fg }};background:{{ m.bg }};cursor:pointer;border-right:1px solid var(--border-1)">{{ m.label }}</div>
+              </sc-for>
+            </div>
+          </div>
+          <div style="flex:none;display:flex;align-items:center;gap:8px;height:34px;padding:0 14px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1)">
+            <span style="flex:none;font:600 13px/1.4 var(--font-cjk);color:var(--ink-800);white-space:nowrap">色阶 · {{ heatLegendTitle }}</span>
+            <div style="display:flex">
+              <sc-for list="{{ heatLegend }}" as="g" hint-placeholder-count="7">
+                <span style="padding:3px 7px;background:{{ g.bg }};border-radius:{{ g.radius }};font:600 11px/1.4 var(--font-mono);color:{{ g.fg }}">{{ g.label }}</span>
+              </sc-for>
+            </div>
+          </div>
+          <div style="flex:none;display:flex;align-items:center;gap:14px;height:28px;padding:0 14px;font:400 12px/1.4 var(--font-cjk);color:var(--ink-500);white-space:nowrap;overflow:hidden">
+            <span style="flex:none;display:flex;align-items:center;gap:6px"><span style="font:600 11px/1.4 var(--font-cjk);letter-spacing:0.06em;color:var(--ink-400)">面积</span>热度＝评论量＋0.3×点赞＋转发</span>
+            <span style="flex:none;width:1px;height:12px;background:var(--border-2)"></span>
+            <span style="flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:6px;overflow:hidden"><span style="flex:none;font:600 11px/1.4 var(--font-cjk);letter-spacing:0.06em;color:var(--ink-400)">颜色</span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ heatMetricNote }}</span></span>
+          </div>
+          <div style="flex:none;padding:4px 14px 14px">
+            <div ref="{{ heatRef }}" style="position:relative;width:100%;height:440px">
+              <sc-for list="{{ tiles }}" as="t" hint-placeholder-count="20">
+                <div onClick="{{ t.go }}" onMouseEnter="{{ t.hoverIn }}" onMouseLeave="{{ t.hoverOut }}" style="position:absolute;left:{{ t.x }}px;top:{{ t.y }}px;width:{{ t.w }}px;height:{{ t.h }}px;box-sizing:border-box;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;overflow:hidden;background:{{ t.bg }};box-shadow:{{ t.ring }};border-radius:2px;cursor:pointer">
+                  <sc-if value="{{ t.risk }}" hint-placeholder-val="{{ false }}">
+                    <span title="需合规关注 · AI 识别待人工确认" style="position:absolute;top:4px;right:4px;width:7px;height:7px;border-radius:9999px;background:var(--negative-600);box-shadow:0 0 0 1.5px #fff"></span>
+                  </sc-if>
+                  <span style="font:{{ t.codeFont }};color:{{ t.fg }};white-space:nowrap">{{ t.code }}</span>
+                  <span style="font:{{ t.valFont }};color:{{ t.fg }};white-space:nowrap">{{ t.val }}</span>
+                  <span style="font:{{ t.subFont }};color:{{ t.fg }};opacity:0.82;white-space:nowrap">{{ t.sub }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div onClick="{{ tailGo }}" style="display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;height:36px;margin-top:6px;padding:0 12px;border:1px dashed var(--border-2);border-radius:4px;background:var(--canvas-alt);cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)" style-hover="background:var(--csop-blue-50)">
+              <span style="flex:none;font:600 13px/1.4 var(--font-cjk);color:var(--ink-700)">其他 {{ heatTailN }} 只</span>
+              <span style="flex:1;min-width:0;font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)">合计讨论热度 {{ tailHeat }} · 占全市场 {{ tailShare }}</span>
+              <span style="flex:none;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600)">看完整榜单 →</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      
+    </div>
+
+  </div>
+
+  <sc-if value="{{ tipOpen }}">
+    <div style="position:fixed;left:{{ tipX }}px;top:{{ tipY }}px;transform:translate(-50%,-100%);z-index:80;pointer-events:none;background:var(--csop-navy-900);color:#fff;border-radius:6px;padding:10px 12px;box-shadow:0 6px 20px rgba(14,42,82,0.28);min-width:186px">
+      <div style="font:600 13px/1.4 var(--font-mono);margin-bottom:8px;color:#fff">{{ tipTitle }}</div>
+      <sc-for list="{{ tipRows }}" as="t" hint-placeholder-count="4">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:18px;padding:2px 0">
+          <span style="font:400 12px/1.5 var(--font-cjk);color:rgba(255,255,255,0.66)">{{ t.k }}</span>
+          <span style="font:600 13px/1.5 var(--font-mono);color:{{ t.fg }}">{{ t.v }}</span>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ drawerOpen }}">
+    <div onClick="{{ closeDrawer }}" style="position:fixed;inset:0;background:rgba(14,42,82,0.55);z-index:60"></div>
+  </sc-if>
+
+  <div style="position:fixed;top:0;right:0;width:544px;height:100vh;background:#fff;border-left:1px solid var(--border-2);box-shadow:-8px 0 28px rgba(14,42,82,0.14);z-index:61;transform:translateX({{ drawerX }});transition:transform 320ms cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;overflow:hidden">
+    <sc-if value="{{ drawerOpen }}">
+      <div style="display:flex;flex-direction:column;height:100vh">
+
+        <div style="flex:none;padding:18px 22px 16px;background:var(--canvas);border-bottom:1px solid var(--border-1)">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px">
+            <div style="min-width:0">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+                <span style="padding:3px 10px;border-radius:9999px;background:var(--csop-navy-900);font:600 14px/1.5 var(--font-mono);color:#fff">{{ sel.code }}</span>
+                <span style="padding:3px 9px;border-radius:4px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)">{{ sel.sector }}</span>
+                <span style="padding:3px 9px;border-radius:4px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)">{{ sel.struct }}</span>
+                <span style="padding:3px 9px;border-radius:4px;background:{{ sel.obg }};font:600 12px/1.6 var(--font-cjk);color:{{ sel.ofg }}">{{ sel.own }}</span>
+                <sc-if value="{{ sel.isNew }}">
+                  <span style="padding:3px 9px;border-radius:4px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700)">新品</span>
+                </sc-if>
+              </div>
+              <div style="font:600 17px/1.4 var(--font-cjk);text-wrap:pretty">{{ sel.name }}</div>
+              <div style="margin-top:5px;font:400 13px/1.5 var(--font-cjk);color:var(--ink-500)">发行商 {{ sel.issuer }} · 上市 {{ sel.listing }}</div>
+            </div>
+            <div onClick="{{ closeDrawer }}" style="flex:none;width:28px;height:28px;border-radius:6px;border:1px solid var(--border-2);background:#fff;display:flex;align-items:center;justify-content:center;font:400 15px/1 var(--font-cjk);color:var(--ink-500);cursor:pointer" style-hover="background:var(--csop-blue-50)">✕</div>
+          </div>
+        </div>
+
+        <div ref="{{ drawerBodyRef }}" style="flex:1;min-height:0;overflow-y:auto;padding:18px 22px 24px">
+
+          <div style="font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400);margin-bottom:10px">当前舆情总结</div>
+          <div style="border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);padding:14px 15px;margin-bottom:20px">
+            <div style="font:400 14px/1.8 var(--font-cjk);color:var(--ink-800);text-wrap:pretty">{{ sel.summary }}</div>
+            <div style="margin-top:11px;padding-top:10px;border-top:1px solid var(--border-1);display:flex;flex-wrap:wrap;gap:6px">
+              <span style="padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-mono);color:var(--ink-600)">{{ sel.rangeText }}</span>
+              <span style="padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-mono);color:var(--ink-600)">更新 {{ updated }}</span>
+              <span style="padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)">有效样本 {{ sel.sample }} 条</span>
+              <span style="padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700)">AI 生成 · 可追溯原文</span>
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            <span style="font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)">分时段讨论热度</span>
+            <span style="padding:2px 8px;border-radius:9999px;background:var(--csop-blue-50);font:500 12px/1.6 var(--font-cjk);color:var(--csop-blue-700)">粒度 {{ granLabel }}</span>
+            <div style="margin-left:auto;display:flex;align-items:center;gap:5px">
+              <span style="font:500 11px/1.4 var(--font-mono);color:var(--ink-400)">低</span>
+              <div style="display:flex">
+                <sc-for list="{{ bucketLegend }}" as="g" hint-placeholder-count="6">
+                  <span style="width:13px;height:9px;background:{{ g.bg }}"></span>
+                </sc-for>
+              </div>
+              <span style="font:500 11px/1.4 var(--font-mono);color:var(--ink-400)">高</span>
+            </div>
+          </div>
+          <div style="border:1px solid var(--border-1);border-radius:6px;background:#fff;padding:13px 14px 12px;margin-bottom:20px">
+            <div onMouseMove="{{ sel.cellMove }}" onMouseLeave="{{ sel.cellLeave }}" style="display:flex;gap:2px;height:86px;cursor:pointer">
+              <sc-for list="{{ sel.cells }}" as="c" hint-placeholder-count="14">
+                <div onClick="{{ c.pick }}" style="flex:1;min-width:3px;background:{{ c.bg }};box-shadow:{{ c.ring }};border-radius:2px"></div>
+              </sc-for>
+            </div>
+            <div style="display:flex;gap:2px;margin-top:7px">
+              <sc-for list="{{ sel.axis }}" as="a" hint-placeholder-count="14">
+                <div style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:4px">
+                  <span style="width:1px;height:{{ a.tick }}px;background:{{ a.tickC }}"></span>
+                  <span style="font:{{ a.fw }} 13px/1.3 var(--font-mono);color:{{ a.fg }};white-space:nowrap">{{ a.v }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <sc-if value="{{ sel.hasDayBands }}">
+              <div style="display:flex;gap:2px;margin-top:7px;padding-top:7px;border-top:1px solid var(--border-1)">
+                <sc-for list="{{ sel.dayBands }}" as="d" hint-placeholder-count="7">
+                  <div style="flex:{{ d.flex }};min-width:0;text-align:center;font:600 13px/1.3 var(--font-mono);color:var(--ink-700);white-space:nowrap;overflow:hidden">{{ d.label }}</div>
+                </sc-for>
+              </div>
+            </sc-if>
+            <div style="margin-top:11px;padding-top:10px;border-top:1px solid var(--border-1)">
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:9px">
+                <span style="padding:3px 11px;border-radius:9999px;background:{{ sel.readBg }};font:600 13px/1.5 var(--font-mono);color:#fff;white-space:nowrap">{{ sel.readTime }}</span>
+                <span style="font:400 12px/1.5 var(--font-cjk);color:var(--ink-500)">{{ sel.readHint }}</span>
+                <sc-if value="{{ sel.hasPick }}">
+                  <span onClick="{{ sel.clearPick }}" style="font:500 12px/1.5 var(--font-cjk);color:var(--csop-blue-600);cursor:pointer">回到峰值时段</span>
+                </sc-if>
+              </div>
+              <div style="display:flex;gap:20px;flex-wrap:wrap">
+                <sc-for list="{{ sel.readRows }}" as="r" hint-placeholder-count="4">
+                  <span style="font:400 12px/1.5 var(--font-cjk);color:var(--ink-500)">{{ r.k }} <span style="font:600 14px/1.3 var(--font-mono);color:{{ r.fg }}">{{ r.v }}</span></span>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+
+          <div style="font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400);margin-bottom:10px">积极 ／ 消极观点</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
+            <div>
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;color:var(--positive-700)">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 10v12"></path><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"></path></svg>
+                <span style="font:600 14px/1.4 var(--font-cjk)">积极观点</span>
+                <span style="font:600 14px/1.4 var(--font-mono)">{{ sel.posTotal }}</span>
+              </div>
+              <sc-for list="{{ sel.posThemes }}" as="t" hint-placeholder-count="3">
+                <a href="{{ t.href }}" style="display:block;border:1px solid var(--border-1);border-left:3px solid var(--positive-600);border-radius:0 6px 6px 0;padding:10px 11px;margin-bottom:8px;background:#fff;text-decoration:none" style-hover="background:var(--positive-50);text-decoration:none">
+                  <div style="font:600 14px/1.45 var(--font-cjk);color:var(--ink-900);text-wrap:pretty">{{ t.title }}</div>
+                  <div style="margin-top:5px;display:flex;align-items:center;gap:10px">
+                    <span style="font:600 13px/1.4 var(--font-mono);color:var(--ink-800)">{{ t.mentions }} 条</span>
+                    <span style="font:500 12px/1.4 var(--font-mono);color:{{ t.dfg }}">{{ t.delta }}</span>
+                    <span style="margin-left:auto;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600)">证据 {{ t.evidence }} →</span>
+                  </div>
+                </a>
+              </sc-for>
+              <sc-if value="{{ sel.noPos }}">
+                <div style="padding:12px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)">暂无相关内容</div>
+              </sc-if>
+            </div>
+            <div>
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;color:var(--negative-700)">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M17 14V2"></path><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"></path></svg>
+                <span style="font:600 14px/1.4 var(--font-cjk)">消极观点</span>
+                <span style="font:600 14px/1.4 var(--font-mono)">{{ sel.negTotal }}</span>
+              </div>
+              <sc-for list="{{ sel.negThemes }}" as="t" hint-placeholder-count="3">
+                <a href="{{ t.href }}" style="display:block;border:1px solid var(--border-1);border-left:3px solid var(--negative-600);border-radius:0 6px 6px 0;padding:10px 11px;margin-bottom:8px;background:#fff;text-decoration:none" style-hover="background:var(--negative-50);text-decoration:none">
+                  <div style="font:600 14px/1.45 var(--font-cjk);color:var(--ink-900);text-wrap:pretty">{{ t.title }}</div>
+                  <div style="margin-top:5px;display:flex;align-items:center;gap:10px">
+                    <span style="font:600 13px/1.4 var(--font-mono);color:var(--ink-800)">{{ t.mentions }} 条</span>
+                    <span style="font:500 12px/1.4 var(--font-mono);color:{{ t.dfg }}">{{ t.delta }}</span>
+                    <span style="margin-left:auto;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600)">证据 {{ t.evidence }} →</span>
+                  </div>
+                </a>
+              </sc-for>
+              <sc-if value="{{ sel.noNeg }}">
+                <div style="padding:12px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)">暂无相关内容</div>
+              </sc-if>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
+            <div style="border:1px solid var(--border-1);border-radius:6px;padding:13px 14px">
+              <div style="font:500 13px/1.4 var(--font-cjk);color:var(--ink-500);margin-bottom:8px">讨论热度</div>
+              <div style="display:flex;align-items:baseline;gap:9px">
+                <span style="font:600 24px/1 var(--font-mono);color:var(--ink-900)">{{ sel.heat }}</span>
+                <span style="font:500 13px/1.4 var(--font-mono);color:{{ sel.heatDfg }}">{{ sel.heatDelta }}</span>
+              </div>
+              <div style="margin-top:8px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-500)">评论 {{ sel.comments }} · 点赞 {{ sel.likes }} · 转发 {{ sel.shares }}<br>全市场评论量排名 第 {{ sel.rank }} ／ {{ sel.rankTotal }}</div>
+            </div>
+            <div style="border:1px solid var(--border-1);border-radius:6px;padding:13px 14px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                <span style="font:500 13px/1.4 var(--font-cjk);color:var(--ink-500)">整体态度</span>
+                <span style="font:500 12px/1.4 var(--font-cjk);color:{{ sel.netFg }}">{{ sel.net }}</span>
+              </div>
+              <div style="display:flex;height:22px;border-radius:4px;overflow:hidden;background:var(--ink-100);margin-bottom:8px">
+                <div style="width:{{ sel.posPct }}%;background:var(--positive-600)"></div>
+                <div style="width:{{ sel.negPct }}%;background:var(--negative-600)"></div>
+              </div>
+              <div style="display:flex;align-items:center;gap:12px;font:600 13px/1.4 var(--font-mono)">
+                <span style="color:var(--positive-700)">赞 {{ sel.posTotal }}</span>
+                <span style="color:var(--negative-700)">踩 {{ sel.negTotal }}</span>
+                <span style="color:var(--ink-500);font-weight:500">中性 {{ sel.neuTotal }}（{{ sel.neuShare }}）</span>
+              </div>
+            </div>
+          </div>
+
+          <div ref="{{ riskRef }}" style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+            <span style="font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)">重点舆情</span>
+            <span style="padding:2px 8px;border-radius:9999px;background:var(--negative-100);font:600 12px/1.5 var(--font-cjk);color:var(--negative-700)">需合规关注</span>
+            <sc-if value="{{ sel.riskOk }}" hint-placeholder-val="{{ false }}">
+              <span style="font:600 14px/1.2 var(--font-mono);color:var(--negative-700)">{{ sel.riskN }}</span>
+            </sc-if>
+            <span style="margin-left:auto;padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 11px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap">AI 识别 · 待人工确认</span>
+          </div>
+          <sc-if value="{{ sel.riskOk }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-bottom:20px">
+              <sc-for list="{{ sel.riskRows }}" as="r" hint-placeholder-count="2">
+                <a href="{{ r.href }}" style="display:block;border:1px solid var(--border-1);border-left:3px solid var(--negative-600);border-radius:0 6px 6px 0;padding:11px 13px;margin-bottom:8px;background:#fff;text-decoration:none;color:inherit" style-hover="background:var(--negative-50);text-decoration:none">
+                  <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:7px">
+                    <sc-for list="{{ r.tags }}" as="g" hint-placeholder-count="2">
+                      <span style="padding:1px 8px;border-radius:9999px;background:var(--negative-50);border:1px solid var(--negative-100);font:600 11px/1.7 var(--font-cjk);color:var(--negative-700)">{{ g.label }}</span>
+                    </sc-for>
+                    <span style="margin-left:auto;font:500 12px/1.4 var(--font-mono);color:var(--ink-500);white-space:nowrap">{{ r.time }}</span>
+                  </div>
+                  <div style="font:400 14px/1.7 var(--font-cjk);color:var(--ink-800);text-wrap:pretty">“{{ r.excerpt }}”</div>
+                  <div style="margin-top:6px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-500);text-wrap:pretty"><span style="font-weight:600;color:var(--ink-600)">AI 命中依据</span>　{{ r.why }}</div>
+                  <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                    <span style="font:500 13px/1.4 var(--font-cjk);color:var(--ink-800)">{{ r.author }}</span>
+                    <span style="padding:0 7px;border-radius:3px;background:{{ r.tbg }};font:600 11px/1.7 var(--font-cjk);color:{{ r.tfg }}">{{ r.type }}</span>
+                    <span style="font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)">来源：{{ r.source }}</span>
+                    <span style="margin-left:auto;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600)">查看原文证据 →</span>
+                  </div>
+                </a>
+              </sc-for>
+              <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+                <a href="{{ sel.riskHref }}" style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none" style-hover="background:var(--csop-blue-50);text-decoration:none">查看全部原文证据 →</a>
+                <sc-if value="{{ sel.riskHasMore }}" hint-placeholder-val="{{ false }}">
+                  <span style="font:400 12px/1.5 var(--font-cjk);color:var(--ink-500)">{{ sel.riskMore }}</span>
+                </sc-if>
+                <span style="font:400 12px/1.5 var(--font-cjk);color:var(--ink-400)">只识别风险信号并保留原文，不判定言论真伪或产品是否违规</span>
+              </div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ sel.riskEmpty }}" hint-placeholder-val="{{ false }}">
+            <div style="padding:14px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500);margin-bottom:20px">暂无相关内容 — 区间内未识别到需合规关注的言论；普通消极观点与负面问题见相邻模块。</div>
+          </sc-if>
+          <sc-if value="{{ sel.riskUnavailable }}" hint-placeholder-val="{{ false }}">
+            <div style="padding:14px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 14px/1.6 var(--font-cjk);color:var(--warning-700);margin-bottom:20px">数据暂不可用 — 风险识别结果尚未核验或数据源未提供，不展示推测内容。</div>
+          </sc-if>
+          <sc-if value="{{ sel.riskNa }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid var(--border-1);border-radius:6px;background:#fff;margin-bottom:20px">
+              <span style="flex:none;min-width:26px;padding:2px 8px;border-radius:9999px;background:var(--ink-100);font:600 13px/1.4 var(--font-mono);color:var(--ink-700);text-align:center">—</span>
+              <span style="font:400 13px/1.6 var(--font-cjk);color:var(--ink-500);text-wrap:pretty">同业产品不纳入重点舆情（需合规关注）识别范围，字段不适用。</span>
+            </div>
+          </sc-if>
+
+          <div style="font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400);margin-bottom:10px">负面舆情摘要</div>
+          <sc-if value="{{ sel.hasNegCats }}" hint-placeholder-val="{{ true }}">
+            <div style="margin-bottom:20px">
+              <sc-for list="{{ sel.negCats }}" as="c" hint-placeholder-count="3">
+                <div style="border:1px solid var(--border-1);border-radius:6px;padding:11px 13px;margin-bottom:8px;background:#fff">
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                    <span style="font:600 14px/1.4 var(--font-cjk);color:var(--ink-900)">{{ c.label }}</span>
+                    <span style="padding:1px 7px;border-radius:9999px;background:{{ c.lbg }};font:600 11px/1.7 var(--font-cjk);color:{{ c.lfg }}">{{ c.life }}</span>
+                    <span style="margin-left:auto;font:600 13px/1.4 var(--font-mono);color:var(--negative-700)">{{ c.mentions }} 条 · {{ c.share }}</span>
+                  </div>
+                  <div style="font:400 13px/1.6 var(--font-cjk);color:var(--ink-600);text-wrap:pretty">{{ c.summary }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+          <sc-if value="{{ sel.noNegCats }}">
+            <div style="padding:14px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500);margin-bottom:20px">暂无相关内容 — 区间内没有可归类为需关注负面舆情的内容。</div>
+          </sc-if>
+
+          <div style="font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400);margin-bottom:10px">关联竞品观点 · 前 3</div>
+          <sc-if value="{{ sel.hasComps }}" hint-placeholder-val="{{ true }}">
+            <div>
+              <sc-for list="{{ sel.comps }}" as="c" hint-placeholder-count="3">
+                <div style="border:1px solid var(--border-1);border-radius:6px;padding:12px 13px;margin-bottom:8px;background:#fff">
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                    <span style="padding:2px 8px;border-radius:9999px;background:var(--ink-100);font:600 13px/1.5 var(--font-mono);color:var(--ink-700)">{{ c.code }}</span>
+                    <span style="flex:1;min-width:0;font:500 14px/1.4 var(--font-cjk);color:var(--ink-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.name }}</span>
+                    <span style="padding:1px 7px;border-radius:9999px;background:{{ c.rbg }};font:600 11px/1.7 var(--font-cjk);color:{{ c.rfg }}">{{ c.relation }}</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;font:500 12px/1.4 var(--font-cjk);color:var(--ink-500)">
+                    <span>{{ c.issuer }}</span>
+                    <span>评论量 <span style="font:600 13px/1.4 var(--font-mono);color:var(--ink-800)">{{ c.mentions }}</span></span>
+                    <span style="font:500 12px/1.4 var(--font-mono);color:{{ c.dfg }}">{{ c.delta }}</span>
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px">
+                    <div style="background:var(--positive-50);border-radius:4px;padding:8px 9px">
+                      <div style="font:600 12px/1.4 var(--font-cjk);color:var(--positive-700);margin-bottom:4px">用户认可</div>
+                      <div style="font:400 12px/1.6 var(--font-cjk);color:var(--ink-700);text-wrap:pretty">{{ c.pos }}</div>
+                    </div>
+                    <div style="background:var(--negative-50);border-radius:4px;padding:8px 9px">
+                      <div style="font:600 12px/1.4 var(--font-cjk);color:var(--negative-700);margin-bottom:4px">用户质疑</div>
+                      <div style="font:400 12px/1.6 var(--font-cjk);color:var(--ink-700);text-wrap:pretty">{{ c.neg }}</div>
+                    </div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+          <sc-if value="{{ sel.noComps }}">
+            <div style="padding:14px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500)">{{ sel.compsEmptyText }}</div>
+          </sc-if>
+        </div>
+
+        <div style="flex:none;padding:14px 22px;border-top:1px solid var(--border-1);background:var(--canvas)">
+          <a href="{{ sel.monitorHref }}" style="display:flex;align-items:center;justify-content:center;padding:11px;border-radius:6px;background:var(--csop-blue-600);color:#fff;font:600 14px/1.4 var(--font-cjk);text-decoration:none;transition:background 120ms cubic-bezier(.4,0,.2,1)" style-hover="background:var(--csop-blue-800);text-decoration:none">进入完整产品监控</a>
+        </div>
+      </div>
+    </sc-if>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:1100}}">
+class Component extends DCLogic {
+  state = {
+    sel: null, sector: 'all', rangeKey: 'd7', notes: false,
+    sort: 'comments', heatMode: 'net', scope: 'all', view: 'sector', q: '', listAll: false,
+    onlyNew: false, onlyNeg: false, onlyRisk: false, scrollRisk: false,
+    secOpen: {}, secAll: {}, flatAll: false, tip: null, loading: false, bucket: null
+  };
+  heatRef = React.createRef();
+  drawerBodyRef = React.createRef();
+  riskRef = React.createRef();
+
+  /* 板块、范围、搜索与开关只改变可见范围；排名与色阶标尺始终来自全市场 */
+  visibleFor(st) {
+    var R = window.RADAR, P = R.pool(st.rangeKey);
+    var q = (st.q || '').trim().toLowerCase();
+    return P.list.filter(function (o) {
+      if (st.scope === 'own' && o.ownership !== 'own') return false;
+      if (st.scope === 'peer' && o.ownership !== 'peer') return false;
+      if (st.sector !== 'all' && o.sector !== st.sector) return false;
+      if (st.onlyNew && !o.isNew) return false;
+      if (st.onlyNeg && !P.alerts[o.code]) return false;
+      if (st.onlyRisk && !(P.complianceCount[o.code] > 0)) return false;
+      if (q && o.code.toLowerCase().indexOf(q) < 0 && o.name.toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    });
+  }
+
+  /* 榜单行与热力图色块共用同一张悬浮卡；榜单行跟随光标横向定位，色块居中于自身 */
+  productHover(o, hr, poolN, atMouse) {
+    return (e) => {
+      var t = this.state.tip;
+      if (t && t.code === o.code && t.i === -1) return;
+      var r = e.currentTarget.getBoundingClientRect();
+      var rc = window.RADAR.pool(this.state.rangeKey).complianceCount[o.code];
+      this.setState({
+        tip: {
+          code: o.code, i: -1,
+          x: atMouse ? e.clientX : r.left + r.width / 2,
+          y: r.top - 8, title: o.code + ' · ' + o.name,
+          rows: [
+            { k: '评论量', v: o.comments.toLocaleString('en-US'), fg: '#fff' },
+            { k: '讨论热度', v: o.discussionHeat.toLocaleString('en-US') + ' · 全市场第 ' + hr + ' ／ ' + poolN + ' 名', fg: '#fff' },
+            { k: '点赞 ／ 转发', v: o.likes.toLocaleString('en-US') + ' ／ ' + o.shares.toLocaleString('en-US'), fg: 'rgba(255,255,255,0.88)' },
+            { k: '积极 ／ 消极 ／ 中性', v: o.attitude.positive + ' / ' + o.attitude.negative + ' / ' + o.attitude.neutral, fg: 'rgba(255,255,255,0.88)' },
+            { k: '情绪净值', v: this.netText(o), fg: 'rgba(255,255,255,0.88)' }
+          ].concat(rc > 0 ? [{ k: '需合规关注', v: rc + ' 条 · AI 识别待确认', fg: '#F3A6A6' }] : [])
+        }
+      });
+    };
+  }
+  netText(o) {
+    var a = o.attitude, v = a.positive + a.negative;
+    if (!a.sampleSufficient || !v) return '样本不足';
+    var n = (a.positive - a.negative) / v * 100;
+    return (n > 0 ? '+' : (n < 0 ? '−' : '')) + Math.abs(n).toFixed(0);
+  }
+
+  /* 方形化 treemap（squarify）：面积正比 value，尽量把每块压成接近正方形 */
+  treemap(items, x0, y0, w0, h0) {
+    var res = [];
+    var list = items.filter(function (it) { return it.value > 0; })
+      .sort(function (a, b) { return b.value - a.value; });
+    var total = list.reduce(function (t, it) { return t + it.value; }, 0);
+    if (!list.length || total <= 0 || w0 <= 0 || h0 <= 0) return res;
+    var scale = w0 * h0 / total;
+    var rect = { x: x0, y: y0, w: w0, h: h0 };
+    var worst = function (vals, len) {
+      var sum = 0, mx = 0, mn = Infinity;
+      vals.forEach(function (v) { sum += v; if (v > mx) mx = v; if (v < mn) mn = v; });
+      sum *= scale; mx *= scale; mn *= scale;
+      if (sum <= 0 || len <= 0) return Infinity;
+      var s2 = sum * sum, l2 = len * len;
+      return Math.max(l2 * mx / s2, s2 / (l2 * mn));
+    };
+    var i = 0, guard = 0;
+    while (i < list.length && guard++ < 500) {
+      if (!(rect.w > 0.5) || !(rect.h > 0.5)) break;
+      var row = [], vals = [], best = Infinity;
+      var len = Math.min(rect.w, rect.h);
+      while (i < list.length) {
+        var w2 = worst(vals.concat([list[i].value]), len);
+        if (vals.length && w2 > best) break;
+        vals.push(list[i].value); row.push(list[i]); best = w2; i++;
+      }
+      var sum = vals.reduce(function (t, v) { return t + v; }, 0) * scale;
+      if (!(sum > 0)) break;
+      if (rect.w >= rect.h) {
+        var cw = Math.min(rect.w, Math.max(0.5, sum / rect.h)), yy = rect.y;
+        row.forEach(function (it, k) {
+          var hh = k === row.length - 1 ? rect.y + rect.h - yy : vals[k] * scale / cw;
+          res.push({ item: it.item || it, x: rect.x, y: yy, w: cw, h: hh });
+          yy += hh;
+        });
+        rect = { x: rect.x + cw, y: rect.y, w: rect.w - cw, h: rect.h };
+      } else {
+        var ch = Math.min(rect.h, Math.max(0.5, sum / rect.w)), xx = rect.x;
+        row.forEach(function (it, k) {
+          var ww = k === row.length - 1 ? rect.x + rect.w - xx : vals[k] * scale / ch;
+          res.push({ item: it.item || it, x: xx, y: rect.y, w: ww, h: ch });
+          xx += ww;
+        });
+        rect = { x: rect.x, y: rect.y + ch, w: rect.w, h: rect.h - ch };
+      }
+      if (rect.w < 0.5 || rect.h < 0.5) break;
+    }
+    return res;
+  }
+
+  componentDidMount() {
+    var el = this.heatRef.current;
+    if (el) {
+      var measure = () => {
+        var w = el.getBoundingClientRect().width;
+        if (w > 50 && Math.abs(w - (this.state.heatW || 0)) > 1) this.setState({ heatW: w });
+      };
+      measure();
+      if (window.ResizeObserver) { this._ro = new ResizeObserver(measure); this._ro.observe(el); }
+      else window.addEventListener('resize', measure);
+    }
+    if (!window.RADAR) {
+      var t = 0, iv = setInterval(() => {
+        if (window.RADAR || ++t > 60) { clearInterval(iv); this.forceUpdate(); }
+      }, 50);
+    }
+  }
+  go(patch) {
+    var s = this.state;
+    if (patch.rangeKey || ('sel' in patch)) patch = Object.assign({ bucket: null }, patch);
+    var changed = (patch.rangeKey && patch.rangeKey !== s.rangeKey)
+      || (patch.sector && patch.sector !== s.sector)
+      || (patch.scope && patch.scope !== s.scope)
+      || (patch.view && patch.view !== s.view);
+    if (changed) {
+      patch = Object.assign({}, patch, { loading: true, tip: null });
+      clearTimeout(this._lt);
+      this._lt = setTimeout(() => this.setState({ loading: false }), 520);
+    }
+    this.setState(patch);
+  }
+  componentWillUnmount() { clearTimeout(this._lt); if (this._ro) this._ro.disconnect(); }
+
+  seg(active, label, patch) {
+    return {
+      label: label, go: () => this.go(patch),
+      fw: active ? 600 : 400,
+      fg: active ? '#fff' : 'var(--ink-600)',
+      bg: active ? 'var(--csop-blue-600)' : '#fff'
+    };
+  }
+  dfg(d) { return d.dir > 0 ? 'var(--positive-700)' : (d.dir < 0 ? 'var(--negative-600)' : 'var(--ink-400)'); }
+
+  barMove(o) {
+    return (e) => {
+      var r = e.currentTarget.getBoundingClientRect();
+      var n = o.buckets.length;
+      var i = Math.max(0, Math.min(n - 1, Math.floor((e.clientX - r.left) / r.width * n)));
+      var t = this.state.tip;
+      if (t && t.code === o.code && t.i === i) return;
+      var b = o.buckets[i];
+      this.setState({
+        tip: {
+          code: o.code, i: i,
+          x: r.left + r.width / 2, y: r.top - 8, title: o.code + ' · ' + b.tip,
+          rows: [
+            { k: '评论数', v: String(b.comments), fg: '#fff' },
+            { k: '点赞 ／ 转发', v: (b.likes || 0) + ' ／ ' + (b.shares || 0), fg: 'rgba(255,255,255,0.88)' },
+            { k: '积极 ／ 消极 ／ 中性', v: b.positive + ' / ' + b.negative + ' / ' + b.neutral, fg: 'rgba(255,255,255,0.88)' }
+          ]
+        }
+      });
+    };
+  }
+
+  /* 从榜单红标进入抽屉时，把抽屉滚到重点舆情区块 */
+  componentDidUpdate() {
+    if (this.state.scrollRisk && this.state.sel) {
+      var body = this.drawerBodyRef.current, el = this.riskRef.current;
+      if (body && el) body.scrollTop = el.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop - 14;
+      this.setState({ scrollRisk: false });
+    }
+  }
+
+  renderVals() {
+    var R = window.RADAR; if (!R) return {};
+    var s = this.state, self = this;
+    var range = R.buildRange(s.rangeKey);
+    var rk = R.ranks(s.rangeKey);
+
+    var domains = R.NAV.map(function (d) {
+      var on = d.k === 'portfolio';
+      return {
+        name: d.name, href: d.items[0].href,
+        fw: on ? 600 : 400, fg: on ? '#fff' : 'rgba(255,255,255,0.66)',
+        bg: on ? 'rgba(255,255,255,0.10)' : 'transparent', bc: on ? '#fff' : 'transparent'
+      };
+    });
+    var subItems = R.NAV[0].items.map(function (it) {
+      var on = it.k === 'sector';
+      return {
+        name: it.name, href: it.href,
+        fw: on ? 600 : 400, fg: on ? 'var(--csop-blue-600)' : 'var(--ink-600)',
+        bc: on ? 'var(--csop-blue-600)' : 'transparent'
+      };
+    });
+    var presets = R.PRESETS.map(function (p) {
+      var on = p.k === s.rangeKey;
+      return {
+        label: p.label, go: () => self.go({ rangeKey: p.k, sel: null, tip: null }),
+        fw: on ? 600 : 400, fg: on ? 'var(--csop-blue-700)' : 'var(--ink-600)',
+        bg: on ? 'var(--csop-blue-50)' : '#fff'
+      };
+    });
+    var chips = [{ k: 'all', name: '全部', hue: 'var(--ink-400)' }].concat(R.SECTORS).map(function (c) {
+      var on = c.k === s.sector;
+      return {
+        name: c.name, go: () => self.go({ sector: c.k, sel: null, tip: null }), dot: c.hue,
+        fw: on ? 600 : 400, fg: on ? '#fff' : 'var(--ink-700)',
+        bg: on ? 'var(--csop-navy-900)' : '#fff', bc: on ? 'var(--csop-navy-900)' : 'var(--border-2)'
+      };
+    });
+
+    /* 可见产品：搜索与筛选只改变可见范围，排名与色阶标尺仍来自全市场 */
+    var P = R.pool(s.rangeKey);
+    var visible = self.visibleFor(s);
+    /* 需合规关注：命中产品数按其余筛选条件计算，供快捷筛选显示计数；同业产品该字段不适用 */
+    var riskVisibleN = self.visibleFor(Object.assign({}, s, { onlyRisk: false })).filter(function (o) { return P.complianceCount[o.code] > 0; }).length;
+    /* 时间桶色阶：6 级离散蓝阶，按该产品区间峰值归一，相邻级别肉眼可分 */
+    var STEP = ['#F1F3F6', '#D7E6F8', '#A8CAEF', '#6D9FD9', '#3574BC', '#0E4A8C'];
+    var cellBg = function (v, peak) {
+      return v <= 0 ? STEP[0] : STEP[Math.min(5, Math.max(1, Math.ceil(v / Math.max(1, peak) * 5)))];
+    };
+
+    /* 底色 = 全市场讨论热度「排名分段」。用排名而非数值分位：卡片默认只显示每板块前几名，
+       数值分位会把它们全部推到最深一级（此前所有卡片看起来一样深）。分段对所有板块同一标尺。 */
+    var byHeat = P.list.slice().sort(function (a, b) { return b.discussionHeat - a.discussionHeat; });
+    var heatRank = {}; byHeat.forEach(function (o, i) { heatRank[o.code] = i + 1; });
+    var poolN = P.list.length;
+    var heatRankOf = function (o) { return heatRank[o.code] || poolN; };
+    var hasQ = !!(s.q || '').trim();
+    var visSet = {}; visible.forEach(function (o) { visSet[o.code] = 1; });
+
+    /* 榜单：单表，点表头切换排序口径；序号即当前排序下的名次 */
+    var growthPct = function (o) {
+      var b = P.baseComments[o.code];
+      return b >= 5 ? (o.comments - b) / b * 100 : null;
+    };
+    var SORTS = {
+      comments: { label: '评论量', note: '按区间评论量降序', get: function (o) { return o.comments; } },
+      growth: { label: '环比', note: '按' + range.benchLabel + '评论量增速降序 · 基准期不足 5 条不参与', get: function (o) { var g = growthPct(o); return g == null ? -1e9 : g; } },
+      heat: { label: '讨论热度', note: '按区间讨论热度降序', get: function (o) { return o.discussionHeat; } },
+      neg: { label: '舆情', note: '按舆情条数（可归类为需关注问题的内容）降序', get: function (o) { return P.negMentions[o.code]; } },
+      att: { label: '正面／负面', note: '按正面占比（正面÷(正面＋负面)）降序 · 样本不足不参与', get: function (o) { var a = o.attitude, v = a.positive + a.negative; return (a.sampleSufficient && v) ? a.positive / v : -1e9; } }
+    };
+    var sortKey = SORTS[s.sort] ? s.sort : 'comments';
+    var asc = !!s.sortAsc;
+    var mkSort = function (k) {
+      var on = k === sortKey;
+      return {
+        go: () => self.go({ sort: k, sortAsc: on ? !asc : false, tip: null }),
+        fw: on ? 600 : 600,
+        fg: on ? 'var(--csop-blue-700)' : 'var(--ink-500)',
+        caret: on ? (asc ? '▲' : '▼') : ''
+      };
+    };
+    var cmp = function (a, b) {
+      var g = SORTS[sortKey].get;
+      var d = g(b) - g(a);
+      if (!d) d = b.comments - a.comments;
+      return asc ? -d : d;
+    };
+    var sorted = visible.slice().sort(cmp);
+    var rows = (s.listAll ? sorted : sorted.slice(0, 50)).map(function (o, i) {
+      var att = o.attitude, valid = att.positive + att.negative;
+      var g = growthPct(o), negN = P.negMentions[o.code];
+      var on = s.sel === o.code;
+      var hs = R.hotSummaryFor(o.code, s.rangeKey);
+      return {
+        idx: String(i + 1), code: o.code, name: o.name,
+        comments: o.comments.toLocaleString('en-US'),
+        growth: g == null ? '—' : (g > 0 ? '+' : '') + g.toFixed(0) + '%',
+        gfg: g == null ? 'var(--ink-300)' : (g > 2 ? 'var(--positive-700)' : (g < -2 ? 'var(--negative-600)' : 'var(--ink-500)')),
+        heat: o.discussionHeat.toLocaleString('en-US'),
+        hasAttitude: att.sampleSufficient, lowSample: !att.sampleSufficient,
+        pos: String(att.positive), neg: String(att.negative),
+        posW: valid ? (att.positive / valid * 100).toFixed(1) : '0',
+        negW: valid ? (att.negative / valid * 100).toFixed(1) : '0',
+        alert: negN > 0, alertN: String(negN),
+        /* 热议总结：AI 一句话归纳区间内该 ETF 的主流具体观点；样本不足／不可用按统一状态文案灰字显示 */
+        hot: hs.text, hotFg: hs.ok ? 'var(--ink-800)' : 'var(--ink-400)',
+        hotTitle: hs.ok ? hs.text + '（AI 生成 · 基于 ' + hs.sample + ' 条有效态度样本）' : hs.text,
+        bg: on ? 'var(--csop-blue-50)' : (i % 2 ? 'var(--canvas)' : '#fff'),
+        codeFg: on ? 'var(--csop-blue-700)' : 'var(--ink-900)',
+        hoverIn: self.productHover(o, heatRankOf(o), poolN, true),
+        hoverOut: () => { if (self.state.tip) self.setState({ tip: null }); },
+        go: () => self.go({ sel: o.code, tip: null })
+      };
+    });
+
+    /* 热力图：始终铺开全市场活跃 ETF，面积＝讨论热度，颜色＝情绪净值或热度环比；
+       筛选只决定哪些色块保留颜色，其余置灰，以便在全市场背景下看位置 */
+    var heatMode = s.heatMode === 'growth' ? 'growth' : 'net';
+    var netOf = function (o) {
+      var a = o.attitude, v = a.positive + a.negative;
+      return (a.sampleSufficient && v) ? (a.positive - a.negative) / v * 100 : null;
+    };
+    var heatGrowth = function (o) {
+      var b = P.baseComments[o.code];
+      return b >= 20 ? (o.comments - b) / b * 100 : null;
+    };
+    var tileVal = function (o) { return heatMode === 'net' ? netOf(o) : heatGrowth(o); };
+    var subLabel = heatMode === 'net' ? '情绪净值' : '评论环比';
+    var fmtVal = function (v) {
+      if (v == null) return '';
+      return (v > 0 ? '+' : (v < 0 ? '−' : '')) + Math.abs(v).toFixed(0) + (heatMode === 'net' ? '' : '%');
+    };
+    var VBANDS = [-30, -15, -5, 5, 15, 30];
+    var NET_BG = ['#C53030', '#DC7B7B', '#F2C7C7', '#EEF2F7', '#C2E2D1', '#67B994', '#1F8A5B'];
+    var NET_FG = ['#fff', '#7C2323', '#7C2323', '#5C6678', '#1B5E3F', '#0D3E28', '#fff'];
+    var GRW_BG = ['#8B95A3', '#B7BFC9', '#DDE2E8', '#EEF2F7', '#D2E0F4', '#5288CF', '#163E73'];
+    var GRW_FG = ['#fff', '#2A3140', '#4A5568', '#5C6678', '#1B4F8E', '#fff', '#fff'];
+    var bandIdx = function (v) {
+      for (var i2 = 0; i2 < VBANDS.length; i2++) if (v < VBANDS[i2]) return i2;
+      return VBANDS.length;
+    };
+    /* 热力图：只画讨论热度前 20 只，长尾合并为一格「其他 N 只」（点开看完整榜单）；
+       面积＝讨论热度，颜色＝情绪净值或评论量环比；筛选外的产品置灰 */
+    var HEAT_TOP = 20;
+    var heatSorted = P.list.slice()
+      .filter(function (o) { return o.discussionHeat > 0; })
+      .sort(function (a, b) { return b.discussionHeat - a.discussionHeat; });
+    var headList = heatSorted.slice(0, HEAT_TOP);
+    var tailList = heatSorted.slice(HEAT_TOP);
+    var tailHeat = tailList.reduce(function (t, o) { return t + o.discussionHeat; }, 0);
+    var tiles = [];
+    var flat = headList.map(function (o) { return { item: o, value: o.discussionHeat }; });
+    var heatW = s.heatW || 420;
+    self.treemap(flat, 0, 0, heatW, 440).forEach(function (t) {
+      var o = t.item, tw = t.w - 1.3, th = t.h - 1.3;
+      if (tw < 3 || th < 3) return;
+      var v = tileVal(o), on = s.sel === o.code, dim = !visSet[o.code];
+      var bi = v == null ? 3 : bandIdx(v);
+      tiles.push({
+        x: t.x.toFixed(1), y: t.y.toFixed(1), w: tw.toFixed(1), h: th.toFixed(1),
+        bg: dim ? '#F1F3F7' : (heatMode === 'net' ? NET_BG[bi] : GRW_BG[bi]),
+        fg: dim ? '#C2C8D2' : (heatMode === 'net' ? NET_FG[bi] : GRW_FG[bi]),
+        code: (tw >= 30 && th >= 16) ? o.code : '',
+        codeFont: '600 ' + (tw >= 56 && th >= 30 ? 13 : 11) + 'px/1.1 var(--font-mono)',
+        /* 格内数字＝面积口径（讨论热度）；颜色口径带明确标签，避免把颜色值误读成面积 */
+        val: (tw >= 42 && th >= 30) ? '热度 ' + o.discussionHeat.toLocaleString('en-US') : '',
+        valFont: '600 ' + (tw >= 64 ? 11 : 9) + 'px/1.2 var(--font-mono)',
+        sub: (tw >= 82 && th >= 50) ? (v == null ? '样本不足' : subLabel + ' ' + fmtVal(v)) : '',
+        subFont: '500 10px/1.2 var(--font-mono)',
+        ring: on ? 'inset 0 0 0 2px var(--csop-navy-900)' : 'inset 0 0 0 0.5px rgba(255,255,255,0.5)',
+        risk: !dim && P.complianceCount[o.code] > 0,
+        hoverIn: self.productHover(o, heatRankOf(o), poolN, false),
+        hoverOut: () => { if (self.state.tip) self.setState({ tip: null }); },
+        go: () => self.go({ sel: o.code, tip: null })
+      });
+    });
+    var heatLegend = (heatMode === 'net'
+      ? ['≤−30', '−15', '−5', '0', '+5', '+15', '≥+30']
+      : ['≤−30%', '−15%', '−5%', '0', '+5%', '+15%', '≥+30%']
+    ).map(function (lb, i2) {
+      return {
+        label: lb,
+        bg: heatMode === 'net' ? NET_BG[i2] : GRW_BG[i2],
+        fg: heatMode === 'net' ? NET_FG[i2] : GRW_FG[i2],
+        radius: i2 === 0 ? '3px 0 0 3px' : (i2 === 6 ? '0 3px 3px 0' : '0')
+      };
+    });
+    var heatColorText = heatMode === 'net'
+      ? '情绪净值＝(积极−消极)÷(积极＋消极)×100，绿色为积极多、红色为消极多，样本不足不着色'
+      : '评论量' + range.benchLabel + '的变化百分比';
+
+    /* 顶部 4 卡（第三轮）：CSOP产品讨论热度 → 舆情管理 → 近期热议飙升的CSOP产品 → 近期热议提升的其他产品；
+       前两卡口径收窄至 CSOP 自家（ownership = own），不随榜单筛选变化；基准期为顶部日期预设的前一等长区间 */
+    var ownAll = P.list.filter(function (o) { return o.ownership === 'own'; });
+    var ownHeat = 0, ownBaseHeat = 0, ownNeg = 0, ownNegBase = 0, ownPos = 0, ownPosBase = 0, ownRisk = 0;
+    ownAll.forEach(function (o) {
+      ownHeat += o.discussionHeat; ownBaseHeat += P.baseHeat[o.code] || 0;
+      ownNeg += P.negMentions[o.code] || 0;
+      R.negCatsFor(o.code, s.rangeKey).forEach(function (c) { ownNegBase += c.mentions - (c.delta && c.delta.abs != null ? c.delta.abs : 0); });
+      ownPos += o.attitude.positive;
+      var bo = R.observe(o.code, s.rangeKey, 'bench'); if (bo && bo.attitude) ownPosBase += bo.attitude.positive;
+      ownRisk += P.complianceCount[o.code] || 0;
+    });
+    var dOH = R.delta(ownHeat, ownBaseHeat), dON = R.delta(ownNeg, ownNegBase), dOP = R.delta(ownPos, ownPosBase);
+    var k1 = { value: ownHeat.toLocaleString('en-US'), delta: dOH.short, dfg: self.dfg(dOH), sub: '仅统计 CSOP 自家 ' + ownAll.length + ' 只 · ' + range.benchLabel + ' · ' + R.HEAT_FORMULA.replace('讨论热度 ＝ ', '热度＝').split(' ').join('') };
+    var pnTot = ownNeg + ownPos;
+    var k2 = {
+      neg: ownNeg.toLocaleString('en-US'), negDelta: dON.short, negDfg: dON.dir > 0 ? 'var(--negative-600)' : (dON.dir < 0 ? 'var(--positive-700)' : 'var(--ink-400)'),
+      pos: ownPos.toLocaleString('en-US'), posDelta: dOP.short, posDfg: self.dfg(dOP),
+      negW: pnTot ? (ownNeg / pnTot * 100).toFixed(1) : '0', posW: pnTot ? (ownPos / pnTot * 100).toFixed(1) : '0',
+      barTitle: '负面 ' + ownNeg + ' ： 正面 ' + ownPos + (pnTot ? ' · 负面占 ' + (ownNeg / pnTot * 100).toFixed(0) + '%' : ''),
+      sub: '正面＝AI 判定积极态度；负面＝可归类为需关注问题 · 其中需合规关注 ' + ownRisk + ' 条 · ' + range.benchLabel
+    };
+    /* 两张 Top3 卡：按评论量环比增长率降序，只取正增长；基准期不足 5 条不参与（与榜单环比同口径）；点行打开右侧快速详情抽屉 */
+    var topOf = function (own) {
+      return P.list.filter(function (o) { return (o.ownership === 'own') === own; })
+        .map(function (o) { return { o: o, g: growthPct(o) }; })
+        .filter(function (x) { return x.g != null && x.g > 0; })
+        .sort(function (a, b) { return b.g - a.g || b.o.comments - a.o.comments; })
+        .slice(0, 3)
+        .map(function (x, i) {
+          var o = x.o;
+          return {
+            rank: String(i + 1), code: o.code, name: R.shortName(o.name), growth: '+' + x.g.toFixed(0) + '%', comments: o.comments.toLocaleString('en-US'),
+            title: o.name + '（' + o.code + '.HK）· 评论量 ' + o.comments + '，' + range.benchLabel + ' ' + '+' + x.g.toFixed(0) + '%（基准期 ' + P.baseComments[o.code] + ' 条）· 点击打开快速详情',
+            go: () => self.go({ sel: o.code, tip: null })
+          };
+        });
+    };
+    var topOwn = topOf(true), topPeer = topOf(false);
+
+    var out = {
+      navGroups: R.navGroups('portfolio', 'sector'), presets: presets, chips: chips,
+      rangeText: range.text, rangeFrom: range.from, rangeTo: range.to,
+      granLabel: range.granLabel, updated: R.UPDATED,
+      loading: s.loading, bodyOpacity: s.loading ? '0.45' : '1',
+      visibleCount: String(visible.length),
+      k1: k1, k2: k2, topOwn: topOwn, topPeer: topPeer, topOwnEmpty: topOwn.length === 0, topPeerEmpty: topPeer.length === 0,
+      topNote: '评论量' + range.benchLabel + ' · 前 3',
+      hotRule: R.HOT_RULE,
+      rows: rows, rowsEmpty: sorted.length === 0,
+      rowsEmptyText: (s.scope === 'peer' && s.onlyRisk) ? '暂无相关内容 — 同业产品不纳入需合规关注识别，请切换范围或关闭该筛选。'
+        : (s.scope === 'peer' ? '暂无相关内容 — 当前条件下没有匹配的同业产品。'
+        : (s.onlyRisk ? '暂无相关内容 — 当前条件下没有需合规关注的产品。' : '暂无相关内容 — 当前搜索与筛选下没有匹配的产品。')),
+      riskRef: self.riskRef, drawerBodyRef: self.drawerBodyRef,
+      listMore: sorted.length > 50,
+      listAll: !!s.listAll,
+      listMoreLabel: s.listAll ? '收起，只看前 50 只' : '展开全部 ' + sorted.length + ' 只（当前显示前 50）',
+      listToggle: () => self.setState({ listAll: !s.listAll, tip: null }),
+      boardNote: SORTS[sortKey].note,
+      sortComments: mkSort('comments'), sortGrowth: mkSort('growth'),
+      sortHeat: mkSort('heat'), sortNeg: mkSort('neg'), sortAtt: mkSort('att'),
+      heatRef: self.heatRef,
+      heatTopN: String(headList.length), heatTailN: String(tailList.length),
+      tailHeat: tailHeat.toLocaleString('en-US'),
+      tailShare: (tailHeat / Math.max(1, tailHeat + headList.reduce(function (t, o) { return t + o.discussionHeat; }, 0)) * 100).toFixed(0) + '%',
+      tailGo: () => self.go({ listAll: true, sort: 'heat', sortAsc: false, sel: null, tip: null }),
+      heatFormula: R.HEAT_FORMULA, heatNote: R.HEAT_NOTE,
+      tiles: tiles,
+      heatModes: [
+        self.seg(heatMode === 'net', '情绪净值', { heatMode: 'net', tip: null }),
+        self.seg(heatMode === 'growth', '评论量环比', { heatMode: 'growth', tip: null })
+      ],
+      heatLegend: heatLegend, heatColorText: heatColorText, heatLegendTitle: subLabel,
+      heatMetricName: heatMode === 'growth' ? '评论量环比' : '情绪净值',
+      heatMetricNote: heatMode === 'growth'
+        ? '环比＝评论量较上期增减 %'
+        : '净值＝积极占比 − 消极占比',
+      benchText: range.benchText, benchLabel: range.benchLabel,
+      q: s.q, hasQ: hasQ, qBc: hasQ ? 'var(--csop-blue-600)' : 'var(--border-2)',
+      onSearch: (e) => {
+        var v = e.target.value;
+        var res = self.visibleFor(Object.assign({}, s, { q: v }));
+        self.go({ q: v, sel: res.length === 1 ? res[0].code : null, tip: null, flatAll: false });
+      },
+      clearQ: () => self.go({ q: '', sel: null, tip: null }),
+      poolCount: String(poolN),
+      bucketLegend: STEP.map(function (c) { return { bg: c }; }),
+      toggles: [
+        { on: s.onlyNew, label: '仅新品', go: () => self.go({ onlyNew: !s.onlyNew, sel: null, tip: null }) },
+        { on: s.onlyNeg, label: '仅有舆情', go: () => self.go({ onlyNeg: !s.onlyNeg, sel: null, tip: null }) },
+        { on: s.onlyRisk, label: '仅看需合规关注', n: riskVisibleN, go: () => self.go({ onlyRisk: !s.onlyRisk, sel: null, tip: null }) }
+      ].map(function (t) {
+        return {
+          label: t.label, go: t.go, fw: t.on ? 600 : 400,
+          hasN: t.n > 0, n: String(t.n || 0),
+          fg: t.on ? 'var(--csop-blue-700)' : 'var(--ink-700)',
+          bg: t.on ? 'var(--csop-blue-50)' : '#fff',
+          bc: t.on ? 'var(--csop-blue-600)' : 'var(--border-2)',
+          dot: t.on ? 'var(--csop-blue-600)' : 'var(--ink-300)'
+        };
+      }),
+      /* 范围三项互斥：同业产品＝产品池中已标记为非自家（ownership: peer）的产品，不由 AI 临时推断 */
+      scopeOptions: [
+        self.seg(s.scope === 'all', '全部', { scope: 'all', sel: null }),
+        self.seg(s.scope === 'own', '仅看自家', { scope: 'own', sel: null }),
+        self.seg(s.scope === 'peer', '仅看同业产品', { scope: 'peer', sel: null })
+      ],
+      notesOpen: s.notes, toggleNotes: () => this.go({ notes: !s.notes }),
+      notesCaret: s.notes ? '▲' : '▼',
+      notesBc: s.notes ? 'var(--csop-blue-600)' : 'var(--border-2)',
+      notesBg: s.notes ? 'var(--csop-blue-50)' : '#fff',
+      notesFg: s.notes ? 'var(--csop-blue-700)' : 'var(--ink-700)',
+      statusLegend: R.STATUS_LEGEND,
+      notesBlocks: [
+        { title: '评论量与讨论热度', body: '评论量为区间内被识别为讨论该 ETF 的评论条数，同一账号同一条评论只计一次，一条评论可分别计入多只 ETF。' + R.HEAT_FORMULA + '；' + R.HEAT_NOTE + ' 热度只用于排序与快速扫描，不作为绝对水平解读。' },
+        { title: '积极、消极与中性', body: '「正面／负面」为 AI 对内容中产品态度的分类，不是 Futu 平台的点赞／点踩行为。只判断针对产品本身的态度（费用、流动性、跟踪表现、机制、分红、使用体验）；单纯预测指数或价格涨跌归入产品话题情绪。正负面比分母为正面＋负面，中性单独计数。有效态度评论少于 ' + R.LOW_SAMPLE + ' 条时显示样本不足。「舆情」列为可归类为需关注问题的内容条数。' },
+        { title: '热议总结（AI 生成）', body: R.HOT_RULE + ' 总结为「现象 + 主流观点／动作倾向」一句话，与产品监控页的舆情总结出自同一次生成；字段缺失显示「数据暂不可用」。' },
+        { title: '排名、基准与热力粒度', body: '卡片名次为全市场评论量排名，基于完整活跃 ETF 池计算，板块筛选不重算。基准区间为 ' + range.benchText + '（' + range.benchLabel + '）。热力粒度随日期筛选自适应：1–2 天按小时、3–14 天按自然日、15 天及以上按自然周；当前为' + range.granLabel + '。' },
+        { title: '重点舆情（需合规关注）与同业产品', body: '重点舆情为 AI 识别的高风险言论信号，标签包括监管举报、严重指控、疑似未经证实指控、煽动扩散、合规质疑；系统只识别信号并保留原文与命中依据，不判定言论真伪或产品是否违规，状态统一为「AI 识别 · 待人工确认」。同一条评论可同时属于消极观点与重点舆情。识别范围为自家产品，同业产品不适用。「仅看同业产品」对应产品池中已标记为非自家的产品，不由 AI 临时推断关系。' }
+      ],
+      tipOpen: !!s.tip,
+      tipX: s.tip ? s.tip.x : 0, tipY: s.tip ? s.tip.y : 0,
+      tipTitle: s.tip ? s.tip.title : '', tipRows: s.tip ? s.tip.rows : [],
+      drawerOpen: !!s.sel, drawerX: s.sel ? '0' : '100%',
+      closeDrawer: () => this.go({ sel: null })
+    };
+
+    if (s.sel && R.MASTER[s.sel]) {
+      var code = s.sel;
+      var o = R.observe(code, s.rangeKey), m = R.MASTER[code];
+      var b = R.benchmark(code, s.rangeKey);
+      var sum = R.summaryFor(code, s.rangeKey);
+      var att = o.attitude, valid = att.positive + att.negative;
+      var all = att.positive + att.negative + att.neutral;
+      var link = function (extra) {
+        return 'product-monitor.dc.html?code=' + code + '&range=' + s.rangeKey + (extra || '');
+      };
+      var themeRow = function (t) {
+        return {
+          title: t.title, mentions: String(t.mentions), delta: t.delta.short,
+          dfg: self.dfg(t.delta), evidence: String(t.evidenceCount),
+          href: link('&ev=' + t.id)
+        };
+      };
+      var pos = R.themesFor(code, s.rangeKey, 'positive').slice(0, 3).map(themeRow);
+      var neg = R.themesFor(code, s.rangeKey, 'negative').slice(0, 3).map(themeRow);
+      var cats = R.negCatsFor(code, s.rangeKey).slice(0, 3);
+      var comps = R.competitorsFor(code, s.rangeKey);
+      var cr = R.complianceFor(code, s.rangeKey);
+      var lifeStyle = { '新增': ['var(--negative-100)', 'var(--negative-700)'], '持续': ['var(--warning-100)', 'var(--warning-700)'], '消退': ['var(--ink-100)', 'var(--ink-600)'] };
+
+      /* 分时段热力条：桶随顶部日期粒度自适应，色阶按该产品区间峰值归一 */
+      var bks = o.buckets, stride = bks.length > 16 ? Math.ceil(bks.length / 12) : (bks.length > 8 ? 2 : 1);
+      var peak = bks.reduce(function (a, b) { return b.comments > a.comments ? b : a; }, bks[0]);
+      var peakN = peak ? peak.comments : 0;
+      var peakIdx = peak ? bks.indexOf(peak) : -1;
+      var readIdx = (s.bucket != null && bks[s.bucket]) ? s.bucket : peakIdx;
+      var read = bks[readIdx] || null;
+      /* 小时／自然日等时间元数据只在 range.buckets 上（观测桶只带数值），按索引对齐取用 */
+      var rbk = range.buckets;
+      var dayBands = [];
+      if (range.gran === 'hour') {
+        rbk.forEach(function (b) {
+          var last = dayBands[dayBands.length - 1];
+          if (!last || last.day !== b.day) dayBands.push({ day: b.day, n: 1 });
+          else last.n++;
+        });
+        dayBands = dayBands.map(function (d) {
+          return { label: String(d.day).slice(5), flex: d.n };
+        });
+      }
+
+      out.sel = {
+        code: code, name: o.name, sector: o.sectorName, struct: o.struct, issuer: o.issuer,
+        listing: m.listingDate, isNew: m.isNew,
+        cells: bks.map(function (b, i) {
+          var hot = s.tip && s.tip.code === code && s.tip.i === i;
+          var on = s.bucket === i;
+          return {
+            bg: cellBg(b.comments, peakN),
+            ring: on ? 'inset 0 0 0 2px var(--csop-navy-900)'
+              : (hot ? 'inset 0 0 0 2px var(--csop-blue-600)' : 'inset 0 0 0 1px rgba(14,42,82,0.10)'),
+            pick: () => self.setState({ bucket: on ? null : i })
+          };
+        }),
+        /* 时间轴：小时粒度只标 0/6/12/18 点，自然日单独一行；日／周粒度按 stride 稀释 */
+        axis: rbk.map(function (b, i) {
+          var head = range.gran === 'hour' && b.hour === 0;
+          var show = range.gran === 'hour' ? (b.hour % 6 === 0) : (i % stride === 0);
+          return {
+            v: show ? (range.gran === 'hour' ? String(b.hour).padStart(2, '0') : b.label) : '',
+            fw: head ? 600 : 500,
+            fg: head ? 'var(--ink-800)' : 'var(--ink-500)',
+            tick: show ? (head ? 11 : 6) : 3,
+            tickC: head ? 'var(--ink-600)' : 'var(--border-2)'
+          };
+        }),
+        hasDayBands: dayBands.length > 1,
+        dayBands: dayBands,
+        cellMove: self.barMove(o), cellLeave: () => { if (self.state.tip) self.setState({ tip: null }); },
+        hasPick: readIdx !== peakIdx && read != null,
+        clearPick: () => self.setState({ bucket: null }),
+        readTime: read ? read.tip : '数据暂不可用',
+        readBg: readIdx === peakIdx ? 'var(--csop-navy-900)' : 'var(--csop-blue-700)',
+        readHint: read == null ? '' : (readIdx === peakIdx ? '区间峰值时段 · 点击任一色块查看该时段' : '已选时段 · 点击其他色块切换'),
+        readRows: read ? [
+          { k: '评论', v: String(read.comments), fg: 'var(--ink-900)' },
+          { k: '点赞', v: String(read.likes || 0), fg: 'var(--ink-800)' },
+          { k: '转发', v: String(read.shares || 0), fg: 'var(--ink-800)' },
+          { k: '积极', v: String(read.positive), fg: 'var(--positive-700)' },
+          { k: '消极', v: String(read.negative), fg: 'var(--negative-700)' },
+          { k: '占区间评论量', v: o.comments ? (read.comments / o.comments * 100).toFixed(1) + '%' : '—', fg: 'var(--ink-700)' }
+        ] : [],
+        own: o.ownership === 'own' ? '自家产品' : '同业产品',
+        obg: o.ownership === 'own' ? 'var(--csop-blue-50)' : 'var(--ink-100)',
+        ofg: o.ownership === 'own' ? 'var(--csop-blue-700)' : 'var(--ink-600)',
+        summary: sum.text, sample: String(sum.sample), rangeText: range.text,
+        posThemes: pos, negThemes: neg, noPos: pos.length === 0, noNeg: neg.length === 0,
+        posTotal: String(att.positive), negTotal: String(att.negative), neuTotal: String(att.neutral),
+        neuShare: all ? (att.neutral / all * 100).toFixed(0) + '% 全部有效内容' : '—',
+        posPct: valid ? (att.positive / valid * 100).toFixed(1) : '0',
+        negPct: valid ? (att.negative / valid * 100).toFixed(1) : '0',
+        net: att.sampleSufficient
+          ? (att.positive === att.negative ? '积极与消极持平' : (att.positive > att.negative ? '积极比消极多 ' + (att.positive - att.negative) + ' 条' : '消极比积极多 ' + (att.negative - att.positive) + ' 条'))
+          : '样本不足 · 不输出倾向结论',
+        netFg: att.sampleSufficient ? (att.positive >= att.negative ? 'var(--positive-700)' : 'var(--negative-700)') : 'var(--ink-500)',
+        heat: o.discussionHeat.toLocaleString('en-US'),
+        heatDelta: b.heat.short, heatDfg: self.dfg(b.heat),
+        comments: o.comments.toLocaleString('en-US'),
+        likes: o.likes.toLocaleString('en-US'),
+        shares: o.shares.toLocaleString('en-US'),
+        interactions: o.interactions.toLocaleString('en-US'),
+        rank: String(rk.map[code]), rankTotal: String(rk.total),
+        hasNegCats: cats.length > 0, noNegCats: cats.length === 0,
+        negCats: cats.map(function (c) {
+          var st = lifeStyle[c.lifecycleLabel] || lifeStyle['持续'];
+          return {
+            label: c.label, summary: c.summary, life: c.lifecycleLabel,
+            lbg: st[0], lfg: st[1],
+            mentions: String(c.mentions), share: '占负面 ' + c.shareOfNegative.toFixed(0) + '%'
+          };
+        }),
+        hasComps: comps.status === 'ok', noComps: comps.status !== 'ok',
+        compsEmptyText: comps.status === 'unavailable'
+          ? '数据暂不可用 — 该产品的竞品关系尚未核验，映射字段未提供。'
+          : '暂无相关内容 — 映射表与自动识别均未给出关联产品。',
+        comps: comps.list.slice(0, 3).map(function (c) {
+          return {
+            code: c.code, name: c.name, issuer: c.issuer,
+            relation: c.relation === 'confirmed' ? '已确认' : 'AI 生成 · 待确认',
+            rbg: c.relation === 'confirmed' ? 'var(--csop-blue-50)' : 'var(--warning-100)',
+            rfg: c.relation === 'confirmed' ? 'var(--csop-blue-700)' : 'var(--warning-700)',
+            mentions: String(c.comments), delta: c.delta.short, dfg: self.dfg(c.delta),
+            pos: c.positiveThemes.length ? c.positiveThemes.map(function (t) { return t.title; }).join('、') : '暂无相关内容',
+            neg: c.negativeThemes.length ? c.negativeThemes.map(function (t) { return t.title; }).join('、') : '暂无相关内容'
+          };
+        }),
+        monitorHref: link(''),
+        riskOk: cr.status === 'ok', riskEmpty: cr.status === 'empty', riskNa: cr.status === 'na', riskUnavailable: cr.status === 'unavailable',
+        riskN: String(cr.list.length), riskHref: link('&risk=1'),
+        riskHasMore: cr.list.length > 3, riskMore: cr.list.length > 3 ? '另有 ' + (cr.list.length - 3) + ' 条，见完整产品监控' : '',
+        riskRows: cr.list.slice(0, 3).map(function (r) {
+          return {
+            tags: r.riskLabels.map(function (l) { return { label: l }; }),
+            time: r.publishedAt, excerpt: r.excerpt, why: r.detectionRationale,
+            author: r.authorName, type: r.authorType, source: r.sourceKind,
+            tbg: r.isKnownKol ? 'var(--csop-blue-50)' : 'var(--canvas-alt)',
+            tfg: r.isKnownKol ? 'var(--csop-blue-700)' : 'var(--ink-700)',
+            href: link('&risk=' + r.id)
+          };
+        })
+      };
+    }
+    return out;
+  }
+}
+
+</script>
+</body>
+</html>
