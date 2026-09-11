@@ -1,5 +1,17 @@
 apscheduler==3.10.4
 requests==2.31.0
-clickhouse-driver==0.2.6
 python-dotenv==1.0.0
 pytest==8.3.4
+# 数据访问层与 backend 同一套：SQLAlchemy Core（不用 ORM）+ PyMySQL，见 ADR-0014、ADR-0002。
+# 原 clickhouse-driver 已删除：存储选型改为 MySQL 8（ADR-0002 推翻 plan.md §6 Q4），
+# 且 ETL 要写 backend 读的同一批表，schema 共用 radar_db/（ADR-0009）。
+SQLAlchemy==2.0.36
+PyMySQL==1.1.1
+
+# 数据库迁移（ADR-0017、runbook Gate 2）。`metadata.create_all()` 只会**新建缺失的表**，
+# 它不会给已存在的表加列、改类型或加约束 —— 本机那个 5.27 GB 的库已经建过表了，
+# 靠 create_all 改 schema 的结果是「本机没变、新环境变了」，两边从此不是同一个库。
+alembic==1.13.3
+
+# 结构化输出的唯一定义：wire JSON Schema 与本地校验同源导出（见 ai/schemas.py）。
+pydantic==2.9.2

@@ -2,7 +2,7 @@
 
 - **状态**：已接受
 - **日期**：2026-09-09
-- **相关**：[ADR-0006](0006-dual-acceptance-criteria.md)、[ADR-0008](0008-dump-import-and-slim-db.md)、[ADR-0010](0010-annotations-and-ai-pipeline.md)
+- **相关**：[ADR-0006](0006-dual-acceptance-criteria.md)、[ADR-0008](0008-dump-import-and-slim-db.md)、[ADR-0010](0010-annotations-and-ai-pipeline.md)、[ADR-0016](0016-sqlite-local-mysql-prod.md)
 
 ## 背景
 
@@ -23,6 +23,8 @@
 |---|---|---|
 | `demo` | 由 `design/radar-data.js` 导出的 fixture | 保证五屏 **100% 还原**，可验收 |
 | `mysql` | 瘦库（真实数据 ＋ `annotations`） | 保证**诚实**：有的字段给真值，没有的走六态 |
+
+> **2026-09-10 更名**：`mysql` → **`sql`**（`backend/providers/sql.py`）。本地跑的是 SQLite，叫 mysql 会让人以为本地也得起一个 MySQL —— 见 [ADR-0016](0016-sqlite-local-mysql-prod.md)。`DATA_PROVIDER=mysql` 作为别名保留。本 ADR 及 0006／0007／0008／0010／0012 里的 `mysql` provider 一律指它。
 
 部署形态：**同一镜像、两个 compose 服务、不同环境变量与端口**——`backend-demo:8008`、`backend-mysql:8009`。前端用 `VITE_API_BASE` 指向其中之一。
 

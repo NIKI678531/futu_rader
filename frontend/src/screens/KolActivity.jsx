@@ -3,6 +3,11 @@
    for the two standing deviations (synchronous RADAR import, `{{ }}` → JSX). */
 import React from 'react'
 import R from '../data/radar'
+import {
+  num, typeStyle, rgba, shell, dirStyle,
+  CAMP, POST_TYPES, TYPE_BY_KEY, DIRECTIONS, DIR_BY_KEY,
+} from '../lib/view'
+import { kolProfile } from '../lib/profile'
 import { s, hover, focus } from '../lib/dc'
 import Shell from '../components/Shell'
 import DcLink from '../components/DcLink'
@@ -41,7 +46,7 @@ export default class KolActivity extends React.Component {
   exportCsv(list, summary, filename) {
     var self = this;
     var esc = function (v) { v = v == null ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.split('"').join('""') + '"' : v; };
-    var campLabel = function (p) { var c = self.camp(p); return c === 'both' ? '自家+竞品' : (R.CAMP[c] || R.CAMP.none).label; };
+    var campLabel = function (p) { var c = self.camp(p); return c === 'both' ? '自家+竞品' : (CAMP[c] || CAMP.none).label; };
     var head = ['合作KOL', 'KOL标签', '发帖时间', 'ETF代码', 'ETF名称', '发行商', '内容形式', '操作方向', '类型置信度', '是否待确认', 'AI摘要', '阵营', '提及产品(全部代码)', '赞', '评论数', '转发', '原帖链接'];
     var lines = [esc('# ' + summary), head.map(esc).join(',')].concat(list.map(function (p) {
       return [p.kol, p.tags.split(',').join(' / '), p.day + ' ' + p.time.slice(6), p.code + '.HK', p.name, p.issuer,
@@ -90,12 +95,12 @@ export default class KolActivity extends React.Component {
     var clamp = this.props.summaryLines != null ? this.props.summaryLines : 2;
     var dual = this.props.typeScheme !== '合并单标签';
     var range = R.buildRange(s.rangeKey);
-    var out = R.shell('accounts', 'kol', s, function (x) { self.setState(x); });
+    var out = shell('accounts', 'kol', s, function (x) { self.setState(x); });
     var M = this.data();
     var etfPosts = this.postsForEtf(M);
     var sp = this.scoped(M);
     var secOf = function (k) { return R.SECTORS.filter(function (x) { return x.k === k; })[0] || R.SECTORS[0]; };
-    var campsOf = function (p) { var c = self.camp(p); return c === 'both' ? [R.CAMP.own, R.CAMP.competitor] : [R.CAMP[c] || R.CAMP.none]; };
+    var campsOf = function (p) { var c = self.camp(p); return c === 'both' ? [CAMP.own, CAMP.competitor] : [CAMP[c] || CAMP.none]; };
     var issuerShort = function (x) { return x === 'CSOP 南方东英' ? '南方东英' : x; };
     var pct = function (n, d) { return d ? Math.round(n / d * 100) + '%' : '—'; };
     out.clamp = String(clamp); out.clampH = String(clamp * 22);
@@ -187,8 +192,8 @@ export default class KolActivity extends React.Component {
       if (p.directionPending) dirCounts.pending = (dirCounts.pending || 0) + 1; else if (p.direction) dirCounts[p.direction] = (dirCounts[p.direction] || 0) + 1;
     });
     var DIR_DEF = { add: '在已有持仓上继续买入', open: '首次买入建立仓位', reduce: '部分卖出降低仓位', close: '全部卖出离场', hold: '明确表示暂不操作', pending: '操作类帖子但方向置信度不足' };
-    var dirLabel = function (k) { return k === 'pending' ? '方向待确认' : R.DIR_BY_KEY[k].label; };
-    var picked = s.types.map(function (k) { return R.TYPE_BY_KEY[k].label; }).concat(s.dirs.map(dirLabel));
+    var dirLabel = function (k) { return k === 'pending' ? '方向待确认' : DIR_BY_KEY[k].label; };
+    var picked = s.types.map(function (k) { return TYPE_BY_KEY[k].label; }).concat(s.dirs.map(dirLabel));
     out.typeLabel = !picked.length ? '全部' : (picked.length <= 2 ? picked.join(' · ') : picked.length + ' 项');
     out.typeCaret = s.typeMenu ? '▲' : '▼';
     out.typeOpen = !!s.typeMenu;
@@ -203,8 +208,8 @@ export default class KolActivity extends React.Component {
     out.tTypeBg = s.tTypeMenu ? 'var(--csop-blue-50)' : '#fff';
     out.tTypeToggle = function () { self.setState({ tTypeMenu: !s.tTypeMenu, lTypeMenu: false, etfMenu: false, kolMenu: false, postMenu: false, typeMenu: false }); };
     out.tTypeClose = function () { self.setState({ tTypeMenu: false }); };
-    out.typeMenu = R.POST_TYPES.map(function (t) {
-      var on = s.types.indexOf(t.k) >= 0, st = R.typeStyle(t.k);
+    out.typeMenu = POST_TYPES.map(function (t) {
+      var on = s.types.indexOf(t.k) >= 0, st = typeStyle(t.k);
       return {
         key: t.k, label: t.label, def: t.def, n: String(typeCounts[t.k] || 0), tick: on ? '✓' : '',
         boxBc: on ? 'var(--csop-blue-600)' : 'var(--border-2)', boxBg: on ? 'var(--csop-blue-600)' : '#fff',
@@ -215,8 +220,8 @@ export default class KolActivity extends React.Component {
         }
       };
     });
-    out.dirMenu = R.DIRECTIONS.map(function (d) { return { k: d.k, label: d.label }; }).concat([{ k: 'pending', label: '方向待确认' }]).map(function (d) {
-      var on = s.dirs.indexOf(d.k) >= 0, st = R.dirStyle(d.k === 'pending' ? null : d.k, d.k === 'pending');
+    out.dirMenu = DIRECTIONS.map(function (d) { return { k: d.k, label: d.label }; }).concat([{ k: 'pending', label: '方向待确认' }]).map(function (d) {
+      var on = s.dirs.indexOf(d.k) >= 0, st = dirStyle(d.k === 'pending' ? null : d.k, d.k === 'pending');
       return {
         key: d.k, label: d.label, def: DIR_DEF[d.k], n: String(dirCounts[d.k] || 0), tick: on ? '✓' : '',
         boxBc: on ? 'var(--csop-blue-600)' : 'var(--border-2)', boxBg: on ? 'var(--csop-blue-600)' : '#fff',
@@ -264,7 +269,7 @@ export default class KolActivity extends React.Component {
       if (self.pending(p)) pendingN++;
       if (!p.hasSummary) noSum++;
       tc[p.postType] = (tc[p.postType] || 0) + 1;
-      if (R.TYPE_BY_KEY[p.postType].group === 'op') opN++;
+      if (TYPE_BY_KEY[p.postType].group === 'op') opN++;
       if (p.direction === 'add') addN++;
       if (p.direction === 'reduce') redN++;
       if (p.directionPending) dirPend++;
@@ -301,18 +306,18 @@ export default class KolActivity extends React.Component {
     out.exportCursor = list.length ? 'pointer' : 'not-allowed';
     out.exportOp = list.length ? '1' : '0.6';
     out.rows = list.map(function (p, i) {
-      var sec = secOf(p.sector), st = R.typeStyle(p.postType), dirOn = !!p.hasDir;
+      var sec = secOf(p.sector), st = typeStyle(p.postType), dirOn = !!p.hasDir;
       return {
         key: p.id,
         kol: p.kol, tags: p.tags.split(',').join(' · '), time: p.time, code: p.code, issuer: issuerShort(p.issuer),
-        pbg: R.rgba(sec.hue, 0.12), pfg: sec.hue,
+        pbg: rgba(sec.hue, 0.12), pfg: sec.hue,
         /* 双标签：形式在上、方向在下；合并单标签（Tweaks）：「加仓 · 晒单」一枚 */
         type: dual ? st.label : ((dirOn ? p.dir.label + ' · ' : '') + st.label), tbg: st.bg, tfg: st.fg,
         hasDir: dual && dirOn, dir: dirOn ? p.dir.label : '', dbg: dirOn ? p.dir.bg : 'transparent', dfg: dirOn ? p.dir.fg : 'transparent',
         pending: self.pending(p), conf: p.confidence.toFixed(2),
         summary: p.hasSummary ? p.summary : '', noSummary: !p.hasSummary,
         camps: campsOf(p),
-        likes: R.num(p.likes), comments: R.num(p.comments), shares: R.num(p.shares),
+        likes: num(p.likes), comments: num(p.comments), shares: num(p.shares),
         url: p.url, stop: function (e) { e.stopPropagation(); },
         bg: p.id === s.sel ? 'var(--csop-blue-50)' : (i % 2 ? 'var(--canvas)' : '#fff'),
         /* 只打开抽屉，不改动上方筛选 */
@@ -324,7 +329,7 @@ export default class KolActivity extends React.Component {
     var basePosts = etfPosts.filter(function (p) { return self.typeOk(p); });
     var byK = {};
     basePosts.forEach(function (p) { (byK[p.kol] = byK[p.kol] || []).push(p); });
-    var leaders = Object.keys(byK).map(function (k) { return R.kolProfile(k, byK[k], function (p) { return self.camp(p); }); });
+    var leaders = Object.keys(byK).map(function (k) { return kolProfile(k, byK[k], function (p) { return self.camp(p); }); });
     if (s.leaderSort === 'n') leaders.sort(function (a, b) { return b.n - a.n || b.comments - a.comments; });
     else leaders.sort(function (a, b) { return b.comments - a.comments || b.n - a.n; });
     out.leaderSorts = [['n', '按篇数'], ['eng', '按评论量']].map(function (x) {
@@ -350,14 +355,14 @@ export default class KolActivity extends React.Component {
     out.lq = s.lq; out.lqBc = lqq ? 'var(--csop-blue-600)' : 'var(--border-2)';
     out.setLq = function (e) { self.setState({ lq: e.target.value }); };
     out.lCamps = seg(s.lCamp, 'lCamp');
-    out.lTypeLabel = s.lType === 'ALL' ? '全部' : R.TYPE_BY_KEY[s.lType].label;
+    out.lTypeLabel = s.lType === 'ALL' ? '全部' : TYPE_BY_KEY[s.lType].label;
     out.lTypeOpen = !!s.lTypeMenu; out.lTypeCaret = s.lTypeMenu ? '▲' : '▼';
     out.lTypeBc = (s.lTypeMenu || s.lType !== 'ALL') ? 'var(--csop-blue-600)' : 'var(--border-2)';
     out.lTypeBg = s.lTypeMenu ? 'var(--csop-blue-50)' : '#fff';
     out.lTypeToggle = function () { self.setState({ lTypeMenu: !s.lTypeMenu, tTypeMenu: false, etfMenu: false, kolMenu: false, postMenu: false, typeMenu: false }); };
     out.lTypeClose = function () { self.setState({ lTypeMenu: false }); };
     out.lTypeMenu = [{ k: 'ALL', label: '全部类型', def: '', n: lBase.length, tbg: 'transparent', tfg: 'var(--ink-800)' }].concat(
-      R.POST_TYPES.map(function (t) { var st = R.typeStyle(t.k); return { k: t.k, label: t.label, def: t.def, n: ltc[t.k] || 0, tbg: st.bg, tfg: st.fg }; })).map(function (o) {
+      POST_TYPES.map(function (t) { var st = typeStyle(t.k); return { k: t.k, label: t.label, def: t.def, n: ltc[t.k] || 0, tbg: st.bg, tfg: st.fg }; })).map(function (o) {
         var on = o.k === s.lType;
         return {
           key: o.k, label: o.label, def: o.def, n: String(o.n), tick: on ? '✓' : '', tbg: o.tbg, tfg: o.tfg,
@@ -373,14 +378,14 @@ export default class KolActivity extends React.Component {
     var p0 = this.selPost();
     var selKol = p0 ? p0.kol : null;
     var leaderRows = lRows.map(function (l, i) {
-      var on = s.kol === l.kol || selKol === l.kol, st = R.typeStyle(l.topType);
+      var on = s.kol === l.kol || selKol === l.kol, st = typeStyle(l.topType);
       return {
         key: l.kol,
         rank: String(i + 1), rankFg: i < 3 ? 'var(--csop-blue-700)' : 'var(--ink-400)',
         kol: l.kol, n: String(l.n),
         ownW: (l.own / mxN * 100).toFixed(1), bothW: (l.both / mxN * 100).toFixed(1), peerW: (l.peer / mxN * 100).toFixed(1),
         ownAny: String(l.ownAny), peerAny: String(l.peerAny),
-        eng: R.num(l.comments),
+        eng: num(l.comments),
         type: st.label, tbg: st.bg, tfg: st.fg,
         fw: on ? 600 : 500,
         dot: on ? 'var(--csop-blue-600)' : 'var(--csop-silver-400)',
@@ -398,11 +403,11 @@ export default class KolActivity extends React.Component {
     /* 抽屉：帖子内容卡 */
     out.selOn = !!p0;
     if (p0) {
-      var sec0 = secOf(p0.sector), st0 = R.typeStyle(p0.postType);
+      var sec0 = secOf(p0.sector), st0 = typeStyle(p0.postType);
       var sameKol = etfPosts.filter(function (q) { return q.kol === p0.kol; }).sort(function (a, b) { return b.t - a.t; });
       out.sel = {
         kol: p0.kol, kolTags: p0.tags.split(',').join(' · '), time: p0.time, code: p0.code, name: p0.name, url: p0.url,
-        pbg: R.rgba(sec0.hue, 0.12), pfg: sec0.hue,
+        pbg: rgba(sec0.hue, 0.12), pfg: sec0.hue,
         type: dual ? st0.label : ((p0.hasDir ? p0.dir.label + ' · ' : '') + st0.label), tbg: st0.bg, tfg: st0.fg, pending: self.pending(p0), confidence: p0.confidence.toFixed(2),
         hasDir: dual && !!p0.hasDir, dir: p0.hasDir ? p0.dir.label : '', dbg: p0.hasDir ? p0.dir.bg : 'transparent', dfg: p0.hasDir ? p0.dir.fg : 'transparent',
         evidenceNote: p0.evidenceIdx >= 0 ? '判定依据的原句已在下方原文中标出' : '本篇无可标注的判定依据句',
@@ -434,10 +439,10 @@ export default class KolActivity extends React.Component {
           };
         }),
         counts: [
-          { label: '点赞', value: R.num(p0.likes) },
-          { label: '评论数', value: R.num(p0.comments) },
-          { label: '转发', value: R.num(p0.shares) },
-          { label: '浏览', value: R.num(p0.views) }
+          { label: '点赞', value: num(p0.likes) },
+          { label: '评论数', value: num(p0.comments) },
+          { label: '转发', value: num(p0.shares) },
+          { label: '浏览', value: num(p0.views) }
         ],
         detailHref: 'kol-detail.dc.html?kol=' + encodeURIComponent(p0.kol) + '&post=' + encodeURIComponent(p0.id) + '&range=' + s.rangeKey
       };

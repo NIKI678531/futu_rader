@@ -62,6 +62,23 @@ def test_status_legend_is_verbatim(client):
     assert [(x["key"], x["text"]) for x in legend] == STATUS_LEGEND
 
 
+def test_status_legend_carries_its_own_colours(client):
+    """图例的底色／字色随口径下发，不由屏幕按 key 现拼。
+
+    六态里只有「暂不可用」和「待确认」是警示色 —— 前者是数据没到，后者是 AI 说了但没人
+    确认，都需要读的人停一下；「暂无内容」是蓝，检查过了、确实没有，不该看着像出事。
+    把这个映射留在屏里，五个屏迟早各写各的，同一个「暂不可用」在两页上是两种颜色。
+    （先例：SECTORS 的 hue／tint 也是随主数据下发的口径常量，ADR-0004。）
+    """
+    legend = {x["key"]: (x["bg"], x["fg"]) for x in
+              client.get("/api/v1/meta").get_json()["data"]["statusLegend"]}
+    warn = ("var(--warning-100)", "var(--warning-700)")
+    assert legend["暂不可用"] == warn
+    assert legend["待确认"] == warn
+    assert legend["暂无内容"] == ("var(--csop-blue-50)", "var(--csop-blue-700)")
+    assert legend["0"] == legend["—"] == legend["样本不足"] == ("var(--ink-100)", "var(--ink-700)")
+
+
 def test_heat_formula_is_verbatim(client):
     heat = client.get("/api/v1/meta").get_json()["data"]["heat"]
     assert heat["formula"] == HEAT_FORMULA
@@ -79,6 +96,143 @@ def test_thresholds_match_prd_3_5(client):
     assert t["lowSample"] == 10
     assert t["newDays"] == 30
     assert t["lowConfidence"] == 0.7
+
+
+def test_stage_half_day_threshold_is_half_of_low_sample(client):
+    """PRD 第 3 章阈值表「阶段观点半日阈值 5」。
+
+    这个 5 不是另一个独立的数，是 `lowSample` 的一半（设计源写作
+    `Math.ceil(LOW_SAMPLE / 2)`）：小时粒度下一天切成三段，每段的样本自然只有整日的
+    几分之一，沿用 10 会让几乎每一段都判成样本不足、整页阶段观点塌成一片灰。
+    改 lowSample 而忘了这个数，症状就是「换了个阈值之后小时视图突然没有阶段了」。
+    """
+    t = client.get("/api/v1/meta").get_json()["data"]["thresholds"]
+    assert t["stageHalfDay"] == 5
+    assert t["stageHalfDay"] == -(-t["lowSample"] // 2)
+
+
+ETF_MENTION_RULE = (
+    "提及 ETF 口径：帖子挂载标的 ∪ 正文出现的产品代码／名称，对照 ETF 产品池"
+    "（61 自家 + 59 竞品）匹配；个股代码、个股名称不在词表内，不计入。"
+    "次数按出现次数，一帖内出现 3 次计 3，挂载标的至少计 1。"
+)
+
+
+POST_TYPE_RULE = (
+    "类型为双标签：内容形式（晒单／操作宣言／行情解读／产品推介／教学科普／活动福利／"
+    "问答互动／其他）必有一枚；操作方向（加仓／减仓／建仓／清仓／持有观望）只在帖子"
+    "表达了明确操作时出现，判不出方向的操作类帖子标「方向待确认」。"
+)
+
+
+def test_post_type_rule_is_verbatim(client):
+    """双标签口径（PRD §4.3、O1／ADR-0013）。这段字印在 KOL 影响力页页脚。
+
+    「判不出方向的操作类帖子标『方向待确认』」是这条口径的要害：把没判出来的说成
+    「持有观望」就是在编造一个模型没给出的结论。改这句话之前先改 PRD。
+    """
+    assert client.get("/api/v1/meta").get_json()["data"]["rules"]["postType"] == POST_TYPE_RULE
+
+
+HOT_SUMMARY_RULE = (
+    "热议总结由 AI 归纳当前日期范围内该 ETF 最主流的具体观点，须为观点而非正负面判断；"
+    "有效态度样本低于 10 条不输出。"
+)
+
+
+def test_hot_summary_rule_is_verbatim(client):
+    """这段字是板块总览「热议总结」表头的 title，也是这一列的验收口径。
+
+    「须为观点而非正负面判断」是要害：一旦有人把它实现成「整体偏正面」，这一列就变成了
+    态度分类的复述，而榜单里紧挨着的正面／负面两列已经在说那件事了。
+    「低于 10 条不输出」与 thresholds.lowSample 是同一个 10（PRD §3.5），不是巧合。
+    """
+    data = client.get("/api/v1/meta").get_json()["data"]
+    assert data["rules"]["hotSummary"] == HOT_SUMMARY_RULE
+    assert str(data["thresholds"]["lowSample"]) in HOT_SUMMARY_RULE
+
+
+STAGE_RULE = (
+    "阶段观点：当日按上午（00:00–12:00）／下午（12:00–17:00）／盘后（17:00–24:00）"
+    "三段各归纳一条主流观点；多日先逐日归纳主流观点与情绪，再由 AI 把观点相近的连续"
+    "日期合并为同一阶段，14 天及以上视图下单日孤立观点并入相邻阶段。样本不足的时段"
+    "不参与合并，只在折线下方以灰点标记。阶段总结描述讨论区观点，不表述与价格的"
+    "因果关系。"
+)
+
+
+def test_stage_rule_is_verbatim(client):
+    """阶段观点口径（PRD §5 `stagesFor` 的 `rule` 字段、第 4 章 P12）。这段字印在
+    产品监控页「热度变化与阶段观点」面板的说明位上。
+
+    最后一句是要害：**「阶段总结描述讨论区观点，不表述与价格的因果关系」**。这一面板
+    的热度折线与上方的 K 线共用横轴，所以「9 月 3 日减仓离场」紧挨着一根阴线是常态；
+    只要总结里出现一次「因……而下跌」，这块只读舆情看板就变成了在给客户做因果归因。
+    删掉这句比改一个数危险得多，而它不会让任何测试变红——除了这一条。
+    """
+    assert client.get("/api/v1/meta").get_json()["data"]["rules"]["stage"] == STAGE_RULE
+
+
+def test_etf_mention_rule_is_verbatim(client):
+    """账号域「提及 ETF」按**出现次数累加**，与市场域的评论去重（PRD §3.2，同一条评论
+    对同一产品只计一次）**语义相反**。这段文字直接印在官号清单表头的 title 上，
+    被人顺手「统一」成去重口径，页面上的数字就全错了，而且看不出来。
+    """
+    assert client.get("/api/v1/meta").get_json()["data"]["rules"]["etfMention"] == ETF_MENTION_RULE
+
+
+# ── 主数据 ──────────────────────────────────────────────────────────────
+
+
+def test_products_are_the_120_of_the_pool(client):
+    products = client.get("/api/v1/meta").get_json()["data"]["products"]
+    own = [p for p in products if p["ownership"] == "own"]
+    peer = [p for p in products if p["ownership"] == "peer"]
+    assert (len(own), len(peer)) == (61, 59)
+
+
+def test_products_are_a_list_so_the_order_survives(client):
+    """**必须是数组。** 产品代码是 '3033' 这样的纯数字字符串，JS 对象会把它们当整数键
+    按数值升序重排，ORDER（自家在前、竞品在后）当场丢失，而前端的产品下拉、热力图
+    都按这个顺序渲染。这条断言就是钉住「别顺手改成 {code: {...}} 字典」。
+    """
+    products = client.get("/api/v1/meta").get_json()["data"]["products"]
+    assert isinstance(products, list)
+    assert [p["code"] for p in products[:2]] == ["3033", "3037"]
+    assert products[0]["ownership"] == "own" and products[-1]["ownership"] == "peer"
+
+
+def test_officials_carry_their_homepage_url(client):
+    """主页地址随主数据下发，不由屏幕现算。
+
+    设计源里这个地址是 `R.hash(全称) % 80000000` 现算的——演示数据生成器泄漏进了
+    屏幕代码（ADR-0004）。地址是账号的属性，接真实库后来自库里的账号表。
+    """
+    officials = client.get("/api/v1/meta").get_json()["data"]["officials"]
+    assert len(officials) == 20
+    assert all(o["url"].startswith("https://www.futunn.com/user/") for o in officials)
+    assert {"short", "full", "comps", "url"} == set(officials[0])
+
+
+def test_officials_do_not_leak_the_generator_baselines(client):
+    """OFFICIAL 主数据里的 7 日发布篇数／互动基准是**演示生成器的输入**，不是业务字段。
+
+    下发它们，前端迟早会有人拿去当「基准值」显示，而真实库里根本没有这个东西。
+    """
+    officials = client.get("/api/v1/meta").get_json()["data"]["officials"]
+    assert not any(k in officials[0] for k in ("postsBase", "interBase", "2", "3"))
+
+
+def test_kol_roster_is_named_entities_not_tuples(client):
+    """合作 KOL 名单：`{name, tags, active}`，标签来自合作名单（PRD §4.4 逐字）。
+
+    设计源里 KOLS 是 `[名字, '标签,标签', 1]` 三元组——那是手写数据表的形状，不是
+    接口形状。下发命名字段，KOL 详情页就不用靠下标位置去认字段。
+    """
+    kols = client.get("/api/v1/meta").get_json()["data"]["kols"]
+    assert kols and {"name", "tags", "active"} == set(kols[0])
+    assert all(isinstance(k["active"], bool) for k in kols)
+    assert all(k["tags"] for k in kols)
 
 
 def test_chinese_is_not_escaped_on_the_wire(client):

@@ -1,0 +1,67 @@
+{
+ "3469|d7": {
+  "currency": null,
+  "granLabel": "日 K",
+  "granularity": "1d",
+  "list": [
+   {
+    "bucket": "08-26（周三）全天",
+    "close": null,
+    "high": null,
+    "low": null,
+    "note": "价格数据暂不可用",
+    "open": null
+   },
+   {
+    "bucket": "08-27（周四）全天",
+    "close": null,
+    "high": null,
+    "low": null,
+    "note": "价格数据暂不可用",
+    "open": null
+   },
+   {
+    "bucket": "08-28（周五）全天",
+    "close": null,
+    "high": null,
+    "low": null,
+    "note": "价格数据暂不可用",
+    "open": null
+   },
+   {
+    "bucket": "08-29（周六）全天",
+    "close": null,
+    "high": null,
+    "low": null,
+    "note": "价格数据暂不可用",
+    "open": null
+   },
+   {
+    "bucket": "08-30（周日）全天",
+    "close": null,
+    "high": null,
+    "low": null,
+    "note": "价格数据暂不可用",
+    "open": null
+   },
+   {
+    "bucket": "08-31（周一）全天",
+    "close": null,
+    "high": null,
+    "low": null,
+    "note": "价格数据暂不可用",
+    "open": null
+   },
+   {
+    "bucket": "09-01（周二）全天",
+    "close": null,
+    "high": null,
+    "low": null,
+    "note": "价格数据暂不可用",
+    "open": null
+   }
+  ],
+  "missing": 7,
+  "status": "unavailable"
+ }
+}

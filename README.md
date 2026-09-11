@@ -9,9 +9,10 @@ The repo holds the same screens twice, on purpose:
 | --- | --- |
 | `design/` | Byte-exact mirror of the design project. Read-only reference — never hand-edit. |
 | `frontend/` | React + Vite port of the five screens, built from that mirror. |
-| `backend/` | Flask API skeleton. Only `GET /api/v1/meta` is implemented; see [plan.md](plan.md). |
-| `worker/` | Collection scheduler skeleton. Raw data only — no metric formulas. |
-| `docs/` | Spec and client-confirmation markdown that shipped with the design project. |
+| `backend/` | Flask API. 22 endpoints under `/api/v1`, two providers (`demo` / `sql`). Every metric formula lives in `backend/core/`. |
+| `worker/` | Dump import, `raw_json` ETL, and the collection scheduler. Raw rows only — no metric formulas. |
+| `radar_db/` | The slim DB's SQLAlchemy `MetaData`, shared by `backend/` and `worker/`. SQLite locally, MySQL 8 in production. |
+| `docs/` | Spec and client-confirmation markdown, plus `docs/adr/` for decisions. |
 
 ## Running
 
@@ -39,15 +40,76 @@ cd backend && python -m venv .venv && .venv/Scripts/pip install -r requirements.
 .venv/Scripts/python -m pytest -q
 .venv/Scripts/python app.py            # → http://localhost:8008/api/v1/meta
 
-docker compose up -d                   # clickhouse (8124/9008) + backend (8008) + worker
+cd worker  && python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
+.venv/Scripts/python -m pytest -q
 ```
 
 No system Python? `uv` does both steps without one:
 `uv venv --python 3.11 .venv && uv pip install --python .venv/Scripts/python.exe -r requirements.txt`.
+Note that a `uv`-made venv has no `pip` module — install into it with
+`VIRTUAL_ENV=<abs path to .venv> uv pip install …`.
+
+On Windows, prefix Python commands with `PYTHONIOENCODING=utf-8` (or run `python -X utf8`);
+the console log lines are Chinese and will otherwise come out as mojibake.
 
 The frontend is deliberately not a compose service: building it in a container off the
 `P:` share is far slower than `npm run dev`. Ports sit one above ChatInsight's so both
 projects can run at once. Rationale for every such choice is in [plan.md](plan.md) §6.
+
+### Which provider is serving
+
+`DATA_PROVIDER` picks the data source; the endpoint contract is identical either way
+([ADR-0001](docs/adr/0001-dual-provider.md)). **Always say which one a screenshot came
+from** — `demo`'s numbers are design-source fiction.
+
+| | `demo` (default) | `sql` |
+| --- | --- | --- |
+| Source | fixtures exported from `design/radar-data.js` | the slim DB built from the client's dump |
+| Anchor ("today") | `2026-09-01`, frozen | `2026-08-25`, measured at import |
+| Job | pixel-for-pixel fidelity, the acceptance baseline | honesty: real values where they exist, 「暂不可用」 where they don't |
+
+```sh
+cd backend
+DATA_PROVIDER=demo .venv/Scripts/python app.py    # fixtures, no database needed
+DATA_PROVIDER=sql  .venv/Scripts/python app.py    # the slim DB (build it first, below)
+```
+
+### Building the slim DB from the client's dump
+
+One-time, and only if you need the `sql` provider. The dump is a 10.3 GB `mysqldump`;
+it is **not in the repo and must not be** — it carries real nicknames, IP regions and
+profile text ([ADR-0008](docs/adr/0008-dump-import-and-slim-db.md)). Copy it off OneDrive
+to a local SSD first: on-demand sync will crawl through a 10 GB sequential read.
+
+```sh
+cd worker
+# 1. stream-parse the dump into the src_* mirror layer
+#    (scans all 991,273 feed rows, keeps 504,400 — the 120 products over the last 120 days)
+.venv/Scripts/python -m jobs.import_dump --dump "D:/path/to/dump-market_insight-….sql"
+# 2. unpack raw_json into the feeds / comments / mentions / users fact tables
+.venv/Scripts/python -m jobs.etl
+```
+
+The slim DB lands **outside the repo** by default — `%LOCALAPPDATA%\futu-radar\radar.db`
+on Windows, ~5.3 GB (most of it the retained `raw_json`, which is what lets the ETL
+re-run without re-reading the dump). Two reasons, either one sufficient: the `P:` share writes at
+9.4 MB/s against C:'s 3.1 GB/s, and the slim DB carries the same real user data the dump
+does. Point `RADAR_DB_URL` somewhere else if you need to; see `radar_db/__init__.py`.
+
+Both steps are re-runnable and reconcile their own row counts — a mismatch between rows
+read, rows kept and rows landed is a hard failure, not a warning.
+
+### Docker
+
+```sh
+docker compose up -d      # mysql 8 (3307) + backend (8008, DATA_PROVIDER=sql) + worker
+```
+
+This is the production shape: MySQL instead of the local SQLite file, same schema, same
+SQL ([ADR-0016](docs/adr/0016-sqlite-local-mysql-prod.md)). The compose database starts
+empty — the import above targets whatever `RADAR_DB_URL` points at, so run it against the
+MySQL URL to fill it. There is no automated test on the MySQL dialect yet; check the
+headline numbers by hand the first time.
 
 ## Routes
 

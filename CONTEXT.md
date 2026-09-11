@@ -61,13 +61,16 @@
 | **设计源镜像** | `design/` 目录，Claude Design 项目的**逐字节只读镜像**。永远不手改；设计变更**重新拷贝**而非照着手推。 | [README.md](README.md) |
 | **移植版** | `frontend/`，从镜像移植的 React + Vite 版本。 | README.md |
 | **可见输出等价** | 「100% 还原」的判定标准：同一 URL 参数下，移植版与设计源渲染出的**可见文本与数值完全一致**。不要求源码等价。 | [ADR-0005](docs/adr/0005-sync-shim-and-fidelity.md) |
-| **provider** | 后端供数实现。`demo` 读 fixture（负责 100% 还原），`mysql` 读真实数据（负责诚实）。**端点契约完全一致**。 | [ADR-0001](docs/adr/0001-dual-provider.md) |
+| **provider** | 后端供数实现。`demo` 读 fixture（负责 100% 还原），`sql` 读瘦库真实数据（负责诚实）。**端点契约完全一致**。`sql` 原名 `mysql`，早期 ADR 里仍这么写。 | [ADR-0001](docs/adr/0001-dual-provider.md)、[ADR-0016](docs/adr/0016-sqlite-local-mysql-prod.md) |
 | **垫片（shim）** | `frontend/src/data/radar.js`，把 API 响应喂成屏内期望的同步返回形状。**不补任何默认值**。 | [ADR-0005](docs/adr/0005-sync-shim-and-fidelity.md) |
 | **契约函数 / 展示助手 / 生成器** | `window.RADAR` 成员的三分法：契约函数走 API；展示助手（`rgba`/`typeStyle`/`dirStyle`/`shell`/`navGroups`）留前端；生成器（`hash`/`rnd`/`pick`/`pickN`）接 API 后**必须从屏内消失**。 | [ADR-0004](docs/adr/0004-radar-member-split.md) |
+| **视图内聚合** | 三分法之外的第五类：对**已下发响应**再数一遍，且结果必须随前端筛选重算，因此没有端点。目前只有 `kolProfile`（`frontend/src/lib/profile.js`）。不是口径公式，不受铁律 1 约束。 | [ADR-0015](docs/adr/0015-view-scoped-aggregation.md) |
 | **原始事实表** | worker 从 `raw_json` 拆出的 feeds / comments / mentions / users 四张表。**只落事实，不算口径**。 | [ADR-0009](docs/adr/0009-worker-scope.md) |
-| **瘦库** | 从 10GB 全量 dump 派生出的项目库：120 只标的 × 最近 N 天。原始 dump 与瘦库**都不进 git**（含真实用户数据）。 | [ADR-0008](docs/adr/0008-dump-import-and-slim-db.md) |
-| **`annotations` 表** | AI 标注结果的唯一落点，带 `confidence` / `model`。`backend/core/` 的 AI 派生字段一律从这里读。 | [ADR-0010](docs/adr/0010-annotations-and-ai-pipeline.md) |
-| **演示锚点（ANCHOR）** | 演示期冻结的「今天」＝`2026-09-01`（`NOW` ＝ `2026-09-02 09:00 HKT`）。由 `/meta` 下发，前端不自算。 | [ADR-0012](docs/adr/0012-frozen-demo-anchor.md) |
+| **瘦库** | 从 10GB 全量 dump 派生出的项目库：120 只标的 × 最近 N 天（实际 504,400 篇帖子 × 120 天）。本地是 SQLite 文件，生产是 MySQL 8，schema 共用 `radar_db/schema.py`。原始 dump 与瘦库**都不进 git**（含真实用户数据），默认落在仓库树外。 | [ADR-0008](docs/adr/0008-dump-import-and-slim-db.md)、[ADR-0016](docs/adr/0016-sqlite-local-mysql-prod.md) |
+| **判定单元** | AI 标注的最小粒度：`(comment_id, subject_code)`。一条评论可以对 3033 正面、对 2800 负面 —— 竞品对比场景下这是常态，不是边缘情况。不涉及具体标的时 `subject_code = ''`（不用 `NULL`，否则唯一索引失效、幂等失效）。 | [ADR-0017](docs/adr/0017-ai-annotation-pipeline-production.md) |
+| **`annotations` 表** | AI 标注结果的唯一落点，`backend/core/` 的 AI 派生字段一律从这里读。**没有「模型自报 confidence」这一列** —— 只有 `calibrated_confidence`，且只能由校准过的模型写入，当前全为 NULL。「待确认」态由 `review_state` 驱动（那是事实：有没有人看过），不由伪概率驱动。 | [ADR-0017](docs/adr/0017-ai-annotation-pipeline-production.md)（取代 [ADR-0010](docs/adr/0010-annotations-and-ai-pipeline.md)） |
+| **证据（evidence）** | 结论在原文里的 `(start, end)` 偏移，**由程序定位**而非模型自报。模型给的引文只是线索：能在原文精确匹配上才存，匹配不上则不存证据并把结论标 `needs_review`。存偏移不存文本 —— 原文一旦漂移，对不上会立刻炸而不是静默出错。 | [ADR-0017](docs/adr/0017-ai-annotation-pipeline-production.md) |
+| **锚点（ANCHOR）** | 「今天」＝**最近一个完整自然日**。由 `/meta` 下发，前端不自算，系统时间从不参与。值随 provider 走：`demo` 冻结在 `2026-09-01`（`NOW` ＝ `2026-09-02 09:00 HKT`），`sql` 取导入实测的 `2026-08-25`（数据实际止于 `2026-08-26 03:00`，另记在 `meta_kv.data_max_ts`）。 | [ADR-0012](docs/adr/0012-frozen-demo-anchor.md) |
 
 ## 5. 明确不属于本系统的词
 

@@ -1,0 +1,103 @@
+{
+ "3469|d7": {
+  "code": "3469",
+  "granLabel": "按自然日归纳，相近观点合并为阶段",
+  "granularity": "day",
+  "rule": "阶段观点：当日按上午（00:00–12:00）／下午（12:00–17:00）／盘后（17:00–24:00）三段各归纳一条主流观点；多日先逐日归纳主流观点与情绪，再由 AI 把观点相近的连续日期合并为同一阶段，14 天及以上视图下单日孤立观点并入相邻阶段。样本不足的时段不参与合并，只在折线下方以灰点标记。阶段总结描述讨论区观点，不表述与价格的因果关系。",
+  "series": [
+   {
+    "comments": 16,
+    "day": "2026-08-26",
+    "heat": 52,
+    "hour": null,
+    "i": 0,
+    "label": "08-26",
+    "mentions": 8,
+    "negative": 2,
+    "neutral": 3,
+    "positive": 3,
+    "tip": "08-26（周三）全天"
+   },
+   {
+    "comments": 14,
+    "day": "2026-08-27",
+    "heat": 70,
+    "hour": null,
+    "i": 1,
+    "label": "08-27",
+    "mentions": 5,
+    "negative": 0,
+    "neutral": 3,
+    "positive": 2,
+    "tip": "08-27（周四）全天"
+   },
+   {
+    "comments": 15,
+    "day": "2026-08-28",
+    "heat": 59,
+    "hour": null,
+    "i": 2,
+    "label": "08-28",
+    "mentions": 6,
+    "negative": 1,
+    "neutral": 3,
+    "positive": 2,
+    "tip": "08-28（周五）全天"
+   },
+   {
+    "comments": 13,
+    "day": "2026-08-29",
+    "heat": 46,
+    "hour": null,
+    "i": 3,
+    "label": "08-29",
+    "mentions": 4,
+    "negative": 0,
+    "neutral": 2,
+    "positive": 2,
+    "tip": "08-29（周六）全天"
+   },
+   {
+    "comments": 12,
+    "day": "2026-08-30",
+    "heat": 55,
+    "hour": null,
+    "i": 4,
+    "label": "08-30",
+    "mentions": 4,
+    "negative": 0,
+    "neutral": 2,
+    "positive": 2,
+    "tip": "08-30（周日）全天"
+   },
+   {
+    "comments": 15,
+    "day": "2026-08-31",
+    "heat": 53,
+    "hour": null,
+    "i": 5,
+    "label": "08-31",
+    "mentions": 8,
+    "negative": 1,
+    "neutral": 3,
+    "positive": 4,
+    "tip": "08-31（周一）全天"
+   },
+   {
+    "comments": 14,
+    "day": "2026-09-01",
+    "heat": 43,
+    "hour": null,
+    "i": 6,
+    "label": "09-01",
+    "mentions": 9,
+    "negative": 1,
+    "neutral": 4,
+    "positive": 4,
+    "tip": "09-01（周二）全天"
+   }
+  ],
+  "stages": [],
+  "status": "unavailable"
+ }
+}

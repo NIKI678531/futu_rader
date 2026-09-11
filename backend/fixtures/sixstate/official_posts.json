@@ -1,0 +1,303 @@
+{
+ "d7": [
+  {
+   "account": "华夏",
+   "accountFull": "华夏",
+   "accountType": "发行商官号",
+   "camp": "both",
+   "campPrimary": "competitor",
+   "code": "7261",
+   "comments": 0,
+   "confidence": 0.95,
+   "dateText": "09-01",
+   "day": "2026-09-01",
+   "dir": null,
+   "direction": null,
+   "directionLabel": "",
+   "directionPending": false,
+   "engagement": 0,
+   "evidenceIdx": -1,
+   "fullText": [
+    "（图片帖：仅含图片或截图，无文字正文；第一期摘要不覆盖图片内容）"
+   ],
+   "hasDir": false,
+   "hasSummary": true,
+   "id": "sixstate-zero",
+   "isIssuer": true,
+   "issuer": "AMC 华夏",
+   "likes": 0,
+   "mentioned": [
+    {
+     "code": "7261",
+     "issuer": "AMC 华夏",
+     "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+     "ownership": "peer"
+    },
+    {
+     "code": "7266",
+     "issuer": "CSOP 南方东英",
+     "name": "納斯達克100指數每日槓桿(2x)產品",
+     "ownership": "own"
+    }
+   ],
+   "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+   "ownership": "peer",
+   "postType": "other",
+   "sector": "us",
+   "shares": 0,
+   "summary": "互动为零的帖子：赞、评、转都确实是 0，不是缺数据。",
+   "t": 164,
+   "time": "09-01 20:47",
+   "typeEvidence": "",
+   "typeLabel": "其他",
+   "url": "https://www.futunn.com/post/9337588"
+  },
+  {
+   "account": "华夏",
+   "accountFull": "华夏",
+   "accountType": "发行商官号",
+   "camp": "both",
+   "campPrimary": "competitor",
+   "code": "7261",
+   "comments": null,
+   "confidence": 0.95,
+   "dateText": "09-01",
+   "day": "2026-09-01",
+   "dir": null,
+   "direction": null,
+   "directionLabel": "",
+   "directionPending": false,
+   "engagement": null,
+   "evidenceIdx": -1,
+   "fullText": [
+    "（图片帖：仅含图片或截图，无文字正文；第一期摘要不覆盖图片内容）"
+   ],
+   "hasDir": false,
+   "hasSummary": true,
+   "id": "sixstate-null",
+   "isIssuer": true,
+   "issuer": "AMC 华夏",
+   "likes": null,
+   "mentioned": [
+    {
+     "code": "7261",
+     "issuer": "AMC 华夏",
+     "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+     "ownership": "peer"
+    },
+    {
+     "code": "7266",
+     "issuer": "CSOP 南方东英",
+     "name": "納斯達克100指數每日槓桿(2x)產品",
+     "ownership": "own"
+    }
+   ],
+   "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+   "ownership": "peer",
+   "postType": "other",
+   "sector": "us",
+   "shares": null,
+   "summary": "平台计数字段未回传：三个数都应该有值，但当前取不到。",
+   "t": 164,
+   "time": "09-01 20:47",
+   "typeEvidence": "",
+   "typeLabel": "其他",
+   "url": "https://www.futunn.com/post/9337588"
+  },
+  {
+   "account": "华夏",
+   "accountFull": "华夏",
+   "accountType": "发行商官号",
+   "camp": "both",
+   "campPrimary": "competitor",
+   "code": "7261",
+   "comments": 3,
+   "confidence": 0.42,
+   "dateText": "09-01",
+   "day": "2026-09-01",
+   "dir": null,
+   "direction": null,
+   "directionLabel": "",
+   "directionPending": false,
+   "engagement": 16,
+   "evidenceIdx": -1,
+   "fullText": [
+    "（图片帖：仅含图片或截图，无文字正文；第一期摘要不覆盖图片内容）"
+   ],
+   "hasDir": false,
+   "hasSummary": true,
+   "id": "sixstate-pending",
+   "isIssuer": true,
+   "issuer": "AMC 华夏",
+   "likes": 12,
+   "mentioned": [
+    {
+     "code": "7261",
+     "issuer": "AMC 华夏",
+     "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+     "ownership": "peer"
+    },
+    {
+     "code": "7266",
+     "issuer": "CSOP 南方东英",
+     "name": "納斯達克100指數每日槓桿(2x)產品",
+     "ownership": "own"
+    }
+   ],
+   "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+   "ownership": "peer",
+   "postType": "other",
+   "sector": "us",
+   "shares": 1,
+   "summary": "类型置信度 0.42，低于阈值，类型标「待确认」。",
+   "t": 164,
+   "time": "09-01 20:47",
+   "typeEvidence": "",
+   "typeLabel": "其他",
+   "url": "https://www.futunn.com/post/9337588"
+  },
+  {
+   "account": "华夏",
+   "accountFull": "华夏",
+   "accountType": "发行商官号",
+   "camp": "both",
+   "campPrimary": "competitor",
+   "code": "7261",
+   "comments": 9,
+   "confidence": 0.96,
+   "dateText": "09-01",
+   "day": "2026-09-01",
+   "dir": null,
+   "direction": null,
+   "directionLabel": "",
+   "directionPending": false,
+   "engagement": 101,
+   "evidenceIdx": -1,
+   "fullText": [
+    "（图片帖：仅含图片或截图，无文字正文；第一期摘要不覆盖图片内容）"
+   ],
+   "hasDir": false,
+   "hasSummary": true,
+   "id": "sixstate-confident",
+   "isIssuer": true,
+   "issuer": "AMC 华夏",
+   "likes": 88,
+   "mentioned": [
+    {
+     "code": "7261",
+     "issuer": "AMC 华夏",
+     "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+     "ownership": "peer"
+    },
+    {
+     "code": "7266",
+     "issuer": "CSOP 南方东英",
+     "name": "納斯達克100指數每日槓桿(2x)產品",
+     "ownership": "own"
+    }
+   ],
+   "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+   "ownership": "peer",
+   "postType": "other",
+   "sector": "us",
+   "shares": 4,
+   "summary": "类型置信度 0.96，达标，不标「待确认」。",
+   "t": 164,
+   "time": "09-01 20:47",
+   "typeEvidence": "",
+   "typeLabel": "其他",
+   "url": "https://www.futunn.com/post/9337588"
+  },
+  {
+   "account": "华夏",
+   "accountFull": "华夏",
+   "accountType": "发行商官号",
+   "camp": "both",
+   "campPrimary": "competitor",
+   "code": "7261",
+   "comments": 0,
+   "confidence": 0.95,
+   "dateText": "09-01",
+   "day": "2026-09-01",
+   "dir": null,
+   "direction": null,
+   "directionLabel": "",
+   "directionPending": false,
+   "engagement": 5,
+   "evidenceIdx": -1,
+   "fullText": [
+    "（图片帖：仅含图片或截图，无文字正文；第一期摘要不覆盖图片内容）"
+   ],
+   "hasDir": false,
+   "hasSummary": false,
+   "id": "sixstate-nosummary",
+   "isIssuer": true,
+   "issuer": "AMC 华夏",
+   "likes": 5,
+   "mentioned": [
+    {
+     "code": "7261",
+     "issuer": "AMC 华夏",
+     "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+     "ownership": "peer"
+    },
+    {
+     "code": "7266",
+     "issuer": "CSOP 南方东英",
+     "name": "納斯達克100指數每日槓桿(2x)產品",
+     "ownership": "own"
+    }
+   ],
+   "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+   "ownership": "peer",
+   "postType": "other",
+   "sector": "us",
+   "shares": 0,
+   "summary": "",
+   "t": 164,
+   "time": "09-01 20:47",
+   "typeEvidence": "",
+   "typeLabel": "其他",
+   "url": "https://www.futunn.com/post/9337588"
+  },
+  {
+   "account": "易方达",
+   "accountFull": "易方达",
+   "accountType": "发行商官号",
+   "camp": "none",
+   "campPrimary": "none",
+   "code": "7261",
+   "comments": 1,
+   "confidence": 0.9,
+   "dateText": "09-01",
+   "day": "2026-09-01",
+   "dir": null,
+   "direction": null,
+   "directionLabel": "",
+   "directionPending": false,
+   "engagement": 4,
+   "evidenceIdx": -1,
+   "fullText": [
+    "（图片帖：仅含图片或截图，无文字正文；第一期摘要不覆盖图片内容）"
+   ],
+   "hasDir": false,
+   "hasSummary": true,
+   "id": "sixstate-nomention",
+   "isIssuer": true,
+   "issuer": "AMC 华夏",
+   "likes": 3,
+   "mentioned": [],
+   "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+   "ownership": "peer",
+   "postType": "other",
+   "sector": "us",
+   "shares": 0,
+   "summary": "这条没提任何 ETF：字段不适用，不是数值为零。",
+   "t": 164,
+   "time": "09-01 20:47",
+   "typeEvidence": "",
+   "typeLabel": "其他",
+   "url": "https://www.futunn.com/post/9337588"
+  }
+ ]
+}

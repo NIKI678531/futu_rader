@@ -15,6 +15,7 @@
        `style-hover` by `hover()`. */
 import React from 'react'
 import R from '../../data/radar'
+import { rgba, num, numRaw, navGroups } from '../../lib/view'
 import { s } from '../../lib/dc'
 import Shell from '../../components/Shell'
 import FilterBar from './FilterBar'
@@ -120,17 +121,19 @@ export default class ProductMonitor extends React.Component {
     patch.panel = null; patch.post = null;
     this.go(patch);
   }
+  /* 候选产品＝整池按当前筛选取子集。设计源写的是 `ORDER.filter(用 MASTER 判).map(observe)`，
+     这里直接在 `pool().list` 上筛 —— 同一批对象、同一个顺序（池就是 ORDER.map(observe)），
+     而观测本身就带着 sector / isNew / name，不必再回 MASTER 查一遍。
+     顺带把「可见集从哪儿来」这件事说死了：候选是池的子集，不是主数据的子集（铁律 3）。 */
   filtered(st) {
     var q = (st.q || '').trim().toLowerCase();
-    return R.ORDER.filter(function (c) {
-      var m = R.MASTER[c];
-      if (st.secF !== 'all' && m.sector !== st.secF) return false;
-      if (st.newF === 'new' && !m.isNew) return false;
-      if (st.newF === 'existing' && m.isNew) return false;
-      if (q && c.toLowerCase().indexOf(q) < 0 && m.name.toLowerCase().indexOf(q) < 0) return false;
+    return R.pool(st.rangeKey).list.filter(function (o) {
+      if (st.secF !== 'all' && o.sector !== st.secF) return false;
+      if (st.newF === 'new' && !o.isNew) return false;
+      if (st.newF === 'existing' && o.isNew) return false;
+      if (q && o.code.toLowerCase().indexOf(q) < 0 && o.name.toLowerCase().indexOf(q) < 0) return false;
       return true;
-    }).map(function (c) { return R.observe(c, st.rangeKey); })
-      .sort(function (a, b) { return b.mentions - a.mentions; });
+    }).sort(function (a, b) { return b.mentions - a.mentions; });
   }
 
   openPanel(p) { this.setState({ panel: p, post: p.post || null }); }
@@ -280,7 +283,7 @@ export default class ProductMonitor extends React.Component {
     candles(t1, h1);
     candles(t2, h2);
 
-    var fade = function (hex) { return R.rgba(hex, 0.42); };
+    var fade = function (hex) { return rgba(hex, 0.42); };
     if (lg.comments) { line(base, 'comments', t1, h1, maxC, fade('#2361AD'), 1); line(cur, 'comments', t1, h1, maxC, '#2361AD', 0); }
     if (lg.active) { line(base, 'active', t1, h1, maxC, fade('#C9A961'), 1); line(cur, 'active', t1, h1, maxC, '#C9A961', 0); }
     if (lg.inter) { line(base, 'interactions', t1, h1, maxI, fade('#4A4E8C'), 1); line(cur, 'interactions', t1, h1, maxI, '#4A4E8C', 0); }
@@ -315,6 +318,7 @@ export default class ProductMonitor extends React.Component {
     var code = R.MASTER[s.code] ? s.code : '3033';
     var m = R.MASTER[code];
     var range = R.buildRange(s.rangeKey);
+    var P = R.pool(s.rangeKey);
     var o = R.observe(code, s.rangeKey);
     var bench = R.benchmark(code, s.rangeKey);
     var rk = R.ranks(s.rangeKey);
@@ -480,7 +484,11 @@ export default class ProductMonitor extends React.Component {
       return {
         name: k.kolName, type: k.kolTypeLabel, tags: String(k.kolTags || '').split(',').join(' · '),
         count: String(k.mentionCommentCount), last: k.lastMentionedAt,
-        att: k.dominantLabel || '样本不足', abg: st[0], afg: st[1],
+        /* 有效样本 < 3 条时后端给 null，这里是「暂不可用」——PRD §3.6 六态里的字段级
+           null 一律走这一态，设计源那句「样本不足」是六态里的另一态（低于判定阈值但
+           仍有结论）。差别不在字数上：一个是「我们不知道」，一个是「我们知道但不下
+           结论」。screen-diff 的 WHITELIST 有对应条目记录这处有意偏差。 */
+        att: k.dominantLabel == null ? '暂不可用' : k.dominantLabel, abg: st[0], afg: st[1],
         excerpt: k.representativeExcerpt || '暂无相关内容', evidence: String(k.evidenceCount),
         go: () => self.openPanel(self.kolPanel(k, code, s.rangeKey))
       };
@@ -524,10 +532,9 @@ export default class ProductMonitor extends React.Component {
 
     /* 顶部产品搜索：命中即出下拉，点击直接切换当前产品 */
     var pqQ = (s.pq || '').trim().toLowerCase();
-    var pqHits = pqQ ? R.ORDER.filter(function (c) {
-      return c.toLowerCase().indexOf(pqQ) >= 0 || R.MASTER[c].name.toLowerCase().indexOf(pqQ) >= 0;
-    }).map(function (c) { return R.observe(c, s.rangeKey); })
-      .sort(function (a, b) { return b.mentions - a.mentions; }) : [];
+    var pqHits = pqQ ? P.list.filter(function (o) {
+      return o.code.toLowerCase().indexOf(pqQ) >= 0 || o.name.toLowerCase().indexOf(pqQ) >= 0;
+    }).sort(function (a, b) { return b.mentions - a.mentions; }) : [];
 
     var sum = R.summaryFor(code, s.rangeKey);
     /* 总结按句拆成要点；过短的片段并入上一条 */
@@ -559,7 +566,7 @@ export default class ProductMonitor extends React.Component {
     });
 
     var out = {
-      navGroups: R.navGroups('portfolio', 'product'), presets: presets,
+      navGroups: navGroups('portfolio', 'product'), presets: presets,
       rangeText: range.text, rangeFrom: range.from, rangeTo: range.to,
       granLabel: range.granLabel, benchText: range.benchText, benchLabel: range.benchLabel,
       updated: R.UPDATED, rangeKey: s.rangeKey,
@@ -596,25 +603,24 @@ export default class ProductMonitor extends React.Component {
       resultCount: String(selList.length),
       selEmpty: selList.length === 0,
       selList: selList.slice(0, 60).map(function (p) {
-        var pm = R.MASTER[p.code];
         return {
           code: p.code, name: p.name, rank: String(rk.map[p.code]),
-          mentions: String(p.mentions), sector: p.sectorName,
+          mentions: numRaw(p.mentions), sector: p.sectorName,
           own: p.ownership === 'own' ? '自家' : '竞品',
           obg: p.ownership === 'own' ? 'var(--csop-blue-50)' : 'var(--ink-100)',
           ofg: p.ownership === 'own' ? 'var(--csop-blue-700)' : 'var(--ink-600)',
-          newTag: pm.isNew ? '新品' : '存量',
-          nbg: pm.isNew ? 'var(--warning-100)' : 'var(--canvas-alt)',
-          nfg: pm.isNew ? 'var(--warning-700)' : 'var(--ink-600)',
+          newTag: p.isNew ? '新品' : '存量',
+          nbg: p.isNew ? 'var(--warning-100)' : 'var(--canvas-alt)',
+          nfg: p.isNew ? 'var(--warning-700)' : 'var(--ink-600)',
           bg: p.code === code ? 'var(--csop-blue-50)' : '#fff',
           go: () => self.go({ code: p.code, selOpen: false, panel: null, post: null, posMore: false, negMore: false })
         };
       }),
 
       kpis: [
-        { label: '评论量', value: o.comments.toLocaleString('en-US'), d: bench.comments, note: '区间内被识别为讨论该 ETF 的评论条数，同一账号同一条只计一次' },
-        { label: '讨论热度', value: o.discussionHeat.toLocaleString('en-US'), d: bench.heat, note: R.HEAT_FORMULA + '　·　点赞 ' + o.likes.toLocaleString('en-US') + ' ／ 转发 ' + o.shares.toLocaleString('en-US') },
-        { label: '活跃账号数', value: R.num(o.activeAccounts), d: bench.accounts, note: o.activeAccounts == null ? '该产品的账号口径尚未核验' : '区间内发布或评论过的独立账号' },
+        { label: '评论量', value: num(o.comments), d: bench.comments, note: '区间内被识别为讨论该 ETF 的评论条数，同一账号同一条只计一次' },
+        { label: '讨论热度', value: num(o.discussionHeat), d: bench.heat, note: R.HEAT_FORMULA + '　·　点赞 ' + num(o.likes) + ' ／ 转发 ' + num(o.shares) },
+        { label: '活跃账号数', value: num(o.activeAccounts), d: bench.accounts, note: o.activeAccounts == null ? '该产品的账号口径尚未核验' : '区间内发布或评论过的独立账号' },
         { label: '全市场评论量排名', value: '第 ' + rk.map[code], d: { short: '／ ' + rk.total + ' 只', dir: 0 }, note: '基于完整活跃 ETF 池计算，板块筛选不重算' }
       ].map(function (k) { return { label: k.label, value: k.value, note: k.note, delta: k.d.short, dfg: self.dfg(k.d) }; }),
 
@@ -701,16 +707,21 @@ export default class ProductMonitor extends React.Component {
     };
 
     if (s.hover != null && o.buckets[s.hover]) {
-      var cb = o.buckets[s.hover], bb = bench.base.buckets[s.hover];
+      /* 逐桶环比随 benchmark 一起下发（bench.buckets 与 base.buckets 逐桶对齐）。
+         悬停不可能每次打一趟接口，而环比是 PRD 第 3 章的全局口径，屏幕里不能自己算
+         那个减法（铁律 1）—— `series` 是后端的序列键，`key` 是图例开关的键，两者不同名。 */
+      var cb = o.buckets[s.hover], bb = bench.base.buckets[s.hover], db = bench.buckets[s.hover];
       var rows = [
-        { key: 'comments', label: '评论数', color: '#2361AD', c: cb.comments, b: bb.comments },
-        { key: 'active', label: '活跃账号数', color: '#C9A961', c: cb.active, b: bb.active },
-        { key: 'inter', label: '互动数', color: '#4A4E8C', c: cb.interactions, b: bb.interactions },
-        { key: 'pos', label: '积极内容数', color: '#1F8A5B', c: cb.positive, b: bb.positive },
-        { key: 'neg', label: '消极内容数', color: '#C53030', c: cb.negative, b: bb.negative }
+        { key: 'comments', series: 'comments', label: '评论数', color: '#2361AD', c: cb.comments, b: bb.comments },
+        { key: 'active', series: 'active', label: '活跃账号数', color: '#C9A961', c: cb.active, b: bb.active },
+        { key: 'inter', series: 'interactions', label: '互动数', color: '#4A4E8C', c: cb.interactions, b: bb.interactions },
+        { key: 'pos', series: 'positive', label: '积极内容数', color: '#1F8A5B', c: cb.positive, b: bb.positive },
+        { key: 'neg', series: 'negative', label: '消极内容数', color: '#C53030', c: cb.negative, b: bb.negative }
       ].filter(function (r) { return s.legend[r.key]; }).map(function (r) {
-        var d = R.delta(r.c, r.b);
-        return { label: r.label, color: r.color, cur: String(r.c), base: String(r.b), delta: d.text, dfg: d.dir > 0 ? '#8FE3B8' : (d.dir < 0 ? '#F3A6A6' : 'rgba(255,255,255,0.6)') };
+        var d = db[r.series];
+        /* 这张悬浮卡不打千分位（设计源逐字 String()），所以走 numRaw —— null 仍然
+           必须是「数据暂不可用」，而不是字符串 'null'，更不是 0。 */
+        return { label: r.label, color: r.color, cur: numRaw(r.c), base: numRaw(r.b), delta: d.text, dfg: d.dir > 0 ? '#8FE3B8' : (d.dir < 0 ? '#F3A6A6' : 'rgba(255,255,255,0.6)') };
       });
       out.hoverOpen = true;
       out.hoverTitle = cb.tip + '　·　基准同位 ' + bb.tip;
@@ -836,8 +847,8 @@ export default class ProductMonitor extends React.Component {
     if (s.panel) {
       var p = s.panel;
       var evCode = p.evidenceCode || code;
-      var count = Math.max(1, Math.min(12, p.count || 6));
-      var items = p.items || R.evidenceFor(evCode, s.rangeKey + '|' + (p.id || p.kind), p.polarity, count);
+      /* 条数钳位（不传取 6、上限 12）是口径，实现在后端，这里原样转发 p.count（铁律 1）。 */
+      var items = p.items || R.evidenceFor(evCode, s.rangeKey + '|' + (p.id || p.kind), p.polarity, p.count);
       var typeStyle = {
         '普通散户': ['var(--canvas-alt)', 'var(--ink-700)'],
         '合作 KOL': ['var(--csop-blue-50)', 'var(--csop-blue-700)'],

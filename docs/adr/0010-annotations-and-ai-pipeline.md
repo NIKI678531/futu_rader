@@ -4,6 +4,11 @@
 - **日期**：2026-09-09
 - **相关**：[ADR-0001](0001-dual-provider.md)、[ADR-0009](0009-worker-scope.md)、[ADR-0013](0013-prd-open-items-o1-o8.md)
 
+> **2026-09-11：下面的第 1、2、3 条已被 [ADR-0017](0017-ai-annotation-pipeline-production.md) 取代。**
+> 本 ADR 是在拿到 API 之前写的；跑过真实数据后，单表形态、Claude Haiku 4.5 的模型选择、
+> 以及 `confidence < 0.7` 阈值三处都不成立。**第 4 条（口径归属）不变。**
+> 这里不改正文 —— 它记录的是当时基于当时信息作出的判断。
+
 ## 背景
 
 市场域与账号域大量字段在原始 schema 里**根本不存在**，必须由 AI 从文本产出：

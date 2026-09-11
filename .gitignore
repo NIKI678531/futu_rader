@@ -1,4 +1,7 @@
 node_modules/
+# P: 盘是 SMB 共享，npm 装到一半失败时会把 node_modules 改名留在原地
+# （实测 EPERM copyfile）。这些残骸是几万个文件，绝不能进 git。
+node_modules.stale-*/
 dist/
 .vite/
 .DS_Store
@@ -17,3 +20,8 @@ __pycache__/
 *.sql
 !init_db.sql
 *.7z
+# 瘦库默认落在仓库树外（%LOCALAPPDATA%\futu-radar\radar.db），但 RADAR_DB_URL 可以指到
+# 树内。它含的用户数据和 dump 一样，所以这里也拦一道。
+*.db
+*.db-wal
+*.db-shm

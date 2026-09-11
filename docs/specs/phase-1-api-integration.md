@@ -289,7 +289,7 @@ PRD §5 逐字规定「生产实现时每个函数对应一个（组）REST 端�
 
 - **`mysql` provider 的真实供数**。架构（[ADR-0001](../adr/0001-dual-provider.md)）与验收标准（[ADR-0006](../adr/0006-dual-acceptance-criteria.md) 的三条诚实性检查）已定，但本 spec 只交付 `demo` 供数。
 - **10GB dump 导入与瘦库派生**（[ADR-0008](../adr/0008-dump-import-and-slim-db.md)），含其两条导入后验证。
-- **AI 标注管线**（[ADR-0010](../adr/0010-annotations-and-ai-pipeline.md)）：`annotations` 表、Claude Haiku 4.5 调用、摘要语言策略。第一期要做，但不是本 spec。
+- **AI 标注管线**（[ADR-0017](../adr/0017-ai-annotation-pipeline-production.md)，取代 [ADR-0010](../adr/0010-annotations-and-ai-pipeline.md)）：标注五表、`gpt-5.6-luna` 调用（不是 Claude Haiku 4.5）、摘要语言策略。管线已落地，但**尚未驱动页面** —— 见 runbook §16 Gate 4。不是本 spec。
 - **`worker/` 的采集实现**（[ADR-0009](../adr/0009-worker-scope.md)）：`raw_json` → 四张原始事实表。
 - **传播关系图**（PRD O7）：数据源层面就没有「谁转了谁」的字段，第一期不做，相关字段走「关系数据暂不可用」。
 - **关注 / 指派 / 处置 / 预警推送 / 告警 / 工单**：本系统是**只读**工作台，这些词不属于本系统（CONTEXT.md §5）。

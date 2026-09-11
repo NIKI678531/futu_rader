@@ -12,7 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN groupadd -g 1000 appuser && useradd -r -u 1000 -g appuser appuser
 
-# curl 供 HEALTHCHECK；gcc/g++ 是 clickhouse-driver 落到源码分发时的编译兜底，
+# curl 供 HEALTHCHECK。gcc/g++ 是 wheel 缺失时的编译兜底（SQLAlchemy 的 C 扩展、greenlet），
 # 依赖集定稿后若确认全程走 wheel 可以去掉，能省掉约 200MB。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl gcc g++ \
@@ -23,6 +23,8 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ /app
+# 表结构 backend 与 worker 共用一份，源在仓库根（radar_db/__init__.py 说明了为什么）。
+COPY radar_db/ /app/radar_db
 RUN chown -R appuser:appuser /app
 
 USER appuser

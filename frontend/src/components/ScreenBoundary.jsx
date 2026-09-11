@@ -56,7 +56,9 @@ export default class ScreenBoundary extends React.Component {
     if (error) {
       return (
         <div style={{ minHeight: '100vh', background: 'var(--canvas)' }}>
-          <div style={BAR}>
+          {/* data-screen-error 是给 scripts/six-state.mjs 认这条错误条用的：它要断言
+              「除了这条错误条，页面上不该再有别的内容」，得先能把错误条自己刨掉。 */}
+          <div data-screen-error style={BAR}>
             <span>
               后端服务连不上，本页数据全部无法加载。这不是「数据暂不可用」——
               是接口没响应，页面上的数字一个都不能信。

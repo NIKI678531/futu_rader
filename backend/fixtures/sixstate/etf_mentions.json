@@ -1,0 +1,57 @@
+{
+ "华夏|d7": {
+  "etfCount": 2,
+  "list": [
+   {
+    "code": "2802",
+    "count": 3,
+    "issuer": "CSOP 南方东英",
+    "name": "國指備兌認購期權主動型ETF",
+    "ownership": "own",
+    "posts": 2,
+    "short": "國指備兌認購期權主動…"
+   },
+   {
+    "code": "2838",
+    "count": 1,
+    "issuer": "恒生投资",
+    "name": "恒生富时中国50指数上市基金",
+    "ownership": "peer",
+    "posts": 1,
+    "short": "恒生富时中国50指数…"
+   }
+  ],
+  "own": [
+   {
+    "code": "2802",
+    "count": 3,
+    "issuer": "CSOP 南方东英",
+    "name": "國指備兌認購期權主動型ETF",
+    "ownership": "own",
+    "posts": 2,
+    "short": "國指備兌認購期權主動…"
+   }
+  ],
+  "peer": [
+   {
+    "code": "2838",
+    "count": 1,
+    "issuer": "恒生投资",
+    "name": "恒生富时中国50指数上市基金",
+    "ownership": "peer",
+    "posts": 1,
+    "short": "恒生富时中国50指数…"
+   }
+  ],
+  "postCount": 3,
+  "total": 4
+ },
+ "易方达|d7": {
+  "etfCount": 0,
+  "list": [],
+  "own": [],
+  "peer": [],
+  "postCount": 0,
+  "total": 0
+ }
+}

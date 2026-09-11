@@ -1,0 +1,3812 @@
+{
+ "3032|d7": {
+  "accounts": {
+   "abs": 2,
+   "dir": 1,
+   "pct": 20,
+   "short": "+20%",
+   "text": "+2（+20.0%）"
+  },
+  "base": {
+   "activeAccounts": 10,
+   "activeByBucket": [
+    3,
+    3,
+    2,
+    2,
+    1,
+    3,
+    4
+   ],
+   "attitude": {
+    "negative": 9,
+    "neutral": 6,
+    "positive": 2,
+    "sampleSufficient": true
+   },
+   "buckets": [
+    {
+     "active": 3,
+     "comments": 5,
+     "i": 0,
+     "interactions": 39,
+     "label": "08-26",
+     "likes": 36,
+     "mentions": 2,
+     "negative": 1,
+     "neutral": 1,
+     "positive": 0,
+     "shares": 3,
+     "start": "2026-08-26",
+     "tip": "08-26（周三）全天"
+    },
+    {
+     "active": 3,
+     "comments": 7,
+     "i": 1,
+     "interactions": 71,
+     "label": "08-27",
+     "likes": 69,
+     "mentions": 4,
+     "negative": 2,
+     "neutral": 1,
+     "positive": 1,
+     "shares": 2,
+     "start": "2026-08-27",
+     "tip": "08-27（周四）全天"
+    },
+    {
+     "active": 2,
+     "comments": 6,
+     "i": 2,
+     "interactions": 57,
+     "label": "08-28",
+     "likes": 53,
+     "mentions": 2,
+     "negative": 1,
+     "neutral": 1,
+     "positive": 0,
+     "shares": 4,
+     "start": "2026-08-28",
+     "tip": "08-28（周五）全天"
+    },
+    {
+     "active": 2,
+     "comments": 5,
+     "i": 3,
+     "interactions": 24,
+     "label": "08-29",
+     "likes": 22,
+     "mentions": 2,
+     "negative": 1,
+     "neutral": 1,
+     "positive": 0,
+     "shares": 2,
+     "start": "2026-08-29",
+     "tip": "08-29（周六）全天"
+    },
+    {
+     "active": 1,
+     "comments": 2,
+     "i": 4,
+     "interactions": 22,
+     "label": "08-30",
+     "likes": 22,
+     "mentions": 1,
+     "negative": 1,
+     "neutral": 0,
+     "positive": 0,
+     "shares": 0,
+     "start": "2026-08-30",
+     "tip": "08-30（周日）全天"
+    },
+    {
+     "active": 3,
+     "comments": 5,
+     "i": 5,
+     "interactions": 35,
+     "label": "08-31",
+     "likes": 32,
+     "mentions": 2,
+     "negative": 1,
+     "neutral": 1,
+     "positive": 0,
+     "shares": 3,
+     "start": "2026-08-31",
+     "tip": "08-31（周一）全天"
+    },
+    {
+     "active": 4,
+     "comments": 8,
+     "i": 6,
+     "interactions": 46,
+     "label": "09-01",
+     "likes": 43,
+     "mentions": 4,
+     "negative": 2,
+     "neutral": 1,
+     "positive": 1,
+     "shares": 3,
+     "start": "2026-09-01",
+     "tip": "09-01（周二）全天"
+    }
+   ],
+   "code": "3032",
+   "comments": 38,
+   "discussionHeat": 138,
+   "interactions": 294,
+   "isNew": false,
+   "issuer": "恒生投资",
+   "likes": 277,
+   "listingDate": "2025-01-26",
+   "maxBucket": 4,
+   "mentions": 17,
+   "name": "恒生科技指数ETF",
+   "ownCode": "3033",
+   "ownership": "peer",
+   "sector": "hk",
+   "sectorName": "港股",
+   "shares": 17,
+   "south": false,
+   "struct": "ETF",
+   "updatedAt": "2026-09-02 09:00"
+  },
+  "buckets": [
+   {
+    "active": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 33.33333333333333,
+     "short": "+33%",
+     "text": "+1（+33.3%）"
+    },
+    "comments": {
+     "abs": 8,
+     "dir": 1,
+     "pct": 160,
+     "short": "+160%",
+     "text": "+8（+160.0%）"
+    },
+    "interactions": {
+     "abs": 69,
+     "dir": 1,
+     "pct": 176.9230769230769,
+     "short": "+177%",
+     "text": "+69（+176.9%）"
+    },
+    "negative": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 100,
+     "short": "+100%",
+     "text": "+1（+100.0%）"
+    },
+    "positive": {
+     "abs": 1,
+     "dir": 1,
+     "pct": null,
+     "short": "新增",
+     "text": "新增 1"
+    }
+   },
+   {
+    "active": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -33.33333333333333,
+     "short": "-33%",
+     "text": "-1（-33.3%）"
+    },
+    "comments": {
+     "abs": -2,
+     "dir": -1,
+     "pct": -28.57142857142857,
+     "short": "-29%",
+     "text": "-2（-28.6%）"
+    },
+    "interactions": {
+     "abs": -13,
+     "dir": -1,
+     "pct": -18.30985915492958,
+     "short": "-18%",
+     "text": "-13（-18.3%）"
+    },
+    "negative": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -50,
+     "short": "-50%",
+     "text": "-1（-50.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "comments": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "interactions": {
+     "abs": -17,
+     "dir": -1,
+     "pct": -29.82456140350877,
+     "short": "-30%",
+     "text": "-17（-29.8%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": null,
+     "short": "—",
+     "text": "—"
+    }
+   },
+   {
+    "active": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "comments": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "interactions": {
+     "abs": 22,
+     "dir": 1,
+     "pct": 91.66666666666666,
+     "short": "+92%",
+     "text": "+22（+91.7%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": null,
+     "short": "—",
+     "text": "—"
+    }
+   },
+   {
+    "active": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "comments": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "interactions": {
+     "abs": -12,
+     "dir": -1,
+     "pct": -54.54545454545454,
+     "short": "-55%",
+     "text": "-12（-54.5%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": null,
+     "short": "—",
+     "text": "—"
+    }
+   },
+   {
+    "active": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "comments": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "interactions": {
+     "abs": 3,
+     "dir": 1,
+     "pct": 8.571428571428571,
+     "short": "+9%",
+     "text": "+3（+8.6%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": null,
+     "short": "—",
+     "text": "—"
+    }
+   },
+   {
+    "active": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "comments": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "interactions": {
+     "abs": 41,
+     "dir": 1,
+     "pct": 89.13043478260869,
+     "short": "+89%",
+     "text": "+41（+89.1%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   }
+  ],
+  "comments": {
+   "abs": 6,
+   "dir": 1,
+   "pct": 15.789473684210526,
+   "short": "+16%",
+   "text": "+6（+15.8%）"
+  },
+  "heat": {
+   "abs": 37,
+   "dir": 1,
+   "pct": 26.811594202898554,
+   "short": "+27%",
+   "text": "+37（+26.8%）"
+  },
+  "interactions": {
+   "abs": 93,
+   "dir": 1,
+   "pct": 31.63265306122449,
+   "short": "+32%",
+   "text": "+93（+31.6%）"
+  },
+  "likes": {
+   "abs": 89,
+   "dir": 1,
+   "pct": 32.12996389891697,
+   "short": "+32%",
+   "text": "+89（+32.1%）"
+  },
+  "mentions": {
+   "abs": 2,
+   "dir": 1,
+   "pct": 11.76470588235294,
+   "short": "+12%",
+   "text": "+2（+11.8%）"
+  },
+  "negative": {
+   "abs": 0,
+   "dir": 0,
+   "pct": 0,
+   "short": "+0%",
+   "text": "+0（+0.0%）"
+  },
+  "neutral": {
+   "abs": 1,
+   "dir": 1,
+   "pct": 16.666666666666664,
+   "short": "+17%",
+   "text": "+1（+16.7%）"
+  },
+  "positive": {
+   "abs": 1,
+   "dir": 1,
+   "pct": 50,
+   "short": "+50%",
+   "text": "+1（+50.0%）"
+  },
+  "shares": {
+   "abs": 4,
+   "dir": 1,
+   "pct": 23.52941176470588,
+   "short": "+24%",
+   "text": "+4（+23.5%）"
+  }
+ },
+ "3033|d7": {
+  "accounts": {
+   "abs": -89,
+   "dir": -1,
+   "pct": -15.978456014362658,
+   "short": "-16%",
+   "text": "-89（-16.0%）"
+  },
+  "base": {
+   "activeAccounts": 557,
+   "activeByBucket": [
+    272,
+    444,
+    173,
+    127,
+    119,
+    351,
+    264
+   ],
+   "attitude": {
+    "negative": 614,
+    "neutral": 581,
+    "positive": 617,
+    "sampleSufficient": true
+   },
+   "buckets": [
+    {
+     "active": 272,
+     "comments": 825,
+     "i": 0,
+     "interactions": 9550,
+     "label": "08-26",
+     "likes": 9150,
+     "mentions": 396,
+     "negative": 143,
+     "neutral": 132,
+     "positive": 121,
+     "shares": 400,
+     "start": "2026-08-26",
+     "tip": "08-26（周三）全天"
+    },
+    {
+     "active": 444,
+     "comments": 915,
+     "i": 1,
+     "interactions": 7834,
+     "label": "08-27",
+     "likes": 7610,
+     "mentions": 286,
+     "negative": 100,
+     "neutral": 82,
+     "positive": 104,
+     "shares": 224,
+     "start": "2026-08-27",
+     "tip": "08-27（周四）全天"
+    },
+    {
+     "active": 173,
+     "comments": 444,
+     "i": 2,
+     "interactions": 2742,
+     "label": "08-28",
+     "likes": 2461,
+     "mentions": 177,
+     "negative": 62,
+     "neutral": 64,
+     "positive": 51,
+     "shares": 281,
+     "start": "2026-08-28",
+     "tip": "08-28（周五）全天"
+    },
+    {
+     "active": 127,
+     "comments": 233,
+     "i": 3,
+     "interactions": 2431,
+     "label": "08-29",
+     "likes": 2339,
+     "mentions": 128,
+     "negative": 40,
+     "neutral": 40,
+     "positive": 48,
+     "shares": 92,
+     "start": "2026-08-29",
+     "tip": "08-29（周六）全天"
+    },
+    {
+     "active": 119,
+     "comments": 266,
+     "i": 4,
+     "interactions": 2150,
+     "label": "08-30",
+     "likes": 1933,
+     "mentions": 88,
+     "negative": 30,
+     "neutral": 24,
+     "positive": 34,
+     "shares": 217,
+     "start": "2026-08-30",
+     "tip": "08-30（周日）全天"
+    },
+    {
+     "active": 351,
+     "comments": 993,
+     "i": 5,
+     "interactions": 5032,
+     "label": "08-31",
+     "likes": 4461,
+     "mentions": 424,
+     "negative": 145,
+     "neutral": 146,
+     "positive": 133,
+     "shares": 571,
+     "start": "2026-08-31",
+     "tip": "08-31（周一）全天"
+    },
+    {
+     "active": 264,
+     "comments": 519,
+     "i": 6,
+     "interactions": 4839,
+     "label": "09-01",
+     "likes": 4665,
+     "mentions": 313,
+     "negative": 94,
+     "neutral": 93,
+     "positive": 126,
+     "shares": 174,
+     "start": "2026-09-01",
+     "tip": "09-01（周二）全天"
+    }
+   ],
+   "code": "3033",
+   "comments": 4195,
+   "discussionHeat": 15940,
+   "interactions": 34578,
+   "isNew": false,
+   "issuer": "CSOP 南方东英",
+   "likes": 32619,
+   "listingDate": "2021-01-28",
+   "maxBucket": 424,
+   "mentions": 1812,
+   "name": "恒生科技指數ETF",
+   "ownership": "own",
+   "sector": "hk",
+   "sectorName": "港股",
+   "shares": 1959,
+   "south": true,
+   "struct": "ETF",
+   "updatedAt": "2026-09-02 09:00"
+  },
+  "buckets": [
+   {
+    "active": {
+     "abs": -146,
+     "dir": -1,
+     "pct": -53.67647058823529,
+     "short": "-54%",
+     "text": "-146（-53.7%）"
+    },
+    "comments": {
+     "abs": -491,
+     "dir": -1,
+     "pct": -59.51515151515151,
+     "short": "-60%",
+     "text": "-491（-59.5%）"
+    },
+    "interactions": {
+     "abs": -7734,
+     "dir": -1,
+     "pct": -80.98429319371728,
+     "short": "-81%",
+     "text": "-7734（-81.0%）"
+    },
+    "negative": {
+     "abs": -84,
+     "dir": -1,
+     "pct": -58.74125874125874,
+     "short": "-59%",
+     "text": "-84（-58.7%）"
+    },
+    "positive": {
+     "abs": -63,
+     "dir": -1,
+     "pct": -52.066115702479344,
+     "short": "-52%",
+     "text": "-63（-52.1%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 53,
+     "dir": 1,
+     "pct": 11.936936936936938,
+     "short": "+12%",
+     "text": "+53（+11.9%）"
+    },
+    "comments": {
+     "abs": 141,
+     "dir": 1,
+     "pct": 15.40983606557377,
+     "short": "+15%",
+     "text": "+141（+15.4%）"
+    },
+    "interactions": {
+     "abs": 587,
+     "dir": 1,
+     "pct": 7.492979320908859,
+     "short": "+7%",
+     "text": "+587（+7.5%）"
+    },
+    "negative": {
+     "abs": 21,
+     "dir": 1,
+     "pct": 21,
+     "short": "+21%",
+     "text": "+21（+21.0%）"
+    },
+    "positive": {
+     "abs": -10,
+     "dir": -1,
+     "pct": -9.615384615384617,
+     "short": "-10%",
+     "text": "-10（-9.6%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 229,
+     "dir": 1,
+     "pct": 132.3699421965318,
+     "short": "+132%",
+     "text": "+229（+132.4%）"
+    },
+    "comments": {
+     "abs": 479,
+     "dir": 1,
+     "pct": 107.88288288288288,
+     "short": "+108%",
+     "text": "+479（+107.9%）"
+    },
+    "interactions": {
+     "abs": 3427,
+     "dir": 1,
+     "pct": 124.981765134938,
+     "short": "+125%",
+     "text": "+3427（+125.0%）"
+    },
+    "negative": {
+     "abs": 69,
+     "dir": 1,
+     "pct": 111.29032258064515,
+     "short": "+111%",
+     "text": "+69（+111.3%）"
+    },
+    "positive": {
+     "abs": 97,
+     "dir": 1,
+     "pct": 190.19607843137254,
+     "short": "+190%",
+     "text": "+97（+190.2%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -35,
+     "dir": -1,
+     "pct": -27.559055118110237,
+     "short": "-28%",
+     "text": "-35（-27.6%）"
+    },
+    "comments": {
+     "abs": -59,
+     "dir": -1,
+     "pct": -25.321888412017167,
+     "short": "-25%",
+     "text": "-59（-25.3%）"
+    },
+    "interactions": {
+     "abs": -718,
+     "dir": -1,
+     "pct": -29.5351707116413,
+     "short": "-30%",
+     "text": "-718（-29.5%）"
+    },
+    "negative": {
+     "abs": -6,
+     "dir": -1,
+     "pct": -15,
+     "short": "-15%",
+     "text": "-6（-15.0%）"
+    },
+    "positive": {
+     "abs": -17,
+     "dir": -1,
+     "pct": -35.41666666666667,
+     "short": "-35%",
+     "text": "-17（-35.4%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 44,
+     "dir": 1,
+     "pct": 36.97478991596639,
+     "short": "+37%",
+     "text": "+44（+37.0%）"
+    },
+    "comments": {
+     "abs": 56,
+     "dir": 1,
+     "pct": 21.052631578947366,
+     "short": "+21%",
+     "text": "+56（+21.1%）"
+    },
+    "interactions": {
+     "abs": 727,
+     "dir": 1,
+     "pct": 33.81395348837209,
+     "short": "+34%",
+     "text": "+727（+33.8%）"
+    },
+    "negative": {
+     "abs": 2,
+     "dir": 1,
+     "pct": 6.666666666666667,
+     "short": "+7%",
+     "text": "+2（+6.7%）"
+    },
+    "positive": {
+     "abs": 7,
+     "dir": 1,
+     "pct": 20.588235294117645,
+     "short": "+21%",
+     "text": "+7（+20.6%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -193,
+     "dir": -1,
+     "pct": -54.98575498575499,
+     "short": "-55%",
+     "text": "-193（-55.0%）"
+    },
+    "comments": {
+     "abs": -545,
+     "dir": -1,
+     "pct": -54.884189325276935,
+     "short": "-55%",
+     "text": "-545（-54.9%）"
+    },
+    "interactions": {
+     "abs": 389,
+     "dir": 1,
+     "pct": 7.730524642289348,
+     "short": "+8%",
+     "text": "+389（+7.7%）"
+    },
+    "negative": {
+     "abs": -75,
+     "dir": -1,
+     "pct": -51.724137931034484,
+     "short": "-52%",
+     "text": "-75（-51.7%）"
+    },
+    "positive": {
+     "abs": -60,
+     "dir": -1,
+     "pct": -45.11278195488722,
+     "short": "-45%",
+     "text": "-60（-45.1%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -147,
+     "dir": -1,
+     "pct": -55.68181818181818,
+     "short": "-56%",
+     "text": "-147（-55.7%）"
+    },
+    "comments": {
+     "abs": -148,
+     "dir": -1,
+     "pct": -28.516377649325626,
+     "short": "-29%",
+     "text": "-148（-28.5%）"
+    },
+    "interactions": {
+     "abs": -829,
+     "dir": -1,
+     "pct": -17.131638768340565,
+     "short": "-17%",
+     "text": "-829（-17.1%）"
+    },
+    "negative": {
+     "abs": -2,
+     "dir": -1,
+     "pct": -2.127659574468085,
+     "short": "-2%",
+     "text": "-2（-2.1%）"
+    },
+    "positive": {
+     "abs": -51,
+     "dir": -1,
+     "pct": -40.476190476190474,
+     "short": "-40%",
+     "text": "-51（-40.5%）"
+    }
+   }
+  ],
+  "comments": {
+   "abs": -567,
+   "dir": -1,
+   "pct": -13.516090584028607,
+   "short": "-14%",
+   "text": "-567（-13.5%）"
+  },
+  "heat": {
+   "abs": -1971,
+   "dir": -1,
+   "pct": -12.365119196988708,
+   "short": "-12%",
+   "text": "-1971（-12.4%）"
+  },
+  "interactions": {
+   "abs": -4151,
+   "dir": -1,
+   "pct": -12.004742900109896,
+   "short": "-12%",
+   "text": "-4151（-12.0%）"
+  },
+  "likes": {
+   "abs": -3925,
+   "dir": -1,
+   "pct": -12.032864281553696,
+   "short": "-12%",
+   "text": "-3925（-12.0%）"
+  },
+  "mentions": {
+   "abs": -290,
+   "dir": -1,
+   "pct": -16.00441501103753,
+   "short": "-16%",
+   "text": "-290（-16.0%）"
+  },
+  "negative": {
+   "abs": -75,
+   "dir": -1,
+   "pct": -12.214983713355048,
+   "short": "-12%",
+   "text": "-75（-12.2%）"
+  },
+  "neutral": {
+   "abs": -118,
+   "dir": -1,
+   "pct": -20.309810671256454,
+   "short": "-20%",
+   "text": "-118（-20.3%）"
+  },
+  "positive": {
+   "abs": -97,
+   "dir": -1,
+   "pct": -15.721231766612643,
+   "short": "-16%",
+   "text": "-97（-15.7%）"
+  },
+  "shares": {
+   "abs": -226,
+   "dir": -1,
+   "pct": -11.53649821337417,
+   "short": "-12%",
+   "text": "-226（-11.5%）"
+  }
+ },
+ "3037|d7": {
+  "accounts": {
+   "abs": 3,
+   "dir": 1,
+   "pct": 3.0927835051546393,
+   "short": "+3%",
+   "text": "+3（+3.1%）"
+  },
+  "base": {
+   "activeAccounts": 97,
+   "activeByBucket": [
+    12,
+    59,
+    25,
+    6,
+    16,
+    17,
+    72
+   ],
+   "attitude": {
+    "negative": 77,
+    "neutral": 56,
+    "positive": 47,
+    "sampleSufficient": true
+   },
+   "buckets": [
+    {
+     "active": 12,
+     "comments": 35,
+     "i": 0,
+     "interactions": 182,
+     "label": "08-26",
+     "likes": 162,
+     "mentions": 21,
+     "negative": 11,
+     "neutral": 5,
+     "positive": 5,
+     "shares": 20,
+     "start": "2026-08-26",
+     "tip": "08-26（周三）全天"
+    },
+    {
+     "active": 59,
+     "comments": 117,
+     "i": 1,
+     "interactions": 1112,
+     "label": "08-27",
+     "likes": 1072,
+     "mentions": 42,
+     "negative": 17,
+     "neutral": 14,
+     "positive": 11,
+     "shares": 40,
+     "start": "2026-08-27",
+     "tip": "08-27（周四）全天"
+    },
+    {
+     "active": 25,
+     "comments": 61,
+     "i": 2,
+     "interactions": 433,
+     "label": "08-28",
+     "likes": 388,
+     "mentions": 29,
+     "negative": 13,
+     "neutral": 8,
+     "positive": 8,
+     "shares": 45,
+     "start": "2026-08-28",
+     "tip": "08-28（周五）全天"
+    },
+    {
+     "active": 6,
+     "comments": 19,
+     "i": 3,
+     "interactions": 216,
+     "label": "08-29",
+     "likes": 207,
+     "mentions": 6,
+     "negative": 2,
+     "neutral": 2,
+     "positive": 2,
+     "shares": 9,
+     "start": "2026-08-29",
+     "tip": "08-29（周六）全天"
+    },
+    {
+     "active": 16,
+     "comments": 33,
+     "i": 4,
+     "interactions": 287,
+     "label": "08-30",
+     "likes": 279,
+     "mentions": 13,
+     "negative": 6,
+     "neutral": 4,
+     "positive": 3,
+     "shares": 8,
+     "start": "2026-08-30",
+     "tip": "08-30（周日）全天"
+    },
+    {
+     "active": 17,
+     "comments": 44,
+     "i": 5,
+     "interactions": 278,
+     "label": "08-31",
+     "likes": 250,
+     "mentions": 24,
+     "negative": 11,
+     "neutral": 7,
+     "positive": 6,
+     "shares": 28,
+     "start": "2026-08-31",
+     "tip": "08-31（周一）全天"
+    },
+    {
+     "active": 72,
+     "comments": 133,
+     "i": 6,
+     "interactions": 1412,
+     "label": "09-01",
+     "likes": 1359,
+     "mentions": 45,
+     "negative": 17,
+     "neutral": 16,
+     "positive": 12,
+     "shares": 53,
+     "start": "2026-09-01",
+     "tip": "09-01（周二）全天"
+    }
+   ],
+   "code": "3037",
+   "comments": 442,
+   "discussionHeat": 1760,
+   "interactions": 3920,
+   "isNew": false,
+   "issuer": "CSOP 南方东英",
+   "likes": 3717,
+   "listingDate": "2015-08-17",
+   "maxBucket": 45,
+   "mentions": 180,
+   "name": "恒生指數ETF",
+   "ownership": "own",
+   "sector": "hk",
+   "sectorName": "港股",
+   "shares": 203,
+   "south": true,
+   "struct": "ETF",
+   "updatedAt": "2026-09-02 09:00"
+  },
+  "buckets": [
+   {
+    "active": {
+     "abs": 51,
+     "dir": 1,
+     "pct": 425,
+     "short": "+425%",
+     "text": "+51（+425.0%）"
+    },
+    "comments": {
+     "abs": 101,
+     "dir": 1,
+     "pct": 288.57142857142856,
+     "short": "+289%",
+     "text": "+101（+288.6%）"
+    },
+    "interactions": {
+     "abs": 1432,
+     "dir": 1,
+     "pct": 786.8131868131868,
+     "short": "+787%",
+     "text": "+1432（+786.8%）"
+    },
+    "negative": {
+     "abs": 8,
+     "dir": 1,
+     "pct": 72.72727272727273,
+     "short": "+73%",
+     "text": "+8（+72.7%）"
+    },
+    "positive": {
+     "abs": 5,
+     "dir": 1,
+     "pct": 100,
+     "short": "+100%",
+     "text": "+5（+100.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -36,
+     "dir": -1,
+     "pct": -61.016949152542374,
+     "short": "-61%",
+     "text": "-36（-61.0%）"
+    },
+    "comments": {
+     "abs": -41,
+     "dir": -1,
+     "pct": -35.04273504273504,
+     "short": "-35%",
+     "text": "-41（-35.0%）"
+    },
+    "interactions": {
+     "abs": -408,
+     "dir": -1,
+     "pct": -36.69064748201439,
+     "short": "-37%",
+     "text": "-408（-36.7%）"
+    },
+    "negative": {
+     "abs": -6,
+     "dir": -1,
+     "pct": -35.294117647058826,
+     "short": "-35%",
+     "text": "-6（-35.3%）"
+    },
+    "positive": {
+     "abs": -3,
+     "dir": -1,
+     "pct": -27.27272727272727,
+     "short": "-27%",
+     "text": "-3（-27.3%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 8,
+     "dir": 1,
+     "pct": 32,
+     "short": "+32%",
+     "text": "+8（+32.0%）"
+    },
+    "comments": {
+     "abs": 2,
+     "dir": 1,
+     "pct": 3.278688524590164,
+     "short": "+3%",
+     "text": "+2（+3.3%）"
+    },
+    "interactions": {
+     "abs": -66,
+     "dir": -1,
+     "pct": -15.242494226327944,
+     "short": "-15%",
+     "text": "-66（-15.2%）"
+    },
+    "negative": {
+     "abs": 3,
+     "dir": 1,
+     "pct": 23.076923076923077,
+     "short": "+23%",
+     "text": "+3（+23.1%）"
+    },
+    "positive": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 12.5,
+     "short": "+13%",
+     "text": "+1（+12.5%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 3,
+     "dir": 1,
+     "pct": 50,
+     "short": "+50%",
+     "text": "+3（+50.0%）"
+    },
+    "comments": {
+     "abs": 5,
+     "dir": 1,
+     "pct": 26.31578947368421,
+     "short": "+26%",
+     "text": "+5（+26.3%）"
+    },
+    "interactions": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "negative": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 50,
+     "short": "+50%",
+     "text": "+1（+50.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -9,
+     "dir": -1,
+     "pct": -56.25,
+     "short": "-56%",
+     "text": "-9（-56.3%）"
+    },
+    "comments": {
+     "abs": -12,
+     "dir": -1,
+     "pct": -36.36363636363637,
+     "short": "-36%",
+     "text": "-12（-36.4%）"
+    },
+    "interactions": {
+     "abs": -124,
+     "dir": -1,
+     "pct": -43.20557491289199,
+     "short": "-43%",
+     "text": "-124（-43.2%）"
+    },
+    "negative": {
+     "abs": -3,
+     "dir": -1,
+     "pct": -50,
+     "short": "-50%",
+     "text": "-3（-50.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 15,
+     "dir": 1,
+     "pct": 88.23529411764706,
+     "short": "+88%",
+     "text": "+15（+88.2%）"
+    },
+    "comments": {
+     "abs": 32,
+     "dir": 1,
+     "pct": 72.72727272727273,
+     "short": "+73%",
+     "text": "+32（+72.7%）"
+    },
+    "interactions": {
+     "abs": 503,
+     "dir": 1,
+     "pct": 180.93525179856115,
+     "short": "+181%",
+     "text": "+503（+180.9%）"
+    },
+    "negative": {
+     "abs": 9,
+     "dir": 1,
+     "pct": 81.81818181818183,
+     "short": "+82%",
+     "text": "+9（+81.8%）"
+    },
+    "positive": {
+     "abs": 5,
+     "dir": 1,
+     "pct": 83.33333333333334,
+     "short": "+83%",
+     "text": "+5（+83.3%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -52,
+     "dir": -1,
+     "pct": -72.22222222222221,
+     "short": "-72%",
+     "text": "-52（-72.2%）"
+    },
+    "comments": {
+     "abs": -82,
+     "dir": -1,
+     "pct": -61.65413533834586,
+     "short": "-62%",
+     "text": "-82（-61.7%）"
+    },
+    "interactions": {
+     "abs": -921,
+     "dir": -1,
+     "pct": -65.22662889518413,
+     "short": "-65%",
+     "text": "-921（-65.2%）"
+    },
+    "negative": {
+     "abs": -10,
+     "dir": -1,
+     "pct": -58.82352941176471,
+     "short": "-59%",
+     "text": "-10（-58.8%）"
+    },
+    "positive": {
+     "abs": -7,
+     "dir": -1,
+     "pct": -58.333333333333336,
+     "short": "-58%",
+     "text": "-7（-58.3%）"
+    }
+   }
+  ],
+  "comments": {
+   "abs": 5,
+   "dir": 1,
+   "pct": 1.1312217194570136,
+   "short": "+1%",
+   "text": "+5（+1.1%）"
+  },
+  "heat": {
+   "abs": 167,
+   "dir": 1,
+   "pct": 9.488636363636363,
+   "short": "+9%",
+   "text": "+167（+9.5%）"
+  },
+  "interactions": {
+   "abs": 416,
+   "dir": 1,
+   "pct": 10.612244897959183,
+   "short": "+11%",
+   "text": "+416（+10.6%）"
+  },
+  "likes": {
+   "abs": 363,
+   "dir": 1,
+   "pct": 9.76594027441485,
+   "short": "+10%",
+   "text": "+363（+9.8%）"
+  },
+  "mentions": {
+   "abs": 6,
+   "dir": 1,
+   "pct": 3.3333333333333335,
+   "short": "+3%",
+   "text": "+6（+3.3%）"
+  },
+  "negative": {
+   "abs": 2,
+   "dir": 1,
+   "pct": 2.5974025974025974,
+   "short": "+3%",
+   "text": "+2（+2.6%）"
+  },
+  "neutral": {
+   "abs": 3,
+   "dir": 1,
+   "pct": 5.357142857142857,
+   "short": "+5%",
+   "text": "+3（+5.4%）"
+  },
+  "positive": {
+   "abs": 1,
+   "dir": 1,
+   "pct": 2.127659574468085,
+   "short": "+2%",
+   "text": "+1（+2.1%）"
+  },
+  "shares": {
+   "abs": 53,
+   "dir": 1,
+   "pct": 26.108374384236456,
+   "short": "+26%",
+   "text": "+53（+26.1%）"
+  }
+ },
+ "3153|d7": {
+  "accounts": {
+   "abs": -1,
+   "dir": -1,
+   "pct": -5,
+   "short": "-5%",
+   "text": "-1（-5.0%）"
+  },
+  "base": {
+   "activeAccounts": 20,
+   "activeByBucket": [
+    9,
+    6,
+    5,
+    6,
+    1,
+    7,
+    9
+   ],
+   "attitude": {
+    "negative": 7,
+    "neutral": 14,
+    "positive": 22,
+    "sampleSufficient": true
+   },
+   "buckets": [
+    {
+     "active": 9,
+     "comments": 17,
+     "i": 0,
+     "interactions": 142,
+     "label": "08-26",
+     "likes": 130,
+     "mentions": 8,
+     "negative": 1,
+     "neutral": 3,
+     "positive": 4,
+     "shares": 12,
+     "start": "2026-08-26",
+     "tip": "08-26（周三）全天"
+    },
+    {
+     "active": 6,
+     "comments": 14,
+     "i": 1,
+     "interactions": 152,
+     "label": "08-27",
+     "likes": 146,
+     "mentions": 5,
+     "negative": 1,
+     "neutral": 2,
+     "positive": 2,
+     "shares": 6,
+     "start": "2026-08-27",
+     "tip": "08-27（周四）全天"
+    },
+    {
+     "active": 5,
+     "comments": 15,
+     "i": 2,
+     "interactions": 154,
+     "label": "08-28",
+     "likes": 141,
+     "mentions": 6,
+     "negative": 1,
+     "neutral": 2,
+     "positive": 3,
+     "shares": 13,
+     "start": "2026-08-28",
+     "tip": "08-28（周五）全天"
+    },
+    {
+     "active": 6,
+     "comments": 13,
+     "i": 3,
+     "interactions": 72,
+     "label": "08-29",
+     "likes": 64,
+     "mentions": 4,
+     "negative": 1,
+     "neutral": 1,
+     "positive": 2,
+     "shares": 8,
+     "start": "2026-08-29",
+     "tip": "08-29（周六）全天"
+    },
+    {
+     "active": 1,
+     "comments": 3,
+     "i": 4,
+     "interactions": 34,
+     "label": "08-30",
+     "likes": 33,
+     "mentions": 1,
+     "negative": 0,
+     "neutral": 0,
+     "positive": 1,
+     "shares": 1,
+     "start": "2026-08-30",
+     "tip": "08-30（周日）全天"
+    },
+    {
+     "active": 7,
+     "comments": 17,
+     "i": 5,
+     "interactions": 126,
+     "label": "08-31",
+     "likes": 113,
+     "mentions": 9,
+     "negative": 1,
+     "neutral": 3,
+     "positive": 5,
+     "shares": 13,
+     "start": "2026-08-31",
+     "tip": "08-31（周一）全天"
+    },
+    {
+     "active": 9,
+     "comments": 17,
+     "i": 6,
+     "interactions": 104,
+     "label": "09-01",
+     "likes": 95,
+     "mentions": 10,
+     "negative": 2,
+     "neutral": 3,
+     "positive": 5,
+     "shares": 9,
+     "start": "2026-09-01",
+     "tip": "09-01（周二）全天"
+    }
+   ],
+   "code": "3153",
+   "comments": 96,
+   "discussionHeat": 375,
+   "interactions": 784,
+   "isNew": false,
+   "issuer": "CSOP 南方东英",
+   "likes": 722,
+   "listingDate": "2017-05-16",
+   "maxBucket": 10,
+   "mentions": 43,
+   "name": "日經225指數ETF",
+   "ownership": "own",
+   "sector": "apac",
+   "sectorName": "亚太及区域",
+   "shares": 62,
+   "south": false,
+   "struct": "ETF",
+   "updatedAt": "2026-09-02 09:00"
+  },
+  "buckets": [
+   {
+    "active": {
+     "abs": 5,
+     "dir": 1,
+     "pct": 55.55555555555556,
+     "short": "+56%",
+     "text": "+5（+55.6%）"
+    },
+    "comments": {
+     "abs": 9,
+     "dir": 1,
+     "pct": 52.94117647058824,
+     "short": "+53%",
+     "text": "+9（+52.9%）"
+    },
+    "interactions": {
+     "abs": 160,
+     "dir": 1,
+     "pct": 112.67605633802818,
+     "short": "+113%",
+     "text": "+160（+112.7%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -16.666666666666664,
+     "short": "-17%",
+     "text": "-1（-16.7%）"
+    },
+    "comments": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -7.142857142857142,
+     "short": "-7%",
+     "text": "-1（-7.1%）"
+    },
+    "interactions": {
+     "abs": -64,
+     "dir": -1,
+     "pct": -42.10526315789473,
+     "short": "-42%",
+     "text": "-64（-42.1%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 50,
+     "short": "+50%",
+     "text": "+1（+50.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 20,
+     "short": "+20%",
+     "text": "+1（+20.0%）"
+    },
+    "comments": {
+     "abs": 4,
+     "dir": 1,
+     "pct": 26.666666666666668,
+     "short": "+27%",
+     "text": "+4（+26.7%）"
+    },
+    "interactions": {
+     "abs": -37,
+     "dir": -1,
+     "pct": -24.025974025974026,
+     "short": "-24%",
+     "text": "-37（-24.0%）"
+    },
+    "negative": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 100,
+     "short": "+100%",
+     "text": "+1（+100.0%）"
+    },
+    "positive": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 33.33333333333333,
+     "short": "+33%",
+     "text": "+1（+33.3%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -2,
+     "dir": -1,
+     "pct": -33.33333333333333,
+     "short": "-33%",
+     "text": "-2（-33.3%）"
+    },
+    "comments": {
+     "abs": -4,
+     "dir": -1,
+     "pct": -30.76923076923077,
+     "short": "-31%",
+     "text": "-4（-30.8%）"
+    },
+    "interactions": {
+     "abs": 6,
+     "dir": 1,
+     "pct": 8.333333333333332,
+     "short": "+8%",
+     "text": "+6（+8.3%）"
+    },
+    "negative": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -100,
+     "short": "-100%",
+     "text": "-1（-100.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "comments": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -33.33333333333333,
+     "short": "-33%",
+     "text": "-1（-33.3%）"
+    },
+    "interactions": {
+     "abs": -19,
+     "dir": -1,
+     "pct": -55.88235294117647,
+     "short": "-56%",
+     "text": "-19（-55.9%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": null,
+     "short": "—",
+     "text": "—"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "comments": {
+     "abs": -2,
+     "dir": -1,
+     "pct": -11.76470588235294,
+     "short": "-12%",
+     "text": "-2（-11.8%）"
+    },
+    "interactions": {
+     "abs": 33,
+     "dir": 1,
+     "pct": 26.190476190476193,
+     "short": "+26%",
+     "text": "+33（+26.2%）"
+    },
+    "negative": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 100,
+     "short": "+100%",
+     "text": "+1（+100.0%）"
+    },
+    "positive": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -20,
+     "short": "-20%",
+     "text": "-1（-20.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -11.11111111111111,
+     "short": "-11%",
+     "text": "-1（-11.1%）"
+    },
+    "comments": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "interactions": {
+     "abs": 54,
+     "dir": 1,
+     "pct": 51.92307692307693,
+     "short": "+52%",
+     "text": "+54（+51.9%）"
+    },
+    "negative": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -50,
+     "short": "-50%",
+     "text": "-1（-50.0%）"
+    },
+    "positive": {
+     "abs": -2,
+     "dir": -1,
+     "pct": -40,
+     "short": "-40%",
+     "text": "-2（-40.0%）"
+    }
+   }
+  ],
+  "comments": {
+   "abs": 5,
+   "dir": 1,
+   "pct": 5.208333333333334,
+   "short": "+5%",
+   "text": "+5（+5.2%）"
+  },
+  "heat": {
+   "abs": 45,
+   "dir": 1,
+   "pct": 12,
+   "short": "+12%",
+   "text": "+45（+12.0%）"
+  },
+  "interactions": {
+   "abs": 133,
+   "dir": 1,
+   "pct": 16.964285714285715,
+   "short": "+17%",
+   "text": "+133（+17.0%）"
+  },
+  "likes": {
+   "abs": 133,
+   "dir": 1,
+   "pct": 18.421052631578945,
+   "short": "+18%",
+   "text": "+133（+18.4%）"
+  },
+  "mentions": {
+   "abs": -1,
+   "dir": -1,
+   "pct": -2.3255813953488373,
+   "short": "-2%",
+   "text": "-1（-2.3%）"
+  },
+  "negative": {
+   "abs": 0,
+   "dir": 0,
+   "pct": 0,
+   "short": "+0%",
+   "text": "+0（+0.0%）"
+  },
+  "neutral": {
+   "abs": 0,
+   "dir": 0,
+   "pct": 0,
+   "short": "+0%",
+   "text": "+0（+0.0%）"
+  },
+  "positive": {
+   "abs": -1,
+   "dir": -1,
+   "pct": -4.545454545454546,
+   "short": "-5%",
+   "text": "-1（-4.5%）"
+  },
+  "shares": {
+   "abs": 0,
+   "dir": 0,
+   "pct": 0,
+   "short": "+0%",
+   "text": "+0（+0.0%）"
+  }
+ },
+ "3174|d7": {
+  "accounts": {
+   "abs": 8,
+   "dir": 1,
+   "pct": 61.53846153846154,
+   "short": "+62%",
+   "text": "+8（+61.5%）"
+  },
+  "base": {
+   "activeAccounts": 13,
+   "activeByBucket": [
+    4,
+    9,
+    8,
+    1,
+    2,
+    6,
+    2
+   ],
+   "attitude": {
+    "negative": 5,
+    "neutral": 12,
+    "positive": 12,
+    "sampleSufficient": true
+   },
+   "buckets": [
+    {
+     "active": 4,
+     "comments": 8,
+     "i": 0,
+     "interactions": 91,
+     "label": "08-26",
+     "likes": 88,
+     "mentions": 4,
+     "negative": 1,
+     "neutral": 1,
+     "positive": 2,
+     "shares": 3,
+     "start": "2026-08-26",
+     "tip": "08-26（周三）全天"
+    },
+    {
+     "active": 9,
+     "comments": 25,
+     "i": 1,
+     "interactions": 226,
+     "label": "08-27",
+     "likes": 206,
+     "mentions": 8,
+     "negative": 1,
+     "neutral": 4,
+     "positive": 3,
+     "shares": 20,
+     "start": "2026-08-27",
+     "tip": "08-27（周四）全天"
+    },
+    {
+     "active": 8,
+     "comments": 15,
+     "i": 2,
+     "interactions": 90,
+     "label": "08-28",
+     "likes": 81,
+     "mentions": 6,
+     "negative": 1,
+     "neutral": 2,
+     "positive": 3,
+     "shares": 9,
+     "start": "2026-08-28",
+     "tip": "08-28（周五）全天"
+    },
+    {
+     "active": 1,
+     "comments": 2,
+     "i": 3,
+     "interactions": 21,
+     "label": "08-29",
+     "likes": 20,
+     "mentions": 1,
+     "negative": 0,
+     "neutral": 1,
+     "positive": 0,
+     "shares": 1,
+     "start": "2026-08-29",
+     "tip": "08-29（周六）全天"
+    },
+    {
+     "active": 2,
+     "comments": 6,
+     "i": 4,
+     "interactions": 49,
+     "label": "08-30",
+     "likes": 45,
+     "mentions": 2,
+     "negative": 0,
+     "neutral": 1,
+     "positive": 1,
+     "shares": 4,
+     "start": "2026-08-30",
+     "tip": "08-30（周日）全天"
+    },
+    {
+     "active": 6,
+     "comments": 11,
+     "i": 5,
+     "interactions": 57,
+     "label": "08-31",
+     "likes": 52,
+     "mentions": 5,
+     "negative": 1,
+     "neutral": 2,
+     "positive": 2,
+     "shares": 5,
+     "start": "2026-08-31",
+     "tip": "08-31（周一）全天"
+    },
+    {
+     "active": 2,
+     "comments": 5,
+     "i": 6,
+     "interactions": 47,
+     "label": "09-01",
+     "likes": 46,
+     "mentions": 3,
+     "negative": 1,
+     "neutral": 1,
+     "positive": 1,
+     "shares": 1,
+     "start": "2026-09-01",
+     "tip": "09-01（周二）全天"
+    }
+   ],
+   "code": "3174",
+   "comments": 72,
+   "discussionHeat": 276,
+   "interactions": 581,
+   "isNew": false,
+   "issuer": "CSOP 南方东英",
+   "likes": 538,
+   "listingDate": "2020-10-29",
+   "maxBucket": 8,
+   "mentions": 29,
+   "name": "恒生生物科技ETF",
+   "ownership": "own",
+   "sector": "hk",
+   "sectorName": "港股",
+   "shares": 43,
+   "south": true,
+   "struct": "ETF",
+   "updatedAt": "2026-09-02 09:00"
+  },
+  "buckets": [
+   {
+    "active": {
+     "abs": 11,
+     "dir": 1,
+     "pct": 275,
+     "short": "+275%",
+     "text": "+11（+275.0%）"
+    },
+    "comments": {
+     "abs": 20,
+     "dir": 1,
+     "pct": 250,
+     "short": "+250%",
+     "text": "+20（+250.0%）"
+    },
+    "interactions": {
+     "abs": 82,
+     "dir": 1,
+     "pct": 90.10989010989012,
+     "short": "+90%",
+     "text": "+82（+90.1%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 2,
+     "dir": 1,
+     "pct": 100,
+     "short": "+100%",
+     "text": "+2（+100.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -2,
+     "dir": -1,
+     "pct": -22.22222222222222,
+     "short": "-22%",
+     "text": "-2（-22.2%）"
+    },
+    "comments": {
+     "abs": -10,
+     "dir": -1,
+     "pct": -40,
+     "short": "-40%",
+     "text": "-10（-40.0%）"
+    },
+    "interactions": {
+     "abs": -60,
+     "dir": -1,
+     "pct": -26.548672566371685,
+     "short": "-27%",
+     "text": "-60（-26.5%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -33.33333333333333,
+     "short": "-33%",
+     "text": "-1（-33.3%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -3,
+     "dir": -1,
+     "pct": -37.5,
+     "short": "-38%",
+     "text": "-3（-37.5%）"
+    },
+    "comments": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -6.666666666666667,
+     "short": "-7%",
+     "text": "-1（-6.7%）"
+    },
+    "interactions": {
+     "abs": 23,
+     "dir": 1,
+     "pct": 25.555555555555554,
+     "short": "+26%",
+     "text": "+23（+25.6%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 2,
+     "dir": 1,
+     "pct": 200,
+     "short": "+200%",
+     "text": "+2（+200.0%）"
+    },
+    "comments": {
+     "abs": 4,
+     "dir": 1,
+     "pct": 200,
+     "short": "+200%",
+     "text": "+4（+200.0%）"
+    },
+    "interactions": {
+     "abs": 9,
+     "dir": 1,
+     "pct": 42.857142857142854,
+     "short": "+43%",
+     "text": "+9（+42.9%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": null,
+     "short": "—",
+     "text": "—"
+    },
+    "positive": {
+     "abs": 1,
+     "dir": 1,
+     "pct": null,
+     "short": "新增",
+     "text": "新增 1"
+    }
+   },
+   {
+    "active": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "comments": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -16.666666666666664,
+     "short": "-17%",
+     "text": "-1（-16.7%）"
+    },
+    "interactions": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 2.0408163265306123,
+     "short": "+2%",
+     "text": "+1（+2.0%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": null,
+     "short": "—",
+     "text": "—"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -16.666666666666664,
+     "short": "-17%",
+     "text": "-1（-16.7%）"
+    },
+    "comments": {
+     "abs": 5,
+     "dir": 1,
+     "pct": 45.45454545454545,
+     "short": "+45%",
+     "text": "+5（+45.5%）"
+    },
+    "interactions": {
+     "abs": 55,
+     "dir": 1,
+     "pct": 96.49122807017544,
+     "short": "+96%",
+     "text": "+55（+96.5%）"
+    },
+    "negative": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 100,
+     "short": "+100%",
+     "text": "+1（+100.0%）"
+    },
+    "positive": {
+     "abs": 2,
+     "dir": 1,
+     "pct": 100,
+     "short": "+100%",
+     "text": "+2（+100.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 12,
+     "dir": 1,
+     "pct": 600,
+     "short": "+600%",
+     "text": "+12（+600.0%）"
+    },
+    "comments": {
+     "abs": 25,
+     "dir": 1,
+     "pct": 500,
+     "short": "+500%",
+     "text": "+25（+500.0%）"
+    },
+    "interactions": {
+     "abs": 290,
+     "dir": 1,
+     "pct": 617.0212765957447,
+     "short": "+617%",
+     "text": "+290（+617.0%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 4,
+     "dir": 1,
+     "pct": 400,
+     "short": "+400%",
+     "text": "+4（+400.0%）"
+    }
+   }
+  ],
+  "comments": {
+   "abs": 42,
+   "dir": 1,
+   "pct": 58.333333333333336,
+   "short": "+58%",
+   "text": "+42（+58.3%）"
+  },
+  "heat": {
+   "abs": null,
+   "dir": 0,
+   "pct": null,
+   "short": "暂不可用",
+   "text": "数据暂不可用"
+  },
+  "interactions": {
+   "abs": 400,
+   "dir": 1,
+   "pct": 68.84681583476764,
+   "short": "+69%",
+   "text": "+400（+68.8%）"
+  },
+  "likes": {
+   "abs": 391,
+   "dir": 1,
+   "pct": 72.67657992565056,
+   "short": "+73%",
+   "text": "+391（+72.7%）"
+  },
+  "mentions": {
+   "abs": 19,
+   "dir": 1,
+   "pct": 65.51724137931035,
+   "short": "+66%",
+   "text": "+19（+65.5%）"
+  },
+  "negative": {
+   "abs": 1,
+   "dir": 1,
+   "pct": 20,
+   "short": "+20%",
+   "text": "+1（+20.0%）"
+  },
+  "neutral": {
+   "abs": 10,
+   "dir": 1,
+   "pct": 83.33333333333334,
+   "short": "+83%",
+   "text": "+10（+83.3%）"
+  },
+  "positive": {
+   "abs": 8,
+   "dir": 1,
+   "pct": 66.66666666666666,
+   "short": "+67%",
+   "text": "+8（+66.7%）"
+  },
+  "shares": {
+   "abs": 9,
+   "dir": 1,
+   "pct": 20.930232558139537,
+   "short": "+21%",
+   "text": "+9（+20.9%）"
+  }
+ },
+ "3442|d7": {
+  "accounts": {
+   "abs": 2,
+   "dir": 1,
+   "pct": 18.181818181818183,
+   "short": "+18%",
+   "text": "+2（+18.2%）"
+  },
+  "base": {
+   "activeAccounts": 11,
+   "activeByBucket": [
+    4,
+    2,
+    6,
+    1,
+    1,
+    6,
+    2
+   ],
+   "attitude": {
+    "negative": 0,
+    "neutral": 0,
+    "positive": 0,
+    "sampleSufficient": false
+   },
+   "buckets": [
+    {
+     "active": 4,
+     "comments": 9,
+     "i": 0,
+     "interactions": 76,
+     "label": "08-26",
+     "likes": 74,
+     "mentions": 4,
+     "negative": 0,
+     "neutral": 2,
+     "positive": 0,
+     "shares": 2,
+     "start": "2026-08-26",
+     "tip": "08-26（周三）全天"
+    },
+    {
+     "active": 2,
+     "comments": 5,
+     "i": 1,
+     "interactions": 30,
+     "label": "08-27",
+     "likes": 27,
+     "mentions": 3,
+     "negative": 0,
+     "neutral": 1,
+     "positive": 0,
+     "shares": 3,
+     "start": "2026-08-27",
+     "tip": "08-27（周四）全天"
+    },
+    {
+     "active": 6,
+     "comments": 11,
+     "i": 2,
+     "interactions": 114,
+     "label": "08-28",
+     "likes": 109,
+     "mentions": 4,
+     "negative": 0,
+     "neutral": 2,
+     "positive": 0,
+     "shares": 5,
+     "start": "2026-08-28",
+     "tip": "08-28（周五）全天"
+    },
+    {
+     "active": 1,
+     "comments": 2,
+     "i": 3,
+     "interactions": 16,
+     "label": "08-29",
+     "likes": 14,
+     "mentions": 1,
+     "negative": 0,
+     "neutral": 0,
+     "positive": 0,
+     "shares": 2,
+     "start": "2026-08-29",
+     "tip": "08-29（周六）全天"
+    },
+    {
+     "active": 1,
+     "comments": 3,
+     "i": 4,
+     "interactions": 16,
+     "label": "08-30",
+     "likes": 14,
+     "mentions": 1,
+     "negative": 0,
+     "neutral": 0,
+     "positive": 0,
+     "shares": 2,
+     "start": "2026-08-30",
+     "tip": "08-30（周日）全天"
+    },
+    {
+     "active": 6,
+     "comments": 12,
+     "i": 5,
+     "interactions": 115,
+     "label": "08-31",
+     "likes": 111,
+     "mentions": 5,
+     "negative": 0,
+     "neutral": 3,
+     "positive": 0,
+     "shares": 4,
+     "start": "2026-08-31",
+     "tip": "08-31（周一）全天"
+    },
+    {
+     "active": 2,
+     "comments": 4,
+     "i": 6,
+     "interactions": 29,
+     "label": "09-01",
+     "likes": 26,
+     "mentions": 2,
+     "negative": 0,
+     "neutral": 1,
+     "positive": 0,
+     "shares": 3,
+     "start": "2026-09-01",
+     "tip": "09-01（周二）全天"
+    }
+   ],
+   "code": "3442",
+   "comments": 46,
+   "discussionHeat": 180,
+   "interactions": 396,
+   "isNew": false,
+   "issuer": "CSOP 南方东英",
+   "likes": 375,
+   "listingDate": "2016-09-22",
+   "maxBucket": 5,
+   "mentions": 20,
+   "name": "恒生港美科技ETF",
+   "ownership": "own",
+   "sector": "hk",
+   "sectorName": "港股",
+   "shares": 21,
+   "south": true,
+   "struct": "ETF",
+   "updatedAt": "2026-09-02 09:00"
+  },
+  "buckets": [
+   {
+    "active": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -25,
+     "short": "-25%",
+     "text": "-1（-25.0%）"
+    },
+    "comments": {
+     "abs": -2,
+     "dir": -1,
+     "pct": -22.22222222222222,
+     "short": "-22%",
+     "text": "-2（-22.2%）"
+    },
+    "interactions": {
+     "abs": -14,
+     "dir": -1,
+     "pct": -18.421052631578945,
+     "short": "-18%",
+     "text": "-14（-18.4%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 3,
+     "dir": 1,
+     "pct": 150,
+     "short": "+150%",
+     "text": "+3（+150.0%）"
+    },
+    "comments": {
+     "abs": 4,
+     "dir": 1,
+     "pct": 80,
+     "short": "+80%",
+     "text": "+4（+80.0%）"
+    },
+    "interactions": {
+     "abs": 72,
+     "dir": 1,
+     "pct": 240,
+     "short": "+240%",
+     "text": "+72（+240.0%）"
+    },
+    "negative": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -100,
+     "short": "-100%",
+     "text": "-1（-100.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -16.666666666666664,
+     "short": "-17%",
+     "text": "-1（-16.7%）"
+    },
+    "comments": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "interactions": {
+     "abs": 4,
+     "dir": 1,
+     "pct": 3.508771929824561,
+     "short": "+4%",
+     "text": "+4（+3.5%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "comments": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 50,
+     "short": "+50%",
+     "text": "+1（+50.0%）"
+    },
+    "interactions": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 6.25,
+     "short": "+6%",
+     "text": "+1（+6.3%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": null,
+     "short": "—",
+     "text": "—"
+    }
+   },
+   {
+    "active": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 100,
+     "short": "+100%",
+     "text": "+1（+100.0%）"
+    },
+    "comments": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "interactions": {
+     "abs": -2,
+     "dir": -1,
+     "pct": -12.5,
+     "short": "-13%",
+     "text": "-2（-12.5%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": null,
+     "short": "—",
+     "text": "—"
+    },
+    "positive": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -100,
+     "short": "-100%",
+     "text": "-1（-100.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -2,
+     "dir": -1,
+     "pct": -33.33333333333333,
+     "short": "-33%",
+     "text": "-2（-33.3%）"
+    },
+    "comments": {
+     "abs": -2,
+     "dir": -1,
+     "pct": -16.666666666666664,
+     "short": "-17%",
+     "text": "-2（-16.7%）"
+    },
+    "interactions": {
+     "abs": -37,
+     "dir": -1,
+     "pct": -32.17391304347826,
+     "short": "-32%",
+     "text": "-37（-32.2%）"
+    },
+    "negative": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 100,
+     "short": "+100%",
+     "text": "+1（+100.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 50,
+     "short": "+50%",
+     "text": "+1（+50.0%）"
+    },
+    "comments": {
+     "abs": 5,
+     "dir": 1,
+     "pct": 125,
+     "short": "+125%",
+     "text": "+5（+125.0%）"
+    },
+    "interactions": {
+     "abs": 30,
+     "dir": 1,
+     "pct": 103.44827586206897,
+     "short": "+103%",
+     "text": "+30（+103.4%）"
+    },
+    "negative": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -100,
+     "short": "-100%",
+     "text": "-1（-100.0%）"
+    },
+    "positive": {
+     "abs": 1,
+     "dir": 1,
+     "pct": null,
+     "short": "新增",
+     "text": "新增 1"
+    }
+   }
+  ],
+  "comments": {
+   "abs": 6,
+   "dir": 1,
+   "pct": 13.043478260869565,
+   "short": "+13%",
+   "text": "+6（+13.0%）"
+  },
+  "heat": {
+   "abs": 26,
+   "dir": 1,
+   "pct": 14.444444444444443,
+   "short": "+14%",
+   "text": "+26（+14.4%）"
+  },
+  "interactions": {
+   "abs": 54,
+   "dir": 1,
+   "pct": 13.636363636363635,
+   "short": "+14%",
+   "text": "+54（+13.6%）"
+  },
+  "likes": {
+   "abs": 48,
+   "dir": 1,
+   "pct": 12.8,
+   "short": "+13%",
+   "text": "+48（+12.8%）"
+  },
+  "mentions": {
+   "abs": 2,
+   "dir": 1,
+   "pct": 10,
+   "short": "+10%",
+   "text": "+2（+10.0%）"
+  },
+  "negative": {
+   "abs": 0,
+   "dir": 0,
+   "pct": null,
+   "short": "—",
+   "text": "—"
+  },
+  "neutral": {
+   "abs": 3,
+   "dir": 1,
+   "pct": 33.33333333333333,
+   "short": "+33%",
+   "text": "+3（+33.3%）"
+  },
+  "positive": {
+   "abs": 0,
+   "dir": 0,
+   "pct": null,
+   "short": "—",
+   "text": "—"
+  },
+  "shares": {
+   "abs": 6,
+   "dir": 1,
+   "pct": 28.57142857142857,
+   "short": "+29%",
+   "text": "+6（+28.6%）"
+  }
+ },
+ "3469|d7": {
+  "accounts": {
+   "abs": null,
+   "dir": 0,
+   "pct": null,
+   "short": "暂不可用",
+   "text": "数据暂不可用"
+  },
+  "base": {
+   "activeAccounts": 26,
+   "activeByBucket": [
+    8,
+    5,
+    13,
+    2,
+    3,
+    10,
+    6
+   ],
+   "attitude": {
+    "negative": 6,
+    "neutral": 21,
+    "positive": 20,
+    "sampleSufficient": true
+   },
+   "buckets": [
+    {
+     "active": 8,
+     "comments": 22,
+     "i": 0,
+     "interactions": 115,
+     "label": "08-26",
+     "likes": 102,
+     "mentions": 9,
+     "negative": 1,
+     "neutral": 4,
+     "positive": 4,
+     "shares": 13,
+     "start": "2026-08-26",
+     "tip": "08-26（周三）全天"
+    },
+    {
+     "active": 5,
+     "comments": 10,
+     "i": 1,
+     "interactions": 95,
+     "label": "08-27",
+     "likes": 92,
+     "mentions": 6,
+     "negative": 1,
+     "neutral": 2,
+     "positive": 3,
+     "shares": 3,
+     "start": "2026-08-27",
+     "tip": "08-27（周四）全天"
+    },
+    {
+     "active": 13,
+     "comments": 31,
+     "i": 2,
+     "interactions": 220,
+     "label": "08-28",
+     "likes": 197,
+     "mentions": 11,
+     "negative": 1,
+     "neutral": 6,
+     "positive": 4,
+     "shares": 23,
+     "start": "2026-08-28",
+     "tip": "08-28（周五）全天"
+    },
+    {
+     "active": 2,
+     "comments": 6,
+     "i": 3,
+     "interactions": 68,
+     "label": "08-29",
+     "likes": 65,
+     "mentions": 3,
+     "negative": 1,
+     "neutral": 1,
+     "positive": 1,
+     "shares": 3,
+     "start": "2026-08-29",
+     "tip": "08-29（周六）全天"
+    },
+    {
+     "active": 3,
+     "comments": 6,
+     "i": 4,
+     "interactions": 53,
+     "label": "08-30",
+     "likes": 51,
+     "mentions": 2,
+     "negative": 0,
+     "neutral": 1,
+     "positive": 1,
+     "shares": 2,
+     "start": "2026-08-30",
+     "tip": "08-30（周日）全天"
+    },
+    {
+     "active": 10,
+     "comments": 26,
+     "i": 5,
+     "interactions": 165,
+     "label": "08-31",
+     "likes": 148,
+     "mentions": 10,
+     "negative": 1,
+     "neutral": 5,
+     "positive": 4,
+     "shares": 17,
+     "start": "2026-08-31",
+     "tip": "08-31（周一）全天"
+    },
+    {
+     "active": 6,
+     "comments": 11,
+     "i": 6,
+     "interactions": 116,
+     "label": "09-01",
+     "likes": 112,
+     "mentions": 6,
+     "negative": 1,
+     "neutral": 2,
+     "positive": 3,
+     "shares": 4,
+     "start": "2026-09-01",
+     "tip": "09-01（周二）全天"
+    }
+   ],
+   "code": "3469",
+   "comments": 112,
+   "discussionHeat": 407,
+   "interactions": 832,
+   "isNew": false,
+   "issuer": "CSOP 南方东英",
+   "likes": 767,
+   "listingDate": "2017-03-16",
+   "maxBucket": 11,
+   "mentions": 47,
+   "name": "恒生港股通紅利ETF",
+   "ownership": "own",
+   "sector": "hk",
+   "sectorName": "港股",
+   "shares": 65,
+   "south": true,
+   "struct": "备兑高息",
+   "updatedAt": "2026-09-02 09:00"
+  },
+  "buckets": [
+   {
+    "active": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -12.5,
+     "short": "-13%",
+     "text": "-1（-12.5%）"
+    },
+    "comments": {
+     "abs": -6,
+     "dir": -1,
+     "pct": -27.27272727272727,
+     "short": "-27%",
+     "text": "-6（-27.3%）"
+    },
+    "interactions": {
+     "abs": -5,
+     "dir": -1,
+     "pct": -4.3478260869565215,
+     "short": "-4%",
+     "text": "-5（-4.3%）"
+    },
+    "negative": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 100,
+     "short": "+100%",
+     "text": "+1（+100.0%）"
+    },
+    "positive": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -25,
+     "short": "-25%",
+     "text": "-1（-25.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -20,
+     "short": "-20%",
+     "text": "-1（-20.0%）"
+    },
+    "comments": {
+     "abs": 4,
+     "dir": 1,
+     "pct": 40,
+     "short": "+40%",
+     "text": "+4（+40.0%）"
+    },
+    "interactions": {
+     "abs": 70,
+     "dir": 1,
+     "pct": 73.68421052631578,
+     "short": "+74%",
+     "text": "+70（+73.7%）"
+    },
+    "negative": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -100,
+     "short": "-100%",
+     "text": "-1（-100.0%）"
+    },
+    "positive": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -33.33333333333333,
+     "short": "-33%",
+     "text": "-1（-33.3%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -6,
+     "dir": -1,
+     "pct": -46.15384615384615,
+     "short": "-46%",
+     "text": "-6（-46.2%）"
+    },
+    "comments": {
+     "abs": -16,
+     "dir": -1,
+     "pct": -51.61290322580645,
+     "short": "-52%",
+     "text": "-16（-51.6%）"
+    },
+    "interactions": {
+     "abs": -89,
+     "dir": -1,
+     "pct": -40.45454545454545,
+     "short": "-40%",
+     "text": "-89（-40.5%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": -2,
+     "dir": -1,
+     "pct": -50,
+     "short": "-50%",
+     "text": "-2（-50.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 3,
+     "dir": 1,
+     "pct": 150,
+     "short": "+150%",
+     "text": "+3（+150.0%）"
+    },
+    "comments": {
+     "abs": 7,
+     "dir": 1,
+     "pct": 116.66666666666667,
+     "short": "+117%",
+     "text": "+7（+116.7%）"
+    },
+    "interactions": {
+     "abs": 15,
+     "dir": 1,
+     "pct": 22.058823529411764,
+     "short": "+22%",
+     "text": "+15（+22.1%）"
+    },
+    "negative": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -100,
+     "short": "-100%",
+     "text": "-1（-100.0%）"
+    },
+    "positive": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 100,
+     "short": "+100%",
+     "text": "+1（+100.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 3,
+     "dir": 1,
+     "pct": 100,
+     "short": "+100%",
+     "text": "+3（+100.0%）"
+    },
+    "comments": {
+     "abs": 6,
+     "dir": 1,
+     "pct": 100,
+     "short": "+100%",
+     "text": "+6（+100.0%）"
+    },
+    "interactions": {
+     "abs": 75,
+     "dir": 1,
+     "pct": 141.50943396226415,
+     "short": "+142%",
+     "text": "+75（+141.5%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": null,
+     "short": "—",
+     "text": "—"
+    },
+    "positive": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 100,
+     "short": "+100%",
+     "text": "+1（+100.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -3,
+     "dir": -1,
+     "pct": -30,
+     "short": "-30%",
+     "text": "-3（-30.0%）"
+    },
+    "comments": {
+     "abs": -11,
+     "dir": -1,
+     "pct": -42.30769230769231,
+     "short": "-42%",
+     "text": "-11（-42.3%）"
+    },
+    "interactions": {
+     "abs": -51,
+     "dir": -1,
+     "pct": -30.909090909090907,
+     "short": "-31%",
+     "text": "-51（-30.9%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -16.666666666666664,
+     "short": "-17%",
+     "text": "-1（-16.7%）"
+    },
+    "comments": {
+     "abs": 3,
+     "dir": 1,
+     "pct": 27.27272727272727,
+     "short": "+27%",
+     "text": "+3（+27.3%）"
+    },
+    "interactions": {
+     "abs": -43,
+     "dir": -1,
+     "pct": -37.06896551724138,
+     "short": "-37%",
+     "text": "-43（-37.1%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 33.33333333333333,
+     "short": "+33%",
+     "text": "+1（+33.3%）"
+    }
+   }
+  ],
+  "comments": {
+   "abs": -13,
+   "dir": -1,
+   "pct": -11.607142857142858,
+   "short": "-12%",
+   "text": "-13（-11.6%）"
+  },
+  "heat": {
+   "abs": -30,
+   "dir": -1,
+   "pct": -7.371007371007371,
+   "short": "-7%",
+   "text": "-30（-7.4%）"
+  },
+  "interactions": {
+   "abs": -28,
+   "dir": -1,
+   "pct": -3.3653846153846154,
+   "short": "-3%",
+   "text": "-28（-3.4%）"
+  },
+  "likes": {
+   "abs": -15,
+   "dir": -1,
+   "pct": -1.955671447196871,
+   "short": "-2%",
+   "text": "-15（-2.0%）"
+  },
+  "mentions": {
+   "abs": -3,
+   "dir": -1,
+   "pct": -6.382978723404255,
+   "short": "-6%",
+   "text": "-3（-6.4%）"
+  },
+  "negative": {
+   "abs": -1,
+   "dir": -1,
+   "pct": -16.666666666666664,
+   "short": "-17%",
+   "text": "-1（-16.7%）"
+  },
+  "neutral": {
+   "abs": -1,
+   "dir": -1,
+   "pct": -4.761904761904762,
+   "short": "-5%",
+   "text": "-1（-4.8%）"
+  },
+  "positive": {
+   "abs": -1,
+   "dir": -1,
+   "pct": -5,
+   "short": "-5%",
+   "text": "-1（-5.0%）"
+  },
+  "shares": {
+   "abs": -13,
+   "dir": -1,
+   "pct": -20,
+   "short": "-20%",
+   "text": "-13（-20.0%）"
+  }
+ },
+ "3589|d7": {
+  "accounts": {
+   "abs": 4,
+   "dir": 1,
+   "pct": 7.6923076923076925,
+   "short": "+8%",
+   "text": "+4（+7.7%）"
+  },
+  "base": {
+   "activeAccounts": 52,
+   "activeByBucket": [
+    20,
+    13,
+    21,
+    16,
+    11,
+    27,
+    34
+   ],
+   "attitude": {
+    "negative": 36,
+    "neutral": 66,
+    "positive": 44,
+    "sampleSufficient": true
+   },
+   "buckets": [
+    {
+     "active": 20,
+     "comments": 65,
+     "i": 0,
+     "interactions": 707,
+     "label": "08-26",
+     "likes": 679,
+     "mentions": 25,
+     "negative": 6,
+     "neutral": 11,
+     "positive": 8,
+     "shares": 28,
+     "start": "2026-08-26",
+     "tip": "08-26（周三）全天"
+    },
+    {
+     "active": 13,
+     "comments": 29,
+     "i": 1,
+     "interactions": 247,
+     "label": "08-27",
+     "likes": 223,
+     "mentions": 15,
+     "negative": 4,
+     "neutral": 6,
+     "positive": 5,
+     "shares": 24,
+     "start": "2026-08-27",
+     "tip": "08-27（周四）全天"
+    },
+    {
+     "active": 21,
+     "comments": 58,
+     "i": 2,
+     "interactions": 317,
+     "label": "08-28",
+     "likes": 283,
+     "mentions": 19,
+     "negative": 4,
+     "neutral": 8,
+     "positive": 7,
+     "shares": 34,
+     "start": "2026-08-28",
+     "tip": "08-28（周五）全天"
+    },
+    {
+     "active": 16,
+     "comments": 31,
+     "i": 3,
+     "interactions": 301,
+     "label": "08-29",
+     "likes": 291,
+     "mentions": 13,
+     "negative": 3,
+     "neutral": 7,
+     "positive": 3,
+     "shares": 10,
+     "start": "2026-08-29",
+     "tip": "08-29（周六）全天"
+    },
+    {
+     "active": 11,
+     "comments": 25,
+     "i": 4,
+     "interactions": 185,
+     "label": "08-30",
+     "likes": 166,
+     "mentions": 14,
+     "negative": 5,
+     "neutral": 5,
+     "positive": 4,
+     "shares": 19,
+     "start": "2026-08-30",
+     "tip": "08-30（周日）全天"
+    },
+    {
+     "active": 27,
+     "comments": 81,
+     "i": 5,
+     "interactions": 945,
+     "label": "08-31",
+     "likes": 903,
+     "mentions": 28,
+     "negative": 6,
+     "neutral": 13,
+     "positive": 9,
+     "shares": 42,
+     "start": "2026-08-31",
+     "tip": "08-31（周一）全天"
+    },
+    {
+     "active": 34,
+     "comments": 70,
+     "i": 6,
+     "interactions": 605,
+     "label": "09-01",
+     "likes": 585,
+     "mentions": 32,
+     "negative": 8,
+     "neutral": 16,
+     "positive": 8,
+     "shares": 20,
+     "start": "2026-09-01",
+     "tip": "09-01（周二）全天"
+    }
+   ],
+   "code": "3589",
+   "comments": 359,
+   "discussionHeat": 1475,
+   "interactions": 3307,
+   "isNew": false,
+   "issuer": "恒生投资",
+   "likes": 3130,
+   "listingDate": "2022-06-29",
+   "maxBucket": 32,
+   "mentions": 146,
+   "name": "恒生科技备兑认购期权主动型ETF",
+   "ownCode": "3033",
+   "ownership": "peer",
+   "sector": "hk",
+   "sectorName": "港股",
+   "shares": 177,
+   "south": false,
+   "struct": "备兑高息",
+   "updatedAt": "2026-09-02 09:00"
+  },
+  "buckets": [
+   {
+    "active": {
+     "abs": -2,
+     "dir": -1,
+     "pct": -10,
+     "short": "-10%",
+     "text": "-2（-10.0%）"
+    },
+    "comments": {
+     "abs": -18,
+     "dir": -1,
+     "pct": -27.692307692307693,
+     "short": "-28%",
+     "text": "-18（-27.7%）"
+    },
+    "interactions": {
+     "abs": -266,
+     "dir": -1,
+     "pct": -37.62376237623762,
+     "short": "-38%",
+     "text": "-266（-37.6%）"
+    },
+    "negative": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -16.666666666666664,
+     "short": "-17%",
+     "text": "-1（-16.7%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 16,
+     "dir": 1,
+     "pct": 123.07692307692308,
+     "short": "+123%",
+     "text": "+16（+123.1%）"
+    },
+    "comments": {
+     "abs": 30,
+     "dir": 1,
+     "pct": 103.44827586206897,
+     "short": "+103%",
+     "text": "+30（+103.4%）"
+    },
+    "interactions": {
+     "abs": 61,
+     "dir": 1,
+     "pct": 24.696356275303643,
+     "short": "+25%",
+     "text": "+61（+24.7%）"
+    },
+    "negative": {
+     "abs": 5,
+     "dir": 1,
+     "pct": 125,
+     "short": "+125%",
+     "text": "+5（+125.0%）"
+    },
+    "positive": {
+     "abs": 6,
+     "dir": 1,
+     "pct": 120,
+     "short": "+120%",
+     "text": "+6（+120.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 13,
+     "dir": 1,
+     "pct": 61.904761904761905,
+     "short": "+62%",
+     "text": "+13（+61.9%）"
+    },
+    "comments": {
+     "abs": 17,
+     "dir": 1,
+     "pct": 29.310344827586203,
+     "short": "+29%",
+     "text": "+17（+29.3%）"
+    },
+    "interactions": {
+     "abs": 526,
+     "dir": 1,
+     "pct": 165.93059936908517,
+     "short": "+166%",
+     "text": "+526（+165.9%）"
+    },
+    "negative": {
+     "abs": 2,
+     "dir": 1,
+     "pct": 50,
+     "short": "+50%",
+     "text": "+2（+50.0%）"
+    },
+    "positive": {
+     "abs": 4,
+     "dir": 1,
+     "pct": 57.14285714285714,
+     "short": "+57%",
+     "text": "+4（+57.1%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -2,
+     "dir": -1,
+     "pct": -12.5,
+     "short": "-13%",
+     "text": "-2（-12.5%）"
+    },
+    "comments": {
+     "abs": -5,
+     "dir": -1,
+     "pct": -16.129032258064516,
+     "short": "-16%",
+     "text": "-5（-16.1%）"
+    },
+    "interactions": {
+     "abs": -116,
+     "dir": -1,
+     "pct": -38.53820598006645,
+     "short": "-39%",
+     "text": "-116（-38.5%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": 4,
+     "dir": 1,
+     "pct": 36.36363636363637,
+     "short": "+36%",
+     "text": "+4（+36.4%）"
+    },
+    "comments": {
+     "abs": 4,
+     "dir": 1,
+     "pct": 16,
+     "short": "+16%",
+     "text": "+4（+16.0%）"
+    },
+    "interactions": {
+     "abs": -15,
+     "dir": -1,
+     "pct": -8.108108108108109,
+     "short": "-8%",
+     "text": "-15（-8.1%）"
+    },
+    "negative": {
+     "abs": -3,
+     "dir": -1,
+     "pct": -60,
+     "short": "-60%",
+     "text": "-3（-60.0%）"
+    },
+    "positive": {
+     "abs": -1,
+     "dir": -1,
+     "pct": -25,
+     "short": "-25%",
+     "text": "-1（-25.0%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -14,
+     "dir": -1,
+     "pct": -51.85185185185185,
+     "short": "-52%",
+     "text": "-14（-51.9%）"
+    },
+    "comments": {
+     "abs": -44,
+     "dir": -1,
+     "pct": -54.32098765432099,
+     "short": "-54%",
+     "text": "-44（-54.3%）"
+    },
+    "interactions": {
+     "abs": -634,
+     "dir": -1,
+     "pct": -67.08994708994709,
+     "short": "-67%",
+     "text": "-634（-67.1%）"
+    },
+    "negative": {
+     "abs": -3,
+     "dir": -1,
+     "pct": -50,
+     "short": "-50%",
+     "text": "-3（-50.0%）"
+    },
+    "positive": {
+     "abs": -3,
+     "dir": -1,
+     "pct": -33.33333333333333,
+     "short": "-33%",
+     "text": "-3（-33.3%）"
+    }
+   },
+   {
+    "active": {
+     "abs": -15,
+     "dir": -1,
+     "pct": -44.11764705882353,
+     "short": "-44%",
+     "text": "-15（-44.1%）"
+    },
+    "comments": {
+     "abs": -10,
+     "dir": -1,
+     "pct": -14.285714285714285,
+     "short": "-14%",
+     "text": "-10（-14.3%）"
+    },
+    "interactions": {
+     "abs": -141,
+     "dir": -1,
+     "pct": -23.305785123966942,
+     "short": "-23%",
+     "text": "-141（-23.3%）"
+    },
+    "negative": {
+     "abs": 0,
+     "dir": 0,
+     "pct": 0,
+     "short": "+0%",
+     "text": "+0（+0.0%）"
+    },
+    "positive": {
+     "abs": 1,
+     "dir": 1,
+     "pct": 12.5,
+     "short": "+13%",
+     "text": "+1（+12.5%）"
+    }
+   }
+  ],
+  "comments": {
+   "abs": -26,
+   "dir": -1,
+   "pct": -7.242339832869081,
+   "short": "-7%",
+   "text": "-26（-7.2%）"
+  },
+  "heat": {
+   "abs": -194,
+   "dir": -1,
+   "pct": -13.152542372881356,
+   "short": "-13%",
+   "text": "-194（-13.2%）"
+  },
+  "interactions": {
+   "abs": -585,
+   "dir": -1,
+   "pct": -17.689749017236164,
+   "short": "-18%",
+   "text": "-585（-17.7%）"
+  },
+  "likes": {
+   "abs": -595,
+   "dir": -1,
+   "pct": -19.009584664536742,
+   "short": "-19%",
+   "text": "-595（-19.0%）"
+  },
+  "mentions": {
+   "abs": 11,
+   "dir": 1,
+   "pct": 7.534246575342466,
+   "short": "+8%",
+   "text": "+11（+7.5%）"
+  },
+  "negative": {
+   "abs": 0,
+   "dir": 0,
+   "pct": 0,
+   "short": "+0%",
+   "text": "+0（+0.0%）"
+  },
+  "neutral": {
+   "abs": 4,
+   "dir": 1,
+   "pct": 6.0606060606060606,
+   "short": "+6%",
+   "text": "+4（+6.1%）"
+  },
+  "positive": {
+   "abs": 7,
+   "dir": 1,
+   "pct": 15.909090909090908,
+   "short": "+16%",
+   "text": "+7（+15.9%）"
+  },
+  "shares": {
+   "abs": 10,
+   "dir": 1,
+   "pct": 5.649717514124294,
+   "short": "+6%",
+   "text": "+10（+5.6%）"
+  }
+ }
+}

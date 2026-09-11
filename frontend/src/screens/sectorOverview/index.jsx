@@ -14,6 +14,7 @@
        key per list item and the dc runtime did not. */
 import React from 'react'
 import R from '../../data/radar'
+import { shortName, navGroups, num } from '../../lib/view'
 import { s } from '../../lib/dc'
 import Shell from '../../components/Shell'
 import FilterBar from './FilterBar'
@@ -63,9 +64,9 @@ export default class SectorOverview extends React.Component {
           x: atMouse ? e.clientX : r.left + r.width / 2,
           y: r.top - 8, title: o.code + ' · ' + o.name,
           rows: [
-            { k: '评论量', v: o.comments.toLocaleString('en-US'), fg: '#fff' },
-            { k: '讨论热度', v: o.discussionHeat.toLocaleString('en-US') + ' · 全市场第 ' + hr + ' ／ ' + poolN + ' 名', fg: '#fff' },
-            { k: '点赞 ／ 转发', v: o.likes.toLocaleString('en-US') + ' ／ ' + o.shares.toLocaleString('en-US'), fg: 'rgba(255,255,255,0.88)' },
+            { k: '评论量', v: num(o.comments), fg: '#fff' },
+            { k: '讨论热度', v: num(o.discussionHeat) + ' · 全市场第 ' + hr + ' ／ ' + poolN + ' 名', fg: '#fff' },
+            { k: '点赞 ／ 转发', v: num(o.likes) + ' ／ ' + num(o.shares), fg: 'rgba(255,255,255,0.88)' },
             { k: '积极 ／ 消极 ／ 中性', v: o.attitude.positive + ' / ' + o.attitude.negative + ' / ' + o.attitude.neutral, fg: 'rgba(255,255,255,0.88)' },
             { k: '情绪净值', v: this.netText(o), fg: 'rgba(255,255,255,0.88)' }
           ].concat(rc > 0 ? [{ k: '需合规关注', v: rc + ' 条 · AI 识别待确认', fg: '#F3A6A6' }] : [])
@@ -279,10 +280,10 @@ export default class SectorOverview extends React.Component {
       var hs = R.hotSummaryFor(o.code, s.rangeKey);
       return {
         idx: String(i + 1), code: o.code, name: o.name,
-        comments: o.comments.toLocaleString('en-US'),
+        comments: num(o.comments),
         growth: g == null ? '—' : (g > 0 ? '+' : '') + g.toFixed(0) + '%',
         gfg: g == null ? 'var(--ink-300)' : (g > 2 ? 'var(--positive-700)' : (g < -2 ? 'var(--negative-600)' : 'var(--ink-500)')),
-        heat: o.discussionHeat.toLocaleString('en-US'),
+        heat: num(o.discussionHeat),
         hasAttitude: att.sampleSufficient, lowSample: !att.sampleSufficient,
         pos: String(att.positive), neg: String(att.negative),
         posW: valid ? (att.positive / valid * 100).toFixed(1) : '0',
@@ -329,6 +330,9 @@ export default class SectorOverview extends React.Component {
        面积＝讨论热度，颜色＝情绪净值或评论量环比；筛选外的产品置灰 */
     var HEAT_TOP = 20;
     var heatSorted = P.list.slice()
+      /* `> 0` 顺带把热度未知的产品也挡在外面（null > 0 为假），这是有意的：格子面积就是热度，
+         「不知道多大」画不出来，硬给个尺寸才是撒谎。它照样出现在下方榜单里，那里有位置说
+         「数据暂不可用」。 */
       .filter(function (o) { return o.discussionHeat > 0; })
       .sort(function (a, b) { return b.discussionHeat - a.discussionHeat; });
     var headList = heatSorted.slice(0, HEAT_TOP);
@@ -378,25 +382,23 @@ export default class SectorOverview extends React.Component {
 
     /* 顶部 4 卡（第三轮）：CSOP产品讨论热度 → 舆情管理 → 近期热议飙升的CSOP产品 → 近期热议提升的其他产品；
        前两卡口径收窄至 CSOP 自家（ownership = own），不随榜单筛选变化；基准期为顶部日期预设的前一等长区间 */
-    var ownAll = P.list.filter(function (o) { return o.ownership === 'own'; });
-    var ownHeat = 0, ownBaseHeat = 0, ownNeg = 0, ownNegBase = 0, ownPos = 0, ownPosBase = 0, ownRisk = 0;
-    ownAll.forEach(function (o) {
-      ownHeat += o.discussionHeat; ownBaseHeat += P.baseHeat[o.code] || 0;
-      ownNeg += P.negMentions[o.code] || 0;
-      R.negCatsFor(o.code, s.rangeKey).forEach(function (c) { ownNegBase += c.mentions - (c.delta && c.delta.abs != null ? c.delta.abs : 0); });
-      ownPos += o.attitude.positive;
-      var bo = R.observe(o.code, s.rangeKey, 'bench'); if (bo && bo.attitude) ownPosBase += bo.attitude.positive;
-      ownRisk += P.complianceCount[o.code] || 0;
-    });
-    var dOH = R.delta(ownHeat, ownBaseHeat), dON = R.delta(ownNeg, ownNegBase), dOP = R.delta(ownPos, ownPosBase);
-    var k1 = { value: ownHeat.toLocaleString('en-US'), delta: dOH.short, dfg: self.dfg(dOH), sub: '仅统计 CSOP 自家 ' + ownAll.length + ' 只 · ' + range.benchLabel + ' · ' + R.HEAT_FORMULA.replace('讨论热度 ＝ ', '热度＝').split(' ').join('') };
-    var pnTot = ownNeg + ownPos;
+    /* 汇总与三个环比全部由后端算好（P.own），屏幕不再自己遍历 61 只求和。设计源那段
+       循环里有三处 `|| 0`：JS 的 `sum + null === sum + 0`，少加的那一只悄悄消失，合计
+       看着还挺像样（比 NaN 难发现得多）。合计里有一个不知道，合计就是不知道（铁律 2）。
+       环比同理 —— delta 是 PRD 第 3 章的全局口径，只在后端实现一份（铁律 1）。 */
+    var own = P.own;
+    var dOH = own.dHeat, dON = own.dNeg, dOP = own.dPos;
+    var k1 = { value: num(own.heat), delta: dOH.short, dfg: self.dfg(dOH), sub: '仅统计 CSOP 自家 ' + own.count + ' 只 · ' + range.benchLabel + ' · ' + R.HEAT_FORMULA.replace('讨论热度 ＝ ', '热度＝').split(' ').join('') };
+    var pnTot = own.neg == null || own.pos == null ? null : own.neg + own.pos;
     var k2 = {
-      neg: ownNeg.toLocaleString('en-US'), negDelta: dON.short, negDfg: dON.dir > 0 ? 'var(--negative-600)' : (dON.dir < 0 ? 'var(--positive-700)' : 'var(--ink-400)'),
-      pos: ownPos.toLocaleString('en-US'), posDelta: dOP.short, posDfg: self.dfg(dOP),
-      negW: pnTot ? (ownNeg / pnTot * 100).toFixed(1) : '0', posW: pnTot ? (ownPos / pnTot * 100).toFixed(1) : '0',
-      barTitle: '负面 ' + ownNeg + ' ： 正面 ' + ownPos + (pnTot ? ' · 负面占 ' + (ownNeg / pnTot * 100).toFixed(0) + '%' : ''),
-      sub: '正面＝AI 判定积极态度；负面＝可归类为需关注问题 · 其中需合规关注 ' + ownRisk + ' 条 · ' + range.benchLabel
+      neg: num(own.neg), negDelta: dON.short, negDfg: dON.dir > 0 ? 'var(--negative-600)' : (dON.dir < 0 ? 'var(--positive-700)' : 'var(--ink-400)'),
+      pos: num(own.pos), posDelta: dOP.short, posDfg: self.dfg(dOP),
+      negW: pnTot ? (own.neg / pnTot * 100).toFixed(1) : '0', posW: pnTot ? (own.pos / pnTot * 100).toFixed(1) : '0',
+      barTitle: '负面 ' + num(own.neg) + ' ： 正面 ' + num(own.pos) + (pnTot ? ' · 负面占 ' + (own.neg / pnTot * 100).toFixed(0) + '%' : ''),
+      /* 「N 条」整体替换成长文案，而不是「需合规关注 数据暂不可用 条」—— 量词得跟着数字走。
+         演示数据里 3153 的合规扫描是 unavailable，所以这里真会走到 null 分支：设计源那句
+         `|| 0` 把「没扫过」读成「零条」，于是这张卡少数了一只还显得言之凿凿。 */
+      sub: '正面＝AI 判定积极态度；负面＝可归类为需关注问题 · 其中需合规关注 ' + (own.risk == null ? '数据暂不可用' : own.risk + ' 条') + ' · ' + range.benchLabel
     };
     /* 两张 Top3 卡：按评论量环比增长率降序，只取正增长；基准期不足 5 条不参与（与榜单环比同口径）；点行打开右侧快速详情抽屉 */
     var topOf = function (own) {
@@ -408,7 +410,7 @@ export default class SectorOverview extends React.Component {
         .map(function (x, i) {
           var o = x.o;
           return {
-            rank: String(i + 1), code: o.code, name: R.shortName(o.name), growth: '+' + x.g.toFixed(0) + '%', comments: o.comments.toLocaleString('en-US'),
+            rank: String(i + 1), code: o.code, name: shortName(o.name), growth: '+' + x.g.toFixed(0) + '%', comments: o.comments.toLocaleString('en-US'),
             title: o.name + '（' + o.code + '.HK）· 评论量 ' + o.comments + '，' + range.benchLabel + ' ' + '+' + x.g.toFixed(0) + '%（基准期 ' + P.baseComments[o.code] + ' 条）· 点击打开快速详情',
             go: () => self.go({ sel: o.code, tip: null })
           };
@@ -417,7 +419,7 @@ export default class SectorOverview extends React.Component {
     var topOwn = topOf(true), topPeer = topOf(false);
 
     var out = {
-      navGroups: R.navGroups('portfolio', 'sector'), presets: presets, chips: chips,
+      navGroups: navGroups('portfolio', 'sector'), presets: presets, chips: chips,
       rangeText: range.text, rangeFrom: range.from, rangeTo: range.to,
       granLabel: range.granLabel, updated: R.UPDATED,
       loading: s.loading, bodyOpacity: s.loading ? '0.45' : '1',
@@ -603,12 +605,12 @@ export default class SectorOverview extends React.Component {
           ? (att.positive === att.negative ? '积极与消极持平' : (att.positive > att.negative ? '积极比消极多 ' + (att.positive - att.negative) + ' 条' : '消极比积极多 ' + (att.negative - att.positive) + ' 条'))
           : '样本不足 · 不输出倾向结论',
         netFg: att.sampleSufficient ? (att.positive >= att.negative ? 'var(--positive-700)' : 'var(--negative-700)') : 'var(--ink-500)',
-        heat: o.discussionHeat.toLocaleString('en-US'),
+        heat: num(o.discussionHeat),
         heatDelta: b.heat.short, heatDfg: self.dfg(b.heat),
-        comments: o.comments.toLocaleString('en-US'),
-        likes: o.likes.toLocaleString('en-US'),
-        shares: o.shares.toLocaleString('en-US'),
-        interactions: o.interactions.toLocaleString('en-US'),
+        comments: num(o.comments),
+        likes: num(o.likes),
+        shares: num(o.shares),
+        interactions: num(o.interactions),
         rank: String(rk.map[code]), rankTotal: String(rk.total),
         hasNegCats: cats.length > 0, noNegCats: cats.length === 0,
         negCats: cats.map(function (c) {

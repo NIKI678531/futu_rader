@@ -9,6 +9,7 @@
        `style-hover` / `style-focus` by `hover()` / `focus()`. */
 import React from 'react'
 import R from '../data/radar'
+import { num, typeStyle, shell, rgba, CAMP, POST_TYPES, TYPE_BY_KEY } from '../lib/view'
 import { s, hover, focus } from '../lib/dc'
 import Shell from '../components/Shell'
 import DcLink from '../components/DcLink'
@@ -88,17 +89,18 @@ export default class OfficialActivity extends React.Component {
     };
     var LC = this.props.lowConfidence != null ? this.props.lowConfidence : 0.7;
     var cols = this.props.feedLayout === '单列' ? 1 : 2;
-    var out = R.shell('accounts', 'official', s, function (x) { self.go(x); });
+    var out = shell('accounts', 'official', s, function (x) { self.go(x); });
     var feedAll = R.officialPosts(s.rangeKey);
     var range = R.buildRange(s.rangeKey);
     var pending = function (p) { return p.confidence < LC; };
-    var campsOf = function (p) { var c = self.camp(p); return c === 'both' ? [R.CAMP.own, R.CAMP.competitor] : [R.CAMP[c] || R.CAMP.none]; };
+    var campsOf = function (p) { var c = self.camp(p); return c === 'both' ? [CAMP.own, CAMP.competitor] : [CAMP[c] || CAMP.none]; };
 
     /* 账号级汇总由帖子流聚合而来，随区间变化 */
     var acc = R.OFFICIAL.map(function (o) {
-      var ps = feedAll.filter(function (p) { return p.account === o[0]; });
+      var ps = feedAll.filter(function (p) { return p.account === o.short; });
       return {
-        short: o[0], full: o[1], comps: o[4], type: o[4] > 0 ? '发行商官号' : '平台运营',
+        short: o.short, full: o.full, comps: o.comps, type: o.comps > 0 ? '发行商官号' : '平台运营',
+        url: o.url,
         posts: ps.length, inter: ps.reduce(function (t, p) { return t + p.engagement; }, 0)
       };
     });
@@ -162,7 +164,7 @@ export default class OfficialActivity extends React.Component {
       return {
         key: o.short,
         short: o.short, full: o.full, type: o.type, fw: on ? 600 : 500,
-        posts: String(o.posts), inter: R.num(o.inter),
+        posts: String(o.posts), inter: num(o.inter),
         hasEtf: em.list.length > 0, noEtf: em.list.length === 0,
         etfHead: em.list.length ? em.etfCount + ' 只 · ' + em.total + ' 次' : '— 区间内未提及 ETF',
         etfHeadTitle: '自家 ' + em.own.length + ' 只 · 竞品 ' + em.peer.length + ' 只 · 涉及 ' + em.postCount + ' 帖 · 仅 ETF，不含个股',
@@ -173,7 +175,7 @@ export default class OfficialActivity extends React.Component {
         color: iss ? '#2361AD' : '#7A5C9E',
         tbg: iss ? 'var(--csop-blue-50)' : '#F1ECF7',
         tfg: iss ? 'var(--csop-blue-700)' : '#5E4480',
-        url: 'https://www.futunn.com/user/' + (10000000 + (R.hash(o.full) % 80000000)),
+        url: o.url,
         bg: on ? 'var(--csop-blue-50)' : (i % 2 ? 'var(--canvas)' : '#fff'),
         stop: function (e) { e.stopPropagation(); },
         go: function () { self.go({ acct: on ? null : o.short }); }
@@ -187,7 +189,7 @@ export default class OfficialActivity extends React.Component {
     var pendingN = feedAll.filter(pending).length;
     out.kpis = [
       { label: '重点官号数', value: String(acc.length), unit: '个', sub: '客户提供的名单 · 发行商 ' + isr.length + ' · 平台运营 ' + plt.length },
-      { label: '区间发布篇数', value: String(feedAll.length), unit: '篇', sub: range.from.slice(5) + ' ～ ' + range.to.slice(5) + ' · 互动合计 ' + R.num(tot) },
+      { label: '区间发布篇数', value: String(feedAll.length), unit: '篇', sub: range.from.slice(5) + ' ～ ' + range.to.slice(5) + ' · 互动合计 ' + num(tot) },
       { label: '提及自家产品', value: String(feedAll.filter(function (p) { var c = self.camp(p); return c === 'own' || c === 'both'; }).length), unit: '篇', sub: '官号帖子里提到南方东英产品的篇数（含同时提及竞品）' },
       { label: '已生成摘要', value: String(withSummary), unit: '篇', sub: (feedAll.length - withSummary) + ' 篇图片帖无摘要 · ' + pendingN + ' 篇类型待确认' }
     ].map(function (x) { return { label: x.label, value: x.value, unit: x.unit, sub: x.sub, vfg: 'var(--ink-900)' }; });
@@ -195,8 +197,8 @@ export default class OfficialActivity extends React.Component {
     var tmx = top.length ? Math.max(1, top[0].posts) : 1;
     out.topIssuers = top.map(function (o, i) {
       return {
-        name: o.short, posts: String(o.posts), inter: R.num(o.inter), pct: String(Math.round(o.posts / tmx * 100)),
-        color: R.rgba('#2361AD', 1 - i * 0.08),
+        name: o.short, posts: String(o.posts), inter: num(o.inter), pct: String(Math.round(o.posts / tmx * 100)),
+        color: rgba('#2361AD', 1 - i * 0.08),
         go: function () { self.go({ acct: s.acct === o.short ? null : o.short, tab: '全部' }); }
       };
     });
@@ -264,7 +266,7 @@ export default class OfficialActivity extends React.Component {
     /* 类型多选：计数按 三态 × 官号 × 产品 的范围算 */
     var typeCounts = {};
     prodPosts.forEach(function (p) { typeCounts[p.postType] = (typeCounts[p.postType] || 0) + 1; });
-    out.typeLabel = !s.types.length ? '全部' : (s.types.length === 1 ? R.TYPE_BY_KEY[s.types[0]].label : s.types.length + ' 类');
+    out.typeLabel = !s.types.length ? '全部' : (s.types.length === 1 ? TYPE_BY_KEY[s.types[0]].label : s.types.length + ' 类');
     out.typeCaret = s.typeMenu ? '▲' : '▼';
     out.typeOpen = !!s.typeMenu;
     out.typeBc = (s.typeMenu || s.types.length) ? 'var(--csop-blue-600)' : 'var(--border-2)';
@@ -272,8 +274,8 @@ export default class OfficialActivity extends React.Component {
     out.typeToggle = function () { self.setState({ typeMenu: !s.typeMenu, acctMenu: false, prodMenu: false }); };
     out.typeClose = function () { self.setState({ typeMenu: false }); };
     out.typeAll = function () { self.go({ types: [] }); };
-    out.typeMenu = R.POST_TYPES.map(function (t) {
-      var on = s.types.indexOf(t.k) >= 0, st = R.typeStyle(t.k);
+    out.typeMenu = POST_TYPES.map(function (t) {
+      var on = s.types.indexOf(t.k) >= 0, st = typeStyle(t.k);
       return {
         key: t.k, label: t.label, def: t.def, n: String(typeCounts[t.k] || 0), tick: on ? '✓' : '',
         boxBc: on ? 'var(--csop-blue-600)' : 'var(--border-2)', boxBg: on ? 'var(--csop-blue-600)' : '#fff',
@@ -317,7 +319,7 @@ export default class OfficialActivity extends React.Component {
     out.shownCount = String(shown); out.pageSize = String(PAGE);
     out.loadMore = function () { self.setState({ shown: shown + PAGE }); };
     out.cards = feed.slice(0, shown).map(function (p) {
-      var st = R.typeStyle(p.postType), open = !!s.open[p.id];
+      var st = typeStyle(p.postType), open = !!s.open[p.id];
       return {
         key: p.id,
         account: p.account, accountType: p.accountType,
@@ -339,7 +341,7 @@ export default class OfficialActivity extends React.Component {
             bg: own ? 'var(--csop-blue-600)' : 'var(--csop-silver-200)', fg: own ? '#fff' : 'var(--ink-700)'
           };
         }),
-        likes: R.num(p.likes), comments: R.num(p.comments), shares: R.num(p.shares),
+        likes: num(p.likes), comments: num(p.comments), shares: num(p.shares),
         url: p.url,
         openLabel: open ? '收起原文' : '原文',
         linkBg: open ? 'var(--csop-blue-50)' : '#fff',

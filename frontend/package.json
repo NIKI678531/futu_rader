@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "design": "vite --config vite.design.config.js"
+    "design": "vite --config vite.design.config.js",
+    "diff": "node scripts/screen-diff.mjs",
+    "six-state": "node scripts/six-state.mjs",
+    "guards": "node scripts/guards.mjs",
+    "test": "npm run six-state && npm run diff && npm run guards"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -16,6 +20,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
+    "playwright": "^1.49.1",
     "vite": "^6.0.7"
   }
 }

@@ -1,28 +1,43 @@
-# 三个服务：clickhouse + backend + worker。前端不在这里 —— P: 网络盘上做容器构建远慢于
+# 三个服务：mysql + backend + worker。前端不在这里 —— P: 网络盘上做容器构建远慢于
 # `cd frontend && npm run dev`，上线前再补多阶段镜像（plan.md Q5）。
 #
-# backend/worker 的 build context 是**仓库根**而不是各自子目录：前端引用仓库根的
-# design/（frontend/src/data/radar.js → ../../../design/radar-data.js），将来把前端也打进
-# 镜像时 context 必须在根上，现在就统一，省得那时再改一遍。
+# 存储是 **MySQL 8**，不是 ClickHouse（ADR-0002 推翻了 plan.md §6 Q4）。这份 compose 是
+# **生产形态**；本地开发不用起它，瘦库是 SQLite，见 README 的启动命令。两边跑同一份
+# `radar_db/schema.py`，方言靠 RADAR_DB_URL 切。
+#
+# backend/worker 的 build context 是**仓库根**而不是各自子目录：一是 `radar_db/` 在根上，
+# 两个镜像都要 COPY 它；二是将来把前端也打进镜像时 context 必须在根上（前端引用根的
+# design/），现在就统一，省得那时再改一遍。
 #
 # 宿主机端口比 ChatInsight（8123/9007/8007）各高一位，两个项目可以同时开着（plan.md Q3）。
 #
 # 不写 version: 字段 —— Compose V2 已废弃，写了只会打告警。
 
 services:
-  clickhouse:
-    image: clickhouse/clickhouse-server:latest
+  mysql:
+    image: mysql:8.0
     ports:
-      - "8124:8123"   # HTTP
-      - "9008:9000"   # TCP native
+      - "3307:3306"
+    command:
+      # 帖子正文、评论、昵称里有 emoji 与生僻字，utf8mb4 是硬要求（utf8mb3 存不下）。
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
     volumes:
-      # 命名卷而非 bind mount：Windows 上 bind mount 会撞 ClickHouse 的属主检查。
-      - clickhouse-data:/var/lib/clickhouse
+      # 命名卷而非 bind mount：Windows 上 bind mount 会撞容器内的属主检查。
+      - mysql-data:/var/lib/mysql
       - ./init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
     environment:
-      CLICKHOUSE_DB: futu_radar
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      MYSQL_DATABASE: futu_radar
+      MYSQL_USER: radar
+      # 演示环境口令，上线前换成 secret / 外部注入。
+      MYSQL_PASSWORD: radar
+      MYSQL_ROOT_PASSWORD: radar-root
+      TZ: Asia/Hong_Kong
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pradar-root"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
   backend:
@@ -35,12 +50,12 @@ services:
       APP_ENV: production
       APP_PORT: 8008
       ROOT_PATH: ""
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: 9000
-      CLICKHOUSE_DB: futu_radar
-      CLICKHOUSE_USER: default
+      # demo＝设计源 fixture（100% 还原验收）；sql＝真实瘦库。
+      DATA_PROVIDER: sql
+      RADAR_DB_URL: mysql+pymysql://radar:radar@mysql:3306/futu_radar?charset=utf8mb4
     depends_on:
-      - clickhouse
+      mysql:
+        condition: service_healthy
     restart: unless-stopped
 
   worker:
@@ -51,13 +66,11 @@ services:
       TZ: Asia/Hong_Kong
       COLLECT_INTERVAL_SECONDS: 60
       LOOKBACK_DAYS: 60
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: 9000
-      CLICKHOUSE_DB: futu_radar
-      CLICKHOUSE_USER: default
+      RADAR_DB_URL: mysql+pymysql://radar:radar@mysql:3306/futu_radar?charset=utf8mb4
     depends_on:
-      - clickhouse
+      mysql:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
-  clickhouse-data:
+  mysql-data:

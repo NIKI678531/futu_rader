@@ -30,7 +30,7 @@
 | `worker/` | **骨架**。只有一个 heartbeat 任务；`jobs/collect.py` 是占位。 |
 | 数据库 | 选型已改为 **MySQL 8**（[ADR-0002](docs/adr/0002-mysql-over-clickhouse.md)）。表结构**未落地**，`init_db.sql` 仍是 ClickHouse 时期的只建库版本。 |
 | 10GB 真实 dump | **未导入**。导入与瘦库派生方案见 [ADR-0008](docs/adr/0008-dump-import-and-slim-db.md)，其中两条「导入后验证」尚未跑过。 |
-| 双 provider / AI 标注 | **未实现**。方案见 [ADR-0001](docs/adr/0001-dual-provider.md)、[ADR-0010](docs/adr/0010-annotations-and-ai-pipeline.md)。 |
+| 双 provider / AI 标注 | provider 已实现；标注管线已落地但**尚未驱动页面**（129 条脱敏影子运行，无 approved 结果）。见 [ADR-0001](docs/adr/0001-dual-provider.md)、[ADR-0017](docs/adr/0017-ai-annotation-pipeline-production.md)。 |
 | 两个 Dockerfile 与 compose | **未验证**：`docker compose config` 解析通过，但 Docker daemon 当时没起，镜像一次都没构建过。 |
 | 前端容器镜像 | **不做**（plan.md Q5）。 |
 

@@ -1,24 +1,15 @@
-"""GET /api/v1/meta —— 全局常量（PRD 第 5 章表末「常量」行）。
+"""GET /api/v1/meta —— 全局常量与主数据（PRD 第 5 章表末「常量」行）。
 
-演示期原样返回 fixtures/meta.json。正式实现时这些值改由配置与主数据表提供，
-**响应形状不变**：前端只承接字段，不在屏内重算任何口径（CLAUDE.md 铁律 1）。
-
-fixture 里的取值逐字来自 design/radar-data.js 的 PRESETS / SECTORS / STATUS_LEGEND /
-HEAT_FORMULA / HEAT_NOTE / HEAT_W / LOW_SAMPLE / NEW_DAYS，与 PRD §3.1、§3.3、§3.5、
-§3.6、§3.7 三方一致；STATUS_LEGEND 的 bg/fg 是设计系统的 CSS 变量名，属展示层，不下发。
+载荷怎么拼、口径常量与主数据为什么分两处来，见 core/meta.py 的模块说明。
+本模块只负责把它套上信封（CLAUDE.md 铁律 1：端点不算口径，只取数）。
 """
 
-import json
-from pathlib import Path
-
-from flask import jsonify
+from core.envelope import respond
+from core.meta import meta_payload
 
 from . import v1_bp
-
-FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "meta.json"
 
 
 @v1_bp.get("/meta")
 def meta():
-    # 每次请求重读：改 fixture 不用重启，骨架阶段的调试成本比这点开销值钱。
-    return jsonify(json.loads(FIXTURE.read_text(encoding="utf-8")))
+    return respond(meta_payload())

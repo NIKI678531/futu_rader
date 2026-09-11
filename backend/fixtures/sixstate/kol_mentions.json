@@ -1,0 +1,176 @@
+{
+ "3033|d7": {
+  "list": [
+   {
+    "dominantAttitude": "positive",
+    "dominantLabel": "积极",
+    "evidence": [
+     {
+      "attitude": "neutral",
+      "attitudeLabel": "中性",
+      "authorName": "股市魔术师",
+      "authorType": "合作 KOL",
+      "comments": 31,
+      "excerpt": "$恒生科技指數ETF（3033.HK）$ 先看成交量，量不放大不加仓。",
+      "id": "3033-km-0-0",
+      "interactions": 288,
+      "isKnownKol": true,
+      "kolType": "partner",
+      "productCodes": [
+       "3033"
+      ],
+      "publishedAt": "2026-09-01 20:03",
+      "sourceKind": "评论",
+      "sourceUrl": "https://www.futunn.com/post/8089468"
+     },
+     {
+      "attitude": "positive",
+      "attitudeLabel": "积极",
+      "authorName": "股市魔术师",
+      "authorType": "合作 KOL",
+      "comments": 22,
+      "excerpt": "$恒生科技指數ETF（3033.HK）$ 这个位置分批接回来，费率在同类里算低的，长期拿着问题不大。",
+      "id": "3033-km-0-3",
+      "interactions": 644,
+      "isKnownKol": true,
+      "kolType": "partner",
+      "productCodes": [
+       "3033"
+      ],
+      "publishedAt": "2026-09-01 16:10",
+      "sourceKind": "评论",
+      "sourceUrl": "https://www.futunn.com/post/8022324"
+     },
+     {
+      "attitude": "positive",
+      "attitudeLabel": "积极",
+      "authorName": "股市魔术师",
+      "authorType": "合作 KOL",
+      "comments": 40,
+      "excerpt": "$恒生科技指數ETF（3033.HK）$ 这个位置分批接回来，费率在同类里算低的，长期拿着问题不大。",
+      "id": "3033-km-0-5",
+      "interactions": 832,
+      "isKnownKol": true,
+      "kolType": "partner",
+      "productCodes": [
+       "3033"
+      ],
+      "publishedAt": "2026-09-01 09:56",
+      "sourceKind": "评论",
+      "sourceUrl": "https://www.futunn.com/post/8156612"
+     },
+     {
+      "attitude": "neutral",
+      "attitudeLabel": "中性",
+      "authorName": "股市魔术师",
+      "authorType": "合作 KOL",
+      "comments": 11,
+      "excerpt": "$恒生科技指數ETF（3033.HK）$ 先看成交量，量不放大不加仓。",
+      "id": "3033-km-0-1",
+      "interactions": 108,
+      "isKnownKol": true,
+      "kolType": "partner",
+      "productCodes": [
+       "3033"
+      ],
+      "publishedAt": "2026-08-31 20:26",
+      "sourceKind": "评论",
+      "sourceUrl": "https://www.futunn.com/post/8067088"
+     },
+     {
+      "attitude": "positive",
+      "attitudeLabel": "积极",
+      "authorName": "股市魔术师",
+      "authorType": "合作 KOL",
+      "comments": 28,
+      "excerpt": "$恒生科技指數ETF（3033.HK）$ 这个位置分批接回来，费率在同类里算低的，长期拿着问题不大。",
+      "id": "3033-km-0-8",
+      "interactions": 640,
+      "isKnownKol": true,
+      "kolType": "partner",
+      "productCodes": [
+       "3033"
+      ],
+      "publishedAt": "2026-08-30 12:02",
+      "sourceKind": "评论",
+      "sourceUrl": "https://www.futunn.com/post/7910420"
+     }
+    ],
+    "evidenceCount": 5,
+    "kolAccountId": "kol-sixstate-5",
+    "kolName": "六态对照 · 提及五条",
+    "kolTags": "晒单",
+    "kolType": "partner",
+    "kolTypeLabel": "合作 KOL",
+    "lastMentionedAt": "2026-09-01 20:03",
+    "mentionCommentCount": 5,
+    "productCode": "3033",
+    "representativeExcerpt": "有效提及五条以上：足够下结论，这一格该显示态度标签。"
+   },
+   {
+    "dominantAttitude": null,
+    "dominantLabel": null,
+    "evidence": [
+     {
+      "attitude": "neutral",
+      "attitudeLabel": "中性",
+      "authorName": "股市魔术师",
+      "authorType": "合作 KOL",
+      "comments": 31,
+      "excerpt": "$恒生科技指數ETF（3033.HK）$ 先看成交量，量不放大不加仓。",
+      "id": "3033-km-0-0",
+      "interactions": 288,
+      "isKnownKol": true,
+      "kolType": "partner",
+      "productCodes": [
+       "3033"
+      ],
+      "publishedAt": "2026-09-01 20:03",
+      "sourceKind": "评论",
+      "sourceUrl": "https://www.futunn.com/post/8089468"
+     },
+     {
+      "attitude": "positive",
+      "attitudeLabel": "积极",
+      "authorName": "股市魔术师",
+      "authorType": "合作 KOL",
+      "comments": 22,
+      "excerpt": "$恒生科技指數ETF（3033.HK）$ 这个位置分批接回来，费率在同类里算低的，长期拿着问题不大。",
+      "id": "3033-km-0-3",
+      "interactions": 644,
+      "isKnownKol": true,
+      "kolType": "partner",
+      "productCodes": [
+       "3033"
+      ],
+      "publishedAt": "2026-09-01 16:10",
+      "sourceKind": "评论",
+      "sourceUrl": "https://www.futunn.com/post/8022324"
+     }
+    ],
+    "evidenceCount": 2,
+    "kolAccountId": "kol-sixstate-2",
+    "kolName": "六态样本 · 提及两条",
+    "kolTags": "晒单",
+    "kolType": "partner",
+    "kolTypeLabel": "合作 KOL",
+    "lastMentionedAt": "2026-09-01 20:03",
+    "mentionCommentCount": 2,
+    "productCode": "3033",
+    "representativeExcerpt": "有效提及不足三条：这一格不输出主要态度，也不能拿一个倾向充数。"
+   }
+  ],
+  "scope": "合作 KOL 名单",
+  "status": "ok"
+ },
+ "3442|d7": {
+  "list": [],
+  "scope": "合作 KOL 名单",
+  "status": "empty"
+ },
+ "3469|d7": {
+  "list": [],
+  "scope": "合作 KOL 名单",
+  "status": "unavailable"
+ }
+}

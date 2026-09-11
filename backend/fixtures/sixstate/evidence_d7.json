@@ -1,0 +1,147 @@
+{
+ "3033|d7|sum|neutral": {
+  "items": [
+   {
+    "authorName": "半仓过夜",
+    "authorType": "普通散户",
+    "comments": 42,
+    "excerpt": "对照卡：字段齐全的一条原帖，用来跟下面三条对照。",
+    "id": "sixstate-ev-control",
+    "interactions": 910,
+    "productCodes": [
+     "3033",
+     "3488"
+    ],
+    "publishedAt": "2026-08-29 13:40",
+    "sourceUrl": "https://www.futunn.com/post/6436440"
+   },
+   {
+    "authorName": "半仓过夜",
+    "authorType": "普通散户",
+    "comments": 0,
+    "excerpt": "互动为零的原帖：评论与互动都确实是零，不是缺数据。",
+    "id": "sixstate-ev-zero",
+    "interactions": 0,
+    "productCodes": [
+     "3033",
+     "3488"
+    ],
+    "publishedAt": "2026-08-29 13:40",
+    "sourceUrl": "https://www.futunn.com/post/6436440"
+   },
+   {
+    "authorName": "半仓过夜",
+    "authorType": "普通散户",
+    "comments": null,
+    "excerpt": "平台计数字段未回传：这两格取不到，不能填零。",
+    "id": "sixstate-ev-null",
+    "interactions": null,
+    "productCodes": [
+     "3033",
+     "3488"
+    ],
+    "publishedAt": "2026-08-29 13:40",
+    "sourceUrl": "https://www.futunn.com/post/6436440"
+   },
+   {
+    "authorName": null,
+    "authorType": "普通散户",
+    "comments": 7,
+    "excerpt": "作者名未回传：这一格用长文案，与上面那两格不是一套。",
+    "id": "sixstate-ev-noauthor",
+    "interactions": 19,
+    "productCodes": [
+     "3033",
+     "3488"
+    ],
+    "publishedAt": "2026-08-29 13:40",
+    "sourceUrl": "https://www.futunn.com/post/6436440"
+   }
+  ],
+  "orders": [
+   [
+    0
+   ],
+   [
+    0,
+    1
+   ],
+   [
+    0,
+    1,
+    2
+   ],
+   [
+    0,
+    1,
+    2,
+    3
+   ],
+   [
+    0,
+    1,
+    2,
+    3
+   ],
+   [
+    0,
+    1,
+    2,
+    3
+   ],
+   [
+    0,
+    1,
+    2,
+    3
+   ],
+   [
+    0,
+    1,
+    2,
+    3
+   ],
+   [
+    0,
+    1,
+    2,
+    3
+   ],
+   [
+    0,
+    1,
+    2,
+    3
+   ],
+   [
+    0,
+    1,
+    2,
+    3
+   ],
+   [
+    0,
+    1,
+    2,
+    3
+   ]
+  ]
+ },
+ "3442|d7|sum|neutral": {
+  "items": [],
+  "orders": [
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   []
+  ]
+ }
+}

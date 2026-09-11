@@ -1,9 +1,14 @@
 /* Port of design/kol-detail.dc.html (KOL 详情).
    Reads `?kol=`, `?post=` and `?range=` off the URL in the constructor exactly as the
    design source does — App.jsx keys this route on the full URL so a link from KOL 影响力
-   remounts and re-reads. Logic below is the design source verbatim. */
+   remounts and re-reads. Logic below is the design source verbatim; see OfficialActivity
+   for the two standing deviations (synchronous RADAR import, `{{ }}` → JSX), plus one
+   local to this screen: the 赞/评/转 合计 propagates null instead of swallowing it
+   （见 out.stats 上方，与 lib/profile.js 同一处偏差）。 */
 import React from 'react'
 import R from '../data/radar'
+import { num, typeStyle, md, shell, rgba, CAMP, POST_TYPES } from '../lib/view'
+import { kolProfile } from '../lib/profile'
 import { s, hover } from '../lib/dc'
 import Shell from '../components/Shell'
 import DcLink from '../components/DcLink'
@@ -70,14 +75,14 @@ export default class KolDetail extends React.Component {
   renderVals() {
     var s = this.state, self = this;
     this.LC = this.props.lowConfidence != null ? this.props.lowConfidence : 0.7;
-    var out = R.shell('accounts', 'kol', s, function (x) { self.setState(x); });
+    var out = shell('accounts', 'kol', s, function (x) { self.setState(x); });
     var M = this.data();
     var kol = this.kolName();
     var ps = this.myPosts();
     var p0 = this.selPost();
-    var prof = R.kolProfile(kol, ps, function (p) { return self.camp(p); });
+    var prof = kolProfile(kol, ps, function (p) { return self.camp(p); });
     var secOf = function (k) { return R.SECTORS.filter(function (x) { return x.k === k; })[0] || R.SECTORS[0]; };
-    var campsOf = function (p) { var c = self.camp(p); return c === 'both' ? [R.CAMP.own, R.CAMP.competitor] : [R.CAMP[c] || R.CAMP.none]; };
+    var campsOf = function (p) { var c = self.camp(p); return c === 'both' ? [CAMP.own, CAMP.competitor] : [CAMP[c] || CAMP.none]; };
     var issuerShort = function (x) { return x === 'CSOP 南方东英' ? '南方东英' : x; };
     var pct = function (n, d) { return d ? Math.round(n / d * 100) + '%' : '—'; };
     var sentencesOf = function (p) {
@@ -94,8 +99,9 @@ export default class KolDetail extends React.Component {
     out.hasStyle = !!prof.styleTag;
     out.styleTag = prof.styleTag;
 
-    var meta = R.KOLS.filter(function (k) { return k[0] === kol; })[0];
-    out.tags = (meta ? String(meta[1]).split(',') : ['合作 KOL']).map(function (t) { return { label: t }; });
+    /* /meta 下发的是 {name, tags, active}，不是设计源那个三元组（radar.js 的 KOLS）。 */
+    var meta = R.KOLS.filter(function (k) { return k.name === kol; })[0];
+    out.tags = (meta ? String(meta.tags).split(',') : ['合作 KOL']).map(function (t) { return { label: t }; });
 
     /* 上一位 / 下一位：沿声量排名顺序翻页 */
     var order = M.leaders.map(function (l) { return l.kol; });
@@ -109,36 +115,49 @@ export default class KolDetail extends React.Component {
 
     var codes = {}; ps.forEach(function (p) { p.mentioned.forEach(function (m) { codes[m.code] = 1; }); });
     var pendingN = ps.filter(function (p) { return self.pending(p); }).length;
+    /* 有一篇不知道，合计就是不知道。设计源这里写的是 `likes += p.likes`，而 JS 里
+       `sum + null === sum + 0` —— 少加的那一篇悄悄消失，合计看着还挺像样。这是
+       lib/profile.js 里同一处偏差，理由同（ADR-0015 末段、铁律 2）。 */
+    var add = function (sum, v) { return sum == null || v == null ? null : sum + v; };
     var likes = 0, comments = 0, shares = 0;
-    ps.forEach(function (p) { likes += p.likes; comments += p.comments; shares += p.shares; });
+    ps.forEach(function (p) {
+      likes = add(likes, p.likes); comments = add(comments, p.comments); shares = add(shares, p.shares);
+    });
     out.stats = [
       { label: '发帖数', value: String(ps.length), unit: '篇', pct: '', pfg: 'transparent', sub: '提及 ' + Object.keys(codes).length + ' 只产品 · ' + pendingN + ' 篇类型待确认', fg: 'var(--ink-900)' },
       { label: '提及自家产品', value: String(prof.ownAny), unit: '篇', pct: pct(prof.ownAny, ps.length), pfg: 'var(--csop-blue-700)', sub: '其中 ' + prof.both + ' 篇同时提及竞品', fg: 'var(--csop-blue-700)' },
       { label: '提及竞品', value: String(prof.peerAny), unit: '篇', pct: pct(prof.peerAny, ps.length), pfg: 'var(--ink-600)', sub: '仅提竞品的有 ' + prof.peer + ' 篇', fg: 'var(--ink-800)' },
-      { label: '互动合计', value: R.num(prof.engagement), unit: '', pct: '', pfg: 'transparent', sub: '赞 ' + R.num(likes) + ' · 评 ' + R.num(comments) + ' · 转 ' + R.num(shares) + '（发布后约 24h）', fg: 'var(--ink-900)' }
+      { label: '互动合计', value: num(prof.engagement), unit: '', pct: '', pfg: 'transparent', sub: '赞 ' + num(likes) + ' · 评 ' + num(comments) + ' · 转 ' + num(shares) + '（发布后约 24h）', fg: 'var(--ink-900)' }
     ];
 
     /* 左表：点行 = 选中该帖（右侧高亮那天）+ 展开原文 */
     out.posts = ps.map(function (p, i) {
-      var sec = secOf(p.sector), st = R.typeStyle(p.postType), on = !!(p0 && p.id === p0.id);
+      var sec = secOf(p.sector), st = typeStyle(p.postType), on = !!(p0 && p.id === p0.id);
       return {
         key: p.id,
         time: p.time, code: p.code,
-        pbg: R.rgba(sec.hue, 0.12), pfg: sec.hue,
+        pbg: rgba(sec.hue, 0.12), pfg: sec.hue,
         type: st.label, tbg: st.bg, tfg: st.fg, pending: self.pending(p), conf: p.confidence.toFixed(2),
         hasDir: !!p.hasDir, dir: p.dir ? p.dir.label : '', dbg: p.dir ? p.dir.bg : 'transparent', dfg: p.dir ? p.dir.fg : 'transparent',
         summary: p.hasSummary ? p.summary : '', noSummary: !p.hasSummary,
         open: on, sentences: on ? sentencesOf(p) : [],
         camps: campsOf(p),
-        likes: R.num(p.likes), comments: R.num(p.comments), shares: R.num(p.shares), eng: R.num(p.engagement),
+        likes: num(p.likes), comments: num(p.comments), shares: num(p.shares), eng: num(p.engagement),
         url: p.url, stop: function (e) { e.stopPropagation(); },
         bg: on ? 'var(--csop-blue-50)' : (i % 2 ? 'var(--canvas)' : '#fff'),
         go: function () { self.setState({ sel: on ? '' : p.id }); }
       };
     });
 
-    /* 右上：按天双色堆叠柱（每格一篮） */
-    var DAYS = M.range.days;
+    /* 右上：按天双色堆叠柱（每格一篮）
+       日历轴由 /ranges/{key} 下发（`dates`）。设计源在下面 addDays(range.from, i) 现算，
+       那是演示生成器泄漏进屏幕代码（ADR-0004、静态守卫①）。`buckets` 顶不上它 ——
+       桶的粒度随区间在时/日/周之间变（d1 是 24 个小时桶，d30 是 5 个周桶），而这根
+       时间线固定按天；backend/tests/test_ranges.py 钉住了这条区别。
+       取的是 shell() 已经取过的那份区间（read() 命中缓存），不多发一次请求；
+       `M.range` 是 kolImpact 里那份四字段的裁剪副本，没有 dates。 */
+    var RANGE = R.buildRange(s.rangeKey);
+    var DAYS = RANGE.days;
     var perDay = {};
     ps.forEach(function (p) {
       var e = perDay[p.day] = perDay[p.day] || { own: 0, both: 0, peer: 0 };
@@ -155,15 +174,15 @@ export default class KolDetail extends React.Component {
     out.days = [];
     for (var i = 0; i < DAYS; i++) {
       (function (i) {
-        var d = R.addDays(M.range.from, i), e = perDay[d] || { own: 0, both: 0, peer: 0 }, on = d === selDay;
+        var d = RANGE.dates[i], e = perDay[d] || { own: 0, both: 0, peer: 0 }, on = d === selDay;
         out.days.push({
           key: d,
           ownH: String(e.own * unit), bothH: String(e.both * unit), peerH: String(e.peer * unit),
           peerGap: e.peer && (e.both || e.own) ? '1' : '0', bothGap: e.both && e.own ? '1' : '0',
           bg: on ? 'var(--csop-blue-50)' : 'transparent',
-          label: (i % step === 0 || on || DAYS <= 7) ? R.md(d) : '',
+          label: (i % step === 0 || on || DAYS <= 7) ? md(d) : '',
           lfg: on ? 'var(--csop-blue-700)' : 'var(--ink-400)', lfw: on ? '600' : '500',
-          title: R.md(d) + ' · 只提自家 ' + e.own + ' · 双方 ' + e.both + ' · 只提竞品 ' + e.peer,
+          title: md(d) + ' · 只提自家 ' + e.own + ' · 双方 ' + e.both + ' · 只提竞品 ' + e.peer,
           go: function () { var q = ps.filter(function (p) { return p.day === d; }).sort(function (a, b) { return a.t - b.t; })[0]; if (q) self.setState({ sel: q.id }); }
         });
       })(i);
@@ -178,11 +197,11 @@ export default class KolDetail extends React.Component {
     /* 右下：8 类构成 */
     var tot = ps.length || 1;
     out.pendingNote = pendingN ? pendingN + ' 篇置信度低于 ' + this.LC.toFixed(2) + ' 已计入但标「待确认」' : '全部类型置信度达标';
-    out.typeBar = R.POST_TYPES.map(function (t) {
+    out.typeBar = POST_TYPES.map(function (t) {
       var n = prof.typeCounts[t.k];
       return { key: t.k, pct: (n / tot * 100).toFixed(2), color: t.bar, title: t.label + ' ' + n + ' 篇' };
     });
-    out.typeRows = R.POST_TYPES.map(function (t) {
+    out.typeRows = POST_TYPES.map(function (t) {
       var n = prof.typeCounts[t.k];
       return { key: t.k, label: t.label, color: n ? t.bar : 'var(--ink-200)', n: String(n), pct: n ? Math.round(n / tot * 100) + '%' : '—', fg: n ? 'var(--ink-800)' : 'var(--ink-400)' };
     });
@@ -197,7 +216,7 @@ export default class KolDetail extends React.Component {
     out.opCount = String(opRows.length);
     out.ops = opRows.map(function (r, i) {
       var open = !!s.openOps[r.code];
-      var tn = TONE[r.actionTone] || TONE.neu, st = R.typeStyle(r.postType);
+      var tn = TONE[r.actionTone] || TONE.neu, st = typeStyle(r.postType);
       return {
         key: r.code,
         code: r.code + '.HK', name: r.name, issuer: issuerShort(r.issuer),
@@ -208,7 +227,7 @@ export default class KolDetail extends React.Component {
         hasDir: !!r.direction, direction: r.direction, actBg: tn[0], actFg: tn[1],
         pending: r.confidence < self.LC, conf: r.confidence.toFixed(2),
         date: r.dateText, time: r.timeText,
-        engagement: R.num(r.engagement), url: r.url,
+        engagement: num(r.engagement), url: r.url,
         open: open,
         linkLabel: open ? '收起' : '原文',
         linkBg: open ? 'var(--csop-blue-50)' : '#fff',

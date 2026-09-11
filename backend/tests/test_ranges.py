@@ -25,10 +25,27 @@ def test_envelope_shape(client):
     "field",
     # PRD §5：响应形状与函数返回一致。缺任何一项，前端就得自己算或自己编。
     ["key", "days", "from", "to", "label", "text", "gran", "granLabel", "buckets",
-     "benchFrom", "benchTo", "benchText", "benchLabel", "trendTitle"],
+     "dates", "benchFrom", "benchTo", "benchText", "benchLabel", "trendTitle"],
 )
 def test_range_carries_every_field_the_screens_need(client, field):
     assert field in client.get("/api/v1/ranges/d7").get_json()["data"]
+
+
+@pytest.mark.parametrize("key,gran", [("d1", "hour"), ("d7", "day"), ("d30", "week")])
+def test_dates_is_the_day_axis_and_buckets_cannot_stand_in_for_it(client, key, gran):
+    """`dates` 是**逐日**日历轴，`buckets` 不是 —— 它的粒度随区间在时/日/周之间变。
+
+    KOL 详情页的时间线固定按天画（PRD §4.4），d1 要 1 根柱不是 24 根，d30 要 30 根
+    不是 5 根。设计源那里靠前端 `addDays(from, i)` 现算；那是第二份日历实现，
+    工单 04 的静态守卫①盯的就是它。所以日历轴也由后端下发。
+    """
+    data = client.get(f"/api/v1/ranges/{key}").get_json()["data"]
+    assert data["gran"] == gran
+    assert len(data["dates"]) == data["days"]
+    assert data["dates"][0] == data["from"]
+    assert data["dates"][-1] == data["to"]
+    assert data["dates"] == sorted(data["dates"])
+    assert len(set(data["dates"])) == data["days"]
 
 
 def test_buckets_are_sent_by_the_backend_not_computed_by_the_screen(client):

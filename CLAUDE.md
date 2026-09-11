@@ -38,11 +38,25 @@ cd frontend && npm run build    # 产出 frontend/dist
 ```bash
 cd backend && python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
 cd backend && .venv/Scripts/python -m pytest -q
-cd backend && .venv/Scripts/python app.py      # → http://localhost:8008/api/v1/meta
+cd backend && DATA_PROVIDER=demo .venv/Scripts/python app.py   # fixture 供数，不需要库
+cd backend && DATA_PROVIDER=sql  .venv/Scripts/python app.py   # 瘦库真实供数
+cd worker  && .venv/Scripts/python -m pytest -q
 cd worker  && .venv/Scripts/python scheduler.py
 
-docker compose up -d              # clickhouse(8124/9008) + backend(8008) + worker
+docker compose up -d              # mysql8(3307) + backend(8008, sql) + worker
 ```
+
+Windows 控制台加 `PYTHONIOENCODING=utf-8`（或 `python -X utf8`），否则中文日志是乱码。
+
+瘦库一次性构建（只有要跑 `DATA_PROVIDER=sql` 才需要；dump 与瘦库**都不进 git**）：
+
+```bash
+cd worker && .venv/Scripts/python -m jobs.import_dump --dump "<本地 SSD 上的 dump 路径>"
+cd worker && .venv/Scripts/python -m jobs.etl
+```
+
+默认落在 `%LOCALAPPDATA%\futu-radar\radar.db`（**仓库外**，5.3 GB），改位置设 `RADAR_DB_URL`；
+理由见 `radar_db/__init__.py`。
 
 前端**不在** compose 里，本地 `npm run dev` 即可；理由与其余定案见 [plan.md](plan.md) §6。
 
@@ -52,13 +66,16 @@ docker compose up -d              # clickhouse(8124/9008) + backend(8008) + work
 |---|---|
 | `design/` | Claude Design 项目的**逐字节只读镜像**。永远不要手改。 |
 | `frontend/` | React + Vite 移植版，由该镜像移植而来。日常前端开发都在这里。 |
-| `backend/` | Flask API 骨架。**口径公式的唯一实现处在 `backend/core/`**。 |
-| `worker/` | 采集调度骨架。只落原始数据，不做任何口径计算。 |
-| `docs/` | 需求规格与客户确认文档。 |
+| `backend/` | Flask API。**口径公式的唯一实现处在 `backend/core/`**。 |
+| `worker/` | dump 导入、`raw_json` ETL、采集调度。只落原始数据，不做任何口径计算。 |
+| `radar_db/` | 瘦库 schema（一份 `MetaData`，backend 与 worker 共用）。本地 SQLite，生产 MySQL 8。 |
+| `docs/` | 需求规格、客户确认文档与 `docs/adr/`。 |
 
 `frontend/` 内部：`src/screens/`（五个屏，`productMonitor/`、`sectorOverview/` 因体量拆成目录）、`src/components/`（Shell、DcLink）、`src/lib/`（`dc.js` 语法垫片、`routes.js` 文件名→路由映射）、`src/data/radar.js`、`src/styles/tokens.css`。
 
-`backend/` 内部：`app.py`（`create_app()`）、`api/v1/`（蓝图，当前只有 `meta.py`）、`core/`（口径，待实现）、`fixtures/`（静态示例响应）、`tests/`。PRD 第 5 章 23 组函数→端点的完整映射在 [plan.md](plan.md) §2.1，**当前只有 `GET /api/v1/meta` 有实现，前端尚未接线**。
+`backend/` 内部：`app.py`（`create_app()`）、`api/v1/`（蓝图，22 个端点）、`core/`（口径）、`providers/`（`demo` 读 fixture／`sql` 读瘦库，见 [ADR-0001](docs/adr/0001-dual-provider.md)）、`fixtures/`、`tests/`。PRD 第 5 章 23 组函数→端点的完整映射在 [plan.md](plan.md) §2.1。
+
+`sql` provider 下，**能数出来的字段都是真的，要 AI 标注或行情源的一律 `null`**（态度、主题、摘要、合规、K 线、日线价格 —— 标注管线见 [ADR-0017](docs/adr/0017-ai-annotation-pipeline-production.md)，取代 [ADR-0010](docs/adr/0010-annotations-and-ai-pipeline.md)）。前端目前假定这些字段存在（如 `p.confidence.toFixed(2)`），空值适配尚未做 —— 注意 `annotations` 里**没有**模型自报的 `confidence`，前端这处要改的不止是空值判断。
 
 设计变更一律**从设计源重新拷贝，不要照着新设计手推一遍**；再导入流程见 [README.md](README.md) 的 *Re-importing from Claude Design*。
 
