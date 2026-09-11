@@ -9,7 +9,7 @@
        `style-hover` / `style-focus` by `hover()` / `focus()`. */
 import React from 'react'
 import R from '../data/radar'
-import { num, typeStyle, shell, rgba, CAMP, POST_TYPES, TYPE_BY_KEY } from '../lib/view'
+import { num, conf2, sumN, descN, typeStyle, shell, rgba, CAMP, POST_TYPES, TYPE_BY_KEY } from '../lib/view'
 import { s, hover, focus } from '../lib/dc'
 import Shell from '../components/Shell'
 import DcLink from '../components/DcLink'
@@ -92,7 +92,11 @@ export default class OfficialActivity extends React.Component {
     var out = shell('accounts', 'official', s, function (x) { self.go(x); });
     var feedAll = R.officialPosts(s.rangeKey);
     var range = R.buildRange(s.rangeKey);
-    var pending = function (p) { return p.confidence < LC; };
+    /* 三态。`null < 0.7` 在 JS 里是 true（null 当 0 用），照原样写会让 sql provider 下
+       **每一篇**官号帖都挂上「待确认」—— 那说的是「模型给了个低分」，不是「模型没跑」。 */
+    var pending = function (p) { return p.confidence == null ? null : p.confidence < LC; };
+    /* AI 标注整块未生成（ADR-0017 §4） */
+    var annNa = function (p) { return p.postType == null; };
     var campsOf = function (p) { var c = self.camp(p); return c === 'both' ? [CAMP.own, CAMP.competitor] : [CAMP[c] || CAMP.none]; };
 
     /* 账号级汇总由帖子流聚合而来，随区间变化 */
@@ -101,7 +105,11 @@ export default class OfficialActivity extends React.Component {
       return {
         short: o.short, full: o.full, comps: o.comps, type: o.comps > 0 ? '发行商官号' : '平台运营',
         url: o.url,
-        posts: ps.length, inter: ps.reduce(function (t, p) { return t + p.engagement; }, 0)
+        /* `engagement` ＝ 赞＋评论＋转发，而转发数在源库里有约 0.03% 的行是坏的
+           （raw_json 被 TEXT 列截断，ADR-0008），那些帖子的 engagement 是 null。
+           设计源这里是 `reduce(t + p.engagement, 0)` —— 镜像里的数永远齐全，所以没事；
+           接真库之后它会把「这一篇不知道」算成「这一篇是 0」，账号的互动合计悄悄少一截。 */
+        posts: ps.length, inter: sumN(ps, function (p) { return p.engagement; })
       };
     });
     out.tabs = ['全部', '发行商官号', '平台运营'].map(function (t) {
@@ -114,10 +122,10 @@ export default class OfficialActivity extends React.Component {
     var list = acc.filter(function (o) {
       return (s.tab === '全部' || o.type === s.tab) && (!lqq || norm(o.short + ' ' + o.full).indexOf(lqq) >= 0) && (!s.onlyActive || o.posts > 0);
     }).sort(s.listSort === 'inter'
-      ? function (a, b) { return b.inter - a.inter || b.posts - a.posts; }
+      ? function (a, b) { return descN(a.inter, b.inter) || b.posts - a.posts; }
       : (s.listSort === 'etf'
         ? function (a, b) { var ea = emOf(a), eb = emOf(b); return eb.etfCount - ea.etfCount || eb.total - ea.total || b.posts - a.posts; }
-        : function (a, b) { return b.posts - a.posts || b.inter - a.inter; }));
+        : function (a, b) { return b.posts - a.posts || descN(a.inter, b.inter); }));
     out.listSorts = segOf([['posts', '按篇数'], ['inter', '按互动'], ['etf', '按提及 ETF']], s.listSort, 'listSort');
     out.etfRule = R.ETF_MENTION_RULE;
     /* 芯片条按 DOM 顺序对应 list 顺序（每行一条），供 syncStrips 取 key；不能用 data-*="{{ }}" 传 key——运行时会卡死 */
@@ -183,17 +191,35 @@ export default class OfficialActivity extends React.Component {
     });
 
     var isr = acc.filter(function (o) { return o.comps > 0; }), plt = acc.filter(function (o) { return o.comps === 0; });
-    var sumI = function (a) { return a.reduce(function (t, o) { return t + o.inter; }, 0); };
-    var tot = sumI(acc) || 1;
-    var withSummary = feedAll.filter(function (p) { return p.hasSummary; }).length;
+    /* 同上：一个账号的互动合计不知道，全站的互动合计就不知道。
+       原来那句 `|| 1` 是设计源的遗留（曾经当过百分比分母，后来那处没了）：合计真为 0
+       时它会显示成「1」，合计为 null 时它会把「不知道」显示成「1」。两种都是编数字。 */
+    var sumI = function (a) { return sumN(a, function (o) { return o.inter; }); };
+    var tot = sumI(acc);
+    /* `hasSummary` 三态：true 有、false 查过了没有（图片帖）、null 还没生成。
+       原来的 `filter(p => p.hasSummary)` 把后两者并成一堆，于是 sql provider 下
+       「已生成摘要 0 篇 · 全部是图片帖」—— 两个数都是编的。 */
+    var withSummary = feedAll.filter(function (p) { return p.hasSummary === true; }).length;
+    var noSummaryN = feedAll.filter(function (p) { return p.hasSummary === false; }).length;
+    var summaryNaN = feedAll.filter(function (p) { return p.hasSummary == null; }).length;
     var pendingN = feedAll.filter(pending).length;
+    var annNaN = feedAll.filter(annNa).length;
     out.kpis = [
       { label: '重点官号数', value: String(acc.length), unit: '个', sub: '客户提供的名单 · 发行商 ' + isr.length + ' · 平台运营 ' + plt.length },
       { label: '区间发布篇数', value: String(feedAll.length), unit: '篇', sub: range.from.slice(5) + ' ～ ' + range.to.slice(5) + ' · 互动合计 ' + num(tot) },
       { label: '提及自家产品', value: String(feedAll.filter(function (p) { var c = self.camp(p); return c === 'own' || c === 'both'; }).length), unit: '篇', sub: '官号帖子里提到南方东英产品的篇数（含同时提及竞品）' },
-      { label: '已生成摘要', value: String(withSummary), unit: '篇', sub: (feedAll.length - withSummary) + ' 篇图片帖无摘要 · ' + pendingN + ' 篇类型待确认' }
-    ].map(function (x) { return { label: x.label, value: x.value, unit: x.unit, sub: x.sub, vfg: 'var(--ink-900)' }; });
-    var top = isr.slice().sort(function (a, b) { return b.posts - a.posts || b.inter - a.inter; }).slice(0, 8);
+      {
+        label: '已生成摘要',
+        value: summaryNaN === feedAll.length && feedAll.length ? '数据暂不可用' : String(withSummary),
+        unit: summaryNaN === feedAll.length && feedAll.length ? '' : '篇',
+        vfg: summaryNaN === feedAll.length && feedAll.length ? 'var(--ink-400)' : 'var(--ink-900)',
+        sub: summaryNaN === feedAll.length && feedAll.length
+          ? 'AI 摘要与类型标注尚未生成 · ' + feedAll.length + ' 篇待标注'
+          : noSummaryN + ' 篇图片帖无摘要 · ' + pendingN + ' 篇类型待确认'
+            + (summaryNaN ? ' · 另有 ' + summaryNaN + ' 篇摘要尚未生成' : '')
+      }
+    ].map(function (x) { return { label: x.label, value: x.value, unit: x.unit, sub: x.sub, vfg: x.vfg || 'var(--ink-900)' }; });
+    var top = isr.slice().sort(function (a, b) { return b.posts - a.posts || descN(a.inter, b.inter); }).slice(0, 8);
     var tmx = top.length ? Math.max(1, top[0].posts) : 1;
     out.topIssuers = top.map(function (o, i) {
       return {
@@ -208,7 +234,7 @@ export default class OfficialActivity extends React.Component {
     var base = tabPosts.filter(function (p) { return !s.acct || p.account === s.acct; });
 
     /* 官号下拉：只列当前三态下的账号，计数为区间篮数；与清单点行是同一个 acct */
-    var accts = acc.filter(function (o) { return s.tab === '全部' || o.type === s.tab; }).sort(function (a, b) { return b.posts - a.posts || b.inter - a.inter; });
+    var accts = acc.filter(function (o) { return s.tab === '全部' || o.type === s.tab; }).sort(function (a, b) { return b.posts - a.posts || descN(a.inter, b.inter); });
     out.acctLabel = s.acct || '全部';
     out.acctCaret = s.acctMenu ? '▲' : '▼';
     out.acctOpen = !!s.acctMenu;
@@ -264,8 +290,14 @@ export default class OfficialActivity extends React.Component {
     var prodPosts = base.filter(function (p) { return s.prod === 'ALL' || self.codesOf(p).indexOf(s.prod) >= 0; });
 
     /* 类型多选：计数按 三态 × 官号 × 产品 的范围算 */
-    var typeCounts = {};
-    prodPosts.forEach(function (p) { typeCounts[p.postType] = (typeCounts[p.postType] || 0) + 1; });
+    /* 没标注的不进任何一类：`typeCounts[null]` 会开一个键名为字符串 "null" 的格子，
+       八类的计数相加对不上总篇数，而页面上看不出少的那批去哪了。明说。 */
+    var typeCounts = {}, typeNaN = 0;
+    prodPosts.forEach(function (p) {
+      if (p.postType == null) { typeNaN++; return; }
+      typeCounts[p.postType] = (typeCounts[p.postType] || 0) + 1;
+    });
+    out.typeNaNote = typeNaN ? '另有 ' + typeNaN + ' 篇内容形式尚未标注，不计入下表' : '';
     out.typeLabel = !s.types.length ? '全部' : (s.types.length === 1 ? TYPE_BY_KEY[s.types[0]].label : s.types.length + ' 类');
     out.typeCaret = s.typeMenu ? '▲' : '▼';
     out.typeOpen = !!s.typeMenu;
@@ -304,7 +336,8 @@ export default class OfficialActivity extends React.Component {
     out.srcAcct = src ? src.acct : ''; out.srcCode = src ? src.code : ''; out.srcName = src ? src.name : '';
     out.clearSrc = function () { self.go({ acct: null, prod: 'ALL', prodQ: '', src: null }); };
     out.feedRef = self.feedRef;
-    if (s.feedSort === 'eng') feed.sort(function (a, b) { return b.engagement - a.engagement; });
+    /* 未知的互动排最后，不是当成 0 混进最低那一段（descN，铁律 2）。 */
+    if (s.feedSort === 'eng') feed.sort(function (a, b) { return descN(a.engagement, b.engagement); });
     else feed.sort(function (a, b) { return b.t - a.t; });
     out.feedSorts = [['time', '时间倒序'], ['eng', '互动降序']].map(function (x) {
       var on = s.feedSort === x[0];
@@ -325,12 +358,21 @@ export default class OfficialActivity extends React.Component {
         account: p.account, accountType: p.accountType,
         atBg: p.isIssuer ? 'var(--csop-blue-50)' : '#F1ECF7', atFg: p.isIssuer ? 'var(--csop-blue-700)' : '#5E4480',
         time: p.time,
-        type: st.label, tbg: st.bg, tfg: st.fg, pending: pending(p), conf: p.confidence.toFixed(2),
+        type: st.label, tbg: st.bg, tfg: st.fg, pending: pending(p), conf: conf2(p.confidence),
         hasDir: !!p.hasDir, dir: p.dir ? p.dir.label : '', dbg: p.dir ? p.dir.bg : 'transparent', dfg: p.dir ? p.dir.fg : 'transparent',
         camps: campsOf(p),
-        summary: p.hasSummary ? p.summary : '', noSummary: !p.hasSummary,
-        open: open,
-        sentences: open ? p.fullText.map(function (t, i) {
+        /* 「查过了，这篇只有图」和「还没查」共用一句就是替 AI 下了个它没下的判断。 */
+        summary: p.hasSummary ? p.summary : '', noSummary: p.hasSummary === false, summaryNa: p.hasSummary == null,
+        /* 这句承诺上面那段原文里有一句被标出来了。标注整块没生成时一句都没有，
+           而那段原文本身也已经是缺失态 —— 照旧写死这句，两句话当场自相矛盾。
+           只分出 null 这一支，`evidenceIdx === -1` 仍按设计源原样说（演示数据里
+           真有 -1 的帖子，改它就是逐字比对里的一处分叉）。KolDetail 同一处。
+
+           分隔符「 · 」在串里：设计源那行的「· 高亮句为判定依据」是**一个**文本节点，
+           写成 `{c.conf} · {c.evidenceNote}` 会拆成两个，逐字比对报差异。 */
+        evidenceNote: p.evidenceIdx == null ? ' · 判定依据尚未生成' : ' · 高亮句为判定依据',
+        open: open, hasText: p.fullText != null,
+        sentences: open ? (p.fullText || []).map(function (t, i) {
           var hit = i === p.evidenceIdx;
           return { text: t, bg: hit ? 'var(--warning-100)' : 'transparent', sh: hit ? 'inset 0 -2px 0 var(--warning-600)' : 'none' };
         }) : [],
@@ -581,6 +623,9 @@ export default class OfficialActivity extends React.Component {
                       <span>多选 · AI 判定的帖子类型</span>
                       <span onClick={v.typeAll} style={s('font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);cursor:pointer')}>清除选择</span>
                     </div>
+                    {v.typeNaNote && (
+                      <div style={s('padding:6px 12px;border-bottom:1px solid var(--border-1);background:var(--warning-100);font:400 12px/1.5 var(--font-cjk);color:var(--warning-700)')}>{v.typeNaNote}</div>
+                    )}
                     {v.typeMenu.map((m) => (
                       <div key={m.key} onClick={m.go} style={s(`display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--ink-100);background:${m.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
                         <span style={s(`flex:none;width:14px;height:14px;box-sizing:border-box;border:1px solid ${m.boxBc};border-radius:3px;background:${m.boxBg};display:flex;align-items:center;justify-content:center;font:600 10px/1 var(--font-cjk);color:#fff`)}>{m.tick}</span>
@@ -646,12 +691,19 @@ export default class OfficialActivity extends React.Component {
                   {c.noSummary && (
                     <div style={s('padding:10px 14px 0;font:400 14px/1.6 var(--font-cjk);color:var(--ink-400)')}>暂无摘要 · 图片帖，第一期不覆盖图片内容</div>
                   )}
+                  {c.summaryNa && (
+                    <div style={s('padding:10px 14px 0;font:400 14px/1.6 var(--font-cjk);color:var(--ink-400)')}>摘要暂不可用 · AI 标注尚未生成</div>
+                  )}
                   {c.open && (
                     <>
-                      <div style={s('margin:10px 14px 0;padding:10px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-700);text-wrap:pretty')}>
-                        {c.sentences.map((q, i) => <span key={i} style={s(`background:${q.bg};box-shadow:${q.sh};border-radius:2px`)}>{q.text}</span>)}
-                      </div>
-                      <div style={s('padding:5px 14px 0;font:400 12px/1.5 var(--font-cjk);color:var(--ink-400)')}>类型置信度 {c.conf} · 高亮句为判定依据</div>
+                      {c.hasText ? (
+                        <div style={s('margin:10px 14px 0;padding:10px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-700);text-wrap:pretty')}>
+                          {c.sentences.map((q, i) => <span key={i} style={s(`background:${q.bg};box-shadow:${q.sh};border-radius:2px`)}>{q.text}</span>)}
+                        </div>
+                      ) : (
+                        <div style={s('margin:10px 14px 0;padding:10px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>原文暂不可用：正文分句尚未生成。</div>
+                      )}
+                      <div style={s('padding:5px 14px 0;font:400 12px/1.5 var(--font-cjk);color:var(--ink-400)')}>类型置信度 {c.conf}{c.evidenceNote}</div>
                     </>
                   )}
                   <div style={s('display:flex;align-items:center;gap:6px;padding:10px 14px 0;flex-wrap:wrap')}>

@@ -1,6 +1,6 @@
 # futu-radar 数据、Hugging Face 模型与 AI API 接入执行手册
 
-> 版本：v1.0  
+> 版本：v1.2（v1.0 初版；v1.1 记录 Gate 0–2 执行结果于 §16；v1.2 新增 §20 重点舆情识别专项、§21 无人工金标路线、§22 公开数据集清单）  
 > 日期：2026-09-11  
 > 适用环境：Windows 11、PowerShell、Python 3.11、SQLite（本地）/ MySQL 8（生产）  
 > 目标：先恢复真实数据展示，再建立可追溯的 AI 标注、Hugging Face 本地模型、行情与在线采集链路。
@@ -124,6 +124,25 @@ gpt-5.6-luna
 - 没有行情事实表和同步 Job。
 - SQL 模式下部分前端直接访问 `null`，五个页面不能稳定完成渲染。
 - 官号 `etfMentionsFor` 的 demo/sql 返回形状不一致。
+
+### 2.2.1 状态更新（2026-09-11 下午）
+
+§2.2 是本手册 v1.0 写作时的快照。同日 Gate 0、Gate 1、Gate 2 已执行完毕（逐项记录见 §16），
+现状变为：
+
+| 项 | 现状 |
+|---|---|
+| 瘦库 | 本机默认路径已有 5.27 GB 真库，Alembic 迁移至 `0002 (head)` |
+| SQL Provider | 五页在真库上稳定渲染，AI／行情区域显示准确缺失态 |
+| GPT 接入 | CSOP 网关 `gpt-5.6-luna`，`/responses` ＋ strict JSON Schema，129 条影子运行 0 失败 |
+| 标注表 | 五张表已建：runs / jobs / annotations / evidence / review_decisions |
+| 已有任务 | `comment_product`（相关性／态度／aspect）、`post_annotation`（类型／方向／摘要） |
+| 尚无任务 | **`compliance_signal`（重点舆情五类）**、主题聚类、热议总结、竞品候选 —— 见 §20 |
+| 人工复核 | `worker/jobs/review.py` 已可用；129 条全部 `pending`／`needs_review`，0 条 approved |
+| 页面 AI 输出 | 仍为「暂不可用」：`SqlProvider` 只读 approved／corrected，而没有人批过 |
+| 未答复 | 供应商数据治理四项（区域、日志保留、训练使用、删除）；OpenD 行情权限；社区增量源 |
+
+结论：管线**通了**，页面**没亮**，卡在「谁来批准」。§21 给出不依赖人工批准的替代方案。
 
 ### 2.3 当前没有一段可替换的 DeepSeek 运行代码
 
@@ -304,11 +323,29 @@ $pool.data.list |
 
 ### 4.5 第五步：验证前端指向正确后端
 
+前端工具链**不能在 P: 上跑**（`npm install` 在 SMB 网络盘上装不上，见
+[ADR-0018](adr/0018-local-mirror-for-npm.md)）。源码留在 P:，`node_modules` 与 `vite`
+只在本地镜像 `%USERPROFILE%\.futu-radar\mirror\frontend` 里存在。
+
+首次（或镜像不存在时）：
+
 ```powershell
 Set-Location P:\NIKI\futu-radar\frontend
+npm run mirror                                   # P: → C:\Users\<你>\.futu-radar\mirror，只同步源码
 
-$env:VITE_API_BASE = 'http://localhost:8008/api/v1'
-npm run dev
+Set-Location "$env:USERPROFILE\.futu-radar\mirror\frontend"
+npm install                                      # 只在镜像里装一次
+```
+
+每次预览（**在 P: 上改过源码就必须先重新 `npm run mirror`**，否则跑的是旧代码）：
+
+```powershell
+Set-Location P:\NIKI\futu-radar\frontend
+npm run mirror
+
+Set-Location "$env:USERPROFILE\.futu-radar\mirror\frontend"
+$env:VITE_API_BASE = 'http://localhost:8008/api/v1'   # 指向 4.3 起的那个后端
+npm run dev                                          # → http://localhost:5173
 ```
 
 然后依次访问：
@@ -349,7 +386,12 @@ $env:RADAR_DB_URL = 'sqlite:///D:/futu-radar-data/radar-rebuild.db'
 
 ## 5. 前端真实数据适配清单
 
-这一步是 AI 接入前置门槛。
+这一步是 AI 接入前置门槛。**2026-09-11 已全部完成**，逐项落点见 §16 Gate 1；
+下表保留为「改之前是什么样」的记录。
+
+需要留意的是：表里列的是**字段级**缺失，而实测抓到的两个硬 TypeError 都是
+**整块容器**为 `null`（`hotSummaries` 整池一份、`themes` 整个双极对象）。
+字段判空一条都拦不住它们 —— 容器不在字段里。
 
 | 页面/模块 | 当前问题 | 必须改成 |
 |---|---|---|
@@ -366,8 +408,8 @@ $env:RADAR_DB_URL = 'sqlite:///D:/futu-radar-data/radar-rebuild.db'
 | 后端值/状态 | UI |
 |---|---|
 | `0` | 确实为零 |
-| `null` / `unavailable` | 暂不可用 |
-| 空数组 / `empty` | 暂无内容 |
+| `null` / `unavailable` | 暂不可用（数值位与环比位是长文案「数据暂不可用」） |
+| 空数组 / `empty` | 暂无相关内容（「暂无内容」只用于状态图例，见 PRD §3.6） |
 | `low_sample` | 样本不足 |
 | `na` | — |
 | 低置信或未复核 | 待确认 |
@@ -754,7 +796,7 @@ MODEL_REGISTRY = {
 | 主题命名 | GPT 基于代表证据 | 本地 Qwen3.5 兜底 | `topic_label` | 板块、产品 |
 | 阶段观点 | 确定性时间分段＋GPT 分类/摘要 | 本地分类器＋GPT 摘要 | `stage` | 产品阶段观点 |
 | 动态负面类 | aspect＋聚类＋GPT 命名 | 专用分类器 | `neg_category` | 板块、产品 |
-| 合规信号 | 规则＋GPT 高召回 | 专用分类器＋GPT 解释 | `compliance` | 板块、产品 |
+| 合规信号（重点舆情） | 词表高召回＋GPT 五类判定＋命中依据（§20） | COLD 微调的攻击性检测器做预筛；专用分类器 | `compliance` | 板块 S7/S8/S10、产品 P10；恒为「AI 识别 · 待人工确认」 |
 | 原文证据 | GPT 返回 span＋程序验证 | 本地 span 模型 | `annotation_evidence` | 证据侧栏 |
 | 固定竞品 | 客户 CMAP 规则 | 不变 | 主数据 | 产品 |
 | AI 竞品候选 | 共现/BGE＋GPT 理由 | 人工确认 | `competitor_candidate` | 产品 |
@@ -983,10 +1025,12 @@ worker/
     config.py
     schemas.py
     prompts/
-      comment_product_v1.py
-      post_annotation_v1.py
-      topic_summary_v1.py
-      compliance_v1.py
+      comment_product_v1.py      # 已落地
+      post_annotation_v1.py      # 已落地
+      compliance_signal_v1.py    # §20，待建
+      topic_summary_v1.py        # 待建
+    lexicon/
+      compliance_zh.py           # §20.3 词表（简／繁／粤／英），待建
     providers/
       base.py
       openai_compatible.py
@@ -1000,6 +1044,7 @@ worker/
     calibration.py
   jobs/
     annotate.py
+    review.py
     embed.py
     cluster_topics.py
     sync_prices.py
@@ -1030,6 +1075,9 @@ frontend/
 - `worker/ai/providers/*`：只负责调用模型；
 - `worker/ai/schemas.py`：Pydantic 输出校验；
 - `worker/jobs/annotate.py`：领取任务、调用、重试、写库；
+- `worker/jobs/review.py`：人工复核。标注结果通向页面的**唯一一道门** ——
+  `SqlProvider` 只读 `approved` / `corrected`（Gate 4），模型写下的是 `pending`
+  或 `needs_review`，在有人看过之前界面上什么都不出现；
 - `worker/models/*`：本地 Hugging Face 推理；
 - `backend/providers/sql.py`：读取事实和 annotations；
 - `backend/core/*`：把原子标签聚合成页面指标；
@@ -1038,6 +1086,10 @@ frontend/
 ---
 
 ## 13. 人工标注和训练
+
+> 本章是**有人力做金标**时的标准路线。若不想或暂时无法组织人工标注，改走 §21 的
+> 弱监督路线；重点舆情（合规关注）按 §20 实现，它在 PRD 里本来就是「AI 识别 · 待人工确认」，
+> **不需要金标就能上页面**。两条路线共用 §10 的表结构与 §11 的 Job 规则。
 
 ### 13.1 第一批金标
 
@@ -1157,9 +1209,10 @@ market_candles
 
 ## 16. 分阶段执行清单
 
-> **本轮执行范围（2026-09-11）：Gate 0 ＋ Gate 2。** 由项目负责人明确选定。
-> Gate 1 与 Gate 3–6 本轮未执行，各自的阻塞原因逐条记在下面 —— 没有勾的框，
-> 下面一定有一行说明它为什么没勾。
+> **本轮执行范围（2026-09-11）：Gate 0 ＋ Gate 2，另补 Gate 1。** 前两者由项目
+> 负责人明确选定；Gate 1 原不在范围内，但执行过程中发现它并不阻塞（本机瘦库就在
+> 默认路径上），八项全部可做，遂一次做完。Gate 3–6 仍未执行，各自的阻塞原因逐条
+> 记在下面 —— 没有勾的框，下面一定有一行说明它为什么没勾。
 
 ### Gate 0：供应商身份确认
 
@@ -1195,21 +1248,75 @@ schema_version。注意 `model_id` 记的是**网关返回的**模型名，不�
 
 ### Gate 1：真实 SQL 数据可见
 
-> **本轮未执行**（不在选定范围内）。第一项在 Gate 2 的过程中顺带确认了：
-> 本机 `radar.db` 存在且完整（5.27 GB，350,399 条评论 / 504,400 篇帖子 /
-> 927,071 条提及，迁移后逐项复核未丢数据）。其余各项属于前端空值适配与
-> SQL Provider 冒烟测试，未动。
+> **本轮补做（2026-09-11）。** 原本不在选定范围内，但做 Gate 2 时确认本机
+> `radar.db` 就在默认路径上（5.27 GB，350,399 条评论 / 504,400 篇帖子 /
+> 927,071 条提及，迁移后逐项复核未丢数据），八项因此全部可做，遂一次做完。
 
 - [x] 找到 `radar.db` 或从 dump 重建 —— 已存在，无需重建。
-- [ ] 只读检查关键表和 `meta_kv`。
-- [ ] backend 明确使用 `DATA_PROVIDER=sql`。
-- [ ] `/pool` 返回约 120 只并有真实非零计数。
-- [ ] 修复官号 `etfMentionsFor` 返回契约。
-- [ ] 修复五页 null/unavailable 渲染。
-- [ ] 修复错误边界误报。
-- [ ] 增加 SQL Provider 五页 smoke test。
+- [x] 只读检查关键表和 `meta_kv` —— 以 `mode=ro` URI 打开，不靠自觉。
+- [x] backend 明确使用 `DATA_PROVIDER=sql` —— 端到端跑通（HTTP，非进程内）。
+- [x] `/pool` 返回约 120 只并有真实非零计数 —— d7 下 120 只、45 只非零。
+- [x] 修复官号 `etfMentionsFor` 返回契约 —— 由 smoke test 钉住返回**列表**不是计数。
+- [x] 修复五页 null/unavailable 渲染 —— 见下。
+- [x] 修复错误边界误报 —— `api.js` 已带 `kind`（network/http/envelope/none），
+      六态里有屏级断言；smoke test 另钉一条：有效产品的 `/evidence` 必须 200 而不是
+      404，因为 404 会让 `ScreenBoundary` 把「这一栏还没标注」误报成「后端连不上」。
+- [x] 增加 SQL Provider 五页 smoke test —— `backend/tests/test_real_db_smoke.py`，
+      15 条。本机没有那份库时**自动跳过**（`skipif`），所以它进得了常规 `pytest`。
+      三条硬约束写在模块 docstring 里：只读打开、不写死任何真值（产品代码与名称
+      运行时现查）、断言里不出现 PII。
 
-完成标准：`annotations=0` 时五页仍稳定显示真实事实和准确缺失态。
+完成标准「`annotations=0` 时五页仍稳定显示真实事实和准确缺失态」：**达成。**
+
+验证方式是 `frontend/scripts/real-data-check.mjs`（`npm run real-data-check`，
+opt-in，不进 `npm test`）：把五页放进真浏览器、对着 `DATA_PROVIDER=sql` 的后端跑，
+断言①页面一条 `pageerror` 都没有、②正文里不出现 `NaN`／`undefined`／`null`／
+`[object Object]`／`Infinity` 与两句错误边界文案。板块总览还会点开产品抽屉 ——
+摘要／主题／负面归类／竞品／合规五块整块 `null` 全在抽屉里，首屏一个都碰不到。
+
+现有三道关口盖不住这件事，所以必须单独有这一条：`guards` 是静态 grep；
+`six-state` 打的是**手工构造**的六态 fixture；`diff` 比的是演示数据下的逐字一致。
+三道都在演示供数下跑，而 `sql` 的缺失面大得多 —— 实测抓到两个硬 TypeError
+（`hotSummaryFor` 的 `null[code]`、`themesFor` 的 `null['positive']`），
+两处都是**整块容器**为 `null`，不是字段为 `null`，三道关口全绿。
+
+修掉的两类：
+- **取数层容器判空**（`frontend/src/data/radar.js`）：`hotSummaryFor` / `themesFor`
+  先判容器再取键，取不到发 `null` 而不是 `{}` —— 六态判定不在取数层。
+- **屏内 null 与空集分家**（`productMonitor` / `sectorOverview` 及其子组件）：
+  `null` 与 `[]` 在这里是两句不同的话。`[]` 是「聚过类了，这一极没有主题」
+  （暂无相关内容），`null` 是「还没聚过」（暂不可用）。合成一个空列表，页面会
+  言之凿凿地说某只产品没有负面主题 —— 那是铁律 2 与 PRD §3.6 都禁止的谎。
+  新增 `lib/view.js` 的 `naBox(res, keys)`（整块缺失 → 该契约形状的 `unavailable` 态，
+  空集合只为让 `.map` 有东西可遍历，**永远配着 `status !== 'ok'` 出现**）。
+
+顺带修掉的一个更要命的：**`updatedAt` 是假的**。它原来手写在
+`backend/fixtures/meta.json` 里当口径常量，于是接真库时页面拿演示锚点
+`2026-09-02 09:00 HKT` 给真数据落款 —— 而真库数据到 `2026-08-25` 就断了，
+整整虚报一周。这不是缺失，是**说谎**，比空着更难发现。已改为随主数据下发
+（那才是它的本相：这批数据最后一条帖子的时间），取不到时该键**不出现**，
+前端 `stamp()` 渲染「数据暂不可用」。演示侧的值逐字取设计源的 `R.UPDATED`，
+逐字比对不受影响。三条后端测试 ＋ 六态第 ⑤ 条断言钉住。
+
+#### Gate 1 补齐项（同一轮，验收之后）
+
+两处是跑真库时才暴露、`real-data-check` 也照不到的：
+
+- [x] **Provider 会认一次死理** —— `SqlProvider` 在构造时读一次 `meta_kv` 就再不回头。
+      compose 先起 backend、库还是空的，`_anchor` 就永远是 `None`，**每个端点从此
+      恒久「暂不可用」，直到有人重启容器**；ETL 重跑换掉事实表，`_scan` 的缓存也
+      照旧不知道。新增 `SqlProvider.refresh()`，由 `get_provider()` 每次取用时调用，
+      `meta` 没变就直接返回、一个查询都不多发。配套 `etl.stamp()` 往 `meta_kv` 写
+      `etl_generation` —— 值是**行数不是时间戳**，故意的：同一份 `src_*` 幂等重跑
+      产出同样的行，缓存本就该留着；写时间戳会把「又跑了一次」误报成「数据变了」。
+      `demo` provider 也实现了空的 `refresh()` —— 在接缝处写 `isinstance(p, SqlProvider)`
+      会把 provider 的实现细节漏回调用方（ADR-0001）。
+- [x] **热力图会悄悄少画格子** —— 面积＝讨论热度，热度是 `null` 就画不出格子；
+      而少画几个格子**看不出来**，于是这张图会冒充全市场的全貌。d30 下真有 8 只落在
+      这里（其中一只带 46,049 条评论），根因是 0.09% 的 `raw_json` 被截断、转发数没采到。
+      现在图下多一行写明「另有 N 只讨论热度暂不可用，未参与面积分配」，榜单里那一格
+      也带上悬浮解释。读的是字段（`o.shares == null`），**不在前端重算热度公式**（铁律 1）；
+      demo 下 N 恒为 0、整块不渲染，逐字比对因此不受影响。
 
 ### Gate 2：AI 数据结构和 Provider
 
@@ -1266,6 +1373,37 @@ irrelevant（讲的是汇丰，不是这只 ETF）。
 **明确没做的**：帖子正文作为上下文。它会让同一篇帖子的正文在一批 30 条里重复至多
 30 次，且需要改 prompt。这是一个单独的决定，不在本轮里顺手扩大。
 
+#### Gate 2 补齐项（同一轮，影子运行之后）
+
+影子运行只跑了评论任务，而 §11.2 的帖子任务、§13.2 的人工复核这两条路径当时**一行
+代码都没有**。补齐的三项：
+
+- [x] **帖子排队** —— `annotate.enqueue_posts()`。判定单元是帖子本身，不按标的展开：
+      一篇挂三只标的的行情解读仍然只是**一篇**行情解读，展开会让它被判三次，还可能
+      判出三个不同的类型。过滤条件是「标题与正文至少一个非空」——只看正文会把整类
+      只有标题的帖子悄悄排除，而官号动态那一屏主要就靠它们。
+- [x] **人工复核 CLI** —— `worker/jobs/review.py`。裁决只追加（`review_decisions` 每次
+      插新行），改正另起一条 annotation 用 `supersedes_id` 链回旧行、**不原地改旧值**
+      （模型当初判的是什么，是 §13.2 训练金标时的对照）。否决必须给受控词表里的理由。
+      这也是 ADR-0017 §4 的落点：「待确认」由 `review_state` 驱动 —— 那是一件事实
+      （有没有人看过），不是模型自报的伪概率。
+- [x] **「没有」也要写下来** —— 帖子任务原先在 `summary` 或 `direction` 为 null 时
+      **不写行**。但 schema 里这两个键必填，模型必须显式写 null，而 Prompt 给了它们
+      各自的含义（「帖子没有可读正文」「帖子没有表达任何操作」）——那是**结论**，
+      不是没回答。不写的后果不是少一行数据，是「已标注、确实没有」和「这帖压根没
+      标注过」在库里变成同一个样子，而页面上它们相反。现在落 `false` 占位：类型与
+      摘要字符串、方向枚举都不同，读取方一眼能分开。
+
+```sh
+cd worker
+.venv/Scripts/python -m jobs.annotate --task post_annotation --limit 200   # 排队并跑
+.venv/Scripts/python -m jobs.review --queue                                # 看待复核队列
+.venv/Scripts/python -m jobs.review --next                                 # 队首一条的详情与证据
+.venv/Scripts/python -m jobs.review --id 42 --approve --reviewer <你的名字>
+.venv/Scripts/python -m jobs.review --id 42 --reject  --reviewer <你的名字> --reason hallucinated_evidence
+.venv/Scripts/python -m jobs.review --id 42 --correct '"positive"' --reviewer <你的名字>
+```
+
 ### Gate 3：P0 Hugging Face
 
 > **本轮未执行 —— 阻塞。** 三个阻塞点：(1) 需要先建 3,000 条评论 ＋ 1,000 篇帖子
@@ -1286,14 +1424,38 @@ irrelevant（讲的是汇丰，不是这只 ETF）。
 
 完成标准：达到业务确认的切片指标；低置信可正确升级 GPT/人工。
 
+#### Gate 3-alt：零金标冷启动（§21，人工不可得时的替代）
+
+> 与上面的清单**二选一**。走这条路线时，Gate 3 上面「建 3,000 条金标」一项改为
+> 「建 200 条抽检集（只验收、不训练）」；若连抽检也不做，则页面与 `/meta` 必须写明
+> 「AI 生成 · 未经人工验证」，且准确率一栏显示「暂不可用」而不是任何数字。
+
+- [ ] 落地 §20 的合规词表 `worker/ai/lexicon/compliance_zh.py`（简／繁／粤／英四套写法）。
+- [ ] 新增 `compliance_signal` 任务：Prompt、Schema、排队、写库（kind=`compliance`）。
+- [ ] 用 §22 可商用数据集预热攻击性预筛器（COLD → `thu-coai/roberta-base-cold` 直接可用）。
+- [ ] 评论任务与帖子任务各跑**两套独立 Prompt**（或两个模型），一致的自动进入
+      `auto_approved`；不一致的留 `needs_review`。
+- [ ] 新增 ADR-0019：`review_state` 增加 `auto_approved`，`SqlProvider` 读取它，
+      前端对应徽章「AI 生成 · 待确认」；`compliance` 类**永不**进入 `approved`，只在
+      `auto_approved` 下以「AI 识别 · 待人工确认」展示。
+- [ ] 用双模型一致率、词表×模型交叉表、证据定位率替代 macro-F1 作为放行门槛。
+- [ ] 若同意抽检：200 条分层抽样（评论 150 ＋ 帖子 50），只算错误率，不回流训练。
+
+完成标准：合规关注、态度、帖子三件套在页面上有真实输出；每条都带「AI 生成／AI 识别」
+徽章与原文证据；文档与 `/meta` 如实写明是否经过人工验证。
+
 ### Gate 4：annotations 驱动页面
 
 > **本轮未执行 —— 阻塞在 Gate 2 的下游。** 现有 129 个判定单元全部是
 > `pending` / `needs_review`，**没有一条 approved**；而 Gate 4 第一项就是
-> 「SqlProvider 读取**已批准** annotations」。要有可批准的量，就得跑全量标注；
-> 而全量标注的前置是 §6.1 那四项数据治理确认（区域、日志保留、是否用于训练、
-> 删除机制）—— 它们至今未答复。顺序是：补齐治理确认 → 全量标注 → 人工复核 →
-> Gate 4。跳过中间任何一步，页面上出现的就是没人担保过的结论。
+> 「SqlProvider 读取**已批准** annotations」。
+>
+> 本轮补上的是**批准的手段**，不是批准的量：`worker/jobs/review.py` 已经能把一条
+> `needs_review` 变成 `approved` / `rejected` / `corrected`（见 Gate 2 补齐项）。
+> 缺的仍然是量 —— 要有可批准的量就得跑全量标注，而全量标注的前置是 §6.1 那四项
+> 数据治理确认（区域、日志保留、是否用于训练、删除机制），它们至今未答复。
+> 顺序是：补齐治理确认 → 全量标注 → 人工复核 → Gate 4。跳过中间任何一步，
+> 页面上出现的就是没人担保过的结论。
 
 
 - [ ] SqlProvider 读取已批准 annotations。
@@ -1416,4 +1578,206 @@ API Key 不需要也不应写入本手册。实现时由项目负责人在本机
 - 行情只来自授权行情源；
 - 在线采集只来自合法授权源；
 - API Key、用户身份字段和数据库凭据不泄露到前端或 Git。
+
+---
+
+## 20. 重点舆情（需合规关注）识别专项
+
+### 20.1 这一项为什么可以不等人工金标
+
+PRD §4.2 P10 与 §3.4 对这一模块的定义本身就是：**「AI 识别 · 待人工确认」**，系统只标记
+风险信号并给出原文与命中依据，不判定言论真伪、是否违法或产品是否违规，不生成风险分数，
+不触发通知。也就是说，这一模块在设计上**从来没有要求模型结论被人批准后才能展示**，
+「待人工确认」就是它的正常展示态。
+
+因此它是所有 AI 模块里最适合先上页面的一项：需要的是**高召回＋可追溯的命中依据**，
+不是经校准的准确率。人工只需在页面上看到之后决定要不要跟进 —— 那是业务动作，不是标注动作。
+
+### 20.2 五类信号：定义、正例、反例
+
+标签键与中文名逐字取自设计源 `design/radar-data.js` 的 `RISK_TAG`（PRD §4.2 P10 冻结）。
+一条内容可同时命中多类；同业产品（`ownership=peer`）**不纳入识别**，接口返回 `status: na`。
+
+| 键 | 中文 | 判定要点 | 正例（改写自设计源 `RISK_BANK`） | 不算（反例） |
+|---|---|---|---|---|
+| `regulatory_complaint` | 监管举报 | 表达**已经**或**打算**向监管／投诉机构（证监会／SFC、消委会、金管局、港交所、12386、警方）投诉、举报、报案；或声称已提交 | 「交易记录我已经整理好了，下周直接去证监会投诉{name}」 | 「这种产品早该被监管」——是评论监管，不是举报意图 |
+| `serious_allegation` | 严重指控 | 对发行人、做市商、平台作出**违法／违规性质**的指控：操纵、利益输送、内幕、欺诈、虚假宣传、挪用、洗钱、割韭菜（作指控用时） | 「做市商和发行人之间肯定有利益输送」「明显是有人在操纵盘口」 | 「跟踪误差太大」——是产品负面，不是指控 |
+| `unverified_claim` | 疑似未经证实指控 | 传播**未附依据**的重大事实断言：清盘、停牌、被查、跑路、暴雷；常带「听说／据说／内部消息／有人说」 | 「听说{name}下季度要清盘，还没卖的赶紧走」 | 引用公告、新闻链接或明确数据来源的陈述 |
+| `mobilization` | 煽动扩散 | 号召他人**集体行动或转发扩散**：集体投诉、留名、刷一星、转发提醒、一起去 | 「凑够 50 个人一起去 SFC 和消委会集体投诉」「大家一起去各个平台刷一星」 | 「建议大家看清风险再买」——是提醒，不是组织行动 |
+| `compliance_concern` | 合规质疑 | 对**销售／披露／适当性环节**提出合规疑问：宣传表述、风险提示位置、KYC／风险测评与产品风险等级不匹配、费率披露 | 「开户问卷是保守型，却能直接买到两倍杠杆产品，适当性评估是怎么过的？」 | 对费率高低本身的不满（那是产品负面 aspect=fee） |
+
+**三层负面必须分开存**（PRD §3.4）：消极观点（`attitude=negative`）、负面舆情类别
+（`neg_category`）、重点舆情（`compliance`）是三个 kind。「跟踪误差太大」只落前两者；
+「跟踪误差就是虚假宣传」同时落 `attitude=negative` 与 `compliance=[serious_allegation]`。
+
+### 20.3 三层识别管线
+
+```text
+评论／帖子正文（仅 own 产品；peer → na）
+  ├─ L1 词表高召回（worker/ai/lexicon/compliance_zh.py）
+  │     命中任一类词表 ⇒ 排队；未命中的抽样 5% 也排队（防词表漏召回）
+  ├─ L2 GPT 结构化判定（task=compliance_signal，strict JSON Schema）
+  │     输出：tags[]、evidence（原文片段）、rationale（命中依据 ≤40 字）、needs_review
+  │     evidence 由 ai/evidence.py 定位；定位不到 ⇒ needs_review，但结论保留
+  └─ L3 展示：backend/core/narrative.compliance_for 聚合
+        每条恒带「AI 识别 · 待人工确认」；review.py 的 approve/reject 只影响
+        「是否已有人看过」这一栏，不改变展示资格
+```
+
+L1 词表种子（实现时**按四种写法各写一份**，并允许词表版本进入 `taxonomy_version`）：
+
+| 类 | 机构／对象 | 动作／指控词 | 传闻／号召词 |
+|---|---|---|---|
+| 监管举报 | 证监会、證監會、SFC、消委会、消委會、金管局、HKMA、港交所、HKEX、12386、警方、報警、报警 | 投诉、投訴、举报、舉報、报案、報案、告、起诉、起訴、集体诉讼、集體訴訟、维权、維權 | — |
+| 严重指控 | 发行人、發行人、做市商、莊家、庄家、平台、券商 | 操纵、操縱、利益输送、利益輸送、内幕、內幕、欺诈、詐騙、骗、騙、老千、割韭菜、虚假宣传、虛假宣傳、误导、誤導、挪用、洗钱、洗錢、黑箱 | — |
+| 疑似未经证实 | 清盘、清盤、停牌、退市、被查、跑路、爆雷、暴雷、资不抵债 | — | 听说、聽說、據說、据说、内部消息、內幕消息、有人说、有人講、传、傳、小道 |
+| 煽动扩散 | — | 集体、集體、一起、大家、留名、报名、刷一星、差评、差評 | 转发、轉發、帮转、幫轉、扩散、擴散、提醒身边、提醒身邊、快走、赶紧卖、趕緊賣 |
+| 合规质疑 | 风险提示、風險提示、招股书、招股書、宣传页、宣傳頁、KYC、风险测评、風險評估、适当性、適當性 | 合规吗、合規嗎、合法吗、能这样卖、可以咁賣、没披露、冇披露、藏在、点进三层 | — |
+
+词表只做**召回**，不做判定；命中率、每类命中量、GPT 否决率按周记入 `annotation_runs`
+附表，用于迭代词表。
+
+### 20.4 数据契约
+
+**Schema（`worker/ai/schemas.py` 新增 `ComplianceAnnotation`）**
+
+```json
+{
+  "item_id": "comment:123|product:3033",
+  "tags": ["regulatory_complaint", "mobilization"],
+  "evidence": "凑够 50 个人一起去 SFC 和消委会集体投诉",
+  "rationale": "号召集体投诉并点名监管机构",
+  "needs_review": false
+}
+```
+
+- `tags` 为空数组 ＝ 「查过了，不是重点舆情」，**必须落库**（kind=`compliance`，
+  value `{"tags": []}`），否则「已扫描无命中」与「未扫描」在库里无法区分（同 §16 Gate 2
+  「没有也要写下来」）。
+- `rationale` 是 PRD 的「AI 命中依据」，≤40 字，允许是模型的话；`evidence` 必须是原文。
+- `tags` 非空但 `evidence` 定位不到 ⇒ `needs_review`，仍展示，徽章不变。
+
+**排队**：`enqueue_compliance(engine, cfg, codes=own_codes)`，评论按 `(comment_id, subject_code)`、
+帖子按 `(feed_id, NO_SUBJECT)`；只排 `ownership=own` 的产品。
+
+**读取**：`SqlProvider.compliance_for(code, range)` 读 kind=`compliance` 且
+`review_state ∈ {auto_approved, approved, corrected, pending, needs_review}`（**全部**，因为
+展示态本身就是待确认），`rejected` 排除；`peer` 直接 `na`；区间内无命中 ⇒ `empty`；
+该产品区间内一条都没扫过 ⇒ `unavailable`。`pool().complianceCount` 同源。
+
+### 20.5 边界（PRD §4.2 P10 逐字约束）
+
+- 不输出「属实／不属实」；不输出风险分数、P0/P1 等级；不触发通知或处置。
+- 每条必须能回到原文（证据侧栏 kind=`risk`）。
+- 页面免责文案逐字沿用设计源：「系统只识别风险信号并提供原文，不判定言论真伪、是否违法或产品是否违规」。
+- 发往外部模型前仍走 §11.4 脱敏；`rationale` 不得包含作者身份。
+
+---
+
+## 21. 不依赖人工金标的替代路线（弱监督）
+
+### 21.1 先说清代价
+
+没有人工金标，就**没有**可对外陈述的准确率、召回率或校准概率。这不是工程能绕过的：
+准确率是「模型答案 vs 人类答案」的比值，分母不存在，比值就不存在。所以走这条路线时：
+
+- `calibrated_confidence` 继续全为 NULL；
+- `/meta` 增加 `aiValidation: "none" | "spot_check" | "gold"` 字段，页面口径面板照实显示；
+- 所有 AI 模块徽章为「AI 生成 · 待确认」或「AI 识别 · 待人工确认」，不出现「已核验」。
+
+这条路线换来的是：**页面今天就能亮**，而不是等 3,000 条金标排期。
+
+### 21.2 用什么代替金标
+
+| 替代手段 | 做什么 | 代替的是什么 |
+|---|---|---|
+| 双 Prompt／双模型一致性 | 同一输入跑两套独立 Prompt（或 GPT ＋ 本地模型）；一致 ⇒ `auto_approved`，不一致 ⇒ `needs_review` | 代替「人批准」作为放行条件 |
+| 证据定位率 | 模型引文必须在原文逐字定位（已实现） | 代替「引文是否可信」的人工检查 |
+| 词表×模型交叉表 | 词表命中而模型否决、模型命中而词表未召回，两格按周复盘 | 代替错误分析 |
+| 公开数据集 warm-start | 用 §22 中**许可允许**的数据集先微调本地分类器，再用 GPT 标签自训练 | 代替金标训练集（仅限任务同构的部分） |
+| 规则硬约束 | `irrelevant ⇒ attitude=null`、`peer ⇒ compliance=na` 等已在 Schema 与 Provider 层强制 | 代替口径层面的人工复核 |
+| 200 条抽检（建议，非必须） | 分层抽 150 评论＋50 帖子，只算错误率，不回流训练 | 用最小人力换一个可陈述的数字 |
+
+### 21.3 需要的一条新决策（ADR-0019，待写）
+
+现行 [ADR-0017](adr/0017-ai-annotation-pipeline-production.md) §4 规定 `SqlProvider` 只读
+`approved`／`corrected`。零金标路线需要：
+
+1. `review_state` 增加 `auto_approved`（机器按 §21.2 一致性规则放行）；
+2. `SqlProvider` 读 `auto_approved`，前端徽章「AI 生成 · 待确认」；
+3. `compliance` 类不适用 `auto_approved`——它按 §20.4 全部展示、恒为「AI 识别 · 待人工确认」；
+4. `review.py` 的 approve／reject 仍有效：人批过的覆盖机器放行，人否决的立即下线；
+5. PRD §3.5／§3.9 的 `lowConfidence=0.7` 改为**仅当 `calibrated_confidence` 非 NULL 时生效**，
+   否则「待确认」完全由 `review_state` 驱动 —— 这同时解决了 §16 里悬着的「0.7 还算不算数」。
+
+不写这条 ADR 就改 Provider，等于悄悄推翻 ADR-0017；写了它，历史决策与现行决策都可追溯。
+
+### 21.4 执行顺序（接 §16 Gate 3-alt）
+
+1. 落 §20 合规词表与 `compliance_signal` 任务 —— 这一项**不需要** ADR-0019，PRD 已允许待确认展示。
+2. 写 ADR-0019，改 `review_state` 枚举与 `SqlProvider` 读取条件。
+3. 评论任务补第二套 Prompt（`comment-product-v1b`，措辞与示例独立编写），跑一致性。
+4. 帖子任务同理。
+5. 全量排队前先补齐 §6.1 数据治理四项；未答复前只跑 own 产品近 30 天（约 10 万判定单元）。
+6. 页面亮起后，再决定要不要做 200 条抽检。
+
+---
+
+## 22. 公开数据集清单（按功能分组，含许可证判断）
+
+> 访问日期 2026-09-11。**许可证是使用前提，不是脚注**：标「可商用」的才能进训练集；
+> 标「需确认」的先联系作者或法务；标「仅研究」的只能做离线对照，不进生产模型。
+> 所有公开数据都与本项目的「ETF 产品态度／重点舆情」口径不完全同构，只能做
+> warm-start、词表挖掘或对照，不能替代本项目文本上的验证。
+
+### 22.1 重点舆情（合规关注）相关
+
+| 数据集 | 链接 | 规模／标签 | 许可 | 对应信号 | 用法 |
+|---|---|---|---|---|---|
+| COLDataset（清华 CoAI） | [GitHub](https://github.com/thu-coai/COLDataset) · [HF 数据集](https://huggingface.co/datasets/thu-coai/cold) | 37,480 条中文评论，二分类 offensive；测试集细分「攻击个人／攻击群体」 | **Apache-2.0，可商用** | 煽动扩散、攻击性指控的预筛 | 直接微调预筛器；或用官方开箱模型 [`thu-coai/roberta-base-cold`](https://huggingface.co/thu-coai/roberta-base-cold)（macro-F1 82.39） |
+| ToxiCN（大连理工） | [GitHub](https://github.com/DUT-lujunyu/ToxiCN) · [HF](https://huggingface.co/datasets/JunyuLu/ToxiCN) | 12k 条知乎／贴吧，细粒度毒性 | **CC BY-NC-ND 4.0，禁商用** | 同上 | 仅离线对照，**不进训练** |
+| 中文谣言数据集 + CED（清华 THUNLP） | [GitHub](https://github.com/thunlp/Chinese_Rumor_Dataset) | 31,669 条微博不实信息举报平台谣言；CED 子集含 1,538 谣言／1,849 非谣言及转发评论 | 仓库未声明许可，**需确认** | 疑似未经证实指控（「听说／据说」类传闻表达） | 挖掘传闻表达词表；许可确认后可作 warm-start |
+| Ma et al. 2016 Weibo 谣言集（rumdect） | [下载](http://alt.qcri.org/~wgao/data/rumdect.zip) | 4,664 条微博事件，rumor／non-rumor | 学术发布，未声明许可，**需确认** | 同上 | 对照 |
+| Weibo21 | [GitHub](https://github.com/kennqiang/MDFEND-Weibo21) | 9,128 条，含「财经」域 | **需申请**，学术用途 | 同上 | 仅研究对照 |
+| MCFEND（WWW 2024） | [官网](https://trustworthycomp.github.io/mcfend/) · [GitHub](https://github.com/TrustworthyComp/MCFEND) | 23,974 条多源中文假新闻，14 家事实核查机构 | 学术用途，**不可再分发** | 同上 | 仅研究对照 |
+| CCF BDCI 2019 金融信息负面及主体判定（国家互联网应急中心出题） | [DataFountain](https://www.datafountain.cn/competitions/353/datasets) · [Heywhale 镜像](https://www.heywhale.com/mw/dataset/5e09a9eb2823a10036b126c0/file) | 金融文本是否含实体负面信息 ＋ 负面主体 | 竞赛条款，**需确认** | 严重指控（对发行人／平台的负面主体判定） | 与本项目「对指定 ETF 的指控」最同构；许可确认后 warm-start |
+| FinChina-SA（FinLLM@IJCAI'23） | [GitHub](https://github.com/YerayL/FinChina-SA) · [论文](https://arxiv.org/abs/2306.14096) | 11,036 篇新闻、21,272 实体情感、**190 类预警类型** | 仓库 Apache-2.0，但新闻正文权利未说明，**需确认** | 严重指控 taxonomy 参考 | 用其 190 类预警名做本项目「严重指控」子类词表来源，不直接训练 |
+| BBT-CFLEB FinNSP | [GitHub](https://github.com/supersymmetry-technologies/BBT-FinCUGE-Applications) | 4,800／600／600，负面消息及其主体 | 仓库未声明许可，**需确认** | 严重指控 | 对照 |
+| DuEE-fin（百度） | [AI Studio](https://aistudio.baidu.com/competition/detail/46) | 1.17 万篇公告，13 类金融事件、92 论元 | 需注册 AI Studio，**需确认** | 事件抽取结构参考 | 事件类型偏公告（收购、质押、亏损等），**无监管举报类**；只借用 trigger／argument 标注格式 |
+| CCL2023 电信网络诈骗案件分类（哈工大） | [GitHub](https://github.com/GJSeason/CCL2023-FCC) | 82,210 训练／12 类，公安反诈平台脱敏笔录 | CodaLab **需申请** | 「骗／诈骗／老千」类表达 | 仅用于挖掘欺诈指控表达词表 |
+| Telecom_Fraud_Texts_8 | [GitHub](https://github.com/ChangMianRen/Telecom_Fraud_Texts_8) | 八分类诈骗文本 | GPL-3.0 且声明**禁商用** | 同上 | 仅研究对照 |
+| 黑猫投诉数据集（新浪） | [说明页](https://textdata.cn/blog/2025-03-05-consumer-complaint-dataset/) | 1,531 万条投诉：标题、问题、要求、对象、进度 | 整理方声明**科研用途**，原平台条款未核 | 监管举报（投诉意图表达） | 挖掘「投诉／维权／要求退款」表达；**不进生产训练** |
+| CnOpenData 消费者在线投诉 | [数据页](https://www.cnopendata.com/data/m/Platform_Eco/xf-tousu.html) | 投诉内容、对象、状态、金额 | 商业数据商，**需采购** | 同上 | 可选 |
+| CFPB Consumer Complaint Database（美国） | [官方 API](https://cfpb.github.io/api/ccdb/) · [TFDS 说明](https://www.tensorflow.org/datasets/community_catalog/huggingface/consumer-finance-complaints) | 约 798 万条金融投诉，`Product / Issue / Sub-issue` 分类 | 美国政府公开数据，**可用** | 投诉分类体系参考 | **英文**；只借用 Issue taxonomy 设计合规质疑子类，不训练中文模型 |
+| CCF BDCI 2021 产品评论观点提取（中原银行） | [DataFountain](https://www.datafountain.cn/competitions/529/) | 7,528 条银行产品评论，情感 ＋ BIO 实体（产品／指标／评价词） | 竞赛条款，**需确认** | 合规质疑／产品负面 aspect | 金融产品投诉式短评最接近本项目文体 |
+
+### 22.2 评论态度／相关性相关（补充 §13 与 research 文档）
+
+| 数据集 | 链接 | 规模／标签 | 许可 | 用法 |
+|---|---|---|---|---|
+| FinFE（BBT-CFLEB） | [GitHub](https://github.com/supersymmetry-technologies/BBT-FinCUGE-Applications) · [HF 指令版](https://huggingface.co/datasets/Maciel/FinCUGE-Instruction) | 股吧／雪球三分类情感，训练 8,000 | 原仓库未声明；HF 整理版标 Apache-2.0，**以原仓库为准需确认** | 中文股票社区语体最接近；许可确认后 warm-start |
+| Eland Entity Sentiment（繁体） | [HF](https://huggingface.co/datasets/p988744/eland-entity-sentiment-zh) | 433 条实体级三分类，含多实体／隐含／反讽标记 | **Apache-2.0，可商用** | 繁体、目标级、量小；作 smoke test 与 few-shot 示例来源 |
+| Eland Sentiment（繁体） | [HF](https://huggingface.co/datasets/p988744/eland-sentiment-zh) | 台股文本整体／实体／观点三任务 | **Apache-2.0，可商用** | 繁体 warm-start |
+| ASAP（美团） | [GitHub](https://github.com/Meituan-Dianping/asap) | 46,730 条点评，18 aspect × 四态 | **Apache-2.0，可商用** | 非金融；只学 aspect 结构与多任务训练 |
+| CFLUE 股票评论 500 条 | [GitHub](https://github.com/aliyun/cflue) | 5 位分析师标注对象级三分类 | **CC BY-NC-SA 4.0，禁商用** | 仅作标注指南与协议参考 |
+| C-STANCE | [GitHub](https://github.com/chenyez/C-STANCE) | 48,126 微博—目标对，favor/against/neutral | 未声明，**需确认** | target-aware 立场任务设计参考 |
+| SMP2020-EWECT | [官网](https://smp2020ewect.github.io/) | 微博六类情绪 | 未声明，**需确认** | 情绪辅助任务 |
+| OpenRice 粤语情感 | [GitHub](https://github.com/toastynews/openrice-senti) | 港式粤语餐厅评论，smile/ok/cry 三类平衡 | **CC BY 4.0，可商用** | 粤语、繁体语言适配（非金融） |
+| HK Content Corpus | [Zenodo](https://doi.org/10.5281/zenodo.16882351) · [HF](https://huggingface.co/datasets/SolarisCipher/hk_content_corpus) | LIHKG、OpenRice 等港式繁体语料，无标签 | 公开网页来源，**版权需逐源审查** | 仅继续预训练／词表，不作标签 |
+| FinGPT sentiment-train | [HF](https://huggingface.co/datasets/FinGPT/fingpt-sentiment-train) | 76,772 条金融情感指令（多来源聚合） | 聚合许可不一，**逐源确认** | 英文为主，弱监督对照 |
+| Financial PhraseBank | [HF](https://huggingface.co/datasets/takala/financial_phrasebank) | 4,840 条英文金融新闻句 | **CC BY-NC-SA 3.0，禁商用** | 仅标注一致性方法参考 |
+
+### 22.3 可直接商用的最短清单
+
+如果只想先动手，且不想碰任何许可灰区，今天就能用的是：
+
+1. **COLDataset ＋ `thu-coai/roberta-base-cold`**（Apache-2.0）：攻击性／煽动预筛器；
+2. **Eland Entity Sentiment ＋ Eland Sentiment**（Apache-2.0）：繁体目标级情感 smoke test；
+3. **ASAP**（Apache-2.0）：aspect 多任务结构；
+4. **OpenRice 粤语**（CC BY 4.0）：粤语适配；
+5. **CFPB**（美国政府公开）：投诉 taxonomy 参考。
+
+其余全部以「需确认」处理。**本项目自己的富途评论**仍然是唯一与业务口径完全同构的数据 ——
+公开数据只能让模型「见过中文金融社区」，不能让它知道「3033 的点差」算产品负面而
+「恒指要跌」不算。
 

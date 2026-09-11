@@ -14,7 +14,7 @@
        key per list item and the dc runtime did not. */
 import React from 'react'
 import R from '../../data/radar'
-import { shortName, navGroups, num } from '../../lib/view'
+import { shortName, navGroups, num, numRaw, stamp, naBox } from '../../lib/view'
 import { s } from '../../lib/dc'
 import Shell from '../../components/Shell'
 import FilterBar from './FilterBar'
@@ -23,6 +23,21 @@ import Kpis from './Kpis'
 import Board from './Board'
 import Tooltip from './Tooltip'
 import Drawer from './Drawer'
+
+/* 热度为 null 时，说清楚缺的是哪一项。
+
+   真库上这不是个别现象：约 0.09% 的源 `raw_json` 被 TEXT 列截断，那些帖子的转发数
+   取不到，于是整只产品的转发与热度都是未知（`worker/jobs/etl.py` 模块头第 4 条）。
+   d30 区间下有 8 只产品落在这里，其中一只有四万六千条评论 —— 榜单上只给一句
+   「数据暂不可用」，看的人会以为是系统坏了，而事实是这一项从源头就没采到。
+
+   读的是字段（`o.shares == null`），不是在前端重算热度公式（铁律 1）：后端已经把
+   「转发数未知」当作 `shares: null` 发下来了，这里只是把它念出来。 */
+function heatWhy(o) {
+  return o.shares == null
+    ? '讨论热度暂不可用：这只产品的转发数未采到（源数据被截断），公式里缺了一项，不以 0 代替。'
+    : '讨论热度暂不可用。';
+}
 
 export default class SectorOverview extends React.Component {
   state = {
@@ -67,7 +82,9 @@ export default class SectorOverview extends React.Component {
             { k: '评论量', v: num(o.comments), fg: '#fff' },
             { k: '讨论热度', v: num(o.discussionHeat) + ' · 全市场第 ' + hr + ' ／ ' + poolN + ' 名', fg: '#fff' },
             { k: '点赞 ／ 转发', v: num(o.likes) + ' ／ ' + num(o.shares), fg: 'rgba(255,255,255,0.88)' },
-            { k: '积极 ／ 消极 ／ 中性', v: o.attitude.positive + ' / ' + o.attitude.negative + ' / ' + o.attitude.neutral, fg: 'rgba(255,255,255,0.88)' },
+            /* attitude 整块可能为 null（AI 标注未建，ADR-0017）。三态同出一块标注，
+               要缺一起缺，所以整行一句长文案，不写三遍。 */
+            { k: '积极 ／ 消极 ／ 中性', v: o.attitude == null ? '数据暂不可用' : o.attitude.positive + ' / ' + o.attitude.negative + ' / ' + o.attitude.neutral, fg: 'rgba(255,255,255,0.88)' },
             { k: '情绪净值', v: this.netText(o), fg: 'rgba(255,255,255,0.88)' }
           ].concat(rc > 0 ? [{ k: '需合规关注', v: rc + ' 条 · AI 识别待确认', fg: '#F3A6A6' }] : [])
         }
@@ -75,7 +92,10 @@ export default class SectorOverview extends React.Component {
     };
   }
   netText(o) {
-    var a = o.attitude, v = a.positive + a.negative;
+    var a = o.attitude;
+    /* 没这块标注 ≠ 样本不足。前者是没算过，后者是算过但样本太少 —— 六态里两态。 */
+    if (a == null) return '数据暂不可用';
+    var v = a.positive + a.negative;
     if (!a.sampleSufficient || !v) return '样本不足';
     var n = (a.positive - a.negative) / v * 100;
     return (n > 0 ? '+' : (n < 0 ? '−' : '')) + Math.abs(n).toFixed(0);
@@ -182,10 +202,22 @@ export default class SectorOverview extends React.Component {
         tip: {
           code: o.code, i: i,
           x: r.left + r.width / 2, y: r.top - 8, title: o.code + ' · ' + b.tip,
+          /* 三行全部过 numRaw：
+             - `shares` 会因源库 raw_json 截断而为 null（ADR-0008），设计源的 `|| 0`
+               把它读成「零次转发」；
+             - 三态要 AI 标注（ADR-0017），设计源这里连 `|| 0` 都没有，直接字符串拼接 ——
+               接真库之后悬浮卡上会写着 `null / null / null`。
+             三态同出一块标注，要缺一起缺，所以合并成一句，不写三遍长文案。 */
           rows: [
-            { k: '评论数', v: String(b.comments), fg: '#fff' },
-            { k: '点赞 ／ 转发', v: (b.likes || 0) + ' ／ ' + (b.shares || 0), fg: 'rgba(255,255,255,0.88)' },
-            { k: '积极 ／ 消极 ／ 中性', v: b.positive + ' / ' + b.negative + ' / ' + b.neutral, fg: 'rgba(255,255,255,0.88)' }
+            { k: '评论数', v: numRaw(b.comments), fg: '#fff' },
+            { k: '点赞 ／ 转发', v: numRaw(b.likes) + ' ／ ' + numRaw(b.shares), fg: 'rgba(255,255,255,0.88)' },
+            {
+              k: '积极 ／ 消极 ／ 中性',
+              v: b.positive == null && b.negative == null && b.neutral == null
+                ? '数据暂不可用'
+                : numRaw(b.positive) + ' / ' + numRaw(b.negative) + ' / ' + numRaw(b.neutral),
+              fg: 'rgba(255,255,255,0.88)'
+            }
           ]
         }
       });
@@ -253,7 +285,9 @@ export default class SectorOverview extends React.Component {
       growth: { label: '环比', note: '按' + range.benchLabel + '评论量增速降序 · 基准期不足 5 条不参与', get: function (o) { var g = growthPct(o); return g == null ? -1e9 : g; } },
       heat: { label: '讨论热度', note: '按区间讨论热度降序', get: function (o) { return o.discussionHeat; } },
       neg: { label: '舆情', note: '按舆情条数（可归类为需关注问题的内容）降序', get: function (o) { return P.negMentions[o.code]; } },
-      att: { label: '正面／负面', note: '按正面占比（正面÷(正面＋负面)）降序 · 样本不足不参与', get: function (o) { var a = o.attitude, v = a.positive + a.negative; return (a.sampleSufficient && v) ? a.positive / v : -1e9; } }
+      /* `-1e9` 是「不参与排序」的哨兵，排到最末。标注整块缺失与样本不足在**排序**上
+         同样处理（都排不出名次），但在**显示**上必须分开 —— 分开的地方在下面 rows 里。 */
+      att: { label: '正面／负面', note: '按正面占比（正面÷(正面＋负面)）降序 · 样本不足不参与', get: function (o) { var a = o.attitude; if (a == null) return -1e9; var v = a.positive + a.negative; return (a.sampleSufficient && v) ? a.positive / v : -1e9; } }
     };
     var sortKey = SORTS[s.sort] ? s.sort : 'comments';
     var asc = !!s.sortAsc;
@@ -274,24 +308,43 @@ export default class SectorOverview extends React.Component {
     };
     var sorted = visible.slice().sort(cmp);
     var rows = (s.listAll ? sorted : sorted.slice(0, 50)).map(function (o, i) {
-      var att = o.attitude, valid = att.positive + att.negative;
+      /* `attitude` **整块**可能是 null（三态要 AI 标注，ADR-0017：标注表没建起来之前
+         观测上就没有这个块）。设计源直接 `att.positive`，接真库时第一次渲染就 TypeError。
+         注意不能退化成 `sampleSufficient: false` 去走「样本不足」那条分支 ——
+         样本不足是「数过了，样本太少不下结论」，暂不可用是「根本没数过」，
+         六态里是两态，混用等于把一次采集故障说成一个结论（PRD §3.6）。 */
+      var att = o.attitude, valid = att == null ? 0 : att.positive + att.negative;
       var g = growthPct(o), negN = P.negMentions[o.code];
       var on = s.sel === o.code;
+      /* 热议总结整块可能是 null：它要 AI 归纳（`providers/sql.py::hot_summaries`），
+         接真库时**整池一份**都没有。设计源直接读 `hs.text`／`hs.ok`／`hs.sample`，
+         第一次渲染就 TypeError，整页白屏。
+         文案逐字取「数据暂不可用」—— 演示数据里本来就有一只产品是这个值
+         （hot_summaries.json 里 42 条「样本不足，暂无主流观点」＋ 1 条「数据暂不可用」），
+         所以这不是新造的一句话，是同一态的同一句。 */
       var hs = R.hotSummaryFor(o.code, s.rangeKey);
+      var hsOk = hs != null && hs.ok;
+      var hsText = hs == null ? '数据暂不可用' : hs.text;
       return {
         idx: String(i + 1), code: o.code, name: o.name,
         comments: num(o.comments),
         growth: g == null ? '—' : (g > 0 ? '+' : '') + g.toFixed(0) + '%',
         gfg: g == null ? 'var(--ink-300)' : (g > 2 ? 'var(--positive-700)' : (g < -2 ? 'var(--negative-600)' : 'var(--ink-500)')),
         heat: num(o.discussionHeat),
-        hasAttitude: att.sampleSufficient, lowSample: !att.sampleSufficient,
-        pos: String(att.positive), neg: String(att.negative),
+        /* undefined ⇒ React 干脆不写这个属性，demo 下与设计源一模一样。 */
+        heatWhy: o.discussionHeat == null ? heatWhy(o) : undefined,
+        hasAttitude: att != null && att.sampleSufficient,
+        lowSample: att != null && !att.sampleSufficient,
+        attNa: att == null,
+        pos: att == null ? '' : String(att.positive), neg: att == null ? '' : String(att.negative),
         posW: valid ? (att.positive / valid * 100).toFixed(1) : '0',
         negW: valid ? (att.negative / valid * 100).toFixed(1) : '0',
-        alert: negN > 0, alertN: String(negN),
+        /* `negMentions` 也要 AI（舆情条数来自负面类别）。`null > 0` 为假，红标不出现 ——
+           这是对的：没扫过就不该报警。但 `alertN` 不能是 `String(null)`。 */
+        alert: negN > 0, alertN: numRaw(negN),
         /* 热议总结：AI 一句话归纳区间内该 ETF 的主流具体观点；样本不足／不可用按统一状态文案灰字显示 */
-        hot: hs.text, hotFg: hs.ok ? 'var(--ink-800)' : 'var(--ink-400)',
-        hotTitle: hs.ok ? hs.text + '（AI 生成 · 基于 ' + hs.sample + ' 条有效态度样本）' : hs.text,
+        hot: hsText, hotFg: hsOk ? 'var(--ink-800)' : 'var(--ink-400)',
+        hotTitle: hsOk ? hs.text + '（AI 生成 · 基于 ' + hs.sample + ' 条有效态度样本）' : hsText,
         bg: on ? 'var(--csop-blue-50)' : (i % 2 ? 'var(--canvas)' : '#fff'),
         codeFg: on ? 'var(--csop-blue-700)' : 'var(--ink-900)',
         hoverIn: self.productHover(o, heatRankOf(o), poolN, true),
@@ -304,7 +357,9 @@ export default class SectorOverview extends React.Component {
        筛选只决定哪些色块保留颜色，其余置灰，以便在全市场背景下看位置 */
     var heatMode = s.heatMode === 'growth' ? 'growth' : 'net';
     var netOf = function (o) {
-      var a = o.attitude, v = a.positive + a.negative;
+      var a = o.attitude;
+      if (a == null) return null;
+      var v = a.positive + a.negative;
       return (a.sampleSufficient && v) ? (a.positive - a.negative) / v * 100 : null;
     };
     var heatGrowth = function (o) {
@@ -335,6 +390,9 @@ export default class SectorOverview extends React.Component {
          「数据暂不可用」。 */
       .filter(function (o) { return o.discussionHeat > 0; })
       .sort(function (a, b) { return b.discussionHeat - a.discussionHeat; });
+    /* 挡掉是对的，**不吭声地**挡掉不是。少画几个格子在界面上看不出来，于是「热度分布」
+       看着像是全市场的全貌，而它漏掉了其中活跃度最高的那一只。数一数，说出来。 */
+    var heatNa = P.list.filter(function (o) { return o.discussionHeat == null; });
     var headList = heatSorted.slice(0, HEAT_TOP);
     var tailList = heatSorted.slice(HEAT_TOP);
     var tailHeat = tailList.reduce(function (t, o) { return t + o.discussionHeat; }, 0);
@@ -421,7 +479,7 @@ export default class SectorOverview extends React.Component {
     var out = {
       navGroups: navGroups('portfolio', 'sector'), presets: presets, chips: chips,
       rangeText: range.text, rangeFrom: range.from, rangeTo: range.to,
-      granLabel: range.granLabel, updated: R.UPDATED,
+      granLabel: range.granLabel, updated: stamp(R.UPDATED),
       loading: s.loading, bodyOpacity: s.loading ? '0.45' : '1',
       visibleCount: String(visible.length),
       k1: k1, k2: k2, topOwn: topOwn, topPeer: topPeer, topOwnEmpty: topOwn.length === 0, topPeerEmpty: topPeer.length === 0,
@@ -441,6 +499,12 @@ export default class SectorOverview extends React.Component {
       sortHeat: mkSort('heat'), sortNeg: mkSort('neg'), sortAtt: mkSort('att'),
       heatRef: self.heatRef,
       heatTopN: String(headList.length), heatTailN: String(tailList.length),
+      /* demo 下恒为 0 ⇒ 整块不渲染，逐字比对照旧一致。 */
+      heatNaShow: heatNa.length > 0,
+      heatNaText: '另有 ' + heatNa.length + ' 只讨论热度暂不可用，未参与面积分配；它们在下方榜单里。',
+      /* 只有在**每一只**都缺转发时才归因于转发；混着别的原因就只说结果，不猜。 */
+      heatNaWhy: heatNa.length > 0 && heatNa.every(function (o) { return o.shares == null; })
+        ? heatWhy(heatNa[0]) : '讨论热度暂不可用。',
       tailHeat: tailHeat.toLocaleString('en-US'),
       tailShare: (tailHeat / Math.max(1, tailHeat + headList.reduce(function (t, o) { return t + o.discussionHeat; }, 0)) * 100).toFixed(0) + '%',
       tailGo: () => self.go({ listAll: true, sort: 'heat', sortAsc: false, sel: null, tip: null }),
@@ -509,9 +573,17 @@ export default class SectorOverview extends React.Component {
       var code = s.sel;
       var o = R.observe(code, s.rangeKey), m = R.MASTER[code];
       var b = R.benchmark(code, s.rangeKey);
+      /* 抽屉里的这几块全要 AI（摘要／主题／负面归类），接真库时整块 null。
+         设计源直接 `.text`／`.slice(0,3)`，第一次开抽屉就 TypeError。null 与空数组
+         在这里是两句不同的话，见 productMonitor 同处注释。 */
       var sum = R.summaryFor(code, s.rangeKey);
-      var att = o.attitude, valid = att.positive + att.negative;
-      var all = att.positive + att.negative + att.neutral;
+      var sumNa = sum == null;
+      if (sumNa) sum = { text: '数据暂不可用 — 舆情总结尚未生成或数据源未提供。', sample: null };
+      /* 同 rows 那处：attitude 整块可能为 null（ADR-0017）。`attNa` 单独一条，
+         别并进 `sampleSufficient`。 */
+      var att = o.attitude, attNa = att == null;
+      var valid = attNa ? 0 : att.positive + att.negative;
+      var all = attNa ? 0 : att.positive + att.negative + att.neutral;
       var link = function (extra) {
         return 'product-monitor.dc.html?code=' + code + '&range=' + s.rangeKey + (extra || '');
       };
@@ -523,11 +595,15 @@ export default class SectorOverview extends React.Component {
           href: link('&ev=' + t.id)
         };
       };
-      var pos = R.themesFor(code, s.rangeKey, 'positive').slice(0, 3).map(themeRow);
-      var neg = R.themesFor(code, s.rangeKey, 'negative').slice(0, 3).map(themeRow);
-      var cats = R.negCatsFor(code, s.rangeKey).slice(0, 3);
-      var comps = R.competitorsFor(code, s.rangeKey);
-      var cr = R.complianceFor(code, s.rangeKey);
+      var posRaw = R.themesFor(code, s.rangeKey, 'positive');
+      var negRaw = R.themesFor(code, s.rangeKey, 'negative');
+      var catsRaw = R.negCatsFor(code, s.rangeKey);
+      var posNa = posRaw == null, negNa = negRaw == null, catsNa = catsRaw == null;
+      var pos = (posNa ? [] : posRaw).slice(0, 3).map(themeRow);
+      var neg = (negNa ? [] : negRaw).slice(0, 3).map(themeRow);
+      var cats = (catsNa ? [] : catsRaw).slice(0, 3);
+      var comps = naBox(R.competitorsFor(code, s.rangeKey));
+      var cr = naBox(R.complianceFor(code, s.rangeKey));
       var lifeStyle = { '新增': ['var(--negative-100)', 'var(--negative-700)'], '持续': ['var(--warning-100)', 'var(--warning-700)'], '消退': ['var(--ink-100)', 'var(--ink-600)'] };
 
       /* 分时段热力条：桶随顶部日期粒度自适应，色阶按该产品区间峰值归一 */
@@ -584,35 +660,53 @@ export default class SectorOverview extends React.Component {
         readTime: read ? read.tip : '数据暂不可用',
         readBg: readIdx === peakIdx ? 'var(--csop-navy-900)' : 'var(--csop-blue-700)',
         readHint: read == null ? '' : (readIdx === peakIdx ? '区间峰值时段 · 点击任一色块查看该时段' : '已选时段 · 点击其他色块切换'),
+        /* 同上：转发可能坏、三态要 AI。`占区间评论量` 的分子分母任一未知就整格未知 ——
+           设计源的 `o.comments ? … : '—'` 只挡住了分母为 0，分子为 null 时会算出 `NaN%`。 */
         readRows: read ? [
-          { k: '评论', v: String(read.comments), fg: 'var(--ink-900)' },
-          { k: '点赞', v: String(read.likes || 0), fg: 'var(--ink-800)' },
-          { k: '转发', v: String(read.shares || 0), fg: 'var(--ink-800)' },
-          { k: '积极', v: String(read.positive), fg: 'var(--positive-700)' },
-          { k: '消极', v: String(read.negative), fg: 'var(--negative-700)' },
-          { k: '占区间评论量', v: o.comments ? (read.comments / o.comments * 100).toFixed(1) + '%' : '—', fg: 'var(--ink-700)' }
+          { k: '评论', v: numRaw(read.comments), fg: 'var(--ink-900)' },
+          { k: '点赞', v: numRaw(read.likes), fg: 'var(--ink-800)' },
+          { k: '转发', v: numRaw(read.shares), fg: 'var(--ink-800)' },
+          { k: '积极', v: numRaw(read.positive), fg: 'var(--positive-700)' },
+          { k: '消极', v: numRaw(read.negative), fg: 'var(--negative-700)' },
+          {
+            k: '占区间评论量',
+            /* 公式逐字照抄设计源（直接 toFixed(1)，**不要**换成 view.js 的 pct1 ——
+               那个先 round 再 toFixed，在 .05 边界上结果不同，逐字比对会红）。 */
+            v: read.comments == null || o.comments == null
+              ? '数据暂不可用'
+              : (o.comments ? (read.comments / o.comments * 100).toFixed(1) + '%' : '—'),
+            fg: 'var(--ink-700)'
+          }
         ] : [],
         own: o.ownership === 'own' ? '自家产品' : '同业产品',
         obg: o.ownership === 'own' ? 'var(--csop-blue-50)' : 'var(--ink-100)',
         ofg: o.ownership === 'own' ? 'var(--csop-blue-700)' : 'var(--ink-600)',
-        summary: sum.text, sample: String(sum.sample), rangeText: range.text,
-        posThemes: pos, negThemes: neg, noPos: pos.length === 0, noNeg: neg.length === 0,
-        posTotal: String(att.positive), negTotal: String(att.negative), neuTotal: String(att.neutral),
-        neuShare: all ? (att.neutral / all * 100).toFixed(0) + '% 全部有效内容' : '—',
+        summary: sum.text, sample: sumNa ? '数据暂不可用' : String(sum.sample), sampleOk: !sumNa, rangeText: range.text,
+        posThemes: pos, negThemes: neg,
+        noPos: !posNa && pos.length === 0, noNeg: !negNa && neg.length === 0,
+        posUnavailable: posNa, negUnavailable: negNa,
+        posTotal: attNa ? '数据暂不可用' : String(att.positive),
+        negTotal: attNa ? '数据暂不可用' : String(att.negative),
+        neuTotal: attNa ? '数据暂不可用' : String(att.neutral),
+        neuShare: attNa ? '数据暂不可用' : (all ? (att.neutral / all * 100).toFixed(0) + '% 全部有效内容' : '—'),
         posPct: valid ? (att.positive / valid * 100).toFixed(1) : '0',
         negPct: valid ? (att.negative / valid * 100).toFixed(1) : '0',
-        net: att.sampleSufficient
-          ? (att.positive === att.negative ? '积极与消极持平' : (att.positive > att.negative ? '积极比消极多 ' + (att.positive - att.negative) + ' 条' : '消极比积极多 ' + (att.negative - att.positive) + ' 条'))
-          : '样本不足 · 不输出倾向结论',
-        netFg: att.sampleSufficient ? (att.positive >= att.negative ? 'var(--positive-700)' : 'var(--negative-700)') : 'var(--ink-500)',
+        /* 三态未标注时既不是「持平」也不是「样本不足」—— 两句都是结论，而这里没有结论。 */
+        net: attNa
+          ? '数据暂不可用 · 不输出倾向结论'
+          : (att.sampleSufficient
+            ? (att.positive === att.negative ? '积极与消极持平' : (att.positive > att.negative ? '积极比消极多 ' + (att.positive - att.negative) + ' 条' : '消极比积极多 ' + (att.negative - att.positive) + ' 条'))
+            : '样本不足 · 不输出倾向结论'),
+        netFg: !attNa && att.sampleSufficient ? (att.positive >= att.negative ? 'var(--positive-700)' : 'var(--negative-700)') : 'var(--ink-500)',
         heat: num(o.discussionHeat),
+        heatWhy: o.discussionHeat == null ? heatWhy(o) : undefined,
         heatDelta: b.heat.short, heatDfg: self.dfg(b.heat),
         comments: num(o.comments),
         likes: num(o.likes),
         shares: num(o.shares),
         interactions: num(o.interactions),
         rank: String(rk.map[code]), rankTotal: String(rk.total),
-        hasNegCats: cats.length > 0, noNegCats: cats.length === 0,
+        hasNegCats: cats.length > 0, noNegCats: !catsNa && cats.length === 0, negCatsUnavailable: catsNa,
         negCats: cats.map(function (c) {
           var st = lifeStyle[c.lifecycleLabel] || lifeStyle['持续'];
           return {

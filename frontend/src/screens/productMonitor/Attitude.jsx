@@ -106,6 +106,11 @@ export default function Attitude({ v }) {
           {v.lowSample && (
             <span style={s('padding:3px 10px;border-radius:9999px;background:var(--warning-100);font:600 13px/1.5 var(--font-cjk);color:var(--warning-700)')}>样本不足 · 低于 {v.threshold} 条阈值，不输出倾向结论</span>
           )}
+          {/* 与「样本不足」互斥：那一枚说的是「数过了，样本太少」，这一枚说的是
+              「三态标注还没有」。徽章位用短文案「暂不可用」（PRD §3.6）。 */}
+          {v.attNa && (
+            <span style={s('padding:3px 10px;border-radius:9999px;background:var(--ink-100);font:600 13px/1.5 var(--font-cjk);color:var(--ink-600)')}>暂不可用 · 三态标注尚未生成</span>
+          )}
         </div>
       </div>
 
@@ -126,6 +131,9 @@ export default function Attitude({ v }) {
           {v.noPos && (
             <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 区间内没有可归类的积极观点。</div>
           )}
+          {v.posUnavailable && (
+            <div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 积极观点聚类尚未生成或数据源未提供，本区域不展示推测内容。</div>
+          )}
         </div>
 
         <div>
@@ -144,6 +152,9 @@ export default function Attitude({ v }) {
           ))}
           {v.noNeg && (
             <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 区间内没有可归类的消极观点。</div>
+          )}
+          {v.negUnavailable && (
+            <div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 消极观点聚类尚未生成或数据源未提供，本区域不展示推测内容。</div>
           )}
         </div>
       </div>

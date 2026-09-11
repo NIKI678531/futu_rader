@@ -8,7 +8,7 @@ from flask import abort
 
 from core.envelope import respond
 from core.ranges import build_range
-from providers.demo import MISSING
+from providers.sentinel import MISSING
 
 from . import v1_bp
 

@@ -45,6 +45,11 @@ export default function Heatmap({ v }) {
           <span style={s('flex:1;min-width:0;font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>合计讨论热度 {v.tailHeat} · 占全市场 {v.tailShare}</span>
           <span style={s('flex:none;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600)')}>看完整榜单 →</span>
         </div>
+        {/* 面积＝热度，热度未知就画不出格子。但少画几个格子看不出来，于是这张图会
+            冒充全市场的全貌 —— 所以缺了几只必须写在图边上。demo 下恒为 0，不渲染。 */}
+        {v.heatNaShow && (
+          <div title={v.heatNaWhy} style={s('display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;height:32px;margin-top:6px;padding:0 12px;border:1px dashed var(--warning-600);border-radius:4px;background:var(--warning-100);font:400 12px/1.4 var(--font-cjk);color:var(--warning-700)')}>{v.heatNaText}</div>
+        )}
       </div>
     </div>
   )

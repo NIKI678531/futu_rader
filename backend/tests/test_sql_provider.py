@@ -11,104 +11,27 @@ schema 是共用的那一份，所以「列名对不上」这类错误照样能�
 用编出来的数字有个额外好处：期望值可以手算写在断言旁边，读的人不用信任何一层实现。
 """
 
-import json
-from datetime import date, datetime
-from pathlib import Path
+from datetime import date
 
 import pytest
-
-from core.calendar import parse_anchor
-
-# 先导入 provider：它会把仓库根塞进 sys.path，下面的 radar_db 才 import 得到
-# （见 providers/sql.py 顶部的 sys.path 守卫）。
-from providers.sql import SqlProvider
-from radar_db import create_all
-from radar_db.schema import comments, feeds, mentions, meta_kv
-
-ANCHOR = "2026-08-25"  # 真实数据的锚点：最近一个完整自然日
-MASTER = json.loads(
-    (Path(__file__).resolve().parents[1] / "fixtures" / "demo" / "master.json").read_text(
-        encoding="utf-8"
-    )
+from sqlalchemy import delete, insert
+from radar_db.schema import meta_kv
+from sql_fixture import (
+    ANCHOR,
+    KOL_NAME,
+    MASTER,
+    OFFICIAL_FULL,
+    OWN_CODE,
+    PEER_CODE,
+    make_sql_provider,
 )
-OWN_CODE = "3033"  # 恒生科技指數ETF，CSOP 南方东英
-PEER_CODE = "3032"  # 同名竞品，恒生投资
-OFFICIAL_FULL = "恒生投資管理有限公司"  # 有 comps ⇒ 发行商官号
-KOL_NAME = "孫子的末代傳人"  # master.json 里 active 的 KOL
 
-
-def _feed(feed_id, day, hour, uid, name, likes, n_comments, shares, browse=None):
-    return {
-        "feed_id": feed_id,
-        "code": OWN_CODE,  # 冗余列，读路径一律走 mentions，这里只是不能为空
-        "posted_at": datetime(2026, 8, day, hour, 0),
-        "feed_type": 1,
-        "author_uid": uid,
-        "author_name": name,
-        "title": None,
-        "content": "正文",
-        "like_count": likes,
-        "comment_count": n_comments,
-        "image_count": 0,
-        "share_count": shares,
-        "browse_count": browse,
-        "raw_json_broken": shares is None,
-    }
-
-
-def _provider(broken_share=True, anchor=ANCHOR):
-    """内存库 ＋ 一小撮数据。
-
-    `broken_share=True` 时 f2 的 `share_count` 是 NULL —— 模拟源库 raw_json 被 TEXT 列
-    截断的那 0.03% 行。它是本文件里好几条断言的起因，不是随手写的。
-    """
-    p = SqlProvider("sqlite://")
-    create_all(p._engine)
-
-    rows_feeds = [
-        # 08-25 09:00 官号发帖，正文同时提到自家与竞品
-        _feed(1, 25, 9, "u1", OFFICIAL_FULL, 10, 4, 2),
-        # 08-25 09:30 → 同一个小时桶。转发数未知
-        _feed(2, 25, 9, "u2", KOL_NAME, 0, 1, None if broken_share else 0, browse=888),
-        # 08-25 14:00 竞品讨论区
-        _feed(3, 25, 14, "u3", "路人甲", 5, 2, 0),
-        # 08-24：基准区间那天
-        _feed(4, 24, 11, "u4", "路人乙", 100, 10, 1),
-    ]
-    rows_comments = [
-        {"comment_id": 11, "feed_id": 1, "author_uid": "u9", "like_count": 3},
-        {"comment_id": 12, "feed_id": 1, "author_uid": "u1", "like_count": 0},
-        {"comment_id": 13, "feed_id": 3, "author_uid": "u9", "like_count": 1},
-    ]
-    rows_mentions = [
-        {"feed_id": 1, "code": OWN_CODE, "source": "anchor", "in_pool": True},
-        {"feed_id": 1, "code": PEER_CODE, "source": "body", "in_pool": True},
-        # 池外标的：读路径必须滤掉，否则 KeyError 或凭空多出一只产品
-        {"feed_id": 1, "code": "0700", "source": "body", "in_pool": False},
-        {"feed_id": 2, "code": OWN_CODE, "source": "anchor", "in_pool": True},
-        {"feed_id": 3, "code": PEER_CODE, "source": "anchor", "in_pool": True},
-        {"feed_id": 4, "code": OWN_CODE, "source": "anchor", "in_pool": True},
-    ]
-    with p._engine.begin() as conn:
-        conn.execute(feeds.insert(), rows_feeds)
-        conn.execute(comments.insert(), rows_comments)
-        conn.execute(mentions.insert(), rows_mentions)
-        if anchor:
-            conn.execute(
-                meta_kv.insert(),
-                [{"k": "anchor", "v": anchor}, {"k": "anchor_ts", "v": f"{anchor} 23:59:59"}],
-            )
-
-    # provider 在 __init__ 里就把 meta 读进来了（生产环境是先导库后起服务）。内存库只能
-    # 由 provider 自己那个 engine 建，顺序反了，所以这里重放 __init__ 的最后两行。
-    p._meta = p._read_meta()
-    p._anchor = parse_anchor(p._meta.get("anchor"))
-    return p
+from providers.sentinel import MISSING
 
 
 @pytest.fixture
 def provider():
-    return _provider()
+    return make_sql_provider()
 
 
 # ── 锚点 ───────────────────────────────────────────────────────────────
@@ -128,7 +51,7 @@ class TestAnchor:
 
         返回 `[]` 或 0 会让「库还没建」长得和「这个区间真的没人发帖」一模一样。
         """
-        p = _provider(anchor=None)
+        p = make_sql_provider(anchor=None)
         assert p.build_range("d7") is None
         assert p.pool("d7") is None
         assert p.ranks("d7") is None
@@ -193,7 +116,7 @@ class TestPool:
         assert len(idle["activeByBucket"]) == 24
 
     def test_attitude_and_alerts_are_none_until_the_annotation_pipeline_exists(self, provider):
-        """态度／预警／负面提及／合规数全部要 AI 标注（ADR-0010）。
+        """态度／预警／负面提及／合规数全部要 AI 标注（ADR-0017）。
 
         `{positive: 0, negative: 0, neutral: 0}` 会在界面上显示成「情绪中性」——
         那是一个我们并没有做出的判断（铁律 2）。
@@ -234,7 +157,7 @@ class TestUnknownSharesPropagate:
 
     def test_without_the_broken_row_everything_is_a_number(self):
         """同一批数据，只把那一行的转发数补上 —— 对照组。"""
-        p = _provider(broken_share=False)
+        p = make_sql_provider(broken_share=False)
         item = next(x for x in p.pool("d1")["list"] if x["code"] == OWN_CODE)
         # 评论 5 + 0.3×13 + 转发 2 = 10.9 → 11
         assert item["discussionHeat"] == 11
@@ -278,13 +201,31 @@ class TestBenchmark:
             assert b[k]["text"] == "数据暂不可用"
 
     def test_buckets_align_position_by_position(self, provider):
-        """基准区间切一样多的桶，趋势图悬停要按同位比。"""
-        b = provider.benchmark(OWN_CODE, "d1")
-        assert len(b["buckets"]) == 24
-        assert [x["i"] for x in b["buckets"]] == list(range(24))
+        """基准区间切一样多的桶，趋势图悬停要按同位比。
 
-    def test_unknown_product(self, provider):
-        assert provider.benchmark("0700", "d1") is None
+        桶里**没有** `i`：对齐靠下标，不靠字段（契约见 `fixtures/generate.mjs:169`，
+        那五条序列的键与趋势图图例键一一对应）。这条断言原来查的是 `x["i"]` ——
+        那是 sql 侧自己多发的字段，demo 下从来没有过，`test_provider_parity.py`
+        建起来当天就把它抓了出来。
+        """
+        b = provider.benchmark(OWN_CODE, "d1")
+        assert len(b["buckets"]) == 24 == len(b["base"]["buckets"])
+        for x in b["buckets"]:
+            assert set(x) == {"comments", "active", "interactions", "positive", "negative"}
+
+    def test_unknown_product_is_missing_not_none(self, provider):
+        """池里没有 0700（那是腾讯，不是 ETF）。
+
+        回 MISSING 而不是 None：端点把它转成 404。回 None 的话页面会显示一屏
+        「暂不可用」，看起来像采集掉了数，而真实原因是 URL 里的代码根本不在池里。
+        demo provider 查不到 fixture 键时回的也是 MISSING —— 两边必须一致。
+        """
+        assert provider.benchmark("0700", "d1") is MISSING
+        assert provider.heat_series_for("0700", "d1") is MISSING
+        assert provider.daily_for("0700") is MISSING
+        # 要 AI 的字段同样先验代码：产品在池里才轮到「这个字段暂不可用」。
+        assert provider.topics_for("0700", "d1") is MISSING
+        assert provider.topics_for(OWN_CODE, "d1") is None
 
 
 class TestSeries:
@@ -356,14 +297,47 @@ class TestOfficialPosts:
     def test_etf_mentions_use_the_account_domain_caliber(self, provider):
         """账号域「提及 ETF」按出现次数累加 —— 和市场域的评论去重口径语义相反。"""
         m = provider.etf_mentions_for("恒生投资", "d1")
-        assert [x["code"] for x in m["list"]] == [PEER_CODE, OWN_CODE]  # 并列时 code 升序
         assert m["etfCount"] == 2
-        assert m["own"] == 1 and m["peer"] == 1
         assert all(x["count"] == x["posts"] for x in m["list"])
+
+    def test_etf_mentions_sorts_own_products_first(self, provider):
+        """契约的排序是三级：自家在前 → 提及次数降序 → 代码升序。
+
+        原来只有后两级，于是同一个官号在 demo 与 sql 下芯片顺序不同。逐字比对抓不到
+        （它比的是 demo），只有接了真库才看得见 —— 那时候没人会想到去查排序。
+        """
+        m = provider.etf_mentions_for("恒生投资", "d1")
+        # 两只都只被提 1 次，差别只在自家／竞品：3033 是自家，3032 是竞品。
+        assert [x["code"] for x in m["list"]] == [OWN_CODE, PEER_CODE]
+
+    def test_etf_mentions_returns_all_six_contract_keys(self, provider):
+        """`own`／`peer` 是**两个子列表**，不是两个计数。
+
+        官号动态页那句 `em.own.map(chipEl)` 直接吃它。发计数过去就是
+        `em.own.map is not a function` —— 整屏白，而屏级边界会报成「后端服务连不上」。
+        """
+        m = provider.etf_mentions_for("恒生投资", "d1")
+        assert set(m) == {"list", "own", "peer", "etfCount", "total", "postCount"}
+        assert [x["code"] for x in m["own"]] == [OWN_CODE]
+        assert [x["code"] for x in m["peer"]] == [PEER_CODE]
+        assert m["total"] == sum(x["count"] for x in m["list"])
+        assert m["postCount"] == 1  # 两只 ETF 都来自同一篇帖子
+
+    def test_etf_mentions_short_name_matches_the_frontend_rule(self, provider):
+        """`short` 要按 shortName 的两条正则来，不是只截长度。
+
+        自家产品叫「恒生科技指數ETF」，去掉 ETF 后缀就是「恒生科技」。只截长度的话
+        sql 下是另一个值，而页面上那一栏的宽度是按前者设计的。
+        """
+        m = provider.etf_mentions_for("恒生投资", "d1")
+        assert next(x for x in m["list"] if x["code"] == OWN_CODE)["short"] == "恒生科技"
 
     def test_etf_mentions_accepts_either_name_form(self, provider):
         assert provider.etf_mentions_for(OFFICIAL_FULL, "d1")["etfCount"] == 2
-        assert provider.etf_mentions_for("查无此号", "d1") is None
+
+    def test_unknown_account_is_missing_not_none(self, provider):
+        """名单里没有这个官号 = 没这个资源 → 404，不是「这个官号暂不可用」。"""
+        assert provider.etf_mentions_for("查无此号", "d1") is MISSING
 
 
 class TestKolImpact:
@@ -422,7 +396,7 @@ class TestAiAndPriceSurfacesAreNone:
 
 def test_master_is_served_even_with_an_empty_database():
     """产品池是客户维护的主数据，不依赖有没有帖子。"""
-    p = _provider(anchor=None)
+    p = make_sql_provider(anchor=None)
     m = p.master()
     assert len(m["products"]) == 120
     assert len(m["officials"]) == 20
@@ -442,3 +416,58 @@ def test_date(provider):
     """锚点是 2026-08-25，不是今天 —— 防止有人把 `date.today()` 加回来。"""
     assert provider.build_range("d1")["from"] == ANCHOR
     assert date.fromisoformat(ANCHOR) < date(2026, 9, 10)
+
+
+# ── 库在进程活着的时候变了 ─────────────────────────────────────────────
+
+
+class TestRefresh:
+    """`refresh()` —— provider 是进程单例，它必须能发现脚下的库被重写了。
+
+    这不是性能问题。compose 把 backend 和 worker 一起拉起来，库那时是空的：
+    没有这一下，`__init__` 读到的空 meta 会被沿用到进程结束，导入跑完之后页面
+    依旧整屏「暂不可用」，直到有人重启容器。
+    """
+
+    def test_an_empty_database_recovers_once_the_import_lands(self):
+        p = make_sql_provider(anchor=None)
+        assert p.build_range("d7") is None, "没锚点 ⇒ 区间未知，不拿今天兜底"
+
+        with p._engine.begin() as conn:
+            conn.execute(insert(meta_kv), [{"k": "anchor", "v": ANCHOR}])
+        assert p.refresh() is True
+        assert p.build_range("d7")["to"] == ANCHOR, "导入跑完，页面自己好起来"
+
+    def test_a_new_etl_generation_drops_the_scan_cache(self, provider):
+        provider.pool("d1")
+        assert provider._cache, "扫描结果本来就该缓存 —— 一次全池扫描按秒计"
+
+        with provider._engine.begin() as conn:
+            conn.execute(insert(meta_kv), [{"k": "etl_generation", "v": "feeds=9"}])
+        assert provider.refresh() is True
+        assert provider._cache == {}
+
+    def test_an_unchanged_database_keeps_the_cache(self, provider):
+        provider.pool("d1")
+        before = dict(provider._cache)
+        assert provider.refresh() is False
+        assert provider._cache == before, (
+            "meta 没变就一行不动：缓存是这个 provider 唯一的性能来源，"
+            "不能因为一次探测就白丢"
+        )
+
+    def test_the_anchor_moves_with_the_meta_row(self, provider):
+        assert provider.build_range("d1")["to"] == ANCHOR
+        with provider._engine.begin() as conn:
+            conn.execute(delete(meta_kv).where(meta_kv.c.k == "anchor"))
+            conn.execute(insert(meta_kv), [{"k": "anchor", "v": "2026-08-26"}])
+        assert provider.refresh() is True
+        assert provider.build_range("d1")["to"] == "2026-08-26"
+
+
+def test_demo_provider_also_answers_refresh():
+    """`get_provider()` 每次取用都调 `refresh()`，两个 provider 都得有这个方法 ——
+    在接缝处写 `isinstance(p, SqlProvider)` 会把实现细节漏回上层（ADR-0001）。"""
+    from providers.demo import DemoProvider
+
+    assert DemoProvider().refresh() is False

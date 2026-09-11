@@ -31,7 +31,7 @@ import sys
 import uuid
 from datetime import timedelta
 
-from sqlalchemy import and_, func, insert, select, update
+from sqlalchemy import and_, func, insert, or_, select, update
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -155,6 +155,72 @@ def enqueue_comments(engine, cfg, *, codes=None, limit=None, since=None, priorit
                     "target_type": "comment",
                     "target_id": comment_id,
                     "subject_code": code,
+                    "task": task,
+                    "input_hash": schemas.input_hash(
+                        payload,
+                        model=cfg.model,
+                        prompt_version=prompt_version(prompt, cfg),
+                        taxonomy_version=cfg.taxonomy_version,
+                        schema_version=cfg.schema_version,
+                    ),
+                    "status": "pending",
+                    "priority": priority,
+                    "attempts": 0,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+    return _insert_jobs(engine, rows)
+
+
+def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, priority=0):
+    """把帖子排进待办（§11.2：类型／操作方向／摘要）。
+
+    与评论任务有三处结构性不同，不是参数差异：
+
+    **判定单元只有帖子本身，没有 subject。** 帖子类型是「这篇文章是什么」，
+    不是「这篇文章对哪只 ETF 什么态度」—— 一篇同时挂着三只标的的行情解读，
+    它仍然只是一篇行情解读。所以 `subject_code` 写 `NO_SUBJECT` 而不是逐标的排三条。
+    这也是为什么排队时**不按 `mentions` 展开**：展开会让同一篇帖子被判三次，
+    三次还可能判出三个不同的类型。
+
+    **正文可能为空，标题不能。** 富途社区有大量只有标题的帖子。所以过滤条件落在
+    「标题与正文至少有一个非空」上，而不是像评论那样只看正文 —— 只看正文会把这些
+    帖子整类排除在外，而它们恰恰是官号动态那一屏的主要内容。
+
+    **指纹覆盖标题＋正文。** `_build_payload` 发出去的就是这两样（`redact.post_payload`），
+    §11.3 要求缓存键覆盖真正发出去的输入。只按正文算指纹的话，改了标题的帖子会被
+    当成已排过队而跳过，而模型看到的输入其实变了。
+    """
+    task = "post_annotation"
+    prompt = get_prompt(task)
+    now = clock.now()
+    rows = []
+
+    with engine.connect() as conn:
+        q = select(feeds.c.feed_id, feeds.c.title, feeds.c.content).where(
+            or_(
+                and_(feeds.c.content.isnot(None), feeds.c.content != ""),
+                and_(feeds.c.title.isnot(None), feeds.c.title != ""),
+            )
+        )
+        if codes:
+            q = q.where(feeds.c.code.in_(list(codes)))
+        if since:
+            q = q.where(feeds.c.posted_at >= since)
+        # 同 enqueue_comments：稳定顺序，同样的参数每次取到同一批。
+        q = q.order_by(feeds.c.feed_id)
+        if limit:
+            q = q.limit(limit)
+
+        for feed_id, title, content in conn.execute(q):
+            job = {"target_id": feed_id, "subject_code": None}
+            payload = _build_payload(task, job, {"text": content, "title": title})
+            rows.append(
+                {
+                    "target_type": "feed",
+                    "target_id": feed_id,
+                    "subject_code": NO_SUBJECT,
                     "task": task,
                     "input_hash": schemas.input_hash(
                         payload,
@@ -485,12 +551,22 @@ def _write(engine, task, job, src, item, run_id):
     else:
         spans = list(item.evidence_spans or [])
         kinds = [("post_type", item.post_type)]
-        if item.summary is not None:
-            kinds.append(("summary", item.summary))
-        if item.direction is not None or item.direction_pending:
-            kinds.append(
-                ("direction", item.direction if not item.direction_pending else "pending")
-            )
+        # `summary=null` 与 `direction=null` 都是模型的**结论**，不是它没回答：schema 里
+        # 两个键都必填（`extra="forbid"` ＋ 无默认值），模型必须显式写 null，而 Prompt 给
+        # 了它们各自的含义 ——「帖子没有可读正文（纯图片、纯链接）」「帖子没有表达任何操作」。
+        #
+        # 所以这两行不能因为值是 null 就不写。不写的后果不是少一行数据，是**两件事在库里
+        # 变成同一个样子**：「已标注、确实没得摘」和「这帖压根没标注过」都表现为查不到行。
+        # 而页面上它们是相反的：前者照常渲染（只是不显示摘要），后者要显示「暂不可用」。
+        # 这也正好是 `direction_pending` 存在的理由 —— 同一个坑，那边已经填过一次了。
+        #
+        # 占位用 `false` 而不是某个字符串：它和摘要／方向枚举**类型不同**，读取方
+        # `json.loads` 之后一眼能分开，也不会跟一条正好写着「无」的摘要撞上。
+        kinds.append(("summary", item.summary if item.summary is not None else False))
+        kinds.append(
+            ("direction", "pending" if item.direction_pending
+             else (item.direction if item.direction is not None else False))
+        )
         expect_evidence = True
 
     located = [(s, ev.locate(s, source_text)) for s in spans]
@@ -645,7 +721,8 @@ def main(argv=None):
     import argparse
 
     ap = argparse.ArgumentParser(description="AI 标注作业")
-    ap.add_argument("--enqueue", action="store_true", help="把评论×产品排进待办")
+    ap.add_argument("--enqueue", action="store_true",
+                    help="排进待办；排哪种由 --task 决定")
     ap.add_argument("--run", action="store_true", help="领取待办并调模型")
     ap.add_argument("--status", action="store_true", help="只看队列状态")
     ap.add_argument("--task", default="comment_product")
@@ -666,9 +743,16 @@ def main(argv=None):
 
     if args.enqueue:
         codes = [c.strip() for c in args.codes.split(",")] if args.codes else None
-        annotate_n = enqueue_comments(engine, cfg, codes=codes, limit=args.limit,
-                                      priority=args.priority)
-        log.info("已排队 %d 条", annotate_n)
+        # 排队函数按 task 分派，而不是「评论固定、帖子加个开关」：两者的判定单元不同
+        # （评论是 (comment_id, subject_code)，帖子只有 feed_id），合成一个函数
+        # 加参数会让那个区别藏进一个 if 里。
+        enqueue = {"comment_product": enqueue_comments,
+                   "post_annotation": enqueue_posts}.get(args.task)
+        if enqueue is None:
+            ap.error(f"--task {args.task} 没有对应的排队函数")
+        annotate_n = enqueue(engine, cfg, codes=codes, limit=args.limit,
+                             priority=args.priority)
+        log.info("已排队 %d 条（%s）", annotate_n, args.task)
 
     if args.run:
         stats = run(engine, cfg, task=args.task, max_items=args.max_items)

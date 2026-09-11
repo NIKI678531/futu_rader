@@ -8,9 +8,16 @@
  * 建起来那天它就报红：官号动态页在用 `R.hash` 算主页地址，KOL 详情页在用 `R.addDays`
  * 算日历轴。两处分别由工单 05 与 07 拔掉，改成后端下发 `url` 与 `range.dates`。
  * 全程**没有设豁免名单**——豁免名单一旦有了就不会有人再删，红线也就永远停在那儿。
- * `npm test` 仍把 guards 排在最后：它是最便宜的一条，前面的六态红线和逐字比对更值得先看。
  *
- * 用法：npm run guards（也在 npm test 里）
+ * ## 在 `npm test` 里排第一（2026-09-11 改，原来排最后）
+ *
+ * 原来的理由是「六态红线和逐字比对更值得先看」。那是在按**价值**排序，而顺序该按
+ * **成本**排：guards 是纯 grep，几百毫秒，不起服务、不下浏览器；六态与逐字比对各要
+ * 拉起一套后端＋前端＋Playwright，合计以分钟计。一条 `?? 0` 让 guards 红的时候，
+ * 按原顺序你要先等完那几分钟才看得到它 —— 而那几分钟跑的东西，本来就会因为同一个
+ * `?? 0` 一起红。先跑最便宜、最可能红的那条，是省时间，不是降低它的分量。
+ *
+ * 用法：npm run guards（也在 npm test 里，第一个）
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'

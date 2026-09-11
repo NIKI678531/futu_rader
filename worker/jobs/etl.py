@@ -42,6 +42,7 @@ from radar_db.schema import (  # noqa: E402
     comments,
     feeds,
     mentions,
+    meta_kv,
     src_feeds,
     src_stocks,
     src_users,
@@ -260,7 +261,28 @@ def run(engine, batch_size=BATCH):
         src.close()
         out.close()
 
-    return {"feeds": n, "broken": broken, "comments": n_comments, "mentions": n_mentions}
+    stats = {"feeds": n, "broken": broken, "comments": n_comments, "mentions": n_mentions}
+    stamp(engine, stats)
+    return stats
+
+
+def stamp(engine, stats):
+    """把这轮 ETL 的产出计数写进 `meta_kv`，当作事实表的「代」。
+
+    后端进程把扫描结果按区间缓存，而缓存只在 `meta_kv` 变了的时候才丢。导入会重写整张
+    `meta_kv`，所以导入天然会让缓存失效；**ETL 不会** —— 它只重建 feeds/comments/
+    mentions。少了这一行，重跑 ETL 之后还在跑的后端会拿旧数据一直服务到有人重启它。
+
+    值取计数而不是时间戳，是有意的：ETL 是可重跑的，同样的 `src_*` 重跑出来的就是同一批
+    行。计数不变 ⇒ 数据没变 ⇒ 缓存本来就该留着。写时间戳会把「又跑了一遍」误报成
+    「数据变了」，每次重跑白白让后端重算一轮全池扫描。
+    """
+    row = {"k": "etl_generation",
+           "v": "feeds={feeds} comments={comments} mentions={mentions} broken={broken}".format(**stats)}
+    with engine.begin() as conn:
+        # 单键改写。两个方言的 upsert 语法不通用，delete + insert 在事务里等价且可移植。
+        conn.execute(delete(meta_kv).where(meta_kv.c.k == row["k"]))
+        conn.execute(insert(meta_kv).values(**row))
 
 
 def _flush(conn, fbuf, cbuf, mbuf):

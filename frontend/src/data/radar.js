@@ -114,7 +114,14 @@ const migrated = {
      串行往返（read() 未命中抛 Promise，Suspense 解决一个才轮到下一个）。
      `ok` 为 false 时 text 已经是该状态的文案，屏幕直接渲染，不按 status 再拼一遍。 */
   hotSummaryFor(code, rangeKey) {
-    return read('/hot-summaries' + qs({ range: rangeKey || DEFAULT_RANGE }))[code]
+    /* 整池那份**自己**可能是 null（`DATA_PROVIDER=sql` 下热议总结要 AI 归纳，
+       `providers/sql.py::hot_summaries` 整块返回 None）。`null[code]` 是硬 TypeError，
+       整个板块总览当场白屏、错误边界报「页面渲染失败」—— 而后端好好的，只是这一栏
+       还没生成。容器不知道 ⇒ 里面每一个也不知道，所以这里发 null 而不是 `{}` 或
+       `{ok:false,text:'…'}`：后者是在这一层替页面编文案，六态判定不在取数层
+       （api.js 硬约束 1）。 */
+    const all = read('/hot-summaries' + qs({ range: rangeKey || DEFAULT_RANGE }))
+    return all == null ? null : all[code]
   },
 
   /* summaryFor(code, range) → GET /products/{code}/summary?range= */
@@ -126,7 +133,10 @@ const migrated = {
      端点一次给 `{positive, negative}`，这里按极性取。设计源的三参签名原样保留 ——
      调用点从来都是正负各取一次，拆成两个端点等于白挨一次串行往返。 */
   themesFor(code, rangeKey, polarity) {
-    return read(product(code, 'themes', rangeKey))[polarity]
+    /* 同 hotSummaryFor：主题聚类整块要 AI（`providers/sql.py::themes_for` 返回 None），
+       `null['positive']` 是硬 TypeError，产品监控整页白屏。 */
+    const both = read(product(code, 'themes', rangeKey))
+    return both == null ? null : both[polarity]
   },
 
   /* negCatsFor(code, range) → GET /products/{code}/negative-categories?range= */

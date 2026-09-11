@@ -20,7 +20,7 @@ KOL 详情页拿它定「声量排名第一」与「上一位／下一位」的�
 """
 
 from providers import get_provider
-from providers.demo import MISSING
+from providers.sentinel import MISSING
 
 from .ranges import VALID_KEYS
 

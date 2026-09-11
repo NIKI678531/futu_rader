@@ -235,7 +235,44 @@ def test_leader_totals_are_null_when_any_post_count_is_null(sixstate_client):
     leader = data["leaders"][0]
     assert leader["comments"] is None
     assert leader["engagement"] is None
-    assert leader["n"] == 5          # 篇数照常有值：那是数得出来的
+    assert leader["n"] == 6          # 篇数照常有值：那是数得出来的
+
+
+def test_unannotated_post_matches_what_sql_actually_emits(sixstate_client):
+    """整块 AI 标注未生成的那一篇，必须与 `sql` provider 发出来的形状**逐字**一致。
+
+    六态样本的全部价值就在这条对齐上：它演的不是某个想象出来的缺失，而是
+    `DATA_PROVIDER=sql` 下每一篇帖子真正的样子（ADR-0017 §4）。少钉一个字段，
+    那个字段上的空值适配就没有任何护栏 —— 而它在真库下是 100% 会走到的那一支。
+    """
+    from providers.sql import _UNANNOTATED
+
+    p = kol_one(sixstate_client, "sixstate-kol-unannotated")
+    assert {k: p[k] for k in _UNANNOTATED} == _UNANNOTATED
+
+
+def test_unannotated_post_still_has_its_platform_counts(sixstate_client):
+    """标注缺不缺与平台计数采没采到是**两条独立的链路**。
+
+    合并成一篇「什么都没有」的帖子，页面上就演不出真库里最常见的那一种形态：
+    互动量好好的、只是一个 AI 字段都没有。前端那几处三态判断（摘要／原文／
+    置信度）恰恰要在计数正常的前提下才看得出有没有做对。
+    """
+    p = kol_one(sixstate_client, "sixstate-kol-unannotated")
+    assert [p["likes"], p["comments"], p["shares"], p["engagement"]] == [9, 2, 1, 12]
+
+
+def test_leader_type_profile_is_null_when_any_post_is_unannotated(sixstate_client):
+    """判据是「**有一篇**不知道」，不是「全都不知道」。
+
+    分布里少一票，谁是第一名就不确定了。五项必须一起是 None：留下 `typeCounts`
+    却把 `topType` 置空（或反过来），前端两处渲染会给出互相矛盾的说法。
+    `styleTag` 是 PRD §4.4 M3 的逐字文案「X为主 · 兼Y」—— 它更是个结论，
+    没标注完就下不得。
+    """
+    leader = sixstate_client.get("/api/v1/kol/impact?range=d7").get_json()["data"]["leaders"][0]
+    for field in ("typeCounts", "typeOrder", "topType", "topTypeLabel", "styleTag"):
+        assert leader[field] is None, field
 
 
 # ── 账号域第三页：KOL 详情 ──────────────────────────────────────────────
@@ -324,6 +361,49 @@ def test_the_other_products_keep_their_prices(sixstate_client):
     ok = sixstate_client.get("/api/v1/products/3033/candles?range=d7").get_json()["data"]
     assert ok["status"] == "ok" and ok["currency"] == "HKD"
     assert any(c["open"] for c in ok["list"])
+
+
+# ── 数据截至 ────────────────────────────────────────────────────────────
+
+
+def test_data_cutoff_is_absent_not_a_stale_constant(sixstate_client):
+    """取不到锚点时 `updatedAt` 这个键**不出现**，而不是退回一个旧日期。
+
+    `updatedAt` 原来手写在 `fixtures/meta.json` 里（演示锚点 `2026-09-02 09:00 HKT`），
+    于是 `DATA_PROVIDER=sql` 接真库时页面会拿它给截止到别的日期的真数据落款 ——
+    虚报，且页面上没有任何迹象。缺失有「数据暂不可用」兜着，这种错没有。
+    """
+    assert "updatedAt" not in sixstate_client.get("/api/v1/meta").get_json()["data"]
+
+
+def test_data_cutoff_is_still_verbatim_under_the_demo_scenario(client):
+    """反向断言：常规演示态下它必须还在，且逐字是设计源的 `R.UPDATED`。
+
+    否则「键不见了」在两种场景下都成立，上面那条测的就不是缺失态，而是我把它删干净了。
+
+    **不与上面那条合并成一个双 fixture 的测试。** `DemoProvider` 在 `__init__` 里读
+    `DEMO_SCENARIO`，而 `sixstate_client` 是用 monkeypatch 设的那个变量 —— 两个 fixture
+    同时出现在一条测试的签名里时，先构造的那个会把变量设上，后构造的 `client` 于是
+    也变成六态。那样写出来的断言会以 `KeyError` 红掉，而原因和被测代码毫无关系。
+    """
+    assert client.get("/api/v1/meta").get_json()["data"]["updatedAt"] == "2026-09-02 09:00 HKT"
+
+
+def test_data_cutoff_travels_with_the_master_data_not_the_constants(client):
+    """它归主数据管，不归口径常量管（`core/meta.py` 模块头）。
+
+    钉死来源而不只是取值：常量那份文件不会随数据变，主数据会。放错地方的后果不是
+    缺失而是说谎，所以这条盯的是「它从哪儿来」。
+    """
+    import json
+    from pathlib import Path
+
+    constants = json.loads(
+        (Path(__file__).resolve().parents[1] / "fixtures" / "meta.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "updatedAt" not in constants, "updatedAt 又被写回口径常量了"
 
 
 # ── 场景本身的确定性 ────────────────────────────────────────────────────

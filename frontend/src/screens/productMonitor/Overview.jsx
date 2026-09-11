@@ -25,6 +25,9 @@ export default function Overview({ v }) {
         </div>
         <div style={s('display:grid;grid-template-columns:minmax(0,1fr) 300px')}>
           <div style={s('padding:18px 24px 20px;display:flex;flex-direction:column;gap:12px')}>
+            {v.summaryNa && (
+              <div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 舆情总结尚未生成或数据源未提供，本区域不展示推测内容。</div>
+            )}
             {v.summaryPoints.map((p) => (
               <div key={p.n} style={s('display:flex;gap:14px;align-items:flex-start')}>
                 <span style={s('flex:none;width:24px;height:24px;margin-top:2px;border-radius:9999px;background:var(--csop-blue-50);display:flex;align-items:center;justify-content:center;font:600 12px/1 var(--font-mono);color:var(--csop-blue-700)')}>{p.n}</span>
@@ -35,7 +38,9 @@ export default function Overview({ v }) {
           <div style={s('border-left:1px solid var(--border-1);background:var(--canvas);padding:18px 20px;display:flex;flex-direction:column;gap:12px')}>
             <div style={s('display:flex;justify-content:space-between;gap:12px')}><span style={s('font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>统计区间</span><span style={s('font:600 13px/1.6 var(--font-mono);color:var(--ink-800);text-align:right')}>{v.rangeText}</span></div>
             <div style={s('display:flex;justify-content:space-between;gap:12px')}><span style={s('font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>基准区间</span><span style={s('font:600 13px/1.6 var(--font-mono);color:var(--ink-800);text-align:right')}>{v.benchText}</span></div>
-            <div style={s('display:flex;justify-content:space-between;gap:12px')}><span style={s('font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>有效样本</span><span style={s('font:600 13px/1.6 var(--font-mono);color:var(--ink-800);text-align:right')}>{v.sampleN} 条</span></div>
+            <div style={s('display:flex;justify-content:space-between;gap:12px')}><span style={s('font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>有效样本</span>{v.sampleOk
+              ? <span style={s('font:600 13px/1.6 var(--font-mono);color:var(--ink-800);text-align:right')}>{v.sampleN} 条</span>
+              : <span style={s('font:600 13px/1.6 var(--font-mono);color:var(--ink-500);text-align:right')}>{v.sampleN}</span>}</div>
             <div style={s('display:flex;justify-content:space-between;gap:12px')}><span style={s('font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>更新时间</span><span style={s('font:600 13px/1.6 var(--font-mono);color:var(--ink-800);text-align:right')}>{v.updated}</span></div>
             {v.hasSummaryEvidence && (
               <div onClick={v.openSummaryEvidence} style={s('margin-top:auto;display:flex;align-items:center;justify-content:center;gap:7px;padding:9px 14px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 14px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>查看原文证据 {v.summaryEvidence} 条 →</div>

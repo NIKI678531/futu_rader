@@ -18,7 +18,7 @@
 | 主数据 | 产品池、官号名单、KOL 名单 | 真实（客户维护，见下） |
 | 日历 | 区间、时间桶、基准区间 | 真实（`core/calendar.py`，锚点来自 `meta_kv`） |
 | 内容 | 帖子标题正文、评论正文、作者、链接 | **真实** |
-| AI 标注 | 帖子类型／置信度／摘要／操作方向、态度正负中性、主题、负面类别、合规扫描、阶段观点 | **None**（标注管线未建，ADR-0010） |
+| AI 标注 | 帖子类型／置信度／摘要／操作方向、态度正负中性、主题、负面类别、合规扫描、阶段观点 | **None**（标注管线已建但尚未驱动页面，ADR-0017） |
 | 行情 | K 线、日线价格 | **None**（dump 里没有本产品池的价格序列） |
 
 None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲染「暂不可用」。
@@ -46,10 +46,13 @@ None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲�
 """
 
 import json
+import re
 import sys
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+
+from .sentinel import MISSING
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
@@ -96,6 +99,31 @@ class SqlProvider:
         except Exception:
             return {}
 
+    def refresh(self):
+        """库在进程活着的时候被重写了，就重新认一遍。每次请求入口调一次。
+
+        这不是优化，是两个会真实发生的失效场景：
+
+        1. **compose 把 backend 和 worker 一起拉起来，库那时是空的**（README 明写了
+           这一点）。`__init__` 读到空 meta ⇒ `_anchor` 是 None ⇒ `build_range` 永远
+           返回 None ⇒ **每一个端点永久「暂不可用」**，直到有人重启容器。导入跑完
+           页面自己好起来，才是对的行为。
+        2. **ETL 重跑**会重建 feeds/comments/mentions，而 `_scan` 的结果缓存不知道。
+           所以 `jobs/etl.py` 收尾时往 `meta_kv` 写一个 `etl_generation` 计数，
+           让这里看得见。
+
+        判据是整份 `meta_kv` 相等，不是某一个键：导入会整表重写，ETL 改 generation，
+        两条路径都落在这一个比较里。相等就一行不动 —— 缓存是这个 provider
+        唯一的性能来源（一次全池扫描按秒计），不能因为一次探测就白白丢掉。
+        """
+        meta = self._read_meta()
+        if meta == self._meta:
+            return False
+        self._meta = meta
+        self._anchor = parse_anchor(meta.get("anchor"))
+        self._cache.clear()
+        return True
+
     @property
     def updated_at(self):
         """页面右上角的「数据截至」。取真实数据的最大 `posted_at`，不是系统时间。"""
@@ -106,11 +134,21 @@ class SqlProvider:
 
     def master(self):
         # 主数据整份下发。没接上库也照发：产品池是客户给的，不依赖有没有帖子。
-        return {
+        #
+        # `updatedAt` 也在这里，尽管它长得像个口径常量。它是**数据的属性**：这份库里
+        # 最后一条帖子发在什么时候。留在 `fixtures/meta.json` 里的后果不是缺失而是
+        # 说谎 —— 那份文件里冻着演示锚点 `2026-09-02 09:00 HKT`，而真库的数据到
+        # `2026-08-25` 就断了，页面会拿演示期的日期给真数据落款，整整虚报一周。
+        # 取不到时这个键**不出现**（`updated_at` 返回 None ⇒ 下面不并入），
+        # 前端据此渲染「数据暂不可用」；绝不退回常量。
+        out = {
             "products": self._products,
             "officials": self._officials,
             "kols": self._kols,
         }
+        if self.updated_at is not None:
+            out["updatedAt"] = self.updated_at
+        return out
 
     def build_range(self, key):
         if key not in PRESETS or self._anchor is None:
@@ -119,6 +157,83 @@ class SqlProvider:
         return build(key, self._anchor)
 
     # ── 市场域：计数 ─────────────────────────────────────────────────
+
+    # 产品主数据里要随观测一起下发的那几个键。`ownCode`（对位自家产品）**只有竞品有**，
+    # 自家产品身上结构性不存在，所以单独处理 —— 给自家产品补一个 `ownCode: None`
+    # 会让「这只自家产品的对位产品暂不可用」变成一个可表达的状态，而它并不存在。
+    _PRODUCT_KEYS = (
+        "code", "name", "sector", "sectorName", "struct",
+        "issuer", "ownership", "listingDate", "isNew", "south",
+    )
+
+    def _observation(self, p, s, rng):
+        """一只产品在某个区间上的**完整观测**。
+
+        `pool().list` 的元素和 `benchmark().base` 必须是同一个形状：门面的
+        `observe(code, range, 'bench')` 直接返回 `benchmark().base`，屏幕拿它当观测用
+        （`frontend/src/data/radar.js` 的 `observe`）。原来 `base` 只发七个计数字段，
+        少掉了 code / name / attitude / discussionHeat / activeAccounts 等等 ——
+        屏幕今天只读它的 `buckets`，所以没炸；改天读别的就会拿到 undefined，
+        而 undefined 在渲染层**不会**触发「暂不可用」，它会直接显示成空白。
+        """
+        out = {k: p[k] for k in self._PRODUCT_KEYS}
+        if "ownCode" in p:
+            out["ownCode"] = p["ownCode"]
+        out.update(
+            {
+                "buckets": self._obs_buckets(rng, s),
+                "mentions": s["mentions"],
+                "comments": s["comments"],
+                "interactions": s["interactions"],
+                "likes": s["likes"],
+                "shares": s["shares"],
+                "discussionHeat": s["heat"],
+                "activeAccounts": s["active"],
+                "activeByBucket": s["activeByBucket"],
+                # 态度分类要 AI 标注（ADR-0017）。整块 None 而不是 {positive: 0, ...}
+                # —— 后者是在说「一条积极的都没有」。
+                "attitude": None,
+                "maxBucket": s["maxBucket"],
+                "updatedAt": self.updated_at,
+            }
+        )
+        return out
+
+    @staticmethod
+    def _obs_buckets(rng, s):
+        """观测里的逐桶序列（设计源 `radar-data.js:351-371` 的 `observe` 内层 map）。
+
+        三件事值得写下来：
+
+        1. **`start`／`label`／`tip` 来自区间，不来自扫描结果。** `_scan` 只会数数，
+           桶的日期与悬停文案是日历算出来的（`core/calendar.build`）。少了它们，
+           产品监控页的趋势图悬停就没有「09-01 00:00–01:00」可显示。
+        2. **基准期观测用的也是当前区间的桶标签。** 设计源里 `observe(code, k, 'bench')`
+           map 的就是 `range.buckets` 本身，只换了随机盐 —— 环比是**同位**比较
+           （PRD §3.1），标签标的是「第几个桶」，不是「哪一天」。
+        3. **没有 `heat`。** 桶级热度另有专门端点（`heat-series`），契约里的观测桶
+           只有五条计数序列 ＋ 三条态度。这里多发一个 `heat` 就是契约漂移：
+           它会让人以为可以直接拿观测桶画热度曲线，而 demo provider 下没有这个键。
+        """
+        return [
+            {
+                "start": rb["day"],
+                "label": rb["label"],
+                "tip": rb["tip"],
+                "i": sb["i"],
+                "mentions": sb["mentions"],
+                "comments": sb["comments"],
+                "interactions": sb["interactions"],
+                "likes": sb["likes"],
+                "shares": sb["shares"],
+                "active": sb["active"],
+                # 三态要 AI 标注（ADR-0017）。0 会被读成「这一桶一条积极的都没有」。
+                "positive": None,
+                "negative": None,
+                "neutral": None,
+            }
+            for rb, sb in zip(rng["buckets"], s["buckets"])
+        ]
 
     def pool(self, range_key):
         rng = self.build_range(range_key)
@@ -131,29 +246,7 @@ class SqlProvider:
         for p in self._products:
             s = cur[p["code"]]
             global_max = max(global_max, s["maxBucket"])
-            items.append(
-                {
-                    **{
-                        k: p[k]
-                        for k in ("code", "name", "sector", "sectorName", "struct",
-                                  "issuer", "ownership", "listingDate", "isNew", "south")
-                    },
-                    "buckets": s["buckets"],
-                    "mentions": s["mentions"],
-                    "comments": s["comments"],
-                    "interactions": s["interactions"],
-                    "likes": s["likes"],
-                    "shares": s["shares"],
-                    "discussionHeat": s["heat"],
-                    "activeAccounts": s["active"],
-                    "activeByBucket": s["activeByBucket"],
-                    # 态度分类要 AI 标注，管线未建（ADR-0010）。整块 None 而不是
-                    # {positive: 0, ...} —— 后者是在说「一条积极的都没有」。
-                    "attitude": None,
-                    "maxBucket": s["maxBucket"],
-                    "updatedAt": self.updated_at,
-                }
-            )
+            items.append(self._observation(p, s, rng))
 
         own = [o for o in items if o["ownership"] == "own"]
         heat = _add_all(o["discussionHeat"] for o in own)
@@ -194,8 +287,12 @@ class SqlProvider:
         return {"map": {c: i + 1 for i, c in enumerate(order)}, "total": len(order)}
 
     def benchmark(self, code, range_key):
+        # 代码不在池里是「没这个资源」→ 404；锚点取不到是「取不到值」→ 200 unavailable。
+        # 两者都写成 `return None` 的话，打错一个代码看起来就跟数据源挂了一样。
+        if code not in self._by_code:
+            return MISSING
         rng = self.build_range(range_key)
-        if rng is None or code not in self._by_code:
+        if rng is None:
             return None
         cur = self._scan(rng["from"], rng["to"], rng)[code]
         # 基准区间也切同样多的桶：环比要逐桶对齐同位（PRD §3.1），产品监控页的趋势图
@@ -213,31 +310,31 @@ class SqlProvider:
             "negative": delta(None, None),
             "neutral": delta(None, None),
             "accounts": delta(cur["active"], base["active"]),
-            "base": {
-                "mentions": base["mentions"],
-                "comments": base["comments"],
-                "interactions": base["interactions"],
-                "likes": base["likes"],
-                "shares": base["shares"],
-                "heat": base["heat"],
-                "buckets": base["buckets"],
-            },
+            # 基准期的**完整观测**，与 pool().list 的元素同形 —— 门面的
+            # `observe(code, range, 'bench')` 返回的就是这一份，屏幕拿它当观测用。
+            "base": self._observation(self._by_code[code], base, rng),
+            # 与 `base.buckets` **逐桶同位**的 delta 束（`fixtures/generate.mjs:169`）。
+            # 五条序列与趋势图的图例键一一对应，前端只按图例开关取用 —— 所以这里
+            # 不能多发也不能少发：多发的（`mentions`/`likes`/`shares`/`i`）图例里没有
+            # 对应开关，少发的（`active`/`positive`/`negative`）会让开关点开一片空白。
             "buckets": [
                 {
-                    "i": i,
-                    "mentions": delta(c["mentions"], b["mentions"]),
                     "comments": delta(c["comments"], b["comments"]),
+                    "active": delta(c["active"], b["active"]),
                     "interactions": delta(c["interactions"], b["interactions"]),
-                    "likes": delta(c["likes"], b["likes"]),
-                    "shares": delta(c["shares"], b["shares"]),
+                    # 态度两条要 AI 标注（ADR-0017），环比无从谈起 → delta(None, None)。
+                    "positive": delta(None, None),
+                    "negative": delta(None, None),
                 }
-                for i, (c, b) in enumerate(zip(cur["buckets"], base["buckets"]))
+                for c, b in zip(cur["buckets"], base["buckets"])
             ],
         }
 
     def heat_series_for(self, code, range_key):
+        if code not in self._by_code:
+            return MISSING
         rng = self.build_range(range_key)
-        if rng is None or code not in self._by_code:
+        if rng is None:
             return None
         s = self._scan(rng["from"], rng["to"], rng)[code]
         out = []
@@ -261,7 +358,9 @@ class SqlProvider:
 
     def daily_for(self, code):
         """KOL 详情与产品监控的逐日轴。价格四项没有数据源 → None，评论与活跃是真的。"""
-        if code not in self._by_code or self._anchor is None:
+        if code not in self._by_code:
+            return MISSING
+        if self._anchor is None:
             return None
         frm = self._anchor - timedelta(days=59)
         per_day = self._by_day(code, frm, self._anchor)
@@ -293,9 +392,14 @@ class SqlProvider:
         for row, codes in self._posts(rng, list(by_name)):
             o = by_name[row.author_name]
             is_issuer = bool(o.get("comps"))
+            common = self._post_common(rng, row, codes)
+            # 官号动态的契约里没有 `hour`（KOL 帖子有 —— KOL 详情页的日历轴要用）。
+            # 多发一个键不会让页面出错，但它是契约漂移：下一个人会以为这是约定的一部分，
+            # 然后在官号页上用它，而 demo provider 下这个键根本不存在。
+            common.pop("hour")
             out.append(
                 {
-                    **self._post_common(rng, row, codes),
+                    **common,
                     "id": f"of-{row.feed_id}",
                     "account": o["short"],
                     "accountFull": o["full"],
@@ -317,18 +421,35 @@ class SqlProvider:
         (feed_id, code)，同一篇帖子正文里把同一只 ETF 提三次，在事实层已经并成一行。
         要还原「按出现次数累加」得回到 `raw_json.summary.rich_text` 逐段数——那是 ETL
         的活，不是这里的。两列都发出去，是为了将来 ETL 补上时前端不用改。
+
+        ## 六个键一个都不能少（2026-09-11 修）
+
+        这里原来只发 `list` / `own` / `peer` / `etfCount` 四个键，而且 `own` / `peer`
+        发的是**计数**。契约（`design/radar-data.js` 的 `etfMentionsFor`，fixture
+        `fixtures/demo/etf_mentions.json` 同形）要的是六个键，其中 `own` / `peer` 是
+        **两个子列表**。官号动态页 `OfficialActivity.jsx:155` 那句 `em.own.map(chipEl)`
+        在 `DATA_PROVIDER=sql` 下当场 TypeError —— 整屏白，且被屏级边界报成
+        「后端服务连不上」，而后端好端端的。
+
+        排序也按契约来：**自家在前**，再按提及次数降序，再按代码升序。原来只有后两级，
+        于是同一个官号在 demo 与 sql 下芯片顺序不同 —— 逐字比对抓不到（它比的是 demo），
+        只有接了真库才看得见。
         """
         rng = self.build_range(range_key)
         if rng is None:
             return None
         o = next((x for x in self._officials if x["short"] == account or x["full"] == account), None)
         if o is None:
-            return None
+            # 名单里没有这个官号 = 没这个资源 → 404，不是「这个官号的数据暂不可用」。
+            return MISSING
         rows = defaultdict(lambda: {"count": 0, "posts": 0})
+        post_ids = set()
         for row, codes in self._posts(rng, [o["full"]]):
             for c in codes:
                 rows[c]["count"] += 1
                 rows[c]["posts"] += 1
+                # 只有真提到了 ETF 的帖子才进 postCount（契约里 postSet 也在这一层写）。
+                post_ids.add(row.feed_id)
         items = []
         for c, v in rows.items():
             p = self._by_code[c]
@@ -336,19 +457,22 @@ class SqlProvider:
                 {
                     "code": c,
                     "name": p["name"],
-                    "short": _ellipsis(p["name"]),
+                    "short": _short_name(p["name"]),
                     "issuer": p["issuer"],
                     "ownership": p["ownership"],
                     "count": v["count"],
                     "posts": v["posts"],
                 }
             )
-        items.sort(key=lambda x: (-x["count"], x["code"]))
+        items.sort(key=lambda x: (0 if x["ownership"] == "own" else 1, -x["count"], x["code"]))
         return {
             "list": items,
-            "own": sum(1 for x in items if x["ownership"] == "own"),
-            "peer": sum(1 for x in items if x["ownership"] != "own"),
+            # 子列表取自**已排好序的** items，与契约里 `list.filter(...)` 同序。
+            "own": [x for x in items if x["ownership"] == "own"],
+            "peer": [x for x in items if x["ownership"] != "own"],
             "etfCount": len(items),
+            "total": sum(x["count"] for x in items),
+            "postCount": len(post_ids),
         }
 
     # ── 账号域：KOL ──────────────────────────────────────────────────
@@ -388,46 +512,60 @@ class SqlProvider:
 
     def kol_opinions(self, kol, range_key):
         # 「这位 KOL 对发帖记录之外的产品的观点与操作」——观点、操作、情绪净值三项全部
-        # 来自 AI 标注（ADR-0010）。一条都算不出来，整份 None 而不是空列表：
+        # 来自 AI 标注（ADR-0017）。一条都算不出来，整份 None 而不是空列表：
         # 空列表是在说「他对别的产品没有观点」。
+        if not any(k["name"] == kol for k in self._kols):
+            return MISSING
         return None
 
     # ── 需要 AI 标注或行情源，本期一律 None ─────────────────────────
+    #
+    # 但**先验产品代码**。「这只产品的这个字段要 AI」和「没有这只产品」是两件事：
+    # 前者是 200 +「暂不可用」，后者是 404。整段都回 None 的话，URL 里把 3033 敲成
+    # 3O33 会得到一屏「暂不可用」—— 看起来像采集掉了数据，于是人去查采集，
+    # 而那边一切正常。demo provider 查不到 fixture 键时回的就是 MISSING，
+    # 两个 provider 在这件事上必须一致（`tests/test_provider_parity.py`）。
+
+    def _unannotated(self, code):
+        """产品在池里但该字段要 AI／行情源 → None；产品不在池里 → MISSING。"""
+        return None if code in self._by_code else MISSING
 
     def hot_summaries(self, range_key):
+        # 整池一份，没有 code 参数，所以没有「产品不存在」这一说。
         return None
 
     def summary_for(self, code, range_key):
-        return None
+        return self._unannotated(code)
 
     def themes_for(self, code, range_key):
-        return None
+        return self._unannotated(code)
 
     def neg_cats_for(self, code, range_key):
-        return None
+        return self._unannotated(code)
 
     def competitors_for(self, code, range_key):
-        return None
+        return self._unannotated(code)
 
     def compliance_for(self, code, range_key):
-        return None
+        return self._unannotated(code)
 
     def topics_for(self, code, range_key):
-        return None
+        return self._unannotated(code)
 
     def kol_mentions_for(self, code, range_key):
         # 提及本身能数，但每行要 dominantAttitude / representativeExcerpt（AI）才成立。
-        return None
+        return self._unannotated(code)
 
     def evidence_for(self, code, ctx_key, polarity, n):
         # 摘录是按极性取的，极性来自态度标注。
-        return None
+        # ctx / polarity 的合法性由 core/evidence.py 先验过了，这里只验产品。
+        return self._unannotated(code)
 
     def candles_for(self, code, range_key):
-        return None
+        return self._unannotated(code)
 
     def stages_for(self, code, range_key):
-        return None
+        return self._unannotated(code)
 
     # ── 内部：扫描与聚合 ─────────────────────────────────────────────
 
@@ -636,13 +774,17 @@ class SqlProvider:
                     "peerAny": sum(1 for p in ps if p["camp"] in ("competitor", "both")),
                     "engagement": _add_all(p["engagement"] for p in ps),
                     "comments": _add_all(p["comments"] for p in ps),
-                    # 类型分布全部来自 AI 类型标注（ADR-0010）。
+                    # 类型分布全部来自 AI 类型标注（ADR-0017）。
                     "typeCounts": None,
                     "typeOrder": None,
                     "topType": None,
                     "topTypeLabel": None,
                     "styleTag": None,
                     "top": max(ps, key=lambda p: (p["engagement"] or 0, p["id"])),
+                    # 这位 KOL 的全部帖子。契约里有（`frontend/src/lib/profile.js` 算出的
+                    # 画像也带它），少发一个键前端就是 undefined —— 而 undefined 不会
+                    # 触发「暂不可用」，它会静悄悄地什么都不显示。
+                    "posts": ps,
                 }
             )
         out.sort(key=lambda x: (-(x["engagement"] or 0), x["kol"]))
@@ -743,5 +885,23 @@ def _camp(by_code, codes):
     return "both" if own and peer else ("own" if own else ("competitor" if peer else "none"))
 
 
-def _ellipsis(name, n=10):
-    return name if len(name) <= n else name[:n] + "…"
+# 两条正则与 `frontend/src/lib/view.js` 的 `shortName()` 逐字对应，那边又是
+# `design/radar-data.js` 的逐字拷贝。三处同源不是重复实现：它是**展示层的缩写规则**，
+# 不是口径（铁律 1 管的是公式），而 fixture 里的 `short` 正是它生成的 —— 后端不照着做，
+# demo 与 sql 两个 provider 就会在同一个字段上给出两个值。
+_SHORT_PREFIX = re.compile(r"^南方[東东]英")
+_SHORT_SUFFIX = re.compile(r"(指數|指数)?ETF$")
+
+
+def _short_name(name, n=10):
+    """产品名缩写。与 `shortName()` 同口径：先去发行商前缀与 ETF 后缀，再截 10 字。
+
+    原来这里是一个只截长度的 `_ellipsis`，于是自家产品的 `short` 在 sql 下是
+    「南方東英恒生科技指…」，在 demo 下是「恒生科技」—— 同一个字段两个值，而页面上
+    那一栏窄得只放得下后者。
+    """
+    s = _SHORT_SUFFIX.sub("", _SHORT_PREFIX.sub("", str(name or "")))
+    # 整个名字都被两条正则吃掉时退回原名（与 `shortName` 的 `if (!s)` 同）。
+    if not s:
+        s = str(name or "")
+    return s if len(s) <= n else s[:n] + "…"

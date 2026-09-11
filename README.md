@@ -32,6 +32,21 @@ The checkout currently lives on the `P:` DFS share, which needs two Vite setting
 read over SMB and the watcher has to poll. Working from a local disk is noticeably faster
 and needs no special configuration.
 
+**`npm install` does not merely run slowly on `P:` — it fails.** Unpacking creates
+symlinks and renames small files concurrently, and SMB's semantics there differ enough
+that the install dies partway with `EPERM`/`EBUSY`/`ENOENT`. So on that share the
+toolchain runs from a local mirror instead ([ADR-0018](docs/adr/0018-local-mirror-for-npm.md)):
+
+```sh
+cd frontend
+npm run mirror        # sync P: → %USERPROFILE%\.futu-radar\mirror (source only)
+npm run mirror:test   # sync, then run the full suite over there
+```
+
+Source is only ever synced one way. The trap worth knowing: edit `src/` on `P:`, go run
+the tests in the mirror without syncing, and they pass — on the previous revision.
+On a local checkout none of this applies; just `npm install` in `frontend/`.
+
 The API and the collector are Python 3.11, each with its own virtualenv and no shared
 package — the worker writes raw rows, the API owns every formula (see `backend/core/`):
 
@@ -55,6 +70,32 @@ the console log lines are Chinese and will otherwise come out as mojibake.
 The frontend is deliberately not a compose service: building it in a container off the
 `P:` share is far slower than `npm run dev`. Ports sit one above ChatInsight's so both
 projects can run at once. Rationale for every such choice is in [plan.md](plan.md) §6.
+
+### Verification
+
+```sh
+cd frontend && npm test      # guards → six-state → diff
+cd backend  && .venv/Scripts/python -m pytest -q
+cd worker   && .venv/Scripts/python -m pytest -q
+```
+
+`npm test` is three gates, and they check different things: `guards` is a static grep for
+five red lines (no demo-data generator in screen code, no `?? 0` fallbacks in the data
+layer, …); `six-state` drives a purpose-built missing-data fixture through a browser and
+asserts 56 renderings; `diff` compares every text segment of the port against the design
+source, verbatim.
+
+All three run under `demo`. They do **not** cover the `sql` provider, whose missing
+surface is much larger — whole blocks come back `null`, not just fields. That needs the
+real slim DB, so it is opt-in and separate:
+
+```sh
+cd backend  && DATA_PROVIDER=sql APP_PORT=8019 .venv/Scripts/python app.py
+cd frontend && API=http://127.0.0.1:8019/api/v1 npm run real-data-check
+```
+
+It loads all five routes against the real database and fails on any `pageerror` or any
+`NaN`/`undefined`/`null`/`[object Object]` reaching the page.
 
 ### Which provider is serving
 

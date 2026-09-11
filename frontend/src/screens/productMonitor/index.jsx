@@ -15,7 +15,7 @@
        `style-hover` by `hover()`. */
 import React from 'react'
 import R from '../../data/radar'
-import { rgba, num, numRaw, navGroups } from '../../lib/view'
+import { rgba, num, numRaw, navGroups, stamp, naBox } from '../../lib/view'
 import { s } from '../../lib/dc'
 import Shell from '../../components/Shell'
 import FilterBar from './FilterBar'
@@ -69,7 +69,10 @@ export default class ProductMonitor extends React.Component {
       if (rg && R.PRESETS.some(function (x) { return x.k === rg; })) p.rangeKey = rg;
       if (ev) {
         var c2 = p.code || this.state.code, r2 = p.rangeKey || this.state.rangeKey;
-        var th = R.themesFor(c2, r2, 'positive').concat(R.themesFor(c2, r2, 'negative'))
+        /* 整块 null 时这里本来会抛，被外层 catch 吞成「深链参数不可用」—— 结果是对的，
+           但用异常当控制流，下次真有个拼写错误也会被同一个 catch 咽掉。显式跳过。 */
+        var evPos = R.themesFor(c2, r2, 'positive'), evNeg = R.themesFor(c2, r2, 'negative');
+        var th = (evPos == null || evNeg == null ? [] : evPos.concat(evNeg))
           .filter(function (x) { return x.id === ev; })[0];
         if (th) p.panel = {
           kind: 'theme', id: th.id, polarity: th.polarity, title: th.title,
@@ -79,7 +82,7 @@ export default class ProductMonitor extends React.Component {
       }
       if (risk) {
         var c3 = p.code || this.state.code, r3 = p.rangeKey || this.state.rangeKey;
-        var cr0 = R.complianceFor(c3, r3);
+        var cr0 = naBox(R.complianceFor(c3, r3));
         var it0 = cr0.list.filter(function (x) { return x.id === risk; })[0] || null;
         if (cr0.status === 'ok') p.panel = this.riskPanel(cr0, it0, c3, r3);
       }
@@ -181,7 +184,9 @@ export default class ProductMonitor extends React.Component {
     var range = R.buildRange(s.rangeKey);
     var cur = R.observe(s.code, s.rangeKey).buckets;
     var base = R.observe(s.code, s.rangeKey, 'bench').buckets;
-    var px = R.candlesFor(s.code, s.rangeKey);
+    /* 行情源还没接（ADR-0017）⇒ 整块 null。`px.status` 会直接 TypeError，而这里是
+       canvas 绘制路径 —— 崩在这儿连错误边界都接不到一个有意义的位置。 */
+    var px = naBox(R.candlesFor(s.code, s.rangeKey));
     var pxOk = !!lg.px && px.status === 'ok';
 
     var G = this.trendGeo();
@@ -193,7 +198,12 @@ export default class ProductMonitor extends React.Component {
     var AX_R = L + pw + 9, AX_P = L + pw + 64;   // 互动数右轴 · 独立价格轴（最右）
     this._geo = { L: L, pw: pw, n: cur.length, top: t1, bottom: t2 + h2 };
 
-    var maxOf = function (f) { return Math.max.apply(null, cur.concat(base).map(function (b) { return b[f] || 0; })); };
+    /* 取标尺上界时把未知项**剔除**（而不是当成 0）。两者对上界的结果一样，
+       但写成 filter 才说得清意图：下面 line() 遇到未知是断线，不是画到轴底。 */
+    var maxOf = function (f) {
+      var vals = cur.concat(base).map(function (b) { return b[f]; }).filter(function (v) { return v != null; });
+      return vals.length ? Math.max.apply(null, vals) : 0;
+    };
     /* 讨论轨道：评论数与活跃账号数同为计数且账号数 ≤ 评论数，共用左轴；互动数量级不同，单独右轴 */
     var maxC = Math.max(1, Math.max(maxOf('comments'), maxOf('active')) * 1.15);
     var maxI = Math.max(1, maxOf('interactions') * 1.15);
@@ -213,12 +223,19 @@ export default class ProductMonitor extends React.Component {
         if (rightMax != null) { g.textAlign = 'left'; g.fillText(String(Math.round(rightMax / 4 * i)), AX_R, y + 3.5); }
       }
     }
+    /* 未知值处**断线**，不落到坐标轴底部。设计源那句 `b[field] || 0` 在镜像里无害
+       （编出来的数永远齐全），接真库之后它会把「这一桶没采到」画成「这一桶是零」——
+       图上这两件事长得一模一样，而看图的人会当成结论。断开的线至少能看出来缺了一段。
+       （转发坏掉 ⇒ interactions 为 null，三态未标注 ⇒ positive/negative 为 null。） */
     function line(data, field, top, h, max, color, dashed) {
       var trace = function () {
         g.beginPath();
+        var pen = false;
         data.forEach(function (b, i) {
-          var x = xAt(i), y = top + h - ((b[field] || 0) / max) * h;
-          if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+          var v = b[field];
+          if (v == null) { pen = false; return; }
+          var x = xAt(i), y = top + h - (v / max) * h;
+          if (pen) g.lineTo(x, y); else { g.moveTo(x, y); pen = true; }
         });
       };
       /* 当前区间折线加白色描边，压在 K 线之上仍清晰可读 */
@@ -228,7 +245,9 @@ export default class ProductMonitor extends React.Component {
       trace(); g.stroke(); g.setLineDash([]);
       if (!dashed && data.length <= 32) {
         data.forEach(function (b, i) {
-          var x = xAt(i), y = top + h - ((b[field] || 0) / max) * h;
+          var v = b[field];
+          if (v == null) return;   // 同上：没有点，不是点在零位
+          var x = xAt(i), y = top + h - (v / max) * h;
           g.beginPath(); g.arc(x, y, 2.8, 0, Math.PI * 2);
           g.fillStyle = '#fff'; g.fill(); g.strokeStyle = color; g.lineWidth = 1.8; g.stroke();
         });
@@ -322,8 +341,12 @@ export default class ProductMonitor extends React.Component {
     var o = R.observe(code, s.rangeKey);
     var bench = R.benchmark(code, s.rangeKey);
     var rk = R.ranks(s.rangeKey);
-    var att = o.attitude, valid = att.positive + att.negative;
-    var allValid = valid + att.neutral;
+    /* `attitude` 整块可能为 null（三态要 AI 标注，ADR-0017）。设计源直接 `att.positive`，
+       接真库时第一次渲染就 TypeError，整屏白。「没标注」与「样本不足」是六态里的两态
+       （PRD §3.6），不能合并 —— 后者是算过之后的结论，前者根本没算。 */
+    var att = o.attitude, attNa = att == null;
+    var valid = attNa ? 0 : att.positive + att.negative;
+    var allValid = attNa ? 0 : valid + att.neutral;
 
     var presets = R.PRESETS.map(function (p) {
       var on = p.k === s.rangeKey;
@@ -410,13 +433,22 @@ export default class ProductMonitor extends React.Component {
         })
       });
     };
+    /* 主题聚类要 AI（`providers/sql.py::themes_for`）⇒ 整块 null，`null.slice` 硬崩。
+       null 与 `[]` 在这里是两句不同的话：`[]` 是「聚过类了，这一极没有主题」（暂无
+       相关内容），null 是「还没聚过」（暂不可用）。合并成一个空列表，页面会言之凿凿
+       地说这只产品没有负面主题（铁律 2、PRD §3.6）。 */
     var posAll = R.themesFor(code, s.rangeKey, 'positive');
     var negAll = R.themesFor(code, s.rangeKey, 'negative');
+    var posNa = posAll == null, negNa = negAll == null;
+    if (posNa) posAll = [];
+    if (negNa) negAll = [];
     var posThemes = (s.posMore ? posAll : posAll.slice(0, 3)).map(function (t) { return themeRow(t); });
     var negThemes = (s.negMore ? negAll : negAll.slice(0, 3)).map(function (t) { return themeRow(t); });
 
     /* 产品话题情绪 */
-    var topics = R.topicsFor(code, s.rangeKey).map(function (t) {
+    var topicsAll = R.topicsFor(code, s.rangeKey);
+    var topicsNa = topicsAll == null;
+    var topics = (topicsNa ? [] : topicsAll).map(function (t) {
       var mx = Math.max(1, Math.max.apply(null, t.buckets.map(function (b) { return b.mentions; })));
       return {
         title: t.title, summary: t.summary, mentions: String(t.mentions),
@@ -439,7 +471,7 @@ export default class ProductMonitor extends React.Component {
     });
 
     /* 关联竞品 */
-    var compsRes = R.competitorsFor(code, s.rangeKey);
+    var compsRes = naBox(R.competitorsFor(code, s.rangeKey));
     var comps = compsRes.list.map(function (c) {
       var mk = function (polarity, themes) {
         return () => self.openPanel({
@@ -458,7 +490,9 @@ export default class ProductMonitor extends React.Component {
         relation: c.relation === 'confirmed' ? '已确认' : 'AI 生成 · 待确认',
         rbg: c.relation === 'confirmed' ? 'var(--csop-blue-50)' : 'var(--warning-100)',
         rfg: c.relation === 'confirmed' ? 'var(--csop-blue-700)' : 'var(--warning-700)',
-        mentions: (c.comments || 0).toLocaleString('en-US'), delta: c.delta.short, dfg: self.dfg(c.delta),
+        /* `num()` 就是 `toLocaleString('en-US')` 加一道空值关口，逐字等价，多的是
+           null 分支 —— 设计源的 `|| 0` 会把「竞品这一项没取到」写成「0 条评论」。 */
+        mentions: num(c.comments), delta: c.delta.short, dfg: self.dfg(c.delta),
         pos: c.positiveThemes.length ? c.positiveThemes.map(function (t) { return t.title; }).join('；') : '暂无相关内容',
         neg: c.negativeThemes.length ? c.negativeThemes.map(function (t) { return t.title; }).join('；') : '暂无相关内容',
         posEv: String(c.evidencePos), negEv: String(c.evidenceNeg),
@@ -468,11 +502,11 @@ export default class ProductMonitor extends React.Component {
     });
 
     /* 本轮新增：价格 K 线、产品相关 KOL、重点舆情（需合规关注）—— 均随 code + rangeKey 同步重算，不残留上一只产品的数据 */
-    var px = R.candlesFor(code, s.rangeKey);
+    var px = naBox(R.candlesFor(code, s.rangeKey));
     var pxOn = !!s.legend.px;
     var candleMode = self.props.candleColor || 'greenUp';
     var candleUpTip = candleMode === 'redUp' ? '#F3A6A6' : '#8FE3B8', candleDnTip = candleMode === 'redUp' ? '#8FE3B8' : '#F3A6A6';
-    var kolRes = R.kolMentionsFor(code, s.rangeKey);
+    var kolRes = naBox(R.kolMentionsFor(code, s.rangeKey));
     var kolAll = kolRes.list, kolShow = s.kolMore ? kolAll : kolAll.slice(0, 5);
     var ATT_STYLE = {
       positive: ['var(--positive-100)', 'var(--positive-700)'],
@@ -493,7 +527,7 @@ export default class ProductMonitor extends React.Component {
         go: () => self.openPanel(self.kolPanel(k, code, s.rangeKey))
       };
     });
-    var cr = R.complianceFor(code, s.rangeKey);
+    var cr = naBox(R.complianceFor(code, s.rangeKey));
     var riskRows = cr.list.map(function (r) {
       return {
         id: r.id,
@@ -536,7 +570,12 @@ export default class ProductMonitor extends React.Component {
       return o.code.toLowerCase().indexOf(pqQ) >= 0 || o.name.toLowerCase().indexOf(pqQ) >= 0;
     }).sort(function (a, b) { return b.mentions - a.mentions; }) : [];
 
+    /* 总结要 AI 归纳（`providers/sql.py::summary_for`）⇒ 整块 null。
+       `String(null.text)` 是硬 TypeError；而退成空字符串又会让右栏「有效样本」写出
+       「0 条」—— 那是铁律 2 明令禁止的那种谎。所以这里立旗标，值位统一走长文案。 */
     var sum = R.summaryFor(code, s.rangeKey);
+    var sumNa = sum == null;
+    if (sumNa) sum = { text: '', sample: null, low: false };
     /* 总结按句拆成要点；过短的片段并入上一条 */
     var sumPts = [], sumBuf = '';
     Array.from(String(sum.text || '')).forEach(function (ch) {
@@ -569,7 +608,7 @@ export default class ProductMonitor extends React.Component {
       navGroups: navGroups('portfolio', 'product'), presets: presets,
       rangeText: range.text, rangeFrom: range.from, rangeTo: range.to,
       granLabel: range.granLabel, benchText: range.benchText, benchLabel: range.benchLabel,
-      updated: R.UPDATED, rangeKey: s.rangeKey,
+      updated: stamp(R.UPDATED), rangeKey: s.rangeKey,
       loading: s.loading, bodyOpacity: s.loading ? '0.45' : '1',
       code: code, name: o.name, sectorName: o.sectorName, struct: o.struct, issuer: o.issuer,
       listing: m.listingDate,
@@ -624,48 +663,59 @@ export default class ProductMonitor extends React.Component {
         { label: '全市场评论量排名', value: '第 ' + rk.map[code], d: { short: '／ ' + rk.total + ' 只', dir: 0 }, note: '基于完整活跃 ETF 池计算，板块筛选不重算' }
       ].map(function (k) { return { label: k.label, value: k.value, note: k.note, delta: k.d.short, dfg: self.dfg(k.d) }; }),
 
-      summary: sum.text, sampleN: String(sum.sample),
+      summary: sum.text, sampleN: sumNa ? '数据暂不可用' : String(sum.sample), sampleOk: !sumNa,
+      summaryNa: sumNa,
       summaryPoints: sumPts.map(function (p, i) { return { n: String(i + 1), text: p }; }),
-      summaryCountText: sumPts.length + ' 条要点 · 基于 ' + sum.sample + ' 条有效样本',
-      aiLabel: sum.low ? '样本不足 · 不输出倾向结论' : 'AI 生成 · 可追溯原文',
-      aiBg: sum.low ? 'var(--ink-100)' : 'var(--warning-100)',
-      aiFg: sum.low ? 'var(--ink-700)' : 'var(--warning-700)',
-      hasSummaryEvidence: o.mentions > 0,
+      summaryCountText: sumNa ? '数据暂不可用' : sumPts.length + ' 条要点 · 基于 ' + sum.sample + ' 条有效样本',
+      aiLabel: sumNa ? '暂不可用' : (sum.low ? '样本不足 · 不输出倾向结论' : 'AI 生成 · 可追溯原文'),
+      aiBg: sumNa ? 'var(--ink-100)' : (sum.low ? 'var(--ink-100)' : 'var(--warning-100)'),
+      aiFg: sumNa ? 'var(--ink-500)' : (sum.low ? 'var(--ink-700)' : 'var(--warning-700)'),
+      hasSummaryEvidence: !sumNa && o.mentions > 0,
       summaryEvidence: String(Math.round(o.mentions * 0.4)),
       openSummaryEvidence: () => self.openPanel({
         kind: 'summary', id: 'sum', polarity: 'neutral', title: '当前舆情总结的支撑原文',
         filter: '全部产品相关内容', count: Math.round(o.mentions * 0.4)
       }),
 
-      netText: att.sampleSufficient
-        ? (att.positive === att.negative ? '积极与消极条数持平' : (att.positive > att.negative ? '积极比消极多 ' + (att.positive - att.negative) + ' 条' : '消极比积极多 ' + (att.negative - att.positive) + ' 条'))
-        : '样本不足 · 不输出倾向结论',
-      netFg: att.sampleSufficient ? (att.positive >= att.negative ? 'var(--positive-700)' : 'var(--negative-700)') : 'var(--ink-500)',
-      posTotal: String(att.positive), negTotal: String(att.negative), neuTotal: String(att.neutral),
-      posShare: valid ? (att.positive / valid * 100).toFixed(1) + '%' : '—',
-      negShare: valid ? (att.negative / valid * 100).toFixed(1) + '%' : '—',
+      netText: attNa
+        ? '数据暂不可用 · 不输出倾向结论'
+        : (att.sampleSufficient
+          ? (att.positive === att.negative ? '积极与消极条数持平' : (att.positive > att.negative ? '积极比消极多 ' + (att.positive - att.negative) + ' 条' : '消极比积极多 ' + (att.negative - att.positive) + ' 条'))
+          : '样本不足 · 不输出倾向结论'),
+      netFg: !attNa && att.sampleSufficient ? (att.positive >= att.negative ? 'var(--positive-700)' : 'var(--negative-700)') : 'var(--ink-500)',
+      posTotal: attNa ? '数据暂不可用' : String(att.positive),
+      negTotal: attNa ? '数据暂不可用' : String(att.negative),
+      neuTotal: attNa ? '数据暂不可用' : String(att.neutral),
+      posShare: attNa ? '数据暂不可用' : (valid ? (att.positive / valid * 100).toFixed(1) + '%' : '—'),
+      negShare: attNa ? '数据暂不可用' : (valid ? (att.negative / valid * 100).toFixed(1) + '%' : '—'),
+      /* 条形宽度是几何量不是数字位：没数据时两边各半，画出来是一条中性的灰条，
+         旁边的文字位已经说了「数据暂不可用」。 */
       posBarPct: valid ? (att.positive / valid * 100).toFixed(2) : '50',
       negBarPct: valid ? (att.negative / valid * 100).toFixed(2) : '50',
       posDelta: bench.positive.text, posDfg: self.dfg(bench.positive),
       negDelta: bench.negative.text, negDfg: self.dfg(bench.negative),
-      neuShare: allValid ? (att.neutral / allValid * 100).toFixed(1) + '%' : '—',
-      validN: String(valid), lowSample: !att.sampleSufficient, threshold: String(R.LOW_SAMPLE),
+      neuShare: attNa ? '数据暂不可用' : (allValid ? (att.neutral / allValid * 100).toFixed(1) + '%' : '—'),
+      validN: attNa ? '数据暂不可用' : String(valid),
+      lowSample: !attNa && !att.sampleSufficient, attNa: attNa, threshold: String(R.LOW_SAMPLE),
 
       posSummary: posAll.length ? posAll[0].summary : '',
       negSummary: negAll.length ? negAll[0].summary : '',
-      negActionable: String(negAll.filter(function (t) { return t.share >= 12; }).length),
-      posLead: posAll.length
+      negActionable: negNa ? '数据暂不可用' : String(negAll.filter(function (t) { return t.share >= 12; }).length),
+      /* na 时导语留空，缺失态交给下面的 posUnavailable 框 —— 「区间内没有可归类的积极观点」
+         是**空态**的话（已聚类、这一极没有），拿它盖 null 就是替没做过的事下结论。 */
+      posLead: posNa ? '' : posAll.length
         ? '主要集中于' + posAll.slice(0, 2).map(function (t) { return t.title; }).join('、')
           + '，合计 ' + posAll.slice(0, 2).reduce(function (a, t) { return a + t.mentions; }, 0) + ' 条，占积极内容 '
           + Math.round(posAll.slice(0, 2).reduce(function (a, t) { return a + t.share; }, 0)) + '%。'
         : '区间内没有可归类的积极观点。',
-      negLead: negAll.length
+      negLead: negNa ? '' : negAll.length
         ? '主要集中于' + negAll.slice(0, 2).map(function (t) { return t.title; }).join('、')
           + '，合计 ' + negAll.slice(0, 2).reduce(function (a, t) { return a + t.mentions; }, 0) + ' 条，占消极内容 '
           + Math.round(negAll.slice(0, 2).reduce(function (a, t) { return a + t.share; }, 0)) + '%。'
         : '区间内没有可归类的消极观点。',
       posThemes: posThemes, negThemes: negThemes,
-      noPos: posThemes.length === 0, noNeg: negThemes.length === 0,
+      noPos: !posNa && posThemes.length === 0, noNeg: !negNa && negThemes.length === 0,
+      posUnavailable: posNa, negUnavailable: negNa,
       posMoreVisible: posAll.length > 3, negMoreVisible: negAll.length > 3,
       posMoreLabel: s.posMore ? '收起' : '展开全部 ' + posAll.length + ' 条',
       negMoreLabel: s.negMore ? '收起' : '展开全部 ' + negAll.length + ' 条',
@@ -694,7 +744,7 @@ export default class ProductMonitor extends React.Component {
       riskN: String(cr.list.length), riskRows: riskRows,
 
       axisCells: axisCells, dayBands: dayBands, hasDayBands: dayBands.length > 1,
-      hasTopics: topics.length > 0, noTopics: topics.length === 0, topics: topics,
+      hasTopics: topics.length > 0, noTopics: !topicsNa && topics.length === 0, topicsUnavailable: topicsNa, topics: topics,
       hasComps: comps.length > 0, noComps: comps.length === 0, comps: comps,
       compCount: String(comps.length),
       compScopeText: o.ownership === 'own' ? '自家产品 · 固定关联竞品与 AI 自动候选' : '竞品产品 · 反向展示对位自家产品与同类竞品',
@@ -757,7 +807,7 @@ export default class ProductMonitor extends React.Component {
     }
 
     /* 热度变化与阶段观点（第三轮 D1）：与上方趋势面板共用同一水平几何（左 64 / 右 136），随 code + rangeKey 同步重算，不残留上一只产品的数据 */
-    var SG = R.stagesFor(code, s.rangeKey);
+    var SG = naBox(R.stagesFor(code, s.rangeKey), ['series', 'stages']);
     var HG = { W: s.trendW || 1344, L: 64, Rr: 136, top: 14, ph: 112 };
     var hpw = HG.W - HG.L - HG.Rr, hsr = SG.series || [];
     var hn = Math.max(1, hsr.length), hstep = hpw / hn;
@@ -848,7 +898,12 @@ export default class ProductMonitor extends React.Component {
       var p = s.panel;
       var evCode = p.evidenceCode || code;
       /* 条数钳位（不传取 6、上限 12）是口径，实现在后端，这里原样转发 p.count（铁律 1）。 */
-      var items = p.items || R.evidenceFor(evCode, s.rangeKey + '|' + (p.id || p.kind), p.polarity, p.count);
+      var itemsRes = p.items || R.evidenceFor(evCode, s.rangeKey + '|' + (p.id || p.kind), p.polarity, p.count);
+      /* 原文证据要 AI 挑（`providers/sql.py::evidence_for`）⇒ 整块 null。抽屉是覆盖层，
+         它抛异常整页跟着白。空列表只是让下面的 `.map` 有东西可遍历，缺失态由
+         `panelUnavailable` 单独渲染 —— 不与「已检索、没有符合条件的原文」混为一谈。 */
+      var itemsNa = itemsRes == null;
+      var items = itemsNa ? [] : itemsRes;
       var typeStyle = {
         '普通散户': ['var(--canvas-alt)', 'var(--ink-700)'],
         '合作 KOL': ['var(--csop-blue-50)', 'var(--csop-blue-700)'],
@@ -856,10 +911,12 @@ export default class ProductMonitor extends React.Component {
       };
       out.panelTitle = p.title || '原文证据';
       out.panelFilter = p.filter || '全部内容';
-      out.panelCount = String(items.length);
+      out.panelCount = itemsNa ? '数据暂不可用' : String(items.length);
+      out.panelCountOk = !itemsNa;
+      out.panelUnavailable = itemsNa;
       out.panelHasExtra = !!(p.extra && p.extra.length);
       out.panelExtra = p.extra || [];
-      out.panelEmpty = items.length === 0;
+      out.panelEmpty = !itemsNa && items.length === 0;
       out.evidence = items.map(function (e) {
         var ts = typeStyle[e.authorType] || typeStyle['普通散户'];
         var open = s.post === e.id;
@@ -895,8 +952,8 @@ export default class ProductMonitor extends React.Component {
         };
       });
     } else {
-      out.panelTitle = ''; out.panelFilter = ''; out.panelCount = '0';
-      out.panelHasExtra = false; out.panelExtra = []; out.panelEmpty = false; out.evidence = [];
+      out.panelTitle = ''; out.panelFilter = ''; out.panelCount = '0'; out.panelCountOk = true;
+      out.panelHasExtra = false; out.panelExtra = []; out.panelEmpty = false; out.panelUnavailable = false; out.evidence = [];
     }
 
     return out;

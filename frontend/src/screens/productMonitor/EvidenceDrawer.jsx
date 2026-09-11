@@ -21,7 +21,9 @@ export default function EvidenceDrawer({ v }) {
                     <span style={s('padding:2px 9px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:600 12px/1.7 var(--font-mono);color:var(--ink-700)')}>{v.code}</span>
                     <span style={s('padding:2px 9px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.7 var(--font-mono);color:var(--ink-600)')}>{v.rangeText}</span>
                     <span style={s('padding:2px 9px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.7 var(--font-cjk);color:var(--ink-600)')}>{v.panelFilter}</span>
-                    <span style={s('padding:2px 9px;border-radius:9999px;background:var(--csop-blue-50);font:600 12px/1.7 var(--font-cjk);color:var(--csop-blue-700)')}>{v.panelCount} 条结果</span>
+                    {v.panelCountOk
+                      ? <span style={s('padding:2px 9px;border-radius:9999px;background:var(--csop-blue-50);font:600 12px/1.7 var(--font-cjk);color:var(--csop-blue-700)')}>{v.panelCount} 条结果</span>
+                      : <span style={s('padding:2px 9px;border-radius:9999px;background:var(--ink-100);font:600 12px/1.7 var(--font-cjk);color:var(--ink-500)')}>{v.panelCount}</span>}
                   </div>
                 </div>
                 <div onClick={v.closePanel} style={s('flex:none;width:28px;height:28px;border-radius:6px;border:1px solid var(--border-2);background:#fff;display:flex;align-items:center;justify-content:center;font:400 15px/1 var(--font-cjk);color:var(--ink-500);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>✕</div>
@@ -91,6 +93,9 @@ export default function EvidenceDrawer({ v }) {
 
               {v.panelEmpty && (
                 <div style={s('padding:16px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 当前筛选范围内没有可展示的原文证据。</div>
+              )}
+              {v.panelUnavailable && (
+                <div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 原文证据尚未生成或数据源未提供，本区域不展示推测内容。</div>
               )}
             </div>
           </div>

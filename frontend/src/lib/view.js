@@ -49,7 +49,76 @@ export function num(v) { return v == null ? '数据暂不可用' : v.toLocaleStr
    缺失文案与 num() 完全一致 —— 两者的差别只在千分位，别顺手合并成一个。 */
 export function numRaw(v) { return v == null ? '数据暂不可用' : String(v); }
 
-export function pct1(v) { return (Math.round(v * 10) / 10).toFixed(1) + '%'; }
+/* 同一道关口。**这里对设计源有一处有意偏离**，写清楚免得下次「照着镜像改回去」：
+   设计源的 pct1 没有空值分支，因为镜像里的数是编出来的，永远不缺。接了真库之后
+   `pct1(null)` 会算出 `NaN%` —— 那比缺一个数还糟：它长得像一个渲染 bug，而它其实
+   在如实反映「这个百分比没取到」，于是没人会去查数据源。
+   公式部分仍然逐字（先 round 再 toFixed，与直接 toFixed(1) 在 .05 边界上结果不同）。 */
+export function pct1(v) { return v == null ? '数据暂不可用' : (Math.round(v * 10) / 10).toFixed(1) + '%'; }
+
+/* 同一道关口，时间戳位（「数据截至」／「最近更新」／「更新时间」）。
+
+   这一位原来不可能为空：`updatedAt` 手写在 `backend/fixtures/meta.json` 里，是个常量。
+   把它改成随主数据下发之后（那才是它的本相 —— 见 `backend/core/meta.py` 模块头），
+   库里没有锚点时它就会缺。缺了不写字的后果比数值位更隐蔽：`{undefined}` 在 React 里
+   渲染成空，页面上只剩一个「数据截至」加一片空白，看着像样式没对齐，没人会去查数据源。
+
+   用长文案「数据暂不可用」而不是短文案「暂不可用」：这三处都是**值位**（标签在左、
+   值在右），与 num()／pct1() 同类，不是状态图例（PRD §3.1、§3.6）。 */
+export function stamp(v) { return v == null ? '数据暂不可用' : String(v); }
+
+/* 整块没取到 → 该契约形状的 `unavailable` 态。
+
+   市场域有一串端点是 `{status, list}`（关联竞品、重点舆情、产品相关 KOL、阶段观点、
+   K 线……）。`DATA_PROVIDER=sql` 下它们**整块**是 null —— 这些结论要 AI 标注或行情源，
+   ADR-0017 说得很清楚。而屏幕代码直接 `res.list.map(…)`／`res.status === 'ok'`，
+   接真库时第一次渲染就 TypeError，产品监控整页白屏，错误边界报「页面渲染失败」：
+   一个数据缺失被报成了前端崩溃，查错方向从一开始就是反的。
+
+   **这不是默认值兜底。** `status: 'unavailable'` 与后端在该态下发的值逐字相同
+   （`core/envelope.py`），空集合只是让 `.map` 有东西可遍历 —— 它永远配着
+   `status !== 'ok'` 一起出现，屏幕据此渲染「暂不可用」。把 null 说成 `'empty'` 才是
+   撒谎：那句文案是「范围内已完成检查，没有符合条件的内容」（PRD §3.6），
+   而我们根本没检查过。
+
+   `keys` 给出该形状里的集合字段名，默认 `['list']`；阶段观点是 `['series', 'stages']`。
+   不无脑铺一堆空数组：铺多了，屏幕里一个拼错的字段名会静默变成空列表而不是报错。 */
+export function naBox(res, keys) {
+  if (res != null) return res;
+  var out = { status: 'unavailable' };
+  (keys || ['list']).forEach(function (k) { out[k] = []; });
+  return out;
+}
+
+/* 同一道关口的**求和**版。JS 里 `t + null === t`，于是
+ * `list.reduce(function (t, x) { return t + x.f; }, 0)` 会把「这一条不知道」当成
+ * 「这一条是 0」—— 合计小了一截，页面上却是个干干净净的数字。这比算出 NaN 糟得多：
+ * NaN 会在页面上显眼地报出来，少加的那一项不会。
+ *
+ * 合计里有一项不知道，合计就是不知道（铁律 2）。语义与后端 `core` 的 `add_all`、
+ * `fixtures/generate.mjs` 的 `addN` 完全一致 —— 三处必须同义，否则同一份数据在
+ * 后端合计是 null、在前端合计是个数。
+ *
+ * 这不是口径公式（守卫④），它没有业务规则，只是 `num()` 的算术对偶。 */
+export function sumN(list, pick) {
+  var t = 0;
+  for (var i = 0; i < list.length; i++) {
+    var v = pick(list[i]);
+    if (v == null) return null;
+    t += v;
+  }
+  return t;
+}
+
+/* 降序比较，**未知排最后**。`b - a` 在有 null 的时候会把未知当成 0：`5 - null === 5`。
+ * 结果不是崩溃，是一条「互动数不知道」的记录被排进了「互动数最少」那一段 —— 看上去像
+ * 一条结论（这个官号没人互动），实际上是一条缺失。两者在榜单上长得一模一样。
+ * 演示数据里没有 null，所以 `descN(a, b)` 与 `b - a` 逐字等价，与设计源不会有差异。 */
+export function descN(av, bv) {
+  if (av == null) return bv == null ? 0 : 1;
+  if (bv == null) return -1;
+  return bv - av;
+}
 
 /* ── 帖子类型与操作方向的标签词汇表 ─────────────────────────────────── */
 
@@ -73,10 +142,30 @@ var TYPE_GROUP = {
   event: { bg: '#F1ECF7', fg: '#5E4480' },
   other: { bg: 'var(--ink-100)', fg: 'var(--ink-600)' }
 };
+/* 「还没分类」的展示态。**不是** POST_TYPES 里的一员，所以不进 TYPE_BY_KEY：
+   筛选菜单遍历的是 POST_TYPES，把它混进去会多出一个选不中任何东西的选项。 */
+export var TYPE_NA = {
+  k: null, label: '暂不可用', bg: 'var(--ink-100)', fg: 'var(--ink-400)',
+  bar: '#C7CED6', def: '内容形式标注尚未生成',
+};
+/* 缺标注与「其他」是两件事。这里原来只有 `TYPE_BY_KEY[k] || TYPE_BY_KEY.other`，
+   于是 `typeStyle(null)` 落成「其他」—— 而「其他」是一个**结论**（分过类了，八类里
+   归不进前七类），不是「还没分过类」。DATA_PROVIDER=sql 下每篇帖子的 postType 都是
+   null（ADR-0017），照原样渲染，整页 KOL 帖子会挂满我们从没做出过的判断（铁律 2）。
+
+   非空但不认识的键仍然落「其他」：那是后端发来了一个前端不认的枚举值 —— 契约漂移，
+   不是数据缺失，两者不该共用一个兜底。短徽章位用短文案「暂不可用」（PRD §3.6
+   STATUS_LEGEND 逐字），不是数值位的长文案。 */
 export function typeStyle(k) {
+  if (k == null) return TYPE_NA;
   var t = TYPE_BY_KEY[k] || TYPE_BY_KEY.other, g = TYPE_GROUP[t.group];
   return { k: t.k, label: t.label, bg: g.bg, fg: g.fg, bar: t.bar, def: t.def };
 }
+
+/* 类型置信度的两位小数。`null.toFixed(2)` 直接抛 TypeError，而 sql provider 下它
+   **恒为 null**：ADR-0017 §4 判定模型自报的 softmax 不是校准概率、不许冒充，所以这一列
+   根本不下发。属于数值位 → 长文案（PRD §3.1）。 */
+export function conf2(v) { return v == null ? '数据暂不可用' : v.toFixed(2); }
 
 /* 操作方向（双标签第二维）：加仓／建仓 绿、减仓／清仓 红、持有观望 灰 */
 export var DIRECTIONS = [
@@ -192,6 +281,6 @@ export function shell(domainKey, subKey, st, go) {
         bg: on ? 'var(--csop-blue-50)' : '#fff'
       };
     }),
-    rangeText: range.text, rangeFrom: range.from, rangeTo: range.to, updated: R.UPDATED
+    rangeText: range.text, rangeFrom: range.from, rangeTo: range.to, updated: stamp(R.UPDATED)
   };
 }

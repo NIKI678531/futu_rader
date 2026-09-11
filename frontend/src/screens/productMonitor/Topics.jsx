@@ -49,6 +49,9 @@ export default function Topics({ v }) {
       {v.noTopics && (
         <div style={s('padding:20px;font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 区间内没有识别到该产品的话题讨论。</div>
       )}
+      {v.topicsUnavailable && (
+        <div style={s('padding:20px')}><div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 话题识别结果尚未生成或数据源未提供，本区域不展示推测内容。</div></div>
+      )}
     </div>
   )
 }

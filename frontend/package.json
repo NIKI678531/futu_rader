@@ -11,7 +11,10 @@
     "diff": "node scripts/screen-diff.mjs",
     "six-state": "node scripts/six-state.mjs",
     "guards": "node scripts/guards.mjs",
-    "test": "npm run six-state && npm run diff && npm run guards"
+    "test": "npm run guards && npm run six-state && npm run diff",
+    "real-data-check": "node scripts/real-data-check.mjs",
+    "mirror": "node scripts/mirror.mjs",
+    "mirror:test": "node scripts/mirror.mjs --test"
   },
   "dependencies": {
     "react": "^18.3.1",

@@ -34,7 +34,9 @@ export default function ProductTable({ v }) {
             </span>
             <span style={s('flex:none;width:64px;text-align:right;font:600 14px/1.4 var(--font-mono);color:var(--ink-900)')}>{r.comments}</span>
             <span style={s(`flex:none;width:60px;text-align:right;font:600 13px/1.4 var(--font-mono);color:${r.gfg}`)}>{r.growth}</span>
-            <span style={s('flex:none;width:72px;text-align:right;font:500 13px/1.4 var(--font-mono);color:var(--ink-700)')}>{r.heat}</span>
+            {/* `heatWhy` 只在热度为 null 时有值；否则 React 不写这个属性，
+                demo 下的 DOM 与设计源逐字节一致。 */}
+            <span title={r.heatWhy} style={s('flex:none;width:72px;text-align:right;font:500 13px/1.4 var(--font-mono);color:var(--ink-700)')}>{r.heat}</span>
             <div style={s('flex:none;width:120px;display:flex;align-items:center;gap:6px')}>
               {r.hasAttitude && (
                 <>
@@ -48,6 +50,12 @@ export default function ProductTable({ v }) {
               )}
               {r.lowSample && (
                 <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>样本不足</span>
+              )}
+              {/* 短徽章位用短文案「暂不可用」（PRD §3.6 STATUS_LEGEND 逐字），
+                  不是数值位的长文案「数据暂不可用」，两套并存不可互换。
+                  与「样本不足」互斥：那一态是数过了，这一态是没数过。 */}
+              {r.attNa && (
+                <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>暂不可用</span>
               )}
             </div>
             <span style={s('flex:none;width:48px;display:flex;justify-content:flex-end')}>

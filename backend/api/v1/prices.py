@@ -17,7 +17,7 @@ from flask import abort
 
 from core.envelope import respond
 from core.prices import candles_for, daily_for, heat_series_for, stages_for
-from providers.demo import MISSING
+from providers.sentinel import MISSING
 
 from . import range_key, v1_bp
 

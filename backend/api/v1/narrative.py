@@ -25,7 +25,7 @@ from core.narrative import (
     summary_for,
     themes_for,
 )
-from providers.demo import MISSING
+from providers.sentinel import MISSING
 
 from . import range_key, v1_bp
 

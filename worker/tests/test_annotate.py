@@ -20,7 +20,7 @@ import sys
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(
@@ -515,3 +515,160 @@ def test_pending_count_excludes_finished_work(engine, cfg):
     annotate.run(engine, cfg, max_items=10,
                  provider=FakeProvider([all_ok(lambda _: "点差太大")]))
     assert annotate.pending_count(engine, "comment_product") == 0
+
+
+# ── 帖子排队（runbook §11.2） ───────────────────────────────────────────
+
+
+@pytest.fixture()
+def posts(engine):
+    """三篇形状不同的帖子：标题＋正文、只有标题、两样都没有。
+
+    「只有标题」不是构造出来的边界 —— 富途社区里大量帖子就长这样，而官号动态那一屏
+    主要就靠它们。它们**必须**能排进队。
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            insert(feeds),
+            [
+                {"feed_id": 2, "code": CODE, "posted_at": datetime(2026, 8, 2, 9, 0),
+                 "feed_type": 1, "title": "恒科今日走势", "content": "暂时不加仓，继续观察",
+                 "like_count": 0, "comment_count": 0, "image_count": 0,
+                 "raw_json_broken": False},
+                {"feed_id": 3, "code": CODE, "posted_at": datetime(2026, 8, 3, 9, 0),
+                 "feed_type": 1, "title": "只有标题的帖子", "content": None,
+                 "like_count": 0, "comment_count": 0, "image_count": 0,
+                 "raw_json_broken": False},
+                {"feed_id": 4, "code": CODE, "posted_at": datetime(2026, 8, 4, 9, 0),
+                 "feed_type": 1, "title": None, "content": "",
+                 "like_count": 0, "comment_count": 0, "image_count": 0,
+                 "raw_json_broken": False},
+            ],
+        )
+    return engine
+
+
+def test_enqueue_posts_takes_the_post_itself_not_one_row_per_subject(posts, cfg):
+    """帖子的判定单元只有帖子。一篇挂三只标的的行情解读仍然只是一篇行情解读 ——
+    按标的展开会让它被判三次，还可能判出三个不同的类型。"""
+    assert annotate.enqueue_posts(posts, cfg) == 2
+    jobs = rows(posts, annotation_jobs, annotation_jobs.c.task == "post_annotation")
+    assert {j["target_id"] for j in jobs} == {2, 3}
+    assert all(j["target_type"] == "feed" for j in jobs)
+    assert all(j["subject_code"] == annotate.NO_SUBJECT for j in jobs)
+
+
+def test_title_only_posts_are_queued_and_textless_ones_are_not(posts, cfg):
+    """过滤条件是「标题与正文至少一个非空」。只看正文会把整类只有标题的帖子
+    悄悄排除 —— 那不会报错，只会让官号动态那一屏永远缺一块。"""
+    annotate.enqueue_posts(posts, cfg)
+    ids = {j["target_id"] for j in rows(posts, annotation_jobs,
+                                        annotation_jobs.c.task == "post_annotation")}
+    assert 3 in ids, "只有标题的帖子必须排得进来"
+    assert 4 not in ids, "标题与正文都空的帖子没有东西可发，不该排队"
+
+
+def test_enqueue_posts_twice_does_not_double_charge(posts, cfg):
+    annotate.enqueue_posts(posts, cfg)
+    assert annotate.enqueue_posts(posts, cfg) == 0, "重复排队 = 重复付费"
+
+
+def test_post_fingerprint_covers_the_title_not_just_the_body(posts, cfg):
+    """指纹必须覆盖真正发出去的输入（§11.3）。只按正文算的话，改了标题的帖子会被
+    当成已排过队跳过 —— 而模型看到的输入其实变了。"""
+    annotate.enqueue_posts(posts, cfg)
+    with posts.begin() as conn:
+        conn.execute(update(feeds).where(feeds.c.feed_id == 2).values(title="改过的标题"))
+    assert annotate.enqueue_posts(posts, cfg) == 1
+
+
+def test_post_and_comment_queues_do_not_collide(posts, cfg):
+    """两种任务共用一张 `annotation_jobs`，而两边的 ID 来自不同的表，**会撞号**：
+    这里特意让一条评论的 `comment_id` 等于一篇帖子的 `feed_id`。区分它们的是
+    唯一键里的 `target_type` 与 `task`，不是 ID 本身。"""
+    with posts.begin() as conn:
+        conn.execute(insert(comments).values(comment_id=2, feed_id=1, content=TEXT_A))
+    annotate.enqueue_comments(posts, cfg)
+    annotate.enqueue_posts(posts, cfg)
+    assert annotate.pending_count(posts, "comment_product") == 3
+    assert annotate.pending_count(posts, "post_annotation") == 2
+    collided = rows(posts, annotation_jobs, annotation_jobs.c.target_id == 2)
+    assert {(j["target_type"], j["task"]) for j in collided} == {
+        ("comment", "comment_product"),
+        ("feed", "post_annotation"),
+    }
+
+
+# ── 帖子结论：「没有」也要写下来（runbook §11.2） ───────────────────────
+
+
+def post_item(item_id, **over):
+    """一条合规的帖子标注。默认：行情解读、没表达操作、没有可摘要的正文。"""
+    out = {
+        "item_id": item_id,
+        "post_type": "market",
+        "direction": None,
+        "direction_pending": False,
+        "summary": None,
+        "evidence_spans": ["暂时不加仓"],
+        "needs_review": False,
+    }
+    out.update(over)
+    return out
+
+
+def run_posts(engine, cfg, **over):
+    annotate.enqueue_posts(engine, cfg)
+    annotate.run(engine, cfg, max_items=10, task="post_annotation",
+                 provider=FakeProvider([lambda ids: {
+                     "results": [post_item(i, **over) for i in ids]}]))
+    # 显式按 id 升序，让「同一 kind 的最后一行」是确定的：重跑会叠新行，
+    # 靠默认行序取最后一条，换个方言就不成立了。
+    with engine.connect() as conn:
+        got = conn.execute(
+            select(annotations)
+            .where(annotations.c.target_id == 2)
+            .order_by(annotations.c.annotation_id.asc())
+        ).mappings().all()
+    return {r["kind"]: json.loads(r["value_json"]) for r in got}
+
+
+def test_a_post_with_nothing_to_summarise_still_gets_a_summary_row(posts, cfg):
+    """`summary: null` 是模型的**结论**（「纯图片、纯链接」，见 Prompt 的摘要一节），
+    不是它没回答 —— schema 里这个键必填，模型必须显式写 null。
+
+    丢掉这一行，「已标注、确实没得摘」和「这帖压根没标注过」在库里就是同一个样子：
+    两边都查不到行。而页面上它们相反 —— 前者照常渲染，后者要显示「暂不可用」。
+    """
+    v = run_posts(posts, cfg)
+    assert "summary" in v, "没得摘也要留下「看过了，没得摘」这句话"
+    assert v["summary"] is False, "false 和摘要字符串类型不同，读取方一眼能分开"
+
+
+def test_a_post_that_expressed_no_action_still_gets_a_direction_row(posts, cfg):
+    """`direction=null, direction_pending=false` 是 Prompt 里的第 1 种情形：
+    「帖子没有表达任何操作」。同样是结论，同样不能因为值是 null 就不写。"""
+    v = run_posts(posts, cfg)
+    assert v["direction"] is False
+
+
+def test_the_three_direction_states_stay_three(posts, cfg):
+    """判出来了 / 表达了但判不出 / 压根没表达 —— 三件事，三个值。
+
+    这正是 `direction_pending` 当初存在的理由；少写一行就把三态压回两态了。
+    """
+    assert run_posts(posts, cfg, direction="add")["direction"] == "add"
+    with posts.begin() as conn:  # 换一篇，免得撞上已写过的结论
+        conn.execute(update(feeds).where(feeds.c.feed_id == 2).values(title="改标题一"))
+    assert run_posts(posts, cfg, direction=None,
+                     direction_pending=True)["direction"] == "pending"
+    with posts.begin() as conn:
+        conn.execute(update(feeds).where(feeds.c.feed_id == 2).values(title="改标题二"))
+    assert run_posts(posts, cfg, direction=None,
+                     direction_pending=False)["direction"] is False
+
+
+def test_a_real_summary_is_stored_as_the_text(posts, cfg):
+    """占位值不能把正常摘要也变成 false。"""
+    v = run_posts(posts, cfg, summary="作者暂不加仓，继续观察恒科走势")
+    assert v["summary"] == "作者暂不加仓，继续观察恒科走势"

@@ -20,7 +20,7 @@ from flask import abort, request
 
 from core.envelope import respond
 from core.evidence import DEFAULT_COUNT, evidence_for, kol_mentions_for, topics_for
-from providers.demo import MISSING
+from providers.sentinel import MISSING
 
 from . import range_key, v1_bp
 

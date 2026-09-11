@@ -35,7 +35,7 @@ Suspense 下一次 read() 未命中就是一次串行往返，分成两个端点
 """
 
 from providers import get_provider
-from providers.demo import MISSING
+from providers.sentinel import MISSING
 
 from .ranges import VALID_KEYS
 

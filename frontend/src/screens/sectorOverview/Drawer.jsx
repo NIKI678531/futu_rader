@@ -58,7 +58,9 @@ export default function Drawer({ v }) {
                 <div style={s('margin-top:11px;padding-top:10px;border-top:1px solid var(--border-1);display:flex;flex-wrap:wrap;gap:6px')}>
                   <span style={s('padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-mono);color:var(--ink-600)')}>{sel.rangeText}</span>
                   <span style={s('padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-mono);color:var(--ink-600)')}>更新 {v.updated}</span>
-                  <span style={s('padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>有效样本 {sel.sample} 条</span>
+                  {sel.sampleOk
+                    ? <span style={s('padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>有效样本 {sel.sample} 条</span>
+                    : <span style={s('padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>有效样本 {sel.sample}</span>}
                   <span style={s('padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700)')}>AI 生成 · 可追溯原文</span>
                 </div>
               </div>
@@ -127,6 +129,9 @@ export default function Drawer({ v }) {
                   {sel.noPos && (
                     <div style={s('padding:12px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容</div>
                   )}
+                  {sel.posUnavailable && (
+                    <div style={s('padding:12px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 13px/1.6 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用</div>
+                  )}
                 </div>
                 <div>
                   <div style={s('display:flex;align-items:center;gap:6px;margin-bottom:8px;color:var(--negative-700)')}>
@@ -139,6 +144,9 @@ export default function Drawer({ v }) {
                   ))}
                   {sel.noNeg && (
                     <div style={s('padding:12px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容</div>
+                  )}
+                  {sel.negUnavailable && (
+                    <div style={s('padding:12px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 13px/1.6 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用</div>
                   )}
                 </div>
               </div>
@@ -236,6 +244,9 @@ export default function Drawer({ v }) {
               )}
               {sel.noNegCats && (
                 <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500);margin-bottom:20px')}>暂无相关内容 — 区间内没有可归类为需关注负面舆情的内容。</div>
+              )}
+              {sel.negCatsUnavailable && (
+                <div style={s('padding:14px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 14px/1.6 var(--font-cjk);color:var(--warning-700);margin-bottom:20px')}>数据暂不可用 — 负面归类尚未生成或数据源未提供，本区域不展示推测内容。</div>
               )}
 
               <div style={s('font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400);margin-bottom:10px')}>关联竞品观点 · 前 3</div>

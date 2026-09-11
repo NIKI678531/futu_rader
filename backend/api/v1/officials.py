@@ -10,7 +10,7 @@ from flask import abort
 
 from core.envelope import respond
 from core.officials import etf_mentions_for, official_posts
-from providers.demo import MISSING
+from providers.sentinel import MISSING
 
 from . import range_key, v1_bp
 

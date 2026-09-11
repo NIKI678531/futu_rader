@@ -25,7 +25,13 @@ _instance = None
 
 
 def get_provider():
-    """当前进程的 provider 单例。演示 provider 会把 fixture 读进内存，不要每次请求重建。"""
+    """当前进程的 provider 单例。演示 provider 会把 fixture 读进内存，不要每次请求重建。
+
+    每次取用都先 `refresh()`：单例意味着**进程启动那一刻的库状态会被一直沿用下去**。
+    compose 把 backend 和 worker 一起拉起来时库还是空的，没有这一下，导入跑完之后
+    页面依旧整屏「暂不可用」，直到有人重启容器。`refresh()` 自己判断有没有变化，
+    没变就一行不动（见 `SqlProvider.refresh`）。
+    """
     global _instance
     if _instance is None:
         name = os.getenv("DATA_PROVIDER", "demo").strip().lower()
@@ -34,6 +40,8 @@ def get_provider():
                 f"未知的 DATA_PROVIDER={name!r}，可选：{', '.join(sorted(_PROVIDERS))}"
             )
         _instance = _PROVIDERS[name]()
+    else:
+        _instance.refresh()
     return _instance
 
 

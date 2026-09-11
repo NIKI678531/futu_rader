@@ -4,7 +4,7 @@
 import React from 'react'
 import R from '../data/radar'
 import {
-  num, typeStyle, rgba, shell, dirStyle,
+  num, conf2, descN, typeStyle, rgba, shell, dirStyle,
   CAMP, POST_TYPES, TYPE_BY_KEY, DIRECTIONS, DIR_BY_KEY,
 } from '../lib/view'
 import { kolProfile } from '../lib/profile'
@@ -35,7 +35,16 @@ export default class KolActivity extends React.Component {
   primaryOnly() { return this.props.campRule === '仅挂载标的'; }
   camp(p) { return this.primaryOnly() ? p.campPrimary : p.camp; }
   codesOf(p) { return this.primaryOnly() ? [p.code] : p.mentioned.map(function (m) { return m.code; }); }
-  pending(p) { return p.confidence < this.LC; }
+  /* 「这条标签有没有把握」有**三**个答案：有（false）、没有（true）、不知道（null）。
+     原来写的是 `p.confidence < this.LC`，而 JS 会把 null 当 0：`null < 0.7` 是 true，
+     于是 DATA_PROVIDER=sql 下（confidence 恒为 null，ADR-0017 §4）每一篇都被标成
+     「待确认」—— 页面上看起来是 AI 判过、只是没把握，实际上 AI 压根没跑。
+     返回 null 的那一支在 `if (...)` 里是假值，所以徽章不挂；「还没标注」由类型徽章
+     自己那枚「暂不可用」说，不跟「判了但没把握」共用一个徽章。 */
+  pending(p) { return p.confidence == null ? null : p.confidence < this.LC; }
+  /* 整块 AI 标注是一起下发、一起缺的（sql provider 的 `_UNANNOTATED`）。以 postType
+     为准判整块，免得屏内十几处各判各的字段、日后漂成十几种说法。 */
+  annNa(p) { return p.postType == null; }
   typeOk(p) {
     var t = this.state.types, d = this.state.dirs;
     if (t.length && t.indexOf(p.postType) < 0) return false;
@@ -48,11 +57,19 @@ export default class KolActivity extends React.Component {
     var esc = function (v) { v = v == null ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.split('"').join('""') + '"' : v; };
     var campLabel = function (p) { var c = self.camp(p); return c === 'both' ? '自家+竞品' : (CAMP[c] || CAMP.none).label; };
     var head = ['合作KOL', 'KOL标签', '发帖时间', 'ETF代码', 'ETF名称', '发行商', '内容形式', '操作方向', '类型置信度', '是否待确认', 'AI摘要', '阵营', '提及产品(全部代码)', '赞', '评论数', '转发', '原帖链接'];
+    /* 导出的缺失格写「数据暂不可用」，不写空。CSV 里的空单元格在 Excel 里与
+       「这里确实没有」长得一模一样，而这份文件会被拿去做判断、甚至再统计一遍。
+       页面上分得开的两件事，落到文件里也得分得开。 */
+    var na = '数据暂不可用';
+    var cell = function (v) { return v == null ? na : v; };
     var lines = [esc('# ' + summary), head.map(esc).join(',')].concat(list.map(function (p) {
+      var ann = self.annNa(p), pd = self.pending(p);
       return [p.kol, p.tags.split(',').join(' / '), p.day + ' ' + p.time.slice(6), p.code + '.HK', p.name, p.issuer,
-        p.typeLabel, p.directionPending ? '待确认' : (p.dir ? p.dir.label : ''), p.confidence.toFixed(2), self.pending(p) ? '是' : '否',
-        p.hasSummary ? p.summary : '（图片帖，无摘要）', campLabel(p), p.mentioned.map(function (m) { return m.code + '.HK'; }).join(' '),
-        p.likes, p.comments, p.shares, p.url].map(esc).join(',');
+        cell(p.typeLabel), ann ? na : (p.directionPending ? '待确认' : (p.dir ? p.dir.label : '')),
+        conf2(p.confidence), pd == null ? na : (pd ? '是' : '否'),
+        ann ? na : (p.hasSummary ? p.summary : '（图片帖，无摘要）'), campLabel(p),
+        p.mentioned.map(function (m) { return m.code + '.HK'; }).join(' '),
+        cell(p.likes), cell(p.comments), cell(p.shares), p.url].map(esc).join(',');
     }));
     var blob = new Blob(['﻿' + lines.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' });
     var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename;
@@ -175,7 +192,7 @@ export default class KolActivity extends React.Component {
     out.postToggle = function () { if (postEnabled) self.setState({ postMenu: !s.postMenu, etfMenu: false, kolMenu: false, typeMenu: false }); };
     out.postClose = function () { self.setState({ postMenu: false }); };
     out.postMenu = [{ k: 'ALL', time: '全部 ' + kolPosts.length + ' 篇', code: '', type: '' }].concat(
-      kolPosts.map(function (p) { return { k: p.id, time: p.time, code: p.code, type: p.typeLabel }; })).map(function (o) {
+      kolPosts.map(function (p) { return { k: p.id, time: p.time, code: p.code, type: typeStyle(p.postType).label }; })).map(function (o) {
         var on = o.k === s.post;
         return {
           key: o.k, time: o.time, code: o.code, type: o.type, tick: on ? '✓' : '',
@@ -186,11 +203,16 @@ export default class KolActivity extends React.Component {
 
     /* ④ 类型多选：计数按 ETF × KOL × 帖子 的范围算，与表格一致 */
     var typeBase = etfPosts.filter(function (p) { return (s.kol === 'ALL' || p.kol === s.kol) && (s.post === 'ALL' || p.id === s.post); });
-    var typeCounts = {}, dirCounts = {};
+    var typeCounts = {}, dirCounts = {}, typeBaseNa = 0;
     typeBase.forEach(function (p) {
+      /* 没标注过的不进任何一格。放进去会得到键名 "null" 的一格（谁都不会去读），
+         同时让八格之和悄悄小于总篇数 —— 菜单看起来数得清清楚楚，其实漏了一批。
+         漏掉的那批改在菜单头上明说（typeNaNote），不摊进八个类型里。 */
+      if (p.postType == null) { typeBaseNa++; return; }
       typeCounts[p.postType] = (typeCounts[p.postType] || 0) + 1;
       if (p.directionPending) dirCounts.pending = (dirCounts.pending || 0) + 1; else if (p.direction) dirCounts[p.direction] = (dirCounts[p.direction] || 0) + 1;
     });
+    out.typeNaNote = typeBaseNa ? '另有 ' + typeBaseNa + ' 篇内容形式尚未标注，不计入下表' : '';
     var DIR_DEF = { add: '在已有持仓上继续买入', open: '首次买入建立仓位', reduce: '部分卖出降低仓位', close: '全部卖出离场', hold: '明确表示暂不操作', pending: '操作类帖子但方向置信度不足' };
     var dirLabel = function (k) { return k === 'pending' ? '方向待确认' : DIR_BY_KEY[k].label; };
     var picked = s.types.map(function (k) { return TYPE_BY_KEY[k].label; }).concat(s.dirs.map(dirLabel));
@@ -260,25 +282,38 @@ export default class KolActivity extends React.Component {
 
     /* KPI：发帖数 / 提及自家 / 提及竞品 / 类型识别（内容形式 × 操作方向） */
     var spKols = {}; sp.forEach(function (p) { spKols[p.kol] = 1; });
-    var ownAny = 0, peerAny = 0, both = 0, pendingN = 0, noSum = 0, tc = {}, opN = 0, addN = 0, redN = 0, dirPend = 0;
+    var ownAny = 0, peerAny = 0, both = 0, pendingN = 0, noSum = 0, tc = {}, opN = 0, addN = 0, redN = 0, dirPend = 0, annNa = 0;
     sp.forEach(function (p) {
       var c = self.camp(p);
       if (c === 'own' || c === 'both') ownAny++;
       if (c === 'competitor' || c === 'both') peerAny++;
       if (c === 'both') both++;
+      /* 整块标注没生成的，类型／方向／摘要三项一个都不算 —— 它们不是「没有」，是「没跑」。
+         原来这一段会把它们全部算进「形式待确认」「图片帖」「非操作类」，于是一屏
+         从没被标注过的帖子，会在 KPI 上读成一屏已经判完、只是判得没把握的帖子。 */
+      if (self.annNa(p)) { annNa++; return; }
       if (self.pending(p)) pendingN++;
-      if (!p.hasSummary) noSum++;
+      /* `=== false` 而不是 `!p.hasSummary`：null 也是假值，但它的意思是「不知道有没有
+         摘要」，不是「查过了是图片帖」。走到这里的都不是 null，写死语义留给下一个人。 */
+      if (p.hasSummary === false) noSum++;
       tc[p.postType] = (tc[p.postType] || 0) + 1;
       if (TYPE_BY_KEY[p.postType].group === 'op') opN++;
       if (p.direction === 'add') addN++;
       if (p.direction === 'reduce') redN++;
       if (p.directionPending) dirPend++;
     });
+    /* 「已识别」就是字面意思：标注跑过的那几篇。全都没跑时 `0` 是真零 —— 我们确实查了
+       标注表，确实一条都没有 —— 所以它不是「暂不可用」，但那行小字得换句话说，
+       否则读到的是「操作类 0 篇 · 加仓 0 · 减仓 0 …」一排看着像结论的零。 */
+    var annOk = sp.length - annNa;
+    var typeSub = '操作类 ' + opN + ' 篇 · 加仓 ' + addN + ' · 减仓 ' + redN + ' · 方向待确认 ' + dirPend + ' · 形式待确认 ' + pendingN + ' 篇' + (noSum ? ' · 图片帖 ' + noSum + ' 篇' : '');
+    if (sp.length && !annOk) typeSub = '内容形式与操作方向标注尚未生成 · ' + sp.length + ' 篇待标注';
+    else if (annNa) typeSub += ' · 另有 ' + annNa + ' 篇标注尚未生成';
     out.kpis = [
       { label: '发帖数', value: String(sp.length), unit: '篇', pct: '', pfg: 'transparent', sub: '涉及 ' + Object.keys(spKols).length + ' 位合作 KOL · 最近 ' + M.range.days + ' 天', vfg: 'var(--ink-900)' },
       { label: '提及自家产品', value: String(ownAny), unit: '篇', pct: pct(ownAny, sp.length), pfg: 'var(--csop-blue-700)', sub: '其中 ' + both + ' 篇同时提及竞品 · 按产品池规则匹配', vfg: 'var(--csop-blue-700)' },
       { label: '提及竞品', value: String(peerAny), unit: '篇', pct: pct(peerAny, sp.length), pfg: 'var(--ink-600)', sub: '仅提竞品、未提自家的有 ' + (peerAny - both) + ' 篇', vfg: 'var(--ink-800)' },
-      { label: '类型已识别（内容形式 × 操作方向）', value: String(sp.length), unit: '篇', pct: '', pfg: 'transparent', sub: '操作类 ' + opN + ' 篇 · 加仓 ' + addN + ' · 减仓 ' + redN + ' · 方向待确认 ' + dirPend + ' · 形式待确认 ' + pendingN + ' 篇' + (noSum ? ' · 图片帖 ' + noSum + ' 篇' : ''), vfg: 'var(--ink-900)' }
+      { label: '类型已识别（内容形式 × 操作方向）', value: String(annOk), unit: '篇', pct: '', pfg: 'transparent', sub: typeSub, vfg: 'var(--ink-900)' }
     ];
 
     /* 发帖记录 */
@@ -290,7 +325,10 @@ export default class KolActivity extends React.Component {
       };
     });
     var list = tbl.slice();
-    if (s.sort === 'eng') list.sort(function (a, b) { return b.engagement - a.engagement; });
+    /* 互动未知的排最后。`b.engagement - a.engagement` 会把 null 当 0，于是一条
+       「互动量没采到」的帖子被排进「互动最少」那一段，与一条真的没人理的帖子混在一起。
+       `t`（距区间起点的小时数）由后端按 posted_at 算，不会缺，照旧直接相减。 */
+    if (s.sort === 'eng') list.sort(function (a, b) { return descN(a.engagement, b.engagement); });
     else list.sort(function (a, b) { return b.t - a.t; });
     /* 导出 CSV：与表格所见完全一致，首行为筛选摘要 */
     var campName = CAMPS.filter(function (x) { return x[0] === s.camp; })[0][1];
@@ -314,8 +352,12 @@ export default class KolActivity extends React.Component {
         /* 双标签：形式在上、方向在下；合并单标签（Tweaks）：「加仓 · 晒单」一枚 */
         type: dual ? st.label : ((dirOn ? p.dir.label + ' · ' : '') + st.label), tbg: st.bg, tfg: st.fg,
         hasDir: dual && dirOn, dir: dirOn ? p.dir.label : '', dbg: dirOn ? p.dir.bg : 'transparent', dfg: dirOn ? p.dir.fg : 'transparent',
-        pending: self.pending(p), conf: p.confidence.toFixed(2),
-        summary: p.hasSummary ? p.summary : '', noSummary: !p.hasSummary,
+        pending: self.pending(p), conf: conf2(p.confidence),
+        /* 摘要位有**三**态：有摘要、查过了是图片帖（「暂无内容」侧）、标注还没跑
+           （「暂不可用」侧）。原来只有前两态，于是没跑过标注的帖子会被写成
+           「暂无摘要 · 图片帖」—— 替一篇可能全是文字的帖子宣布了它只有图片。 */
+        summary: p.hasSummary ? p.summary : '',
+        noSummary: p.hasSummary === false, summaryNa: self.annNa(p),
         camps: campsOf(p),
         likes: num(p.likes), comments: num(p.comments), shares: num(p.shares),
         url: p.url, stop: function (e) { e.stopPropagation(); },
@@ -330,8 +372,11 @@ export default class KolActivity extends React.Component {
     var byK = {};
     basePosts.forEach(function (p) { (byK[p.kol] = byK[p.kol] || []).push(p); });
     var leaders = Object.keys(byK).map(function (k) { return kolProfile(k, byK[k], function (p) { return self.camp(p); }); });
-    if (s.leaderSort === 'n') leaders.sort(function (a, b) { return b.n - a.n || b.comments - a.comments; });
-    else leaders.sort(function (a, b) { return b.comments - a.comments || b.n - a.n; });
+    /* `n`（篇数）永远数得出来；`comments` 是合计，有一篇没采到就整份未知，所以它走
+       descN：评论量未知的 KOL 排最后，而不是被 `b.comments - a.comments` 当成 0 排进
+       「最不被讨论」那一头 —— 那一头是一个结论，这里要的是「还不知道」。 */
+    if (s.leaderSort === 'n') leaders.sort(function (a, b) { return b.n - a.n || descN(a.comments, b.comments); });
+    else leaders.sort(function (a, b) { return descN(a.comments, b.comments) || b.n - a.n; });
     out.leaderSorts = [['n', '按篇数'], ['eng', '按评论量']].map(function (x) {
       var on = s.leaderSort === x[0];
       return {
@@ -350,7 +395,11 @@ export default class KolActivity extends React.Component {
       if (s.lCamp === 'both') return l.ownAny > 0 && l.peerAny > 0;
       return true;
     });
-    var ltc = {}; lBase.forEach(function (l) { ltc[l.topType] = (ltc[l.topType] || 0) + 1; });
+    /* 「主要类型」未知的不进任何一格，与顶部④同一条规矩：漏掉的在菜单头上明说，
+       不摊进八个类型里冒充计数。 */
+    var ltc = {}, lBaseNa = 0;
+    lBase.forEach(function (l) { if (l.topType == null) lBaseNa++; else ltc[l.topType] = (ltc[l.topType] || 0) + 1; });
+    out.lTypeNaNote = lBaseNa ? '另有 ' + lBaseNa + ' 位的主要类型尚未标注，不计入下表' : '';
     var lRows = lBase.filter(function (l) { return s.lType === 'ALL' || l.topType === s.lType; });
     out.lq = s.lq; out.lqBc = lqq ? 'var(--csop-blue-600)' : 'var(--border-2)';
     out.setLq = function (e) { self.setState({ lq: e.target.value }); };
@@ -403,14 +452,18 @@ export default class KolActivity extends React.Component {
     /* 抽屉：帖子内容卡 */
     out.selOn = !!p0;
     if (p0) {
-      var sec0 = secOf(p0.sector), st0 = typeStyle(p0.postType);
+      var sec0 = secOf(p0.sector), st0 = typeStyle(p0.postType), ann0 = self.annNa(p0);
       var sameKol = etfPosts.filter(function (q) { return q.kol === p0.kol; }).sort(function (a, b) { return b.t - a.t; });
       out.sel = {
         kol: p0.kol, kolTags: p0.tags.split(',').join(' · '), time: p0.time, code: p0.code, name: p0.name, url: p0.url,
         pbg: rgba(sec0.hue, 0.12), pfg: sec0.hue,
-        type: dual ? st0.label : ((p0.hasDir ? p0.dir.label + ' · ' : '') + st0.label), tbg: st0.bg, tfg: st0.fg, pending: self.pending(p0), confidence: p0.confidence.toFixed(2),
+        type: dual ? st0.label : ((p0.hasDir ? p0.dir.label + ' · ' : '') + st0.label), tbg: st0.bg, tfg: st0.fg, pending: self.pending(p0), confidence: conf2(p0.confidence),
         hasDir: dual && !!p0.hasDir, dir: p0.hasDir ? p0.dir.label : '', dbg: p0.hasDir ? p0.dir.bg : 'transparent', dfg: p0.hasDir ? p0.dir.fg : 'transparent',
-        evidenceNote: p0.evidenceIdx >= 0 ? '判定依据的原句已在下方原文中标出' : '本篇无可标注的判定依据句',
+        /* `evidenceIdx >= 0` 不能单独判 null：JS 的关系比较会把 null 当 0，`null >= 0`
+           是 **true**，于是「判定依据的原句已在下方原文中标出」会挂在一篇根本没标注过的
+           帖子上，而下面的原文里一句高亮都没有。三态要分开写。 */
+        evidenceNote: p0.evidenceIdx == null ? '判定依据尚未生成'
+          : (p0.evidenceIdx >= 0 ? '判定依据的原句已在下方原文中标出' : '本篇无可标注的判定依据句'),
         camps: campsOf(p0),
         campNote: self.primaryOnly() ? '阵营按挂载标的判定（当前口径）' : '阵营按挂载标的 ∪ 正文提及判定',
         hasSwitch: sameKol.length > 1, switchN: String(sameKol.length),
@@ -418,7 +471,7 @@ export default class KolActivity extends React.Component {
           var on = q.id === p0.id;
           return {
             key: q.id,
-            time: q.time, code: q.code, type: q.typeLabel,
+            time: q.time, code: q.code, type: typeStyle(q.postType).label,
             fw: on ? 600 : 500,
             fg: on ? 'var(--csop-blue-700)' : 'var(--ink-700)',
             bg: on ? 'var(--csop-blue-50)' : '#fff',
@@ -426,8 +479,15 @@ export default class KolActivity extends React.Component {
             go: function () { self.setState({ sel: q.id }); }
           };
         }),
-        summary: p0.hasSummary ? p0.summary : '暂无摘要：该帖仅含图片或截图，第一期不覆盖图片内容。',
-        sentences: p0.fullText.map(function (t, i) {
+        /* 三态：有摘要／查过了确实没有（图片帖）／根本没生成。中间那句是**结论**，
+           落到第三种情况上就是替 AI 说了一句它没说过的话。 */
+        summary: p0.hasSummary ? p0.summary
+          : (ann0 ? '摘要暂不可用：AI 标注尚未生成。' : '暂无摘要：该帖仅含图片或截图，第一期不覆盖图片内容。'),
+        /* 正文分句属于标注块（ADR-0017 §4：evidenceIdx 索引的就是这个数组），sql 下整块为
+           null —— `null.map` 直接抛。空数组会让原文面板变成一个没有任何提示的空框，所以
+           另给一个显式缺失态。 */
+        hasText: p0.fullText != null,
+        sentences: (p0.fullText || []).map(function (t, i) {
           var hit = i === p0.evidenceIdx;
           return { text: t, bg: hit ? 'var(--warning-100)' : 'transparent', sh: hit ? 'inset 0 -2px 0 var(--warning-600)' : 'none' };
         }),
@@ -458,6 +518,11 @@ export default class KolActivity extends React.Component {
           <span>{note}</span>
           <span onClick={v.typeAll} style={s('font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);cursor:pointer')}>清除选择</span>
         </div>
+        {/* 下面八项的篇数只数得出「已标注」的那批；没标注的既不能摊进任一类，也不能
+            悄悄消失（各项相加对不上总篇数会被当成 bug），所以在菜单头上明说。 */}
+        {v.typeNaNote && (
+          <div style={s('padding:6px 12px;border-bottom:1px solid var(--border-1);background:var(--warning-100);font:400 12px/1.5 var(--font-cjk);color:var(--warning-700)')}>{v.typeNaNote}</div>
+        )}
         <div style={s('padding:6px 12px 4px;font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>内容形式</div>
         {v.typeMenu.map((m) => (
           <div key={m.key} onClick={m.go} style={s(`display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--ink-100);background:${m.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
@@ -687,6 +752,11 @@ export default class KolActivity extends React.Component {
                         {r.noSummary && (
                           <div style={s('font:400 13px/22px var(--font-cjk);color:var(--ink-400)')}>暂无摘要 · 图片帖，第一期不覆盖图片内容</div>
                         )}
+                        {/* 上一行是「查过了，这篇确实没有」；这一行是「还没查」。共用一句会把
+                            未标注的帖子全都说成图片帖。 */}
+                        {r.summaryNa && (
+                          <div style={s('font:400 13px/22px var(--font-cjk);color:var(--ink-400)')}>摘要暂不可用 · AI 标注尚未生成</div>
+                        )}
                       </td>
                       <td style={s('padding:11px 6px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
                         <div style={s('display:flex;flex-wrap:wrap;gap:3px')}>
@@ -738,6 +808,9 @@ export default class KolActivity extends React.Component {
                 {v.lTypeOpen && (
                   <div onMouseLeave={v.lTypeClose} style={s('position:absolute;left:0;top:36px;z-index:45;width:372px;background:#fff;border:1px solid var(--border-2);border-radius:8px;box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
                     <div style={s('padding:7px 12px;border-bottom:1px solid var(--border-1);background:var(--canvas);font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>单选 · 该 KOL 区间内最多的一类</div>
+                    {v.lTypeNaNote && (
+                      <div style={s('padding:6px 12px;border-bottom:1px solid var(--border-1);background:var(--warning-100);font:400 12px/1.5 var(--font-cjk);color:var(--warning-700)')}>{v.lTypeNaNote}</div>
+                    )}
                     {v.lTypeMenu.map((m) => (
                       <div key={m.key} onClick={m.go} style={s(`display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--ink-100);background:${m.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
                         <span style={s('flex:none;width:10px;font:600 12px/1.3 var(--font-cjk);color:var(--csop-blue-600)')}>{m.tick}</span>
@@ -845,9 +918,13 @@ export default class KolActivity extends React.Component {
                 <div style={s('margin-top:8px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-400)')}>类型「{v.sel.type}」置信度 {v.sel.confidence} · {v.sel.evidenceNote}</div>
 
                 <div style={s('margin-top:22px;font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400);margin-bottom:8px')}>原文</div>
-                <div style={s('padding:14px 16px;border:1px solid var(--border-1);border-radius:8px;background:var(--canvas);font:400 14px/1.9 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>
-                  {v.sel.sentences.map((q, i) => <span key={i} style={s(`background:${q.bg};box-shadow:${q.sh};border-radius:2px`)}>{q.text}</span>)}
-                </div>
+                {v.sel.hasText ? (
+                  <div style={s('padding:14px 16px;border:1px solid var(--border-1);border-radius:8px;background:var(--canvas);font:400 14px/1.9 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>
+                    {v.sel.sentences.map((q, i) => <span key={i} style={s(`background:${q.bg};box-shadow:${q.sh};border-radius:2px`)}>{q.text}</span>)}
+                  </div>
+                ) : (
+                  <div style={s('padding:14px 16px;border:1px solid var(--border-1);border-radius:8px;background:var(--canvas);font:400 14px/1.9 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>原文暂不可用：正文分句尚未生成。</div>
+                )}
 
                 <div style={s('margin-top:22px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px')}>
                   <div style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>提及产品</div>

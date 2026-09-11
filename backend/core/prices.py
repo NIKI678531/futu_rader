@@ -33,7 +33,7 @@ K 线、热度折线、趋势折线画在同一条横轴上。桶由 `buildRange
 """
 
 from providers import get_provider
-from providers.demo import MISSING
+from providers.sentinel import MISSING
 
 from .ranges import VALID_KEYS
 

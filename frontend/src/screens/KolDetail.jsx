@@ -7,7 +7,7 @@
    （见 out.stats 上方，与 lib/profile.js 同一处偏差）。 */
 import React from 'react'
 import R from '../data/radar'
-import { num, typeStyle, md, shell, rgba, CAMP, POST_TYPES } from '../lib/view'
+import { num, conf2, typeStyle, md, shell, rgba, CAMP, POST_TYPES } from '../lib/view'
 import { kolProfile } from '../lib/profile'
 import { s, hover } from '../lib/dc'
 import Shell from '../components/Shell'
@@ -35,7 +35,12 @@ export default class KolDetail extends React.Component {
   data() { return R.kolImpact(this.state.rangeKey); }
   primaryOnly() { return this.props.campRule === '仅挂载标的'; }
   camp(p) { return this.primaryOnly() ? p.campPrimary : p.camp; }
-  pending(p) { return p.confidence < this.LC; }
+  /* 三态，不是两态：`null < 0.7` 在 JS 里是 **true**（null 被当成 0），照原样写会给
+     每一篇没标注过的帖子都挂上「待确认」—— 而「待确认」的意思是「模型给了个低分」，
+     不是「模型没跑」。返回 null 让调用点自己决定怎么说这件事。 */
+  pending(p) { return p.confidence == null ? null : p.confidence < this.LC; }
+  /* AI 标注整块未生成（ADR-0017 §4，sql provider 下恒为真） */
+  annNa(p) { return p.postType == null; }
 
   /* 当前 KOL：URL 未指定时取排名第一位 */
   kolName() {
@@ -85,8 +90,10 @@ export default class KolDetail extends React.Component {
     var campsOf = function (p) { var c = self.camp(p); return c === 'both' ? [CAMP.own, CAMP.competitor] : [CAMP[c] || CAMP.none]; };
     var issuerShort = function (x) { return x === 'CSOP 南方东英' ? '南方东英' : x; };
     var pct = function (n, d) { return d ? Math.round(n / d * 100) + '%' : '—'; };
+    /* 正文分句在标注块里（ADR-0017 §4），sql 下整块是 null —— `null.map` 直接抛。
+       返回空数组会让展开后的原文框变成一个没有任何说明的空框，所以调用点另发 hasText。 */
     var sentencesOf = function (p) {
-      return p.fullText.map(function (t, i) {
+      return (p.fullText || []).map(function (t, i) {
         var hit = i === p.evidenceIdx;
         return { text: t, bg: hit ? 'var(--warning-100)' : 'transparent', sh: hit ? 'inset 0 -2px 0 var(--warning-600)' : 'none' };
       });
@@ -115,6 +122,7 @@ export default class KolDetail extends React.Component {
 
     var codes = {}; ps.forEach(function (p) { p.mentioned.forEach(function (m) { codes[m.code] = 1; }); });
     var pendingN = ps.filter(function (p) { return self.pending(p); }).length;
+    var annNaN = ps.filter(function (p) { return self.annNa(p); }).length;
     /* 有一篇不知道，合计就是不知道。设计源这里写的是 `likes += p.likes`，而 JS 里
        `sum + null === sum + 0` —— 少加的那一篇悄悄消失，合计看着还挺像样。这是
        lib/profile.js 里同一处偏差，理由同（ADR-0015 末段、铁律 2）。 */
@@ -124,7 +132,7 @@ export default class KolDetail extends React.Component {
       likes = add(likes, p.likes); comments = add(comments, p.comments); shares = add(shares, p.shares);
     });
     out.stats = [
-      { label: '发帖数', value: String(ps.length), unit: '篇', pct: '', pfg: 'transparent', sub: '提及 ' + Object.keys(codes).length + ' 只产品 · ' + pendingN + ' 篇类型待确认', fg: 'var(--ink-900)' },
+      { label: '发帖数', value: String(ps.length), unit: '篇', pct: '', pfg: 'transparent', sub: '提及 ' + Object.keys(codes).length + ' 只产品 · ' + (annNaN === ps.length && ps.length ? '类型标注尚未生成' : pendingN + ' 篇类型待确认' + (annNaN ? ' · 另有 ' + annNaN + ' 篇尚未标注' : '')), fg: 'var(--ink-900)' },
       { label: '提及自家产品', value: String(prof.ownAny), unit: '篇', pct: pct(prof.ownAny, ps.length), pfg: 'var(--csop-blue-700)', sub: '其中 ' + prof.both + ' 篇同时提及竞品', fg: 'var(--csop-blue-700)' },
       { label: '提及竞品', value: String(prof.peerAny), unit: '篇', pct: pct(prof.peerAny, ps.length), pfg: 'var(--ink-600)', sub: '仅提竞品的有 ' + prof.peer + ' 篇', fg: 'var(--ink-800)' },
       { label: '互动合计', value: num(prof.engagement), unit: '', pct: '', pfg: 'transparent', sub: '赞 ' + num(likes) + ' · 评 ' + num(comments) + ' · 转 ' + num(shares) + '（发布后约 24h）', fg: 'var(--ink-900)' }
@@ -137,10 +145,28 @@ export default class KolDetail extends React.Component {
         key: p.id,
         time: p.time, code: p.code,
         pbg: rgba(sec.hue, 0.12), pfg: sec.hue,
-        type: st.label, tbg: st.bg, tfg: st.fg, pending: self.pending(p), conf: p.confidence.toFixed(2),
+        type: st.label, tbg: st.bg, tfg: st.fg, pending: self.pending(p), conf: conf2(p.confidence),
         hasDir: !!p.hasDir, dir: p.dir ? p.dir.label : '', dbg: p.dir ? p.dir.bg : 'transparent', dfg: p.dir ? p.dir.fg : 'transparent',
-        summary: p.hasSummary ? p.summary : '', noSummary: !p.hasSummary,
-        open: on, sentences: on ? sentencesOf(p) : [],
+        /* `!p.hasSummary` 把 null 和 false 合成了一句「图片帖」—— 前者是「还没生成」，
+           后者是「查过了，这篇确实只有图」。合成的那一刻，未标注的帖子全被说成了图片帖。 */
+        summary: p.hasSummary ? p.summary : '', noSummary: p.hasSummary === false, summaryNa: p.hasSummary == null,
+        /* 「高亮句为判定依据」是一句**指路**：它承诺上面那段原文里有一句被标出来了。
+           标注整块没生成时一句都没有，照旧写死这句，读的人会在原文里找一个不存在的
+           高亮 —— 而那段原文本身也已经换成了缺失态，两句话当场自相矛盾。
+
+           这里只分出 null 这一支，`evidenceIdx === -1`（查过了，本篇没有可标注的
+           依据句）仍按设计源原样说「高亮句为判定依据」：演示数据里确实有 -1 的帖子，
+           改它就是逐字比对里的一处分叉，而那是设计源的文案取舍，不是空值适配。
+           kol-activity.dc.html:908 对 -1 另有说法，两份设计源在这一句上本来就不一致
+           —— 已记在交付说明里，等裁决，不在这里顺手统一（CLAUDE.md：设计变更从设计源
+           重新拷贝，不照着新行为手推）。
+
+           分隔符「 · 」在串里而不是留在 JSX 里：设计源那一行是
+           `类型置信度 {{ p.conf }} · 高亮句为判定依据`，「· 高亮句为判定依据」是**一个**
+           文本节点。写成 `{p.conf} · {p.evidenceNote}` 会拆成两个，逐字比对当场报差异
+           （screen-diff 比的是文本分段，不是拼出来的整句）。 */
+        evidenceNote: p.evidenceIdx == null ? ' · 判定依据尚未生成' : ' · 高亮句为判定依据',
+        open: on, hasText: p.fullText != null, sentences: on ? sentencesOf(p) : [],
         camps: campsOf(p),
         likes: num(p.likes), comments: num(p.comments), shares: num(p.shares), eng: num(p.engagement),
         url: p.url, stop: function (e) { e.stopPropagation(); },
@@ -187,7 +213,7 @@ export default class KolDetail extends React.Component {
         });
       })(i);
     }
-    out.chartNote = p0 ? '高亮 ' + p0.dateText + '（' + p0.typeLabel + ' · ' + p0.code + '）' : '这段时间没有发帖';
+    out.chartNote = p0 ? '高亮 ' + p0.dateText + '（' + typeStyle(p0.postType).label + ' · ' + p0.code + '）' : '这段时间没有发帖';
     out.campCells = [
       { label: '只提自家', value: String(prof.own), fg: '#2361AD' },
       { label: '双方都提', value: String(prof.both), fg: '#3674C2' },
@@ -196,12 +222,17 @@ export default class KolDetail extends React.Component {
 
     /* 右下：8 类构成 */
     var tot = ps.length || 1;
-    out.pendingNote = pendingN ? pendingN + ' 篇置信度低于 ' + this.LC.toFixed(2) + ' 已计入但标「待确认」' : '全部类型置信度达标';
-    out.typeBar = POST_TYPES.map(function (t) {
+    /* typeCounts 只要有一篇没标注就整份是 null（lib/profile.js 偏差二）—— 按 8 类拆的
+       构成图在那时没有任何一格是可信的，整块换成缺失态，而不是画一张全 0 的图：
+       全 0 的柱状图长得和「这段时间他真没发过这几类」一模一样。 */
+    out.typeNa = prof.typeCounts == null;
+    out.pendingNote = out.typeNa ? '类型标注尚未生成'
+      : (pendingN ? pendingN + ' 篇置信度低于 ' + this.LC.toFixed(2) + ' 已计入但标「待确认」' : '全部类型置信度达标');
+    out.typeBar = out.typeNa ? [] : POST_TYPES.map(function (t) {
       var n = prof.typeCounts[t.k];
       return { key: t.k, pct: (n / tot * 100).toFixed(2), color: t.bar, title: t.label + ' ' + n + ' 篇' };
     });
-    out.typeRows = POST_TYPES.map(function (t) {
+    out.typeRows = out.typeNa ? [] : POST_TYPES.map(function (t) {
       var n = prof.typeCounts[t.k];
       return { key: t.k, label: t.label, color: n ? t.bar : 'var(--ink-200)', n: String(n), pct: n ? Math.round(n / tot * 100) + '%' : '—', fg: n ? 'var(--ink-800)' : 'var(--ink-400)' };
     });
@@ -212,9 +243,13 @@ export default class KolDetail extends React.Component {
       neg: ['var(--negative-100)', 'var(--negative-700)'],
       neu: ['var(--ink-100)', 'var(--ink-700)']
     };
+    /* `kolOpinions` 整份可以是 null：观点、操作、情绪净值三项全部来自 AI 标注，一条都
+       算不出来时后端回 null 而不是 []（sql.py::kol_opinions）—— 空列表是在说「他对别的
+       产品没有观点」，那是个结论。这里必须分开：null → 缺失态，[] → 空态。 */
     var opRows = R.kolOpinions(kol, s.rangeKey);
-    out.opCount = String(opRows.length);
-    out.ops = opRows.map(function (r, i) {
+    out.opsNa = opRows == null;
+    out.opCount = opRows == null ? '暂不可用' : String(opRows.length);
+    out.ops = (opRows || []).map(function (r, i) {
       var open = !!s.openOps[r.code];
       var tn = TONE[r.actionTone] || TONE.neu, st = typeStyle(r.postType);
       return {
@@ -223,9 +258,9 @@ export default class KolDetail extends React.Component {
         ownLabel: r.own ? '自家' : '竞品',
         ownBg: r.own ? 'var(--csop-blue-600)' : 'var(--csop-silver-200)', ownFg: r.own ? '#fff' : 'var(--ink-700)',
         summary: r.summary, excerpt: r.excerpt,
-        type: r.typeLabel, tbg: st.bg, tfg: st.fg,
+        type: st.label, tbg: st.bg, tfg: st.fg,
         hasDir: !!r.direction, direction: r.direction, actBg: tn[0], actFg: tn[1],
-        pending: r.confidence < self.LC, conf: r.confidence.toFixed(2),
+        pending: r.confidence == null ? null : r.confidence < self.LC, conf: conf2(r.confidence),
         date: r.dateText, time: r.timeText,
         engagement: num(r.engagement), url: r.url,
         open: open,
@@ -241,7 +276,7 @@ export default class KolDetail extends React.Component {
         }
       };
     });
-    out.csvGo = function () { self.exportCsv(opRows, kol); };
+    out.csvGo = function () { self.exportCsv(opRows || [], kol); };
     return out;
   }
 
@@ -350,12 +385,19 @@ export default class KolDetail extends React.Component {
                           {p.noSummary && (
                             <div style={s('font:400 13px/1.6 var(--font-cjk);color:var(--ink-400)')}>暂无摘要 · 图片帖，第一期不覆盖图片内容</div>
                           )}
+                          {p.summaryNa && (
+                            <div style={s('font:400 13px/1.6 var(--font-cjk);color:var(--ink-400)')}>摘要暂不可用 · AI 标注尚未生成</div>
+                          )}
                           {p.open && (
                             <>
-                              <div style={s('margin-top:9px;padding:10px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-700);text-wrap:pretty')}>
-                                {p.sentences.map((q, i) => <span key={i} style={s(`background:${q.bg};box-shadow:${q.sh};border-radius:2px`)}>{q.text}</span>)}
-                              </div>
-                              <div style={s('margin-top:5px;font:400 12px/1.5 var(--font-cjk);color:var(--ink-400)')}>类型置信度 {p.conf} · 高亮句为判定依据</div>
+                              {p.hasText ? (
+                                <div style={s('margin-top:9px;padding:10px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-700);text-wrap:pretty')}>
+                                  {p.sentences.map((q, i) => <span key={i} style={s(`background:${q.bg};box-shadow:${q.sh};border-radius:2px`)}>{q.text}</span>)}
+                                </div>
+                              ) : (
+                                <div style={s('margin-top:9px;padding:10px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>原文暂不可用：正文分句尚未生成。</div>
+                              )}
+                              <div style={s('margin-top:5px;font:400 12px/1.5 var(--font-cjk);color:var(--ink-400)')}>类型置信度 {p.conf}{p.evidenceNote}</div>
                             </>
                           )}
                         </td>
@@ -420,6 +462,9 @@ export default class KolDetail extends React.Component {
                   <div style={s('font:600 18px/1.3 var(--font-cjk)')}>帖子类型构成</div>
                   <div style={s('margin-top:5px;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>区间内 {v.postCount} 篇按 8 类归类 · {v.pendingNote}</div>
                 </div>
+                {v.typeNa ? (
+                  <div style={s('padding:28px 20px;text-align:center;font:400 14px/1.7 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>暂不可用<div style={s('margin-top:6px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400)')}>帖子类型标注尚未生成，构成比例无法计算</div></div>
+                ) : (
                 <div style={s('padding:16px 20px 12px')}>
                   <div style={s('display:flex;height:22px;border-radius:5px;overflow:hidden;background:var(--ink-100);margin-bottom:12px')}>
                     {v.typeBar.map((b) => (
@@ -437,6 +482,7 @@ export default class KolDetail extends React.Component {
                     ))}
                   </div>
                 </div>
+                )}
               </div>
             </div>
           </div>
@@ -447,8 +493,13 @@ export default class KolDetail extends React.Component {
                 <div style={s('font:600 18px/1.3 var(--font-cjk)')}>其他产品观点及操作</div>
                 <div style={s('margin-top:5px;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>{v.opCount} 条 · 该 KOL 在评论与转发中提到的其他产品（竞品 + 南方东英其他产品），一条内容一行；类型与操作方向由 AI 识别，点「原文」核对</div>
               </div>
-              <div onClick={v.csvGo} style={s('flex:none;display:flex;align-items:center;gap:7px;padding:8px 15px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 14px/1.4 var(--font-cjk);color:var(--ink-700);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>导出 CSV</div>
+              {!v.opsNa && (
+                <div onClick={v.csvGo} style={s('flex:none;display:flex;align-items:center;gap:7px;padding:8px 15px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 14px/1.4 var(--font-cjk);color:var(--ink-700);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>导出 CSV</div>
+              )}
             </div>
+            {v.opsNa ? (
+              <div style={s('padding:34px 22px;text-align:center;font:400 14px/1.7 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>暂不可用<div style={s('margin-top:6px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400)')}>观点、操作与情绪净值均来自 AI 标注，尚未生成 —— 这不等于「他没有提到其他产品」</div></div>
+            ) : (
             <table>
               <thead>
                 <tr style={s('background:var(--canvas-alt)')}>
@@ -503,6 +554,7 @@ export default class KolDetail extends React.Component {
                 ))}
               </tbody>
             </table>
+            )}
             <div style={s('padding:14px 22px;border-top:1px solid var(--border-1);font:400 13px/1.7 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>「类型」与「操作」为同一套 8 类枚举下的两层标注：操作类帖子（晒单 / 操作宣告）附买卖方向；行情解读等观点类如识别出持有 / 观望意向也一并标出。置信度低于 {v.lcText} 标「待确认」。</div>
           </div>
         </div>

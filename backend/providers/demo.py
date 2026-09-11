@@ -25,21 +25,13 @@ import json
 import os
 from pathlib import Path
 
+# 哨兵本体搬去了 providers/sentinel.py —— sql provider 也要用它，而 sql 去 import demo
+# 是说不通的（两个平行实现，谁都不该依赖另一个）。这里 re-export 只为了让
+# `from providers.demo import MISSING` 这种旧写法不至于突然报错；新代码从 sentinel 取。
+from .sentinel import MISSING  # noqa: F401  （re-export，见上）
+
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures"
 FIXTURE_DIR = FIXTURE_ROOT / "demo"
-
-
-class _Missing:
-    """「fixture 里没有这个参数键」的哨兵。与 None（字段暂不可用）严格区分。"""
-
-    def __repr__(self):
-        return "MISSING"
-
-    def __bool__(self):
-        return False
-
-
-MISSING = _Missing()
 
 
 class DemoProvider:
@@ -79,6 +71,15 @@ class DemoProvider:
     def _doc(self, name):
         """整份文档，不按参数键查表（主数据用）。场景目录优先。"""
         return self._tables(name)[0]
+
+    def refresh(self):
+        """空操作。fixture 是仓库里的静态文件，进程跑着的时候不会自己变。
+
+        这个方法存在只是为了让 `get_provider()` 有一个统一的调用点 —— 在那边写
+        `if isinstance(p, SqlProvider)` 会把 provider 的实现细节漏回接缝里（ADR-0001
+        的整个意思是两个 provider 对上层没有区别）。
+        """
+        return False
 
     # ── PRD §5 契约函数 ────────────────────────────────────────────────
 

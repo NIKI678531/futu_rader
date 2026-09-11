@@ -7,9 +7,9 @@
     "comments": null,
     "engagement": null,
     "kol": "一颗财丸",
-    "n": 5,
-    "own": 5,
-    "ownAny": 5,
+    "n": 6,
+    "own": 6,
+    "ownAny": 6,
     "peer": 0,
     "peerAny": 0,
     "posts": [
@@ -258,9 +258,53 @@
       "typeLabel": "行情解读",
       "url": "https://www.futunn.com/post/7854708",
       "views": 41919
+     },
+     {
+      "camp": "own",
+      "campPrimary": "own",
+      "code": "2802",
+      "comments": 2,
+      "confidence": null,
+      "dateText": "08-26",
+      "day": "2026-08-26",
+      "dir": null,
+      "direction": null,
+      "directionLabel": null,
+      "directionPending": null,
+      "engagement": 12,
+      "evidenceIdx": null,
+      "fullText": null,
+      "hasDir": null,
+      "hasSummary": null,
+      "hour": 11,
+      "id": "sixstate-kol-unannotated",
+      "issuer": "CSOP 南方东英",
+      "kol": "一颗财丸",
+      "likes": 9,
+      "mentioned": [
+       {
+        "code": "2802",
+        "issuer": "CSOP 南方东英",
+        "name": "國指備兌認購期權主動型ETF",
+        "ownership": "own"
+       }
+      ],
+      "name": "國指備兌認購期權主動型ETF",
+      "ownership": "own",
+      "postType": null,
+      "sector": "hk",
+      "shares": 1,
+      "summary": null,
+      "t": 11,
+      "tags": "市场洞察",
+      "time": "08-26 11:28",
+      "typeEvidence": null,
+      "typeLabel": null,
+      "url": "https://www.futunn.com/post/7854708",
+      "views": 41919
      }
     ],
-    "styleTag": "行情解读为主",
+    "styleTag": null,
     "top": {
      "camp": "own",
      "campPrimary": "own",
@@ -309,14 +353,10 @@
      "url": "https://www.futunn.com/post/7854708",
      "views": 41919
     },
-    "topType": "market",
-    "topTypeLabel": "行情解读",
-    "typeCounts": {
-     "market": 5
-    },
-    "typeOrder": [
-     "market"
-    ]
+    "topType": null,
+    "topTypeLabel": null,
+    "typeCounts": null,
+    "typeOrder": null
    }
   ],
   "posts": [
@@ -563,6 +603,50 @@
     "time": "08-26 11:28",
     "typeEvidence": "25400 这个位置守了几次，短线还是震荡看待。",
     "typeLabel": "行情解读",
+    "url": "https://www.futunn.com/post/7854708",
+    "views": 41919
+   },
+   {
+    "camp": "own",
+    "campPrimary": "own",
+    "code": "2802",
+    "comments": 2,
+    "confidence": null,
+    "dateText": "08-26",
+    "day": "2026-08-26",
+    "dir": null,
+    "direction": null,
+    "directionLabel": null,
+    "directionPending": null,
+    "engagement": 12,
+    "evidenceIdx": null,
+    "fullText": null,
+    "hasDir": null,
+    "hasSummary": null,
+    "hour": 11,
+    "id": "sixstate-kol-unannotated",
+    "issuer": "CSOP 南方东英",
+    "kol": "一颗财丸",
+    "likes": 9,
+    "mentioned": [
+     {
+      "code": "2802",
+      "issuer": "CSOP 南方东英",
+      "name": "國指備兌認購期權主動型ETF",
+      "ownership": "own"
+     }
+    ],
+    "name": "國指備兌認購期權主動型ETF",
+    "ownership": "own",
+    "postType": null,
+    "sector": "hk",
+    "shares": 1,
+    "summary": null,
+    "t": 11,
+    "tags": "市场洞察",
+    "time": "08-26 11:28",
+    "typeEvidence": null,
+    "typeLabel": null,
     "url": "https://www.futunn.com/post/7854708",
     "views": 41919
    }

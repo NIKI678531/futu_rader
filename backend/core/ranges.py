@@ -11,7 +11,7 @@ PRD §5 逐字：区间与桶由**后端下发，前端不自行算桶**。这�
 """
 
 from providers import get_provider
-from providers.demo import MISSING
+from providers.sentinel import MISSING
 
 # PRD §3.1 的五个预设。未知 key 不做兜底回落——静默回落到 d7 会让前端以为自己拿到了
 # 请求的区间，图表横轴和标题却是另一段时间。

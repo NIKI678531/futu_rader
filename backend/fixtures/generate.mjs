@@ -351,9 +351,17 @@ function master() {
      但它是名单本身的属性（区分在册与在跑），接真实库后同样来自库表。 */
   const kols = R.KOLS.map((k) => ({ name: k[0], tags: k[1], active: k[2] === 1 }))
 
+  /* 「数据截至」。它长得像口径常量，但它是**数据的属性**：这批数据最后一条帖子发在
+     什么时候。原来它手写在 fixtures/meta.json 里，于是 `DATA_PROVIDER=sql` 接真库时，
+     页面拿演示锚点 `2026-09-02 09:00 HKT` 给真数据落款 —— 而真库的数据到 `2026-08-25`
+     就断了，整整虚报一周。那不是缺失，是说谎，比空着更难发现。
+     这里逐字取设计源的 `R.UPDATED`（`NOW_DATE + ' ' + NOW_TIME + ' HKT'`），
+     演示侧的输出一个字都不变。 */
+  const updatedAt = R.UPDATED
+
   writeFileSync(
     join(outDir, 'master.json'),
-    JSON.stringify({ products, officials, kols }),
+    JSON.stringify({ products, officials, kols, updatedAt }),
     'utf8',
   )
   files++

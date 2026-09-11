@@ -133,11 +133,21 @@ def build_mentions(posts):
 
 
 def build_kol():
-    """KOL 影响力页的六态样本：同一位 KOL 的 5 篇，每篇只演一态。
+    """KOL 影响力页的六态样本：同一位 KOL 的 6 篇，每篇只演一态。
 
-    这一页比官号页多一态要演：**操作方向判不出来**。设计源把它落成
-    `directionPending=True` 而不是 `direction='hold'` —— 把没判出来的说成「持有观望」，
-    是六态里「待确认」存在的全部理由（PRD §3.6）。
+    这一页比官号页多两态要演。
+
+    **操作方向判不出来。** 设计源把它落成 `directionPending=True` 而不是
+    `direction='hold'` —— 把没判出来的说成「持有观望」，是六态里「待确认」存在的
+    全部理由（PRD §3.6）。
+
+    **整块 AI 标注还没生成。** 这一态不是「某个字段缺了」，而是标注块整个没下发：
+    类型、置信度、方向、摘要、正文分句、判定依据句一起是 None（`providers/sql.py`
+    的 `_UNANNOTATED`，ADR-0017 §4）。它是 `DATA_PROVIDER=sql` 下**每一篇**帖子的
+    样子，却恰恰是演示数据一次都构造不出来的那一种：演示里 postType 永远有值，
+    于是 `typeStyle(null)→「其他」`、`null < 0.7 →「待确认」`、`!hasSummary →
+    「图片帖」`、`null.map` 这几处一个都不会被走到。六态样本不补这一篇，接真库
+    那天页面会挂满我们从没做出过的判断 —— 而且每一条都长得像结论。
     """
     src = load("kol_impact")[RANGE]
     donor = next(p for p in src["posts"] if p["mentioned"] and p["hasSummary"])
@@ -188,22 +198,44 @@ def build_kol():
         # ⑤ 暂无内容 —— 查过了确实没摘要（图片帖），与「暂不可用」不是一回事。
         make("sixstate-kol-nosummary", likes=5, comments=0, shares=0, engagement=5,
              confidence=0.95, hasSummary=False, summary=""),
+
+        # ⑥ 暂不可用（整块）—— AI 标注还没跑。逐字对齐 `providers/sql.py::_UNANNOTATED`，
+        #    十三个字段一起是 None；对不上就不是在演 sql 真正会发出来的东西了（这条对齐
+        #    由 tests/test_six_states.py 钉住，不靠这里的注释）。
+        #
+        #    与⑤的区别是全篇的要害：⑤ 的 `hasSummary=False` 是**结论**（查过了，这篇
+        #    只有图片），⑥ 的 `hasSummary=None` 是「还没查」。JS 里两者都是假值，
+        #    `!p.hasSummary` 一合并，没标注过的帖子就全被写成了图片帖。
+        #
+        #    计数字段照常给值，而且**不是** 0：标注缺不缺与平台计数采没采到是两条独立
+        #    的链路。混成一篇「什么都没有」的帖子，断言就分不出断的是哪一条，页面上也
+        #    看不出「互动量好好的、只是没标注」这一种最常见的真实形态。
+        make("sixstate-kol-unannotated", likes=9, comments=2, shares=1, engagement=12,
+             postType=None, typeLabel=None, confidence=None,
+             direction=None, directionLabel=None, directionPending=None,
+             hasDir=None, dir=None,
+             hasSummary=None, summary=None, fullText=None,
+             evidenceIdx=None, typeEvidence=None),
     ]
 
     # leaders 是**全量**画像榜，KOL 详情页拿它定「声量排名第一」与上一位／下一位的顺序。
     # 这里手写：把 kolProfile 在 Python 里再实现一遍，正是 ADR-0015 拒绝的那件事
-    # （它的唯一实现在 frontend/src/lib/profile.js）。5 篇同一类型，数值一眼可核。
-    # comments 是 None 而不是 4+7+3+0=14：其中一篇的评论数取不到，合计就是未知。
-    t = donor["postType"]
+    # （它的唯一实现在 frontend/src/lib/profile.js）。数值一眼可核。
+    # comments 是 None 而不是 0+7+3+0+2=12：其中一篇的评论数取不到，合计就是未知。
+    #
+    # 类型五项一起是 None，与 `providers/sql.py::_leaders` 对齐：判据是「**有一篇**
+    # 不知道」而不是「全都不知道」——⑥ 那篇没标注，谁是这位 KOL 的主要类型就不确定了。
+    # 写成 {market: 5} 少数一篇，画出来的构成图看着完全正常、只是分母不对；写成
+    # {market: 5, null: 1} 更糟，那是给界面递了一个叫「null」的类型。
     leader = {
         "kol": kol,
         "n": len(posts),
         "own": 0, "peer": 0, "both": 0, "ownAny": 0, "peerAny": 0,
         "engagement": None, "comments": None,
-        "typeCounts": {t: len(posts)},
-        "typeOrder": [t],
-        "topType": t, "topTypeLabel": donor["typeLabel"],
-        "styleTag": donor["typeLabel"] + "为主",
+        "typeCounts": None,
+        "typeOrder": None,
+        "topType": None, "topTypeLabel": None,
+        "styleTag": None,
         "top": posts[0], "posts": posts,
     }
     camp_field = "camp"
@@ -508,8 +540,29 @@ def build_stages():
     return {NO_ACCOUNTS + "|" + RANGE: mine}
 
 
+def build_master():
+    """主数据，去掉 `updatedAt` —— 「数据截至」这一位的缺失态。
+
+    这一位原本不可能缺：`updatedAt` 曾是 `fixtures/meta.json` 里的手写常量。它其实是
+    **数据的属性**（这批数据最后一条帖子发在什么时候），改成随 `master()` 下发之后，
+    库里没有锚点时它就会缺（`providers/sql.py::master`）。
+
+    这是整份 fixture 里唯一一个**整份覆盖**的文档：`_doc()` 不按键合并，场景目录里有
+    master.json 就整份用它（`providers/demo.py::_doc`）。所以这里不手抄那 120 只产品，
+    而是读演示版**删一个键**再写出去 —— 手抄的那份会慢慢和演示版长得不一样，而那时
+    六态跑的产品池和逐字比对跑的就不是同一批了。
+
+    为什么值得单独演一态：缺了不写字的后果比数值位更隐蔽。`{undefined}` 在 React 里
+    渲染成空，页面上只剩「数据截至」四个字加一片空白 —— 看着像样式没对齐。
+    """
+    master = dict(load("master"))
+    master.pop("updatedAt")
+    return master
+
+
 def main():
     OUT.mkdir(exist_ok=True)
+    write("master", build_master())
     build_market()
     posts = build_posts()
     write("official_posts", {RANGE: posts})

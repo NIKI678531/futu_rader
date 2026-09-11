@@ -75,7 +75,11 @@ cd worker && .venv/Scripts/python -m jobs.etl
 
 `backend/` 内部：`app.py`（`create_app()`）、`api/v1/`（蓝图，22 个端点）、`core/`（口径）、`providers/`（`demo` 读 fixture／`sql` 读瘦库，见 [ADR-0001](docs/adr/0001-dual-provider.md)）、`fixtures/`、`tests/`。PRD 第 5 章 23 组函数→端点的完整映射在 [plan.md](plan.md) §2.1。
 
-`sql` provider 下，**能数出来的字段都是真的，要 AI 标注或行情源的一律 `null`**（态度、主题、摘要、合规、K 线、日线价格 —— 标注管线见 [ADR-0017](docs/adr/0017-ai-annotation-pipeline-production.md)，取代 [ADR-0010](docs/adr/0010-annotations-and-ai-pipeline.md)）。前端目前假定这些字段存在（如 `p.confidence.toFixed(2)`），空值适配尚未做 —— 注意 `annotations` 里**没有**模型自报的 `confidence`，前端这处要改的不止是空值判断。
+`sql` provider 下，**能数出来的字段都是真的，要 AI 标注或行情源的一律 `null`**（态度、主题、摘要、合规、K 线、日线价格 —— 标注管线见 [ADR-0017](docs/adr/0017-ai-annotation-pipeline-production.md)，取代 [ADR-0010](docs/adr/0010-annotations-and-ai-pipeline.md)）。前端的空值适配**已完成**（2026-09-11，[runbook](docs/ai-data-integration-runbook.md) §16 Gate 1）：五页在真实库上不再抛错，缺失态逐块按 PRD §3.6 渲染。
+
+标注怎么跑、跑到哪一步、每道闸口卡在什么上，都在 [docs/ai-data-integration-runbook.md](docs/ai-data-integration-runbook.md) §16（Gate 0–6），那里是这条管线唯一的操作文档。要记住的是它的出口：`SqlProvider` **只读 `approved` / `corrected`**，模型写下的是 `pending` / `needs_review`，在有人用 `worker/jobs/review.py` 看过之前，界面上一个字都不会出现。
+
+改这一带时注意两件事。一是 `annotations` 里**没有**模型自报的 `confidence`，只有 `calibrated_confidence` 且当前全为 NULL —— 「待确认」由 `review_state` 驱动，那是事实（有没有人看过），不是伪概率。二是这里的缺失**经常是整块容器为 `null`**，不是字段为 `null`（热议总结整池一份、主题聚类整个双极对象）；字段判空一条都拦不住它们。防线是 `src/lib/view.js` 的 `naBox()` ＋ 屏内显式 null 分支，回归靠 `cd frontend && npm run real-data-check`（opt-in，需要本机瘦库）。
 
 设计变更一律**从设计源重新拷贝，不要照着新设计手推一遍**；再导入流程见 [README.md](README.md) 的 *Re-importing from Claude Design*。
 

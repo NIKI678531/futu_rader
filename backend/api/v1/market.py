@@ -12,7 +12,7 @@ from flask import abort
 
 from core.envelope import respond
 from core.market import benchmark, pool, ranks
-from providers.demo import MISSING
+from providers.sentinel import MISSING
 
 from . import range_key, v1_bp
 
