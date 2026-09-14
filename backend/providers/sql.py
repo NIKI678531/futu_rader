@@ -84,6 +84,7 @@ from core.calendar import PRESETS, build, parse_anchor  # noqa: E402
 from core.delta import delta  # noqa: E402
 from core.heat import heat_of  # noqa: E402
 from radar_db import make_engine  # noqa: E402
+from radar_db.annotations_read import current_annotations  # noqa: E402
 from radar_db.schema import (  # noqa: E402
     annotation_evidence,
     annotations,
@@ -782,108 +783,15 @@ class SqlProvider:
     def _current_annotations(self, kind, target_type, ids=None, window=None):
         """某个 kind 的**现行结论**，键为判定单元的后两半 `(target_id, subject_code)`。
 
-        ADR-0019 §1 逐条，整个 provider 只在这里实现一次：
+        ADR-0019 §1 的规则（链末、非 rejected、同链末取最新、rejected 链末＝无结论）
+        **只实现一次**，在 `radar_db/annotations_read.current_annotations` —— worker 的
+        Layer B（`jobs/synthesize.py`）按同一条规则取评论标注组事实，两侧共用那一份。
+        这里只是把 provider 的引擎递过去。
 
-        ① **链末** —— 没有任何一行 supersede 它；
-        ② `review_state != 'rejected'`；
-        ③ 链末有多条（ADR-0017 遗留的双现行情况）时取 `created_at` 最新的一条；
-        ④ 链末是 rejected ⇒ 该单元**当前没有结论**，不回退到旧行。
-
-        ④ 是 ① 与 ② 的乘积，不用另写分支：rejected 的那一行被 ② 滤掉，而被它
-        supersede 的旧行被 ① 滤掉，于是这个单元一行都不剩 —— 调用方拿不到键，页面
-        照常渲染「暂不可用」。**判链末的子查询里不能再加 `review_state` 条件**，
-        加了就等于「被 rejected 的行不算数」，旧结论会自己爬回页面上，`--reject`
-        这唯一的下线通道当场失效。
-
-        ## 三个参数
-
-        - `target_type` 是**必需**的，不是可选的收窄：`annotations.target_id` 在
-          `feed` 与 `comment` 两个命名空间里各自取值，不区分就会拿一条评论的标注去
-          回填一篇恰好同号的帖子。
-        - `ids` 按 900 一批切（SQLite 绑定变量上限 999，ADR-0016）；给了空集合就一条
-          查询都不发（`IN ()` 在两个方言下行为不同）。
-        - `window=(lo, hi)` 是 ADR 签名之外的一个参数：按**帖子的** `posted_at` 收窗口。
-          市场域一扫就是几万条评论，把 id 列表灌进 `IN (...)` 要切几十批；按窗口过滤
-          让库去做这件事，也正好和 `_scan` / `_posts` 用的是同一个半开区间。
-
-        评论的 `posted_at` 一路取自它所在的**帖子**（`comments.posted_at` 在瘦库里大量
-        为 NULL），与 `_scan` 对评论的归桶口径一致。
+        `window=(lo, hi)` 按**帖子的** `posted_at` 收半开窗口，与 `_scan` / `_posts` 用的
+        是同一个区间；评论的 `posted_at` 在瘦库里大量为 NULL。
         """
-        if ids is not None and not ids:
-            return {}
-
-        if target_type == "comment":
-            src = annotations.join(
-                comments, comments.c.comment_id == annotations.c.target_id
-            ).join(feeds, feeds.c.feed_id == comments.c.feed_id)
-        else:
-            src = annotations.join(feeds, feeds.c.feed_id == annotations.c.target_id)
-
-        newer = annotations.alias("newer")
-        chain_end = ~(
-            select(newer.c.annotation_id)
-            .where(newer.c.supersedes_id == annotations.c.annotation_id)
-            .exists()
-        )
-        stmt = (
-            select(
-                annotations.c.annotation_id,
-                annotations.c.target_id,
-                annotations.c.subject_code,
-                annotations.c.value_json,
-                annotations.c.review_state,
-                annotations.c.calibrated_confidence,
-                annotations.c.created_at,
-                feeds.c.feed_id,
-                feeds.c.posted_at,
-            )
-            .select_from(src)
-            .where(
-                annotations.c.kind == kind,
-                annotations.c.target_type == target_type,
-                annotations.c.review_state != "rejected",
-                chain_end,
-            )
-        )
-        if window is not None:
-            stmt = stmt.where(feeds.c.posted_at >= window[0], feeds.c.posted_at < window[1])
-
-        chunks = [None] if ids is None else _chunked(list(ids), 900)
-        out = {}
-        try:
-            with self._engine.connect() as conn:
-                for chunk in chunks:
-                    q = stmt if chunk is None else stmt.where(annotations.c.target_id.in_(chunk))
-                    for r in conn.execute(q):
-                        unit = (r.target_id, r.subject_code)
-                        prev = out.get(unit)
-                        # ③ 同一链末多行取最新。`created_at` 同秒时按 annotation_id
-                        # 兜底，不然「最新」会随库的返回顺序变，两次请求两个答案。
-                        if prev is not None and (prev["created_at"], prev["annotation_id"]) >= (
-                            r.created_at,
-                            r.annotation_id,
-                        ):
-                            continue
-                        out[unit] = {
-                            "annotation_id": r.annotation_id,
-                            "created_at": r.created_at,
-                            "review_state": r.review_state,
-                            # 校准置信度，当前全库为 NULL（ADR-0017 §4）。照取不硬编码
-                            # None：Gate 3 真把校准跑起来时，这里不用再改一次。
-                            "confidence": r.calibrated_confidence,
-                            # 坏 JSON 是坏库，不是缺失态：吞掉它等于把一条写错的标注
-                            # 伪装成「这条还没标」，而后者页面上是有话说的。
-                            "value": json.loads(r.value_json),
-                            "feed_id": r.feed_id,
-                            "posted_at": r.posted_at,
-                        }
-        except SQLAlchemyError:
-            # 标注五张表可能根本不存在（只跑过 import_dump、没跑过 Alembic 的库）。
-            # 那是「这批数据还没标注」，不是 500 —— 返回空 ⇒ 页面照旧「暂不可用」，
-            # 和 `_read_meta` 对空库的态度一致。**只吞库层异常**：`value_json` 不是
-            # 合法 JSON 是库坏了，那一条要炸出来，不能伪装成「这条还没标」。
-            return {}
-        return out
+        return current_annotations(self._engine, kind, target_type, ids=ids, window=window)
 
     # ── 内部：扫描与聚合 ─────────────────────────────────────────────
 
