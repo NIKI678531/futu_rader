@@ -140,8 +140,8 @@ def new_run_id():
 # ── 排队 ───────────────────────────────────────────────────────────────
 
 
-def _comment_candidates(engine, *, codes=None, limit=None, since=None, until=None):
-    """评论×挂载产品的候选行。`until` 为半开上界（`posted_at < until`）。"""
+def _comment_candidates(engine, *, codes=None, limit=None, since=None, until=None, authors=None):
+    """评论×挂载产品的候选行。`until` 为半开上界（`posted_at < until`）；`authors` 限定评论作者名。"""
     parent = comments.alias("parent")
     q = (
         select(
@@ -164,6 +164,8 @@ def _comment_candidates(engine, *, codes=None, limit=None, since=None, until=Non
     )
     if codes:
         q = q.where(feeds.c.code.in_(list(codes)))
+    if authors:
+        q = q.where(comments.c.author_name.in_(list(authors)))
     if since:
         q = q.where(feeds.c.posted_at >= since)
     if until:
@@ -176,10 +178,10 @@ def _comment_candidates(engine, *, codes=None, limit=None, since=None, until=Non
         yield from conn.execute(q)
 
 
-def job_row_for_comment(cfg, prompt, schema_version, row, *, priority=0, scope_id=None, now=None):
+def job_row_for_comment(cfg, prompt, schema_version, row, *, priority=0, scope_id=None, now=None,
+                        task="comment_product"):
     """一行候选 → 一条待办。指纹用的是**将来真正会发出去的那个 payload**。"""
     now = now or clock.now()
-    task = "comment_product"
     payload = _build_payload(
         task,
         {"target_id": row.comment_id, "subject_code": row.code},
@@ -297,6 +299,26 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None
                     "updated_at": now,
                 }
             )
+    return _insert_jobs(engine, rows)
+
+
+def enqueue_kol_comments(engine, cfg, kol_names, *, codes=None, limit=None, since=None, until=None,
+                         priority=0, scope_id=None):
+    """把合作 KOL 写的评论排进 `kol_comment_opinion`（PRD §4.4 M7）。
+
+    判定单元、payload、指纹都与 comment_product 同构 —— 只是作者被限定在 KOL 名单内，
+    任务名不同。32 位 KOL 的评论量很小，这是全套里最便宜的一个任务。
+    """
+    task = "kol_comment_opinion"
+    prompt, schema_version = resolve(task, cfg)
+    now = clock.now()
+    rows = []
+    for r in _comment_candidates(engine, codes=codes, limit=None, since=since, until=until,
+                                 authors=list(kol_names)):
+        rows.append(job_row_for_comment(cfg, prompt, schema_version, r, priority=priority,
+                                        scope_id=scope_id, now=now, task=task))
+        if limit and len(rows) >= limit:
+            break
     return _insert_jobs(engine, rows)
 
 
@@ -601,7 +623,7 @@ def _load_sources(engine, task, jobs):
     if not ids:
         return out
     with engine.connect() as conn:
-        if task == "comment_product":
+        if task in COMMENT_TASKS:
             parent = comments.alias("parent")
             q = (
                 select(
@@ -635,8 +657,12 @@ def _load_sources(engine, task, jobs):
     return out
 
 
+# 以评论 × 产品为判定单元的任务；帖子任务是另一种形状。
+COMMENT_TASKS = ("comment_product", "kol_comment_opinion")
+
+
 def _item_id(task, job):
-    if task == "comment_product":
+    if task in COMMENT_TASKS:
         return f"comment:{job['target_id']}|product:{job['subject_code']}"
     return f"feed:{job['target_id']}"
 
@@ -652,7 +678,7 @@ def _product_block(code):
 
 
 def _build_payload(task, job, src):
-    if task == "comment_product":
+    if task in COMMENT_TASKS:
         post_context = (src.get("post_content") or "").strip()[:POST_CONTEXT_CHARS] or None
         return redact.comment_payload(
             _item_id(task, job),
@@ -695,6 +721,14 @@ def _kinds_for(task, item, src, schema_version):
              [], False)
         )
         return kinds
+
+    if task == "kol_comment_opinion":
+        spans = [item.evidence] if item.evidence else []
+        # `summary=null`＝「这条评论没有对该产品表达观点」，是结论，落 false 占位（同帖子 summary）。
+        return [
+            ("kol_summary", item.summary if item.summary is not None else False, spans, item.summary is not None),
+            ("kol_action", item.action, [], False),
+        ]
 
     spans = [item.evidence] if item.evidence else []
     # 相关但没给出可定位证据 ⇒ 存疑。无关/需上下文本来就没有证据可给，不算问题。
@@ -941,6 +975,11 @@ def main(argv=None):
             n = enqueue_posts(engine, cfg, codes=codes, limit=args.limit, since=since,
                               until=until, authors=authors, priority=args.priority,
                               scope_id=args.scope)
+        elif args.task == "kol_comment_opinion":
+            from jobs.extract import master_accounts
+            n = enqueue_kol_comments(engine, cfg, authors or master_accounts()[0], codes=codes,
+                                     limit=args.limit, since=since, until=until,
+                                     priority=args.priority, scope_id=args.scope)
         else:
             ap.error(f"--task {args.task} 没有对应的排队函数")
         log.info("已排队 %d 条（%s）", n, args.task)

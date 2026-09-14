@@ -100,6 +100,8 @@ def _walk(value, path, shape):
     if isinstance(value, dict):
         types.setdefault(path, set()).add("dict")
         keys.setdefault(path, set()).update(value)
+        if isinstance(value.get("status"), str):
+            _STATUS.setdefault(id(shape), {})[path] = value["status"]
         for k, v in value.items():
             _walk(v, f"{path}.{k}", shape)
         return
@@ -119,10 +121,45 @@ def _walk(value, path, shape):
         types.setdefault(path, set()).add("str")
 
 
+# 每个 dict 路径上的 `status` 值（六态）。形状按契约**随 status 变**：热议总结 `ok` 才有
+# `tone`，竞品 `unavailable` 时 list 为空……两边同一路径 status 不同时，比键集比的是数据差异，
+# 不是契约差异，所以那棵子树跳过（打印出来，不算通过）。
+_STATUS = {}
+
+
 def _shape(payload):
     shape = ({}, {}, {})
     _walk(payload, "$", shape)
-    return shape
+    statuses = _STATUS.pop(id(shape), {})
+    return shape + (statuses,)
+
+
+# ADR-0020 加进契约的**扩展键**：sql 侧在 Layer B 生成物上附带的可追溯信息（徽章要的
+# `reviewState`、证据侧栏要的 `evidenceIds`、「模型还没写这一段」的 `labelStatus` /
+# `aiStatus` / `reasonStatus`、以及 core 分桶的稳定键 `key` / `subkey` / `aspect` / `units`）。
+# demo fixture 冻结自设计源，不会有它们；前端读不到就是 undefined，与 null 同义，不会炸。
+# 除此之外的新键仍然判失败 —— 这张表是白名单，不是放宽。
+EXTENSION_KEYS = frozenset({
+    "reviewState", "evidenceIds", "labelStatus", "aiStatus", "reasonStatus",
+    "key", "subkey", "aspect", "units", "points", "category",
+})
+
+
+def _under_extension(path):
+    return any(seg.rstrip("[]") in EXTENSION_KEYS for seg in path.split(".")[1:])
+
+
+def _status_differs(path, d_status, s_status):
+    """`path` 自己或任一祖先 dict 的 status 两边不同。"""
+    p = path
+    while p:
+        if p in d_status and p in s_status and d_status[p] != s_status[p]:
+            return True
+        cut = max(p.rfind("."), p.rfind("["))
+        if cut <= 0:
+            break
+        p = p[:cut]
+    return False
 
 
 def _blind(path, d_lists):
@@ -157,13 +194,18 @@ class TestShape:
         assert demo_code == 200, f"demo 下 {url} 不是 200：{demo_code}"
         assert sql_code == 200, f"sql 下 {url} 不是 200：{sql_code}"
 
-        d_types, d_keys, d_lists = _shape(demo_body["data"])
-        s_types, s_keys, _ = _shape(sql_body["data"])
+        d_types, d_keys, d_lists, d_status = _shape(demo_body["data"])
+        s_types, s_keys, _, s_status = _shape(sql_body["data"])
         blind = []
 
         # ① 键集。只比 sql 真的给出了 dict 的那些路径 —— sql 在某处整块 null
         # （AI 标注未建）是合法的，那时它没有键集可比。
         for path, sk in s_keys.items():
+            if _under_extension(path):
+                continue
+            if _status_differs(path, d_status, s_status):
+                blind.append(path)
+                continue
             dk = d_keys.get(path)
             if dk is None:
                 if _blind(path, d_lists):
@@ -173,15 +215,17 @@ class TestShape:
                     f"{url}：sql 在 {path} 给了一个 demo 里不存在的对象。"
                     f"契约以设计源为准，多出来的字段说明 provider 和契约岔开了。键={sorted(sk)}"
                 )
-            assert sk == dk, (
+            assert sk - EXTENSION_KEYS == dk - EXTENSION_KEYS, (
                 f"{url} 的 {path} 键集不一致。\n"
                 f"  只在 demo：{sorted(dk - sk)}\n"
-                f"  只在 sql ：{sorted(sk - dk)}\n"
+                f"  只在 sql ：{sorted(sk - dk - EXTENSION_KEYS)}\n"
                 f"前者会让前端读到 undefined，后者说明有人加了字段没进契约。"
             )
 
         # ② 类型。sql 可以在任何地方是 null，但不能把 list 换成 number。
         for path, st in s_types.items():
+            if _under_extension(path) or _status_differs(path, d_status, s_status):
+                continue
             dt = d_types.get(path)
             if dt is None:
                 if _blind(path, d_lists):

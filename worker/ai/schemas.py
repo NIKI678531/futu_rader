@@ -185,9 +185,41 @@ class CommentAnnotationV2(BaseModel):
         return self
 
 
+# ── KOL 评论观点（PRD §4.4 M7「其他产品观点及操作」） ─────────────────────
+#
+# 只跑合作 KOL 的评论。`summary` 是这条评论对该产品观点的一句话（≤30 字），`action` 是设计源
+# `ACTIONS` 的 8 个枚举之一（逐字）。它是评论 × 产品的判定单元，与 comment_product 同键。
+
+KOL_ACTIONS = ("加仓", "建仓", "减仓", "清仓", "转投其他产品", "持有不动", "观望", "未提及操作")
+KOL_SUMMARY_MAX = 30
+
+
+class KolOpinionAnnotation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str
+    # 评论没有对该产品表达任何观点 ⇒ null（那是结论，写库时落 false 占位，同帖子 summary）。
+    summary: Optional[str]
+    action: Literal[KOL_ACTIONS]  # type: ignore[valid-type]
+    evidence: Optional[str]
+    needs_review: bool
+
+    @model_validator(mode="after")
+    def _rules(self):
+        if self.summary is not None and len(self.summary) > KOL_SUMMARY_MAX:
+            raise ValueError(f"{self.item_id}: 观点摘要 {len(self.summary)} 字，超过 {KOL_SUMMARY_MAX} 字上限")
+        return self
+
+
+class KolOpinionBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    results: list[KolOpinionAnnotation]
+
+
 TASKS = {
     "comment_product": CommentAnnotation,
     "post_annotation": PostAnnotation,
+    "kol_comment_opinion": KolOpinionAnnotation,
 }
 
 # 按 schema 版本选模型。`v1` 是 Gate 0–2 的形状，保留给回放与对照实验；生产默认 `v2`
@@ -195,6 +227,7 @@ TASKS = {
 VERSIONED = {
     "comment_product": {"v1": CommentAnnotation, "v2": CommentAnnotationV2},
     "post_annotation": {"v1": PostAnnotation, "v2": PostAnnotation},
+    "kol_comment_opinion": {"v1": KolOpinionAnnotation, "v2": KolOpinionAnnotation},
 }
 
 
@@ -233,11 +266,13 @@ class PostBatch(BaseModel):
 BATCHES = {
     "comment_product": CommentBatch,
     "post_annotation": PostBatch,
+    "kol_comment_opinion": KolOpinionBatch,
 }
 
 VERSIONED_BATCHES = {
     "comment_product": {"v1": CommentBatch, "v2": CommentBatchV2},
     "post_annotation": {"v1": PostBatch, "v2": PostBatch},
+    "kol_comment_opinion": {"v1": KolOpinionBatch, "v2": KolOpinionBatch},
 }
 
 
