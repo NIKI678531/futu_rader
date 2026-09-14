@@ -93,9 +93,13 @@ class AiConfig:
         }
 
 
-def load(**overrides):
+def load(_allow_missing_key=False, **overrides):
     """从环境读配置。`overrides` 供测试注入，**不读环境**，所以测试不会因为本机
-    `.env` 里恰好配了什么而变绿或变红。"""
+    `.env` 里恰好配了什么而变绿或变红。
+
+    `_allow_missing_key=True` 给**不发请求**的作业用（`jobs/extract.py` 排队、`--dry-run`）：
+    它们要 `model` 与三个版本号算 `input_hash`，但用不到 Key。没配 Key 就不该拦着人排队。
+    """
     if overrides:
         base = dict(
             provider="openai_compatible",
@@ -119,8 +123,10 @@ def load(**overrides):
 
     return AiConfig(
         provider=os.getenv("AI_PRIMARY_PROVIDER", "openai_compatible").strip(),
-        base_url=_require("AI_PRIMARY_BASE_URL").rstrip("/"),
-        api_key=_require("AI_PRIMARY_API_KEY"),
+        base_url=(os.getenv("AI_PRIMARY_BASE_URL", "").strip() if _allow_missing_key
+                  else _require("AI_PRIMARY_BASE_URL")).rstrip("/"),
+        api_key=os.getenv("AI_PRIMARY_API_KEY", "").strip() if _allow_missing_key
+        else _require("AI_PRIMARY_API_KEY"),
         model=_require("AI_PRIMARY_MODEL"),
         timeout_seconds=_int("AI_REQUEST_TIMEOUT_SECONDS", 60),
         max_retries=_int("AI_MAX_RETRIES", 3),
