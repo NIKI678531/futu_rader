@@ -37,6 +37,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import clock  # noqa: E402
 from ai.lexicon import compliance_zh  # noqa: E402
 from radar_db import default_data_dir, make_engine  # noqa: E402
 from radar_db.annotations_read import current_annotations  # noqa: E402
@@ -58,7 +59,7 @@ def _scope_filter(q, scope_id):
 
 
 def report(engine, scope_id=None):
-    out = {"scope_id": scope_id, "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    out = {"scope_id": scope_id, "generated_at": clock.now().strftime("%Y-%m-%d %H:%M")}
     with engine.connect() as conn:
         # 队列
         q = _scope_filter(select(annotation_jobs.c.task, annotation_jobs.c.status, func.count())
@@ -244,7 +245,7 @@ def main(argv=None):
     engine = make_engine()
     data_dir = default_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    stamp = clock.now().strftime("%Y%m%dT%H%M%S")
 
     if args.report or not (args.lexicon_recall or args.sample):
         rep = report(engine, args.scope)

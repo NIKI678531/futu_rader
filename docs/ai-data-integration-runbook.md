@@ -1431,11 +1431,14 @@ cd worker
 > 没有校准集 ⇒ `calibrated_confidence` 长期 NULL）。发布规则、徽章映射与实施清单
 > 全部以 ADR-0019 为准，此处只列与本手册其余章节的衔接项。
 
-- [ ] 落地 §20 的合规词表 `worker/ai/lexicon/compliance_zh.py`（简／繁／粤／英四套写法）。
-- [ ] 新增 `compliance_signal` 任务：Prompt、Schema、排队、写库（kind=`compliance`）。
-- [ ] 用 §22 可商用数据集预热攻击性预筛器（COLD → `thu-coai/roberta-base-cold` 直接可用）。
-- [ ] 按 ADR-0019 实施清单第 1–9 项改 `SqlProvider`／`core`／`/meta`／前端徽章（不花钱，可立刻做）。
-- [ ] `/meta.aiValidation = "none"`，面板写明「AI 结论由模型自动生成，未经人工验证」。
+- [x] 落地 §20 的合规词表 `worker/ai/lexicon/compliance_zh.py`（简／繁／粤／英四套写法）——
+      **角色变了**（ADR-0020 §3）：不再是预筛闸门，是 `jobs/audit.py --lexicon-recall` 的召回审计。
+- [x] ~~新增 `compliance_signal` 任务~~ → 合规五类**并入** `comment_product` v2 的单次调用
+      （`compliance_tags` / `compliance_rationale` / `compliance_evidence`，kind=`compliance`，
+      空数组也落库）。每条评论本来就要发一遍，再为合规发一遍是两倍请求。
+- [ ] ~~用 §22 可商用数据集预热攻击性预筛器~~ —— 挂起：ADR-0020 试点只用 LLM，不引入本地模型。
+- [x] 按 ADR-0019 实施清单第 1–9 项改 `SqlProvider`／`core`／`/meta`／前端徽章。
+- [x] `/meta.aiValidation = "none"`，面板写明「AI 结论由模型自动生成，未经人工验证」。
 
 完成标准：合规关注、态度、帖子三件套在页面上有真实输出；每条都带「AI 生成／AI 识别」
 徽章与原文证据；`/meta` 与面板如实写明未经人工验证。
@@ -1468,12 +1471,33 @@ cd worker
 - [x] 接原文证据（`evidenceIdx`／`typeEvidence`／`evidenceFor`，引文可在原文逐字定位）。
 - [x] 接合规候选的**读路径**（`na`／`unavailable`／`empty`／`ok` 四态）；写入方
       `compliance_signal` 任务仍缺，见 §20 与 Gate 3-alt。
-- [ ] 接主题聚类和命名（`topic_label` 既没有写入方，读路径也没实现）。
-- [ ] 接动态负面（`neg_category` 没有写入方）。
+- [x] 接主题与命名 —— **不是聚类**：主题＝极性 × aspect 桶（`backend/core/themes.py` 计数），
+      名字与摘要由 Layer B 的 `theme_label` 生成物给（[ADR-0020](adr/0020-llm-only-90d-pilot.md) §5）。
+- [x] 接动态负面（`neg_category`）：负面 aspect 桶＋`core/lifecycle.py` 的新增／持续／消退与关注程度。
+- [x] 接热议总结／舆情总结／话题情绪／阶段观点／关联竞品候选／产品相关 KOL／KOL 其他产品观点
+      （`synthesis_outputs` 七种 kind ＋ `kol_comment_opinion` 任务；读路径 `sql.py`，三态分明）。
 - [x] 前端按 `review_state` 渲染徽章，`/meta` 与面板写明未经人工验证。
-- [ ] **全量排队与运行**（ADR-0019 实施清单第 10 项）——等 §6.1 四项答复与授权。
+- [ ] **全量排队与运行**（ADR-0019 第 10 项 → ADR-0020 §8 的 90 天试点）——
+      命令见 [docs/llm-90d-operations.md](llm-90d-operations.md)；负责人 2026-09-14 已授权，
+      §6.1 四项与网关价格仍应索取。
 
 完成标准：AI 模块从 unavailable 逐项切换为真实输出，任何结论可回到原文。
+
+#### Gate 4-alt：90 天 LLM 试点（ADR-0020，2026-09-14）
+
+> 入口不再是 `annotate --enqueue`，而是 **`jobs/extract.py`**（按 ETF × 时间段抽取、五条规则预过滤、
+> 打 `scope_id`）→ **`jobs/pipeline.py --scope`**（评论 → KOL 评论 → 帖子 → Layer B → 报表，幂等续跑）。
+> 放量前先跑 `scripts/probe_gateway.py`（flex／batches／缓存／限流）与 `scripts/calibrate.py`
+> （b=1 vs b=30、v1 vs v2 一致率、仅个股规则误杀抽查）。
+
+- [x] 词表：`worker/ai/lexicon/{product_aliases,offpool_stocks,compliance_zh}.py`
+- [x] 抽取＋预过滤：`worker/jobs/extract.py`、`worker/ai/prefilter.py`
+- [x] 评论 v2 七维、Prompt 针对富途评论区改写、产品别名进 payload、帖子正文上下文
+- [x] 并发、scope 领取、`--dry-run`、`--budget-requests`
+- [x] Layer B：`worker/ai/synth.py`、`worker/jobs/synthesize.py`、`synthesis_outputs`（Alembic 0003）
+- [x] 读路径九个方法；parity 测试按六态与扩展键比对
+- [x] 报表：`worker/jobs/audit.py`
+- [ ] 本机：切库、探测、实验、全量运行、`real-data-check` —— 见操作单。
 
 ### Gate 5：行情
 
