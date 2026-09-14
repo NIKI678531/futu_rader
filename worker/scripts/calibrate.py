@@ -44,6 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import clock  # noqa: E402
 from ai import config, prefilter, schemas  # noqa: E402
 from ai.lexicon import offpool_stocks, product_aliases  # noqa: E402
 from ai.prompts import get as get_prompt  # noqa: E402
@@ -152,7 +153,7 @@ def main(argv=None):
     cfg = config.load()
     provider = build_provider(cfg)
     ownership = pool_codes()
-    stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    stamp = clock.now().strftime("%Y%m%dT%H%M%S")
 
     rows = candidates(engine, args, ownership)
     plex = product_aliases.ProductLexicon()
