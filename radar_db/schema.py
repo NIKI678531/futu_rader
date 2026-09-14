@@ -235,12 +235,76 @@ annotation_jobs = Table(
     Column("last_error", Text),
     Column("created_at", DateTime, nullable=False),
     Column("updated_at", DateTime, nullable=False),
+    # 这条待办属于哪次「按 ETF × 时间段」的抽取（`analysis_scopes`）。`run(scope_id=…)`
+    # 只领本 scope 的任务 —— 没有它，跑 3033 近 7 天时会把队列里别的产品、别的日期一起领走。
+    # 可空：Gate 0–2 的影子任务没有 scope。
+    Column("scope_id", String(40), index=True),
     # 同一个 (目标, 产品, 任务, 输入指纹) 只该有一条待办。重复排队 = 重复付费。
     UniqueConstraint(
         "target_type", "target_id", "subject_code", "task", "input_hash",
         name="uq_jobs_target_input",
     ),
     Index("ix_jobs_claimable", "status", "priority", "job_id"),
+)
+
+# 一次「按 ETF × 时间段」的抽取范围（`worker/jobs/extract.py`）。
+#
+# `annotation_runs` 记的是**一次执行**，`analysis_scopes` 记的是**一个业务窗口**：
+# 「3033 与 7226，2026-06-01 到 08-25，评论任务」。同一个 scope 可以被多次 run 分几天跑完，
+# 也可以在中断后续跑；覆盖率（候选多少、剔了多少、标了多少）挂在 scope 上，不挂在 run 上。
+analysis_scopes = Table(
+    "analysis_scopes",
+    metadata,
+    Column("scope_id", String(40), primary_key=True),  # 时间前缀＋随机尾，同 run_id
+    Column("task", String(40), nullable=False),
+    Column("codes_json", Text, nullable=False),  # ["3033","7226"]
+    Column("date_from", DateTime, nullable=False),  # 闭区间起
+    Column("date_to", DateTime, nullable=False),  # 闭区间止（实现用半开 < to+1d）
+    Column("time_basis", String(20), nullable=False),  # 'feed_posted_at'（市场域口径）
+    Column("with_baseline", Boolean, nullable=False, default=False),
+    Column("prompt_version", String(40), nullable=False),
+    Column("taxonomy_version", String(40), nullable=False),
+    Column("schema_version", String(40), nullable=False),
+    # 抽取时的统计快照：候选数、各规则剔除数、可复用数、新排队数、token 估算……
+    # 是 JSON 因为这些键会随规则演进而变，而它们只用来给人看与做报表。
+    Column("stats_json", Text),
+    Column("created_at", DateTime, nullable=False),
+)
+
+# 产品 × 区间级的 AI 生成物（热议总结、舆情总结、主题命名、负面类别、阶段观点、话题、竞品原因）。
+#
+# 与 `annotations` 分表，因为判定单元不同：那边是「一条评论对一只产品」，这边是
+# 「一只产品在一个区间」。硬塞进 `annotations` 要把 `target_id`（BigInteger）挪用成产品代码、
+# 把 `subject_code` 挪用成区间 —— 两列都会失去原义。
+#
+# `input_fingerprint` 覆盖：参与生成的 annotation_id 集合＋core/ 算出的事实 JSON＋Prompt 版本。
+# 底层标注一变（重跑、reject）指纹就变 ⇒ 旧生成物自动失效、下次 synthesize 重生成。
+# 这也是为什么不能只拿 `d7` 当缓存键：同一个 `d7` 在不同锚点、不同标注版本下是不同的输入。
+synthesis_outputs = Table(
+    "synthesis_outputs",
+    metadata,
+    Column("synthesis_id", AUTO_PK, primary_key=True, autoincrement=True),
+    Column("code", String(10), nullable=False),
+    Column("range_key", String(10), nullable=False),  # d1|d2|d7|d14|d30
+    Column("anchor", String(10), nullable=False),  # 'YYYY-MM-DD'，来自 meta_kv
+    # 'hot_summary'|'summary'|'theme_label'|'neg_category'|'stage'|'topic_label'|'competitor_reason'
+    Column("kind", String(30), nullable=False),
+    # 同一 kind 下的子键：主题是 '<polarity>|<aspect>'，阶段是 '<n>'，竞品是 '<code>'；
+    # 单值 kind（hot_summary / summary）写 NO_SUBJECT。
+    Column("subkey", String(40), nullable=False, default=NO_SUBJECT),
+    Column("input_fingerprint", String(64), nullable=False),
+    Column("value_json", Text, nullable=False),
+    # 模型引用的证据 id（来自输入里带 id 的引文）。程序已校验它是输入 id 的子集。
+    Column("evidence_ids_json", Text),
+    Column("run_id", String(40), nullable=False),
+    Column("review_state", String(20), nullable=False, default="pending"),
+    Column("created_at", DateTime, nullable=False),
+    Column("supersedes_id", BigInteger),
+    UniqueConstraint(
+        "code", "range_key", "anchor", "kind", "subkey", "input_fingerprint",
+        name="uq_synthesis_unit",
+    ),
+    Index("ix_synthesis_lookup", "code", "range_key", "anchor", "kind"),
 )
 
 annotations = Table(
