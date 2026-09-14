@@ -538,7 +538,6 @@ class TestAiAndPriceSurfacesAreNone:
     @pytest.mark.parametrize(
         "fn,args",
         [
-            ("hot_summaries", ("d1",)),
             ("summary_for", (OWN_CODE, "d1")),
             ("themes_for", (OWN_CODE, "d1")),
             ("neg_cats_for", (OWN_CODE, "d1")),
@@ -547,11 +546,19 @@ class TestAiAndPriceSurfacesAreNone:
             ("kol_mentions_for", (OWN_CODE, "d1")),
         ],
     )
-    def test_the_panels_without_a_writer_are_none(self, provider, fn, args):
-        """这几个面板要的 kind（`topic_label` / `neg_category` / 产品级总结……）
-        目前没有任何任务在写 —— `annotate.py` 只有 `comment_product` 与
-        `post_annotation` 两个。门槛拿掉了，读不到的原因换成了「还没人写」。"""
+    def test_the_panels_are_none_before_any_attitude_annotation(self, provider, fn, args):
+        """ADR-0020 接通了这几个面板的读路径，但「这只产品这个区间一条态度标注都没有」
+        仍然是整块 None（暂不可用）——不是空列表，空列表是在说「标过了，什么都没有」。
+        有标注时的真值断言在 `TestLayerBReadPath`。"""
         assert getattr(provider, fn)(*args) is None
+
+    def test_hot_summaries_is_per_code_unavailable_before_annotation(self, provider):
+        """热议总结整池一份：没标注的产品逐只给 `unavailable`，不是整块 None ——
+        榜单每一行都要一个状态可渲染（PRD §4.1 S8）。"""
+        hs = provider.hot_summaries("d1")
+        assert set(hs) == {p["code"] for p in provider._products}
+        assert all(v == {"status": "unavailable", "text": "数据暂不可用", "sample": None, "ok": False}
+                   for v in hs.values())
 
     @pytest.mark.parametrize(
         "fn,args", [("candles_for", (OWN_CODE, "d1")), ("stages_for", (OWN_CODE, "d1"))]

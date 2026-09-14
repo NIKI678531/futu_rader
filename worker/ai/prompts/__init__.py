@@ -13,6 +13,7 @@ Prompt 对不上时，`annotation_runs.prompt_version` 记的就是一个假版�
 from . import (
     comment_product_v1,
     comment_product_v2,
+    kol_opinion_v1,
     post_annotation_v1,
     post_annotation_v2,
 )
@@ -27,10 +28,13 @@ _REGISTRY = {
         post_annotation_v2.VERSION: post_annotation_v2,
         post_annotation_v1.VERSION: post_annotation_v1,
     },
+    "kol_comment_opinion": {
+        kol_opinion_v1.VERSION: kol_opinion_v1,
+    },
 }
 
 # Prompt 版本 → 它输出的 schema 版本。Prompt 与 schema 是一对：v2 Prompt 要求七个字段，
-# 拿 v1 schema 校验会整批失败。
+# 拿 v1 schema 校验会整批失败。kol_opinion 两版 schema 同形，配哪个都行。
 SCHEMA_OF = {
     comment_product_v1.VERSION: "v1",
     comment_product_v2.VERSION: "v2",
