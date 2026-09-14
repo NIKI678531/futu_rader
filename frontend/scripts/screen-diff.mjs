@@ -1,4 +1,4 @@
-/* 五页逐字比对 —— React 移植版（:5173）对设计源镜像（:5174）。
+/* 五页逐字比对 —— 独立测试 React（:5177）对设计源镜像（:5174），演示后端 :8017。
  *
  * ## 为什么是这个 harness，而不是组件单测
  *
@@ -47,8 +47,10 @@ import { chromium } from 'playwright'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const FRONTEND = path.resolve(HERE, '..')
+const BACKEND = path.resolve(FRONTEND, '..', 'backend')
 
-const REACT_ORIGIN = 'http://localhost:5173'
+const API_ORIGIN = 'http://127.0.0.1:8017'
+const REACT_ORIGIN = 'http://localhost:5177'
 const DESIGN_ORIGIN = 'http://localhost:5174'
 
 /* 榜单行、热力图色块、Top3 卡都是「点一下把 sel 设成这个代码」，所以按代码的**完整文字**
@@ -132,8 +134,16 @@ const SCREENS = [
  * 也就是说这 4 处按设计就都是文本中性的。真出现差异说明偏差比 README 记的更深，
  * 那是 bug，不是豁免。
  *
- * 于是白名单里能有的只剩一类：**设计源自己算错了，我们照抄就是撒谎**。往里加东西之前
- * 先问一句：出处是什么。
+ * 于是白名单里能有的只剩两类，往里加东西之前先问一句：出处是什么。
+ *
+ *   A. **设计源自己算错了，我们照抄就是撒谎**（前两条）。
+ *   B. **设计源之后有人改了定案，页面必须跟着改口**（AI 徽章与验证声明那几条）。
+ *      这一类不是「移植得不像」，是「设计源画的时候那条规则还不存在」——
+ *      [ADR-0019](../../docs/adr/0019-ai-auto-publish-no-human-gate.md) 2026-09-11 由项目
+ *      负责人裁决取消人工批准门槛，设计稿定稿于此之前。A 类只会越来越少，B 类只会随定案
+ *      增加；两类都必须写明出处，区别在于 B 类的出处是一份**比设计源新**的文档。
+ *      B 类条目意味着设计源那一页已经过时了：等设计稿按 ADR-0019 重画并重新镜像之后，
+ *      对应条目应当删掉，而不是永久留着。
  */
 const WHITELIST = [
   {
@@ -159,6 +169,51 @@ const WHITELIST = [
       + '3033 · d7 只有第 9 位 KOL（2 条）落在这一态，所以只有在「产品相关 KOL 全部'
       + '展开」这个视图里才会各豁免一处。',
   },
+  {
+    screen: '/product',
+    match: /^AI 结论由模型自动生成，未经人工验证；每条可回到原文。$/,
+    source: 'ADR-0019 §4「如实声明」／PRD §4.2 P7',
+    note:
+      'P7 右栏「统计区间／基准区间／有效样本／更新时间」之后多出来的一句。设计源没有它，'
+      + '因为设计稿定稿时的规则还是「AI 结论要人批准才上页面」——那条规则下这句话是多余的。'
+      + 'ADR-0019 取消了批准门槛，页面上的每一条 AI 结论都没有经过人工验证，于是这句话从'
+      + '多余变成必需：不写它，读的人会按旧规则默认有人看过。三处必须一致（`/meta.aiValidation`、'
+      + '板块总览 S6、产品监控 P7），这是第三处。',
+  },
+  {
+    screen: '/sector',
+    match: /^(AI 结论的验证程度|AI 结论由模型自动生成，未经人工验证；每条可回到原文。本期未安排人工复核.*)$/,
+    source: 'ADR-0019 §4「如实声明」／PRD §4.1 S6',
+    note:
+      '同上一条，这是 S6「口径与数据状态」面板里的那一处：一个标题片段 ＋ 一段正文片段。'
+      + '正文的前半句与 P7 逐字相同（同一个 `aiValidationNote()`，跟着 `/meta` 走而不是'
+      + '两边各写死一份），后半句是这一页特有的补充。只在「口径与数据状态」展开态里出现。',
+  },
+  ...['/kol', '/kol/detail', '/official'].map((screen) => ({
+    screen,
+    /* /kol 的行徽章带置信度（「待确认 0.62」）、详情弹层里是光秃秃的「待确认」；
+       /kol/detail 的发帖表是光秃秃的，/official 的带置信度。三页各取所需，不写成一条
+       大而全的正则：`待确认 0.62` 这个形态在 /kol/detail 的「提及其他产品」表里两边**都**
+       渲染（那一块还按老的置信度规则走，见 KolDetail.jsx:266），把它一并豁免会顺手把那块
+       将来的回归也一起盖掉。 */
+    match: screen === '/kol/detail'
+      ? /^(AI 生成( · (可追溯原文|待确认))?|待确认)$/
+      : screen === '/official'
+        ? /^(AI 生成( · (可追溯原文|待确认))?|待确认 \d+(\.\d+)?)$/
+        : /^(AI 生成( · (可追溯原文|待确认))?|待确认( \d+(\.\d+)?)?)$/,
+    source: 'ADR-0019 §2「徽章而非门槛」／PRD §3.9 徽章词表',
+    note:
+      '帖子卡上那枚小徽章。设计源的规则是「置信度低于 0.7 就标『待确认』，否则什么都不标」；'
+      + 'ADR-0019 把它换成了「每条都说清楚自己是怎么来的」：`pending` ⇒「AI 生成 · 可追溯原文」'
+      + '（没有可定位证据时退为「AI 生成」），`needs_review` ⇒「AI 生成 · 待确认」，'
+      + '`rejected` ⇒ 不显示。所以移植版这边的徽章**比设计源多得多**（设计源只给低置信的那几条'
+      + '挂牌，移植版每条都挂），豁免条数会是三位数，那是预期。'
+      + '两件事没跟着变，因此不在豁免范围内：一是「仅看待确认」筛选与各处「N 篇类型待确认」'
+      + '计数——demo fixture 里 `needs_review` 与 `confidence < 0.7` 是同一批记录（429/2306 条'
+      + '逐条核对过，零处不一致），两边数出来的数字仍然逐字相同，它们真差了就是真 bug；'
+      + '二是合规那枚「AI 识别 · 待人工确认」，两边都是写死的常量，ADR-0019 §2 也要求它恒定。'
+      + '真库下 `calibrated_confidence` 整列是 NULL，0.7 这个阈值在校准概率存在之前不生效。',
+  })),
 ]
 
 /* 抓一页的文本片段序列 ＋ 站外链接序列。act 是可选的展开操作（见顶部「展开态」）。 */
@@ -239,11 +294,11 @@ function exempt(screenPath, text) {
   return WHITELIST.find((w) => (!w.screen || w.screen === screenPath) && w.match.test(text))
 }
 
-/* 站点已经起着就直接用，没起就拉起来。两个 vite 都是长驻进程，跑完由我们负责收掉。 */
-async function up(origin, npmScript) {
-  if (await alive(origin)) return null
-  const child = spawn(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', npmScript], {
-    cwd: FRONTEND,
+async function up(origin, command, args, { cwd, env = {} }) {
+  if (await alive(origin)) throw new Error(`${origin} 已被占用，测试需要独立服务`)
+  const child = spawn(command, args, {
+    cwd,
+    env: { ...process.env, ...env },
     stdio: 'ignore',
     shell: process.platform === 'win32',
   })
@@ -252,7 +307,7 @@ async function up(origin, npmScript) {
     if (await alive(origin)) return child
   }
   kill(child)
-  throw new Error(`${origin} 起不来（npm run ${npmScript}）`)
+  throw new Error(`${origin} 起不来（${command}）`)
 }
 
 /* Windows 上 spawn 的是 npm.cmd（shell:true），child.kill() 只杀得掉那层 cmd，真正占着
@@ -294,7 +349,17 @@ let failures = 0
 let comparisons = 0
 
 try {
-  spawned.push(await up(REACT_ORIGIN, 'dev'), await up(DESIGN_ORIGIN, 'design'))
+  const python = path.join(BACKEND, '.venv', 'Scripts', process.platform === 'win32' ? 'python.exe' : 'python')
+  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+  spawned.push(await up(API_ORIGIN, python, [path.join(BACKEND, 'app.py')], {
+    cwd: BACKEND,
+    env: { DATA_PROVIDER: 'demo', DEMO_SCENARIO: 'demo', APP_PORT: '8017', APP_ENV: 'production' },
+  }))
+  spawned.push(await up(REACT_ORIGIN, npm, ['run', 'dev', '--', '--port', '5177', '--strictPort'], {
+    cwd: FRONTEND,
+    env: { VITE_API_BASE: `${API_ORIGIN}/api/v1` },
+  }))
+  spawned.push(await up(DESIGN_ORIGIN, npm, ['run', 'design', '--', '--strictPort'], { cwd: FRONTEND }))
   browser = await chromium.launch()
 
   for (const s of screens) {

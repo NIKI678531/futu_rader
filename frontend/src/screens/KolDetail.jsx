@@ -7,7 +7,7 @@
    （见 out.stats 上方，与 lib/profile.js 同一处偏差）。 */
 import React from 'react'
 import R from '../data/radar'
-import { num, conf2, typeStyle, md, shell, rgba, CAMP, POST_TYPES } from '../lib/view'
+import { num, conf2, typeStyle, md, shell, rgba, CAMP, POST_TYPES, reviewBadge, needsReview } from '../lib/view'
 import { kolProfile } from '../lib/profile'
 import { s, hover } from '../lib/dc'
 import Shell from '../components/Shell'
@@ -35,10 +35,13 @@ export default class KolDetail extends React.Component {
   data() { return R.kolImpact(this.state.rangeKey); }
   primaryOnly() { return this.props.campRule === '仅挂载标的'; }
   camp(p) { return this.primaryOnly() ? p.campPrimary : p.camp; }
-  /* 三态，不是两态：`null < 0.7` 在 JS 里是 **true**（null 被当成 0），照原样写会给
-     每一篇没标注过的帖子都挂上「待确认」—— 而「待确认」的意思是「模型给了个低分」，
-     不是「模型没跑」。返回 null 让调用点自己决定怎么说这件事。 */
-  pending(p) { return p.confidence == null ? null : p.confidence < this.LC; }
+  /* 三态，不是两态：举了手（true）、没举（false）、不知道（null）。判据是
+     `reviewState` 而不是置信度 —— ADR-0019 §2：`calibrated_confidence` 整列为
+     NULL，`lowConfidence` 在校准概率存在之前不生效；而 `null < 0.7` 在 JS 里是
+     **true**，照置信度写会给每一篇没标注过的帖子都挂上「待确认」。 */
+  pending(p) { return needsReview(p.reviewState); }
+  /* 这一条结论的如实声明（ADR-0019 §2／§4）。指不到原文就不说「可追溯原文」。 */
+  review(p) { return reviewBadge(p.reviewState, p.evidenceIdx != null && p.evidenceIdx >= 0); }
   /* AI 标注整块未生成（ADR-0017 §4，sql provider 下恒为真） */
   annNa(p) { return p.postType == null; }
 
@@ -145,7 +148,7 @@ export default class KolDetail extends React.Component {
         key: p.id,
         time: p.time, code: p.code,
         pbg: rgba(sec.hue, 0.12), pfg: sec.hue,
-        type: st.label, tbg: st.bg, tfg: st.fg, pending: self.pending(p), conf: conf2(p.confidence),
+        type: st.label, tbg: st.bg, tfg: st.fg, pending: self.pending(p), conf: conf2(p.confidence), review: self.review(p),
         hasDir: !!p.hasDir, dir: p.dir ? p.dir.label : '', dbg: p.dir ? p.dir.bg : 'transparent', dfg: p.dir ? p.dir.fg : 'transparent',
         /* `!p.hasSummary` 把 null 和 false 合成了一句「图片帖」—— 前者是「还没生成」，
            后者是「查过了，这篇确实只有图」。合成的那一刻，未标注的帖子全被说成了图片帖。 */
@@ -375,8 +378,9 @@ export default class KolDetail extends React.Component {
                             {p.hasDir && (
                               <span title="操作方向 · AI 判定" style={s(`padding:2px 7px;border-radius:4px;background:${p.dbg};font:600 12px/1.6 var(--font-cjk);color:${p.dfg};white-space:nowrap`)}>{p.dir}</span>
                             )}
-                            {p.pending && (
-                              <span style={s('padding:0 6px;border-radius:9999px;background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500);white-space:nowrap')}>待确认</span>
+                            {/* 徽章文案由 `review_state` 决定（ADR-0019 §2），逐字取自 PRD §3.9 */}
+                            {p.review && (
+                              <span style={s('padding:0 6px;border-radius:9999px;background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500);white-space:nowrap')}>{p.review}</span>
                             )}
                           </div>
                         </td>

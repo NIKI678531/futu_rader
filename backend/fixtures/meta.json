@@ -1,5 +1,6 @@
 {
   "defaultRange": "d7",
+    "aiValidation": "none",
     "presets": [
       {
         "key": "d1",

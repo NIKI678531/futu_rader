@@ -40,8 +40,6 @@
  * 和连不上是同一类事故。
  */
 
-/* 后端地址。开发默认 8008（demo provider）；接真实库时改指 8009（mysql provider，
-   ADR-0001 双服务同镜像）。不写死在代码里。 */
 const BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8008/api/v1'
 
 /** 取数层抛出的错误。`kind` 见模块头那张表；`url` 用来在错误条上指出是哪个端点。 */

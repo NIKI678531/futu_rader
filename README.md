@@ -19,12 +19,16 @@ The repo holds the same screens twice, on purpose:
 ```sh
 cd frontend
 npm install
-npm run dev      # the React port          → http://localhost:5173
-npm run design   # the untouched .dc.html  → http://localhost:5174
+npm run dev      # real-data UI → http://localhost:5173
 ```
 
-`npm run design` serves `../design` as static files, so the original design source
-renders side by side with the port for comparison. `npm run build` emits `frontend/dist`.
+Daily use runs only the frontend on `5173` and the real-data backend on `8008`.
+The backend defaults to `sql`; no demo service or separate `8019` backend is needed.
+`npm run build` and `npm run preview` use the same real-data API default.
+Missing database data stays unavailable; it never falls back to fixtures.
+
+`npm run design` is a design/test-only command serving the read-only static reference
+on `5174`, not the application. Do not start it for daily use.
 
 The checkout currently lives on the `P:` DFS share, which needs two Vite settings that
 `frontend/vite.env.js` turns on automatically — see the comment there. A cold
@@ -90,8 +94,8 @@ surface is much larger — whole blocks come back `null`, not just fields. That 
 real slim DB, so it is opt-in and separate:
 
 ```sh
-cd backend  && DATA_PROVIDER=sql APP_PORT=8019 .venv/Scripts/python app.py
-cd frontend && API=http://127.0.0.1:8019/api/v1 npm run real-data-check
+cd backend  && .venv/Scripts/python app.py
+cd frontend && npm run real-data-check
 ```
 
 It loads all five routes against the real database and fails on any `pageerror` or any
@@ -103,7 +107,7 @@ It loads all five routes against the real database and fails on any `pageerror` 
 ([ADR-0001](docs/adr/0001-dual-provider.md)). **Always say which one a screenshot came
 from** — `demo`'s numbers are design-source fiction.
 
-| | `demo` (default) | `sql` |
+| | `demo` (explicit tests only) | `sql` (default) |
 | --- | --- | --- |
 | Source | fixtures exported from `design/radar-data.js` | the slim DB built from the client's dump |
 | Anchor ("today") | `2026-09-01`, frozen | `2026-08-25`, measured at import |
@@ -111,9 +115,15 @@ from** — `demo`'s numbers are design-source fiction.
 
 ```sh
 cd backend
-DATA_PROVIDER=demo .venv/Scripts/python app.py    # fixtures, no database needed
-DATA_PROVIDER=sql  .venv/Scripts/python app.py    # the slim DB (build it first, below)
+.venv/Scripts/python app.py    # real slim DB on 8008 (build it first, below)
 ```
+
+Keep `DATA_PROVIDER=sql` in any existing `backend/.env`, or leave it unset.
+The frontend defaults to `http://localhost:8008/api/v1`; remove old `VITE_API_BASE`
+overrides pointing at `8019` or demo services. Fixtures remain only for explicit
+regression tests: `six-state` uses `8018/5175`, and `diff` uses `8017/5177/5174`.
+These test services are isolated from the daily UI and stop when the tests finish
+(except when explicitly requesting `diff -- --keep`).
 
 ### Building the slim DB from the client's dump
 

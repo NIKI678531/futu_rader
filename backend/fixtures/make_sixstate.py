@@ -59,7 +59,12 @@ def load(name):
 
 
 def build_posts():
-    """六态样本贴。全部落在 d7，其余区间照常回落演示数据。"""
+    """六态样本贴。全部落在 d7，其余区间照常回落演示数据。
+
+    每一篇都**显式**写 `reviewState`，不让它跟着 `tpl` 混进来：徽章文案由它决定
+    （ADR-0019 §2），而 `tpl` 带的是供体那一篇的复核态，与这里改过的 `confidence`
+    无关。跟着供体走的话，③ 和 ④ 演的就不是「待确认」与它的反面，而是同一态两遍。
+    """
     src = load("official_posts")[RANGE]
     tpl = next(p for p in src if p["mentioned"])  # 有挂载标的的模板
 
@@ -77,34 +82,42 @@ def build_posts():
         # ① `0` —— 真的数过了，确实是零。**必须仍然渲染成 0。**
         #    没有这一条，「null 不许显示成 0」很容易矫枉过正，把真零也一起抹掉。
         make(tpl, ISSUER, "sixstate-zero", likes=0, comments=0, shares=0,
-             engagement=0, confidence=0.95,
+             engagement=0, confidence=0.95, reviewState="pending",
              summary="互动为零的帖子：赞、评、转都确实是 0，不是缺数据。", hasSummary=True),
 
         # ② 暂不可用 —— 字段应有值，但数据源没提供。数值位渲染长文案「数据暂不可用」。
         #    渲染成 0 或空白都是撒谎，这是整套护栏要守的那一条。
         make(tpl, ISSUER, "sixstate-null", likes=None, comments=None, shares=None,
-             engagement=None, confidence=0.95,
+             engagement=None, confidence=0.95, reviewState="pending",
              summary="平台计数字段未回传：三个数都应该有值，但当前取不到。", hasSummary=True),
 
-        # ③ 待确认 —— AI 标注置信度低于 lowConfidence(0.7)，标签照挂但标「待确认」。
+        # ③ 待确认 —— 模型自己举了手（`review_state = needs_review`），标签照挂但要
+        #    标出来它没把握 → 徽章「AI 生成 · 待确认」（ADR-0019 §2）。
+        #    置信度一并给低值只是让样本自洽（标注管线写 needs_review 的原因之一就是
+        #    自报分低），**不是判据** —— 判据只有 `reviewState` 这一个。
         make(tpl, ISSUER, "sixstate-pending", likes=12, comments=3, shares=1,
-             engagement=16, confidence=0.42,
-             summary="类型置信度 0.42，低于阈值，类型标「待确认」。", hasSummary=True),
+             engagement=16, confidence=0.42, reviewState="needs_review",
+             # 摘要里**不能**出现「待确认」或「AI 生成」：这一段整篇都会被正／反向断言
+             #    扫过，样本自己带上要断的字，断的就是它自己（六态样本踩过这个坑）。
+             summary="模型自报存疑：标签照挂，但要标出来它没把握。",
+             hasSummary=True),
 
-        # ④ 待确认的反面 —— 置信度达标就不该挂「待确认」。
+        # ④ 待确认的反面 —— 模型没举手，就不该出现「待确认」三个字。
         make(tpl, ISSUER, "sixstate-confident", likes=88, comments=9, shares=4,
-             engagement=101, confidence=0.96,
-             summary="类型置信度 0.96，达标，不标「待确认」。", hasSummary=True),
+             engagement=101, confidence=0.96, reviewState="pending",
+             summary="模型没有自报存疑：这一篇不该挂那一枚存疑徽章。", hasSummary=True),
 
         # ⑤ 暂无内容 —— 检查过了，确实没有摘要（图片帖）。与「暂不可用」不是一回事：
         #    一个是「查过了没有」，一个是「应该有但没取到」。
         make(tpl, ISSUER, "sixstate-nosummary", likes=5, comments=0, shares=0,
-             engagement=5, confidence=0.95, hasSummary=False, summary=""),
+             engagement=5, confidence=0.95, reviewState="pending",
+             hasSummary=False, summary=""),
 
         # ⑥ 「—」的来源 —— 这个官号区间内一条 ETF 都没提，清单表该显示
         #    「— 区间内未提及 ETF」，而不是「0 只 · 0 次」。
         make(tpl, BARE, "sixstate-nomention", likes=3, comments=1, shares=0,
-             engagement=4, confidence=0.9, mentioned=[], camp="none",
+             engagement=4, confidence=0.9, reviewState="pending",
+             mentioned=[], camp="none",
              campPrimary="none", hasSummary=True,
              summary="这条没提任何 ETF：字段不适用，不是数值为零。"),
     ]
@@ -170,38 +183,44 @@ def build_kol():
     posts = [
         # ① `0` —— 数过了确实是零，必须仍然渲染成 0（反向断言，防矫枉过正）。
         make("sixstate-kol-zero", likes=0, comments=0, shares=0, engagement=0,
-             confidence=0.95, hasSummary=True,
+             confidence=0.95, reviewState="pending", hasSummary=True,
              summary="互动为零的帖子：赞、评、转都确实是 0，不是缺数据。"),
 
         # ② 暂不可用 —— 三个计数字段都取不到。这一条同时钉住**聚合**：
         #    声量排名里这位 KOL 的评论量合计必须也是「数据暂不可用」，不是把 null 当 0 加进去，
         #    更不是 NaN。少数一篇的合计冒充总数，比直接说不知道更难被发现。
         make("sixstate-kol-null", likes=None, comments=None, shares=None,
-             engagement=None, confidence=0.95, hasSummary=True,
+             engagement=None, confidence=0.95, reviewState="pending", hasSummary=True,
              summary="平台计数字段未回传：三个数都应该有值，但当前取不到。"),
 
         # ③ 待确认（方向）—— 操作类帖子但方向置信度不足。
         make("sixstate-kol-dirpending", likes=31, comments=7, shares=2, engagement=40,
-             confidence=0.95, hasSummary=True, directionPending=True, hasDir=True,
+             confidence=0.95, reviewState="pending",
+             hasSummary=True, directionPending=True, hasDir=True,
              dir=pending_dir, directionLabel="待确认",
              # 摘要里**不能**出现任何一个方向词。断言要看的是方向那一枚徽章渲染成了什么，
              # 摘要正文里随口提一句「不是持有观望」，就足以让反向断言自己撞上自己。
              summary="操作类帖子，方向置信度不足：这一格该说明判不出来，不该硬填一个方向。"),
 
-        # ④ 待确认（类型）—— AI 类型置信度低于 lowConfidence(0.7)。
-        #    摘要里同样不能出现「待确认」三个字：KOL 详情页的徽章只写「待确认」不带数字
-        #    （影响力页写「待确认 0.42」），摘要里带一句就够让断言自己满足自己了。
+        # ④ 待确认（类型）—— 模型自报存疑（`review_state = needs_review`），两页都渲染
+        #    「AI 生成 · 待确认」（ADR-0019 §2；判据只有 reviewState，置信度不参与）。
+        #    摘要里同样不能出现「待确认」或「AI 生成」：这一段会被正／反向断言一起扫过，
+        #    样本自己带上要断的字，断的就是它自己。
         make("sixstate-kol-lowconf", likes=12, comments=3, shares=1, engagement=16,
-             confidence=0.42, hasSummary=True,
-             summary="类型置信度 0.42，低于阈值：标签照挂，但要标出来 AI 没把握。"),
+             confidence=0.42, reviewState="needs_review", hasSummary=True,
+             summary="模型自报存疑：标签照挂，但要标出来它没把握。"),
 
         # ⑤ 暂无内容 —— 查过了确实没摘要（图片帖），与「暂不可用」不是一回事。
         make("sixstate-kol-nosummary", likes=5, comments=0, shares=0, engagement=5,
-             confidence=0.95, hasSummary=False, summary=""),
+             confidence=0.95, reviewState="pending", hasSummary=False, summary=""),
 
         # ⑥ 暂不可用（整块）—— AI 标注还没跑。逐字对齐 `providers/sql.py::_UNANNOTATED`，
-        #    十三个字段一起是 None；对不上就不是在演 sql 真正会发出来的东西了（这条对齐
+        #    十四个字段一起是 None；对不上就不是在演 sql 真正会发出来的东西了（这条对齐
         #    由 tests/test_six_states.py 钉住，不靠这里的注释）。
+        #
+        #    `reviewState=None` 是其中要害的一个：`null` **不是** `pending`。没标注过的
+        #    帖子一枚 AI 徽章都不该出（ADR-0019 §2），落成 `pending` 就是替一次没跑过的
+        #    标注宣布「AI 生成 · 可追溯原文」，而原文里一个字的判定依据都没有。
         #
         #    与⑤的区别是全篇的要害：⑤ 的 `hasSummary=False` 是**结论**（查过了，这篇
         #    只有图片），⑥ 的 `hasSummary=None` 是「还没查」。JS 里两者都是假值，
@@ -215,7 +234,7 @@ def build_kol():
              direction=None, directionLabel=None, directionPending=None,
              hasDir=None, dir=None,
              hasSummary=None, summary=None, fullText=None,
-             evidenceIdx=None, typeEvidence=None),
+             evidenceIdx=None, typeEvidence=None, reviewState=None),
     ]
 
     # leaders 是**全量**画像榜，KOL 详情页拿它定「声量排名第一」与上一位／下一位的顺序。

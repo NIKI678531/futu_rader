@@ -14,8 +14,8 @@
    **它不进 `npm test`**：跑它需要本机有那份 5.3 GB 瘦库（仓库外、不进 git），
    CI 与没建库的同事都没有。所以是 opt-in：
 
-     cd backend && DATA_PROVIDER=sql APP_PORT=8019 .venv/Scripts/python app.py
-     cd frontend && API=http://127.0.0.1:8019/api/v1 node scripts/real-data-check.mjs
+    cd backend && .venv/Scripts/python app.py
+    cd frontend && node scripts/real-data-check.mjs
 
    判定分两层：① 页面不许抛（`pageerror` 一条都不行，错误边界兜住的也算）；
    ② 正文里不许出现 POISON 里的任何一串 —— 那些是「没兜住的 null」在页面上的
@@ -25,7 +25,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { chromium } from 'playwright'
 
-const API = process.env.API || 'http://127.0.0.1:8019/api/v1'
+const API = process.env.API || 'http://127.0.0.1:8008/api/v1'
 const PORT = Number(process.env.PORT || 5176)
 
 /* 第三项是「进屏之后还要点开的东西」。板块总览的产品抽屉是这里唯一**必须**点的：

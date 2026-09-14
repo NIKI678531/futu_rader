@@ -79,6 +79,34 @@ def test_status_legend_carries_its_own_colours(client):
     assert legend["0"] == legend["—"] == legend["样本不足"] == ("var(--ink-100)", "var(--ink-700)")
 
 
+# PRD 之外的一个键：ADR-0019 §4 的三档枚举。
+AI_VALIDATION_LEVELS = ("none", "spot_check", "gold")
+
+
+def test_ai_validation_says_none_because_nobody_verified_anything(client):
+    """ADR-0019 §4「如实声明」的第一处，另外两处是板块总览 S6 与产品监控 P7。
+
+    取消人工批准门槛之后，页面上每一条 AI 结论都是模型自己写的，没人看过。这个键
+    是那句话的**唯一来源**：面板文案跟着它走（`lib/view.js` 的 `aiValidationNote`），
+    汇报时也引它。三处分头写死，改了一处另外两处就开始撒谎。
+
+    真做了抽检要改成 `spot_check` 时，改的是 `fixtures/meta.json` 这一个值 ——
+    这条断言会红，那是对的：改验证等级是件需要有人点头的事。
+    """
+    data = client.get("/api/v1/meta").get_json()["data"]
+    assert data["aiValidation"] == "none"
+    assert data["aiValidation"] in AI_VALIDATION_LEVELS
+
+
+def test_ai_validation_is_the_same_under_the_real_data_provider(sql_client):
+    """demo 与 sql 同值。
+
+    演示数据里的 AI 字段更不是验证过的 —— 它们是生成器编出来的。一旦两个 provider
+    在这个键上分叉，「这一屏的结论验证到什么程度」就变成了「你用哪个 provider 截的图」。
+    """
+    assert sql_client.get("/api/v1/meta").get_json()["data"]["aiValidation"] == "none"
+
+
 def test_heat_formula_is_verbatim(client):
     heat = client.get("/api/v1/meta").get_json()["data"]["heat"]
     assert heat["formula"] == HEAT_FORMULA

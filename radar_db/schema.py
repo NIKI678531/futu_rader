@@ -262,8 +262,11 @@ annotations = Table(
     Column("calibrated_confidence", Float),
     Column("run_id", String(40), nullable=False),
     Column("input_hash", String(64), nullable=False),
-    # 'pending' 未复核 | 'approved' 人工通过 | 'rejected' 人工否决 | 'corrected' 人工改过
-    # SqlProvider 只读 approved/corrected（Gate 4）—— 未复核的结论不能直接上界面。
+    # 'pending' 模型写完 | 'needs_review' 模型自报存疑 | 'approved' 人工通过 |
+    # 'rejected' 人工否决 | 'corrected' 人工改过
+    # 它**不是发布门槛**（ADR-0019）：除 'rejected' 外全部直接上界面，这一列决定的是
+    # 页面上挂哪一枚徽章（'needs_review' ⇒ 「AI 生成 · 待确认」）。发布规则的唯一实现
+    # 处是 backend/providers/sql.py 的 `_current_annotations()`。
     Column("review_state", String(20), nullable=False, default="pending"),
     Column("created_at", DateTime, nullable=False),
     # 重跑产生的新行指向被它取代的旧行。**不删旧行**：模型失败或回滚时要能回到上一版

@@ -15,7 +15,7 @@
        `style-hover` by `hover()`. */
 import React from 'react'
 import R from '../../data/radar'
-import { rgba, num, numRaw, navGroups, stamp, naBox } from '../../lib/view'
+import { rgba, num, numRaw, navGroups, stamp, naBox, aiValidationNote } from '../../lib/view'
 import { s } from '../../lib/dc'
 import Shell from '../../components/Shell'
 import FilterBar from './FilterBar'
@@ -667,6 +667,9 @@ export default class ProductMonitor extends React.Component {
       summaryNa: sumNa,
       summaryPoints: sumPts.map(function (p, i) { return { n: String(i + 1), text: p }; }),
       summaryCountText: sumNa ? '数据暂不可用' : sumPts.length + ' 条要点 · 基于 ' + sum.sample + ' 条有效样本',
+      /* P7 元信息末尾的如实声明（ADR-0019 §4）：徽章说的是这一条怎么来的，这句说的是
+         整页的 AI 结论被验证到了什么程度。文案跟 /meta 的 `aiValidation` 走。 */
+      aiValidationNote: aiValidationNote(R.AI_VALIDATION),
       aiLabel: sumNa ? '暂不可用' : (sum.low ? '样本不足 · 不输出倾向结论' : 'AI 生成 · 可追溯原文'),
       aiBg: sumNa ? 'var(--ink-100)' : (sum.low ? 'var(--ink-100)' : 'var(--warning-100)'),
       aiFg: sumNa ? 'var(--ink-500)' : (sum.low ? 'var(--ink-700)' : 'var(--warning-700)'),

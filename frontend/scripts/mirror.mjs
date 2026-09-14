@@ -40,7 +40,7 @@ const DIRS = [
 
 const FILES = [
   ['frontend', ['package.json', 'index.html', 'vite.config.js', 'vite.design.config.js', 'vite.env.js']],
-  ['backend', ['app.py', 'requirements.txt', 'conftest.py', 'pytest.ini']],
+  ['backend', ['app.py', 'requirements.txt', 'conftest.py', 'pytest.ini', '.env.example']],
 ]
 
 function main() {

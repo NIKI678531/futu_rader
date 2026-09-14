@@ -253,6 +253,12 @@ flowchart TD
 
 模型放行阈值必须由这套金标校准。`lowConfidence=0.7` 目前只是产品配置，不是已经验证的正确率阈值。
 
+> **2026-09-11 更新（[ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md)）**：项目负责人裁决
+> **不做金标、不做复核、不做抽检、不设放行阈值** —— 本节的评测口径保留为将来要补的功课，
+> 但它**不再是上线前置条件**。当前 `calibrated_confidence` 全为 NULL，`lowConfidence=0.7`
+> 在校准概率存在之前**不生效**；「待确认」徽章的唯一触发是 `review_state = 'needs_review'`
+> （模型自己举手），与阈值无关。
+
 ## 10. 实施顺序
 
 ### P0：让真实数据可见
@@ -272,9 +278,12 @@ flowchart TD
 3. 建立金标集与模型无关的离线 benchmark harness。
 4. 用规则/线性模型、轻量 encoder/reranker、托管 LLM 跑同一隐藏测试集。
 5. 实现可恢复、幂等的批量 annotation job；先影子写入，不影响页面。
-6. `SqlProvider` 读取已通过版本/阈值的标注，后端聚合为 attitude、帖子三件套和证据。
+6. `SqlProvider` 读取**现行**标注（[ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md)：链末且非
+   `rejected`，不再按版本／阈值放行），后端聚合为 attitude、帖子三件套和证据。
 
-验收：可按 run/model/taxonomy 追溯每条结论；同一批数据可重跑；模型失败不覆盖旧的已批准结果；P0 页面逐步从“暂不可用”变为真实 AI 输出。
+验收：可按 run/model/taxonomy 追溯每条结论；同一批数据可重跑；重跑不覆盖人工改过的结论
+（`approved`／`corrected` 由 `annotate.py` 的 `_HUMAN_SETTLED` 跳过）；P0 页面逐步从“暂不可用”
+变为真实 AI 输出，且页面如实标明这些结论**未经人工验证**。
 
 ### P2：高级分析与持续运行
 

@@ -42,6 +42,9 @@ export default function Overview({ v }) {
               ? <span style={s('font:600 13px/1.6 var(--font-mono);color:var(--ink-800);text-align:right')}>{v.sampleN} 条</span>
               : <span style={s('font:600 13px/1.6 var(--font-mono);color:var(--ink-500);text-align:right')}>{v.sampleN}</span>}</div>
             <div style={s('display:flex;justify-content:space-between;gap:12px')}><span style={s('font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>更新时间</span><span style={s('font:600 13px/1.6 var(--font-mono);color:var(--ink-800);text-align:right')}>{v.updated}</span></div>
+            {/* AI 结论的验证程度（ADR-0019 §4）。挨着「更新时间」，因为它和上面四行是
+                同一类东西：这一块结论的出处与成色。 */}
+            <div style={s('padding-top:12px;border-top:1px solid var(--border-1);font:400 12px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>{v.aiValidationNote}</div>
             {v.hasSummaryEvidence && (
               <div onClick={v.openSummaryEvidence} style={s('margin-top:auto;display:flex;align-items:center;justify-content:center;gap:7px;padding:9px 14px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 14px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>查看原文证据 {v.summaryEvidence} 条 →</div>
             )}

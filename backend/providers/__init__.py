@@ -7,7 +7,7 @@
 - ``sql``  —— 取数自真实瘦库（本地 SQLite / 生产 MySQL，`RADAR_DB_URL` 决定方言）。
              计数、内容、日历是真的；AI 标注与行情返回 None，见 providers/sql.py 模块头。
 
-选择靠环境变量 DATA_PROVIDER（默认 demo）。两者同镜像、同端点、不同 compose 服务。
+选择靠环境变量 DATA_PROVIDER（默认 sql）。日常服务只读真实数据；demo 仅供显式测试验收。
 ``mysql`` 是 ``sql`` 的旧名别名：本地跑的是 SQLite，叫 mysql 会让人以为本地也要起 MySQL。
 
 **provider 只负责「取到原始返回」，不负责判定状态。** 状态（ok/empty/unavailable/
@@ -34,7 +34,7 @@ def get_provider():
     """
     global _instance
     if _instance is None:
-        name = os.getenv("DATA_PROVIDER", "demo").strip().lower()
+        name = os.getenv("DATA_PROVIDER", "sql").strip().lower()
         if name not in _PROVIDERS:
             raise ValueError(
                 f"未知的 DATA_PROVIDER={name!r}，可选：{', '.join(sorted(_PROVIDERS))}"

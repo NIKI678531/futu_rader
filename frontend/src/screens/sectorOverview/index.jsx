@@ -14,7 +14,7 @@
        key per list item and the dc runtime did not. */
 import React from 'react'
 import R from '../../data/radar'
-import { shortName, navGroups, num, numRaw, stamp, naBox } from '../../lib/view'
+import { shortName, navGroups, num, numRaw, stamp, naBox, aiValidationNote } from '../../lib/view'
 import { s } from '../../lib/dc'
 import Shell from '../../components/Shell'
 import FilterBar from './FilterBar'
@@ -560,6 +560,11 @@ export default class SectorOverview extends React.Component {
         { title: '积极、消极与中性', body: '「正面／负面」为 AI 对内容中产品态度的分类，不是 Futu 平台的点赞／点踩行为。只判断针对产品本身的态度（费用、流动性、跟踪表现、机制、分红、使用体验）；单纯预测指数或价格涨跌归入产品话题情绪。正负面比分母为正面＋负面，中性单独计数。有效态度评论少于 ' + R.LOW_SAMPLE + ' 条时显示样本不足。「舆情」列为可归类为需关注问题的内容条数。' },
         { title: '热议总结（AI 生成）', body: R.HOT_RULE + ' 总结为「现象 + 主流观点／动作倾向」一句话，与产品监控页的舆情总结出自同一次生成；字段缺失显示「数据暂不可用」。' },
         { title: '排名、基准与热力粒度', body: '卡片名次为全市场评论量排名，基于完整活跃 ETF 池计算，板块筛选不重算。基准区间为 ' + range.benchText + '（' + range.benchLabel + '）。热力粒度随日期筛选自适应：1–2 天按小时、3–14 天按自然日、15 天及以上按自然周；当前为' + range.granLabel + '。' },
+        /* AI 结论的验证程度（ADR-0019 §4）。放进这个面板而不是某个角标，是因为它管的
+           不是某一格而是整页：上面几块每一块都写着「AI 判定」「AI 生成」，读的人默认
+           这些结论上线前被人看过。本期没有人看过，这句得自己说出来。
+           文案由 /meta 的 `aiValidation` 决定，不在这里写死 —— 见 lib/view.js。 */
+        { title: 'AI 结论的验证程度', body: aiValidationNote(R.AI_VALIDATION) + '本期未安排人工复核，也没有金标集 —— 页面上任何一条 AI 结论都没有经过人工确认，对不对请点开证据以原文为准。' },
         { title: '重点舆情（需合规关注）与同业产品', body: '重点舆情为 AI 识别的高风险言论信号，标签包括监管举报、严重指控、疑似未经证实指控、煽动扩散、合规质疑；系统只识别信号并保留原文与命中依据，不判定言论真伪或产品是否违规，状态统一为「AI 识别 · 待人工确认」。同一条评论可同时属于消极观点与重点舆情。识别范围为自家产品，同业产品不适用。「仅看同业产品」对应产品池中已标记为非自家的产品，不由 AI 临时推断关系。' }
       ],
       tipOpen: !!s.tip,

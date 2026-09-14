@@ -138,11 +138,11 @@ gpt-5.6-luna
 | 标注表 | 五张表已建：runs / jobs / annotations / evidence / review_decisions |
 | 已有任务 | `comment_product`（相关性／态度／aspect）、`post_annotation`（类型／方向／摘要） |
 | 尚无任务 | **`compliance_signal`（重点舆情五类）**、主题聚类、热议总结、竞品候选 —— 见 §20 |
-| 人工复核 | `worker/jobs/review.py` 已可用；129 条全部 `pending`／`needs_review`，0 条 approved |
-| 页面 AI 输出 | 仍为「暂不可用」：`SqlProvider` 只读 approved／corrected，而没有人批过 |
+| 人工复核 | `worker/jobs/review.py` 已可用；129 条全部 `pending`／`needs_review`，0 条 approved。[ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md) 起它是**可选工具**，不再是闸口 |
+| 页面 AI 输出 | 当时为「暂不可用」：`SqlProvider` 只读 approved／corrected，而没有人批过。**该门槛已由 [ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md) 取消并实施** —— 现行结论＝链末且非 `rejected`，`pending` 与 `needs_review` 一样可读 |
 | 未答复 | 供应商数据治理四项（区域、日志保留、训练使用、删除）；OpenD 行情权限；社区增量源 |
 
-结论：管线**通了**，页面**没亮**，卡在「谁来批准」。§21 给出不依赖人工批准的替代方案。
+结论：管线**通了**，页面**没亮**，卡在「谁来批准」。项目负责人已裁决**不设批准门槛、不做人工复核与抽检**，规则见 [ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md)；§21 保留为该裁决之前的方案记录。
 
 ### 2.3 当前没有一段可替换的 DeepSeek 运行代码
 
@@ -412,7 +412,7 @@ $env:RADAR_DB_URL = 'sqlite:///D:/futu-radar-data/radar-rebuild.db'
 | 空数组 / `empty` | 暂无相关内容（「暂无内容」只用于状态图例，见 PRD §3.6） |
 | `low_sample` | 样本不足 |
 | `na` | — |
-| 低置信或未复核 | 待确认 |
+| `review_state = needs_review` | 待确认（[ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md) §2：**唯一**触发。不是「低置信」，也不是「还没人复核」——`calibrated_confidence` 整列为 NULL，`lowConfidence` 在校准概率存在之前不生效） |
 
 禁止在 API Client 中使用全局 `null ?? 0` 或 `null ?? []`。
 
@@ -1075,9 +1075,9 @@ frontend/
 - `worker/ai/providers/*`：只负责调用模型；
 - `worker/ai/schemas.py`：Pydantic 输出校验；
 - `worker/jobs/annotate.py`：领取任务、调用、重试、写库；
-- `worker/jobs/review.py`：人工复核。标注结果通向页面的**唯一一道门** ——
-  `SqlProvider` 只读 `approved` / `corrected`（Gate 4），模型写下的是 `pending`
-  或 `needs_review`，在有人看过之前界面上什么都不出现；
+- `worker/jobs/review.py`：人工复核，**可选工具**（[ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md)：
+  模型写下即发布，没有批准门槛）。`--reject` 是把一条错结论从页面上拿下来的唯一通道；
+  `--correct` 留下 Gate 3 训练金标所需的人工对照；`--approve` 只在库里留痕，不改变显示；
 - `worker/models/*`：本地 Hugging Face 推理；
 - `backend/providers/sql.py`：读取事实和 annotations；
 - `backend/core/*`：把原子标签聚合成页面指标；
@@ -1424,47 +1424,54 @@ cd worker
 
 完成标准：达到业务确认的切片指标；低置信可正确升级 GPT/人工。
 
-#### Gate 3-alt：零金标冷启动（§21，人工不可得时的替代）
+#### Gate 3-alt：零金标冷启动（已按 [ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md) 定案）
 
-> 与上面的清单**二选一**。走这条路线时，Gate 3 上面「建 3,000 条金标」一项改为
-> 「建 200 条抽检集（只验收、不训练）」；若连抽检也不做，则页面与 `/meta` 必须写明
-> 「AI 生成 · 未经人工验证」，且准确率一栏显示「暂不可用」而不是任何数字。
+> 项目负责人 2026-09-11 裁决：**不做人工金标、不做复核、不做抽检、不设批准门槛**。
+> 上面 Gate 3 的金标／训练／校准各项因此**挂起**（本地模型改为直接用 GPT 标签自训练，
+> 没有校准集 ⇒ `calibrated_confidence` 长期 NULL）。发布规则、徽章映射与实施清单
+> 全部以 ADR-0019 为准，此处只列与本手册其余章节的衔接项。
 
 - [ ] 落地 §20 的合规词表 `worker/ai/lexicon/compliance_zh.py`（简／繁／粤／英四套写法）。
 - [ ] 新增 `compliance_signal` 任务：Prompt、Schema、排队、写库（kind=`compliance`）。
 - [ ] 用 §22 可商用数据集预热攻击性预筛器（COLD → `thu-coai/roberta-base-cold` 直接可用）。
-- [ ] 评论任务与帖子任务各跑**两套独立 Prompt**（或两个模型），一致的自动进入
-      `auto_approved`；不一致的留 `needs_review`。
-- [ ] 新增 ADR-0019：`review_state` 增加 `auto_approved`，`SqlProvider` 读取它，
-      前端对应徽章「AI 生成 · 待确认」；`compliance` 类**永不**进入 `approved`，只在
-      `auto_approved` 下以「AI 识别 · 待人工确认」展示。
-- [ ] 用双模型一致率、词表×模型交叉表、证据定位率替代 macro-F1 作为放行门槛。
-- [ ] 若同意抽检：200 条分层抽样（评论 150 ＋ 帖子 50），只算错误率，不回流训练。
+- [ ] 按 ADR-0019 实施清单第 1–9 项改 `SqlProvider`／`core`／`/meta`／前端徽章（不花钱，可立刻做）。
+- [ ] `/meta.aiValidation = "none"`，面板写明「AI 结论由模型自动生成，未经人工验证」。
 
 完成标准：合规关注、态度、帖子三件套在页面上有真实输出；每条都带「AI 生成／AI 识别」
-徽章与原文证据；文档与 `/meta` 如实写明是否经过人工验证。
+徽章与原文证据；`/meta` 与面板如实写明未经人工验证。
 
 ### Gate 4：annotations 驱动页面
 
-> **本轮未执行 —— 阻塞在 Gate 2 的下游。** 现有 129 个判定单元全部是
-> `pending` / `needs_review`，**没有一条 approved**；而 Gate 4 第一项就是
-> 「SqlProvider 读取**已批准** annotations」。
+> **读路径已通，数据还没到 —— 阻塞在第 10 项。**
 >
-> 本轮补上的是**批准的手段**，不是批准的量：`worker/jobs/review.py` 已经能把一条
-> `needs_review` 变成 `approved` / `rejected` / `corrected`（见 Gate 2 补齐项）。
-> 缺的仍然是量 —— 要有可批准的量就得跑全量标注，而全量标注的前置是 §6.1 那四项
-> 数据治理确认（区域、日志保留、是否用于训练、删除机制），它们至今未答复。
-> 顺序是：补齐治理确认 → 全量标注 → 人工复核 → Gate 4。跳过中间任何一步，
-> 页面上出现的就是没人担保过的结论。
+> [ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md)（2026-09-11 定案）取消了批准门槛：
+> **现行结论 = 链末（没被任何一行 supersede）且 `review_state != 'rejected'`**，同一链末
+> 多行取 `created_at` 最新；`pending` 与 `needs_review` 一样可读。`review.py` 随之降级为
+> 可选工具，`--reject` 是仅剩的下线通道。这条规则的唯一实现处是
+> `backend/providers/sql.py` 的 `_current_annotations()`。
+>
+> 它的实施清单第 1–9 项**已完成**（读取规则、态度聚合、帖子三件套、证据定位、合规四态、
+> `/meta.aiValidation`、徽章与如实声明、测试、文档）——后端测试全绿，有标注即出真值、
+> 无标注仍是缺失态。
+>
+> 卡住的是第 10 项**全量排队与运行**：它等 §6.1 数据治理四项答复与负责人授权，不是技术
+> 问题。在它跑完之前，库里只有 Gate 0–2 留下的 129 个影子判定单元，覆盖不到页面上的
+> 观察窗口，所以**界面上的 AI 模块多数仍显示缺失态** —— 那是「还没标」，不是「读不出」。
+>
+> 页面上出现的是**未经人工验证**的结论，`/meta.aiValidation="none"`、板块总览 S6 与
+> 产品监控 P7 三处必须一起如实标明；不许出现「已核验」「准确率 xx%」。
 
 
-- [ ] SqlProvider 读取已批准 annotations。
-- [ ] 后端聚合 attitude。
-- [ ] 接帖子类型、方向和摘要。
-- [ ] 接原文证据。
-- [ ] 接主题聚类和命名。
-- [ ] 接动态负面和合规候选。
-- [ ] 前端展示模型版本/AI 待确认语义。
+- [x] SqlProvider 按 ADR-0019 第 1 条读取现行 annotations（非 `rejected` 链末行）。
+- [x] 后端聚合 attitude（正／负／中按判定单元计数，阈值判定走 `core/attitude.py`）。
+- [x] 接帖子类型、方向和摘要。
+- [x] 接原文证据（`evidenceIdx`／`typeEvidence`／`evidenceFor`，引文可在原文逐字定位）。
+- [x] 接合规候选的**读路径**（`na`／`unavailable`／`empty`／`ok` 四态）；写入方
+      `compliance_signal` 任务仍缺，见 §20 与 Gate 3-alt。
+- [ ] 接主题聚类和命名（`topic_label` 既没有写入方，读路径也没实现）。
+- [ ] 接动态负面（`neg_category` 没有写入方）。
+- [x] 前端按 `review_state` 渲染徽章，`/meta` 与面板写明未经人工验证。
+- [ ] **全量排队与运行**（ADR-0019 实施清单第 10 项）——等 §6.1 四项答复与授权。
 
 完成标准：AI 模块从 unavailable 逐项切换为真实输出，任何结论可回到原文。
 
@@ -1574,7 +1581,7 @@ API Key 不需要也不应写入本手册。实现时由项目负责人在本机
 - 每个 AI 结论具有目标产品、模型版本、Prompt/标签版本和原文证据；
 - 模型失败、限流和更换供应商可恢复、可重放；
 - 高频分类由本地模型承担，复杂任务才调用外部 GPT；
-- 合规信号保持 AI 待确认并有人工作最终确认；
+- 合规信号恒为「AI 识别 · 待人工确认」，只标信号与原文，不判真伪（ADR-0019：不设人工门槛）；
 - 行情只来自授权行情源；
 - 在线采集只来自合法授权源；
 - API Key、用户身份字段和数据库凭据不泄露到前端或 Git。
@@ -1661,8 +1668,7 @@ L1 词表种子（实现时**按四种写法各写一份**，并允许词表版�
 帖子按 `(feed_id, NO_SUBJECT)`；只排 `ownership=own` 的产品。
 
 **读取**：`SqlProvider.compliance_for(code, range)` 读 kind=`compliance` 且
-`review_state ∈ {auto_approved, approved, corrected, pending, needs_review}`（**全部**，因为
-展示态本身就是待确认），`rejected` 排除；`peer` 直接 `na`；区间内无命中 ⇒ `empty`；
+`review_state != 'rejected'` 的链末行（**全部**，因为展示态本身就是待确认；与 ADR-0019 第 1 条同一规则）；`peer` 直接 `na`；区间内无命中 ⇒ `empty`；
 该产品区间内一条都没扫过 ⇒ `unavailable`。`pool().complianceCount` 同源。
 
 ### 20.5 边界（PRD §4.2 P10 逐字约束）
@@ -1675,6 +1681,11 @@ L1 词表种子（实现时**按四种写法各写一份**，并允许词表版�
 ---
 
 ## 21. 不依赖人工金标的替代路线（弱监督）
+
+> **本章状态**：写于 2026-09-11 上午，作为"如何在没有金标的情况下仍保留一道机器放行门槛"的
+> 方案。同日项目负责人裁决**连这道门槛也不要**——不做一致性放行、不做抽检、不加 `auto_approved`，
+> 全部 AI 结论直接发布。现行规则见 [ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md)；
+> 本章保留为决策记录，§21.2 中的手段可作为**可选**质量信号使用，但都不是发布条件。
 
 ### 21.1 先说清代价
 
@@ -1698,9 +1709,12 @@ L1 词表种子（实现时**按四种写法各写一份**，并允许词表版�
 | 规则硬约束 | `irrelevant ⇒ attitude=null`、`peer ⇒ compliance=na` 等已在 Schema 与 Provider 层强制 | 代替口径层面的人工复核 |
 | 200 条抽检（建议，非必须） | 分层抽 150 评论＋50 帖子，只算错误率，不回流训练 | 用最小人力换一个可陈述的数字 |
 
-### 21.3 需要的一条新决策（ADR-0019，待写）
+### 21.3 需要的一条新决策（ADR-0019 —— 已写，且**未采纳**下列 `auto_approved` 方案）
 
-现行 [ADR-0017](adr/0017-ai-annotation-pipeline-production.md) §4 规定 `SqlProvider` 只读
+> [ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md) 的裁决是**不加** `auto_approved`、
+> **不设**任何放行条件；下面 1–3 条是被否决的原提案，第 4、5 条在 ADR-0019 中以另一种形式保留。
+
+原提案：现行 [ADR-0017](adr/0017-ai-annotation-pipeline-production.md) §4 规定 `SqlProvider` 只读
 `approved`／`corrected`。零金标路线需要：
 
 1. `review_state` 增加 `auto_approved`（机器按 §21.2 一致性规则放行）；
@@ -1712,14 +1726,17 @@ L1 词表种子（实现时**按四种写法各写一份**，并允许词表版�
 
 不写这条 ADR 就改 Provider，等于悄悄推翻 ADR-0017；写了它，历史决策与现行决策都可追溯。
 
-### 21.4 执行顺序（接 §16 Gate 3-alt）
+### 21.4 执行顺序（已被 ADR-0019 实施清单取代）
 
-1. 落 §20 合规词表与 `compliance_signal` 任务 —— 这一项**不需要** ADR-0019，PRD 已允许待确认展示。
-2. 写 ADR-0019，改 `review_state` 枚举与 `SqlProvider` 读取条件。
-3. 评论任务补第二套 Prompt（`comment-product-v1b`，措辞与示例独立编写），跑一致性。
-4. 帖子任务同理。
-5. 全量排队前先补齐 §6.1 数据治理四项；未答复前只跑 own 产品近 30 天（约 10 万判定单元）。
-6. 页面亮起后，再决定要不要做 200 条抽检。
+原顺序中的「第二套 Prompt 跑一致性」「200 条抽检」两步按裁决取消。现行顺序：
+
+1. 落 §20 合规词表与 `compliance_signal` 任务。
+2. ~~按 ADR-0019 实施清单第 1–9 项改 `SqlProvider`／`core`／`/meta`／前端徽章。~~
+   **已完成（2026-09-11）**：读取规则、态度聚合、帖子三件套、证据、合规四态、
+   `aiValidation`、徽章与声明、测试、文档。这九项不发请求、不花钱，所以先做完。
+3. **排队与运行（第 10 项）等 §6.1 数据治理四项答复与负责人授权**。在此之前
+   一条请求都不发 —— 包括「只跑 own 产品近 30 天」这类缩小版，那仍然是把评论正文
+   送出去，治理问题一个字都没少。
 
 ---
 

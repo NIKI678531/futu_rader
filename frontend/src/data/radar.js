@@ -297,6 +297,12 @@ const constants = {
      不会有任何东西变红。 */
   get STAGE_RULE() { return meta().rules.stage },
 
+  /* 页面上的 AI 结论验证到什么程度（ADR-0019 §4，枚举 none/spot_check/gold，本期恒为
+     `none`）。它不是口径也不是数据，是一句**关于数据可信度的声明**，所以由 /meta 下发
+     而不是写在屏幕里：面板上那句、`/meta`、汇报时的说法必须是同一个来源。
+     文案映射在 lib/view.js 的 `aiValidationNote`。 */
+  get AI_VALIDATION() { return meta().aiValidation },
+
   /* 六态图例（PRD §3.6 逐字）。`key`/`text` → `k`/`v` 是 /meta 的形状转换之一。
      底色随图例一起下发，理由同 SECTORS 的 hue：「暂不可用是警示色、暂无内容不是」
      本身就是这套状态体系的一部分，不是一张前端配色表。 */

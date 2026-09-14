@@ -167,6 +167,62 @@ export function typeStyle(k) {
    根本不下发。属于数值位 → 长文案（PRD §3.1）。 */
 export function conf2(v) { return v == null ? '数据暂不可用' : v.toFixed(2); }
 
+/* ── AI 结论的复核态徽章（ADR-0019 §2） ──────────────────────────────────
+ *
+ * AI 标注不再等人批准就上页面，所以徽章从「门槛」变成了「如实声明」：每一条结论都要
+ * 说清楚它是模型生成的、能不能回到原文、模型自己有没有举手。
+ *
+ *   pending             AI 生成 · 可追溯原文（没有可定位证据时退为「AI 生成」）
+ *   needs_review        AI 生成 · 待确认      ← 模型自报存疑，或证据定位失败
+ *   approved/corrected  同 pending
+ *   rejected            不显示（唯一的下线通道）
+ *   null                不显示（这一条压根没标注过，由类型徽章的「暂不可用」去说）
+ *
+ * 三件事是这个函数的全部要点：
+ *
+ * 1. **没有「已核验」这一枚。** `approved` 只在库里留痕，页面不加。PRD §3.9 的徽章体系
+ *    里没有它，而在「不做人工复核」的决定下它几乎永远不会出现 —— 为一个不会出现的
+ *    状态造一枚 PRD 外的徽章，等于向读的人暗示这里有过人工确认。
+ * 2. **「待确认」的唯一触发是 `needs_review`。** 原来它由 `confidence < 0.7` 驱动，而
+ *    `calibrated_confidence` 整列是 NULL（ADR-0017 §4）；`null < 0.7` 在 JS 里是 true，
+ *    于是真库下每一篇都会被标成「判过了但没把握」，实际上是「模型自己举了手」与
+ *    「压根没跑」被混成了一句话。校准概率存在之前，0.7 这个阈值不生效。
+ * 3. **`null` 不等于 `pending`。** 「不知道复核状态」不是「模型给了结论且未举手」。
+ */
+export function reviewBadge(state, hasEvidence) {
+  if (state == null || state === 'rejected') return null;
+  if (state === 'needs_review') return 'AI 生成 · 待确认';
+  return hasEvidence ? 'AI 生成 · 可追溯原文' : 'AI 生成';
+}
+
+/* 「这条结论模型自己举手了吗」的三值判断：是（true）／否（false）／不知道（null）。
+   页面上的「仅看待确认」筛选与 CSV 的那一列都读它。三值不能压成两值：压了之后
+   没标注过的帖子会被算进「否」，于是筛选结果看起来像「已经全部确认过了」。 */
+export function needsReview(state) {
+  return state == null ? null : state === 'needs_review';
+}
+
+/* ── 页面级的如实声明（ADR-0019 §4） ────────────────────────────────────
+ *
+ * 逐条徽章说的是「这一条是怎么来的」，这句说的是「整页的 AI 结论被验证到了什么程度」。
+ * 两句缺一不可：徽章写满一屏「AI 生成 · 可追溯原文」，读的人仍然会默认有人抽检过。
+ *
+ * 枚举由 `/meta` 的 `aiValidation` 下发（backend/core/meta.py），本期恒为 `none`。
+ * 文案跟着枚举走而不是写死，是因为这句话必须和 `/meta`、和汇报口径**同一个来源** ——
+ * 三处分头写死，改了一处另外两处就开始撒谎。
+ *
+ * 只有 `none` 有现成文案：`spot_check` 与 `gold` 那两句都要带一个准确率，而那个数今天
+ * 不存在。等它存在时连数一起下发，在这里补上对应的一支。在此之前认不出来的值一律
+ * 退回 `none` 那句 —— 不知道验证到哪一步，就不能说验证过（往轻里说，不往重里说）。
+ */
+export var AI_VALIDATION_NOTE = {
+  none: 'AI 结论由模型自动生成，未经人工验证；每条可回到原文。'
+};
+
+export function aiValidationNote(level) {
+  return AI_VALIDATION_NOTE[level] || AI_VALIDATION_NOTE.none;
+}
+
 /* 操作方向（双标签第二维）：加仓／建仓 绿、减仓／清仓 红、持有观望 灰 */
 export var DIRECTIONS = [
   { k: 'add', label: '加仓', tone: 'pos' }, { k: 'open', label: '建仓', tone: 'pos' },

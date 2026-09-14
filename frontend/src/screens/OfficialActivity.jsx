@@ -9,7 +9,7 @@
        `style-hover` / `style-focus` by `hover()` / `focus()`. */
 import React from 'react'
 import R from '../data/radar'
-import { num, conf2, sumN, descN, typeStyle, shell, rgba, CAMP, POST_TYPES, TYPE_BY_KEY } from '../lib/view'
+import { num, conf2, sumN, descN, typeStyle, shell, rgba, CAMP, POST_TYPES, TYPE_BY_KEY, reviewBadge, needsReview } from '../lib/view'
 import { s, hover, focus } from '../lib/dc'
 import Shell from '../components/Shell'
 import DcLink from '../components/DcLink'
@@ -87,14 +87,19 @@ export default class OfficialActivity extends React.Component {
         return { label: x[1], go: function () { self.go(patch); }, fw: on ? 600 : 400, fg: on ? '#fff' : 'var(--ink-600)', bg: on ? 'var(--csop-blue-600)' : '#fff' };
       });
     };
-    var LC = this.props.lowConfidence != null ? this.props.lowConfidence : 0.7;
+    /* `lowConfidence` 这一屏不再读：徽章改由 `review_state` 驱动（ADR-0019 §2），
+       而这一屏没有任何一处把阈值本身印出来。另外两屏的脚注还印着它，所以它们留着。 */
     var cols = this.props.feedLayout === '单列' ? 1 : 2;
     var out = shell('accounts', 'official', s, function (x) { self.go(x); });
     var feedAll = R.officialPosts(s.rangeKey);
     var range = R.buildRange(s.rangeKey);
-    /* 三态。`null < 0.7` 在 JS 里是 true（null 当 0 用），照原样写会让 sql provider 下
+    /* 三态。判据是 `reviewState`（模型自己有没有举手），不是置信度 —— ADR-0019 §2：
+       `calibrated_confidence` 整列为 NULL，`lowConfidence` 在校准概率存在之前不生效；
+       而 `null < 0.7` 在 JS 里是 true（null 当 0 用），照置信度写会让 sql provider 下
        **每一篇**官号帖都挂上「待确认」—— 那说的是「模型给了个低分」，不是「模型没跑」。 */
-    var pending = function (p) { return p.confidence == null ? null : p.confidence < LC; };
+    var pending = function (p) { return needsReview(p.reviewState); };
+    /* 这一条结论的如实声明（ADR-0019 §2／§4）。指不到原文就不说「可追溯原文」。 */
+    var review = function (p) { return reviewBadge(p.reviewState, p.evidenceIdx != null && p.evidenceIdx >= 0); };
     /* AI 标注整块未生成（ADR-0017 §4） */
     var annNa = function (p) { return p.postType == null; };
     var campsOf = function (p) { var c = self.camp(p); return c === 'both' ? [CAMP.own, CAMP.competitor] : [CAMP[c] || CAMP.none]; };
@@ -358,7 +363,7 @@ export default class OfficialActivity extends React.Component {
         account: p.account, accountType: p.accountType,
         atBg: p.isIssuer ? 'var(--csop-blue-50)' : '#F1ECF7', atFg: p.isIssuer ? 'var(--csop-blue-700)' : '#5E4480',
         time: p.time,
-        type: st.label, tbg: st.bg, tfg: st.fg, pending: pending(p), conf: conf2(p.confidence),
+        type: st.label, tbg: st.bg, tfg: st.fg, pending: pending(p), conf: conf2(p.confidence), review: review(p),
         hasDir: !!p.hasDir, dir: p.dir ? p.dir.label : '', dbg: p.dir ? p.dir.bg : 'transparent', dfg: p.dir ? p.dir.fg : 'transparent',
         camps: campsOf(p),
         /* 「查过了，这篇只有图」和「还没查」共用一句就是替 AI 下了个它没下的判断。 */
@@ -680,8 +685,10 @@ export default class OfficialActivity extends React.Component {
                     {c.hasDir && (
                       <span title="操作方向 · AI 判定" style={s(`padding:2px 8px;border-radius:4px;background:${c.dbg};font:600 12px/1.6 var(--font-cjk);color:${c.dfg};white-space:nowrap`)}>{c.dir}</span>
                     )}
-                    {c.pending && (
-                      <span style={s('padding:0 6px;border-radius:9999px;background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500)')}>待确认 {c.conf}</span>
+                    {/* 徽章文案由 `review_state` 决定（ADR-0019 §2），逐字取自 PRD §3.9。
+                        置信度不再跟在后面：它是模型自报的数，不是「有没有人看过」的事实。 */}
+                    {c.review && (
+                      <span style={s('padding:0 6px;border-radius:9999px;background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500)')}>{c.review}</span>
                     )}
                     {c.camps.map((k) => (
                       <span key={k.label} style={s(`padding:2px 8px;border-radius:9999px;background:${k.bg};font:600 12px/1.5 var(--font-cjk);color:${k.fg}`)}>{k.label}</span>

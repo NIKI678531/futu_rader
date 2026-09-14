@@ -4,7 +4,7 @@
 import React from 'react'
 import R from '../data/radar'
 import {
-  num, conf2, descN, typeStyle, rgba, shell, dirStyle,
+  num, conf2, descN, typeStyle, rgba, shell, dirStyle, reviewBadge, needsReview,
   CAMP, POST_TYPES, TYPE_BY_KEY, DIRECTIONS, DIR_BY_KEY,
 } from '../lib/view'
 import { kolProfile } from '../lib/profile'
@@ -35,13 +35,15 @@ export default class KolActivity extends React.Component {
   primaryOnly() { return this.props.campRule === '仅挂载标的'; }
   camp(p) { return this.primaryOnly() ? p.campPrimary : p.camp; }
   codesOf(p) { return this.primaryOnly() ? [p.code] : p.mentioned.map(function (m) { return m.code; }); }
-  /* 「这条标签有没有把握」有**三**个答案：有（false）、没有（true）、不知道（null）。
-     原来写的是 `p.confidence < this.LC`，而 JS 会把 null 当 0：`null < 0.7` 是 true，
-     于是 DATA_PROVIDER=sql 下（confidence 恒为 null，ADR-0017 §4）每一篇都被标成
-     「待确认」—— 页面上看起来是 AI 判过、只是没把握，实际上 AI 压根没跑。
+  /* 「这条标签模型自己举手了吗」有**三**个答案：举了（true）、没举（false）、
+     不知道（null）。判据是 `reviewState`，不是置信度（ADR-0019 §2：校准概率存在
+     之前 lowConfidence 不生效，而 `calibrated_confidence` 整列是 NULL）。
      返回 null 的那一支在 `if (...)` 里是假值，所以徽章不挂；「还没标注」由类型徽章
-     自己那枚「暂不可用」说，不跟「判了但没把握」共用一个徽章。 */
-  pending(p) { return p.confidence == null ? null : p.confidence < this.LC; }
+     自己那枚「暂不可用」说，不跟「判了但存疑」共用一个徽章。 */
+  pending(p) { return needsReview(p.reviewState); }
+  /* 这一条结论的如实声明（ADR-0019 §2／§4）。没有可定位的判定依据句时退为「AI 生成」
+     —— 「可追溯原文」是一句承诺，指不到原文就不能这么说。 */
+  review(p) { return reviewBadge(p.reviewState, p.evidenceIdx != null && p.evidenceIdx >= 0); }
   /* 整块 AI 标注是一起下发、一起缺的（sql provider 的 `_UNANNOTATED`）。以 postType
      为准判整块，免得屏内十几处各判各的字段、日后漂成十几种说法。 */
   annNa(p) { return p.postType == null; }
@@ -352,7 +354,7 @@ export default class KolActivity extends React.Component {
         /* 双标签：形式在上、方向在下；合并单标签（Tweaks）：「加仓 · 晒单」一枚 */
         type: dual ? st.label : ((dirOn ? p.dir.label + ' · ' : '') + st.label), tbg: st.bg, tfg: st.fg,
         hasDir: dual && dirOn, dir: dirOn ? p.dir.label : '', dbg: dirOn ? p.dir.bg : 'transparent', dfg: dirOn ? p.dir.fg : 'transparent',
-        pending: self.pending(p), conf: conf2(p.confidence),
+        pending: self.pending(p), conf: conf2(p.confidence), review: self.review(p),
         /* 摘要位有**三**态：有摘要、查过了是图片帖（「暂无内容」侧）、标注还没跑
            （「暂不可用」侧）。原来只有前两态，于是没跑过标注的帖子会被写成
            「暂无摘要 · 图片帖」—— 替一篇可能全是文字的帖子宣布了它只有图片。 */
@@ -457,7 +459,7 @@ export default class KolActivity extends React.Component {
       out.sel = {
         kol: p0.kol, kolTags: p0.tags.split(',').join(' · '), time: p0.time, code: p0.code, name: p0.name, url: p0.url,
         pbg: rgba(sec0.hue, 0.12), pfg: sec0.hue,
-        type: dual ? st0.label : ((p0.hasDir ? p0.dir.label + ' · ' : '') + st0.label), tbg: st0.bg, tfg: st0.fg, pending: self.pending(p0), confidence: conf2(p0.confidence),
+        type: dual ? st0.label : ((p0.hasDir ? p0.dir.label + ' · ' : '') + st0.label), tbg: st0.bg, tfg: st0.fg, pending: self.pending(p0), confidence: conf2(p0.confidence), review: self.review(p0),
         hasDir: dual && !!p0.hasDir, dir: p0.hasDir ? p0.dir.label : '', dbg: p0.hasDir ? p0.dir.bg : 'transparent', dfg: p0.hasDir ? p0.dir.fg : 'transparent',
         /* `evidenceIdx >= 0` 不能单独判 null：JS 的关系比较会把 null 当 0，`null >= 0`
            是 **true**，于是「判定依据的原句已在下方原文中标出」会挂在一篇根本没标注过的
@@ -742,8 +744,12 @@ export default class KolActivity extends React.Component {
                           {r.hasDir && (
                             <span title="操作方向 · AI 判定" style={s(`padding:2px 8px;border-radius:4px;background:${r.dbg};font:600 12px/1.6 var(--font-cjk);color:${r.dfg};white-space:nowrap`)}>{r.dir}</span>
                           )}
-                          {r.pending && (
-                            <span style={s('padding:0 6px;border-radius:9999px;background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500);white-space:nowrap')}>待确认 {r.conf}</span>
+                          {/* 如实声明（ADR-0019 §2／§4）：标注过的帖子都挂一枚，文案由
+                              `review_state` 决定，逐字取自 PRD §3.9。置信度不再跟在徽章
+                              后面 —— 它是模型自报的数，不是「有没有人看过」的事实，两件事
+                              挂在一枚徽章上会被读成一件。数值仍在右侧抽屉与 CSV 里。 */}
+                          {r.review && (
+                            <span style={s('padding:0 6px;border-radius:9999px;background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500);white-space:nowrap')}>{r.review}</span>
                           )}
                         </div>
                       </td>
@@ -889,8 +895,8 @@ export default class KolActivity extends React.Component {
                   {v.sel.hasDir && (
                     <span title="操作方向 · AI 判定" style={s(`padding:3px 9px;border-radius:4px;background:${v.sel.dbg};font:600 12px/1.5 var(--font-cjk);color:${v.sel.dfg}`)}>{v.sel.dir}</span>
                   )}
-                  {v.sel.pending && (
-                    <span style={s('padding:2px 7px;border-radius:9999px;background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500)')}>待确认</span>
+                  {v.sel.review && (
+                    <span style={s('padding:2px 7px;border-radius:9999px;background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500)')}>{v.sel.review}</span>
                   )}
                   {v.sel.camps.map((c) => (
                     <span key={c.label} style={s(`padding:3px 9px;border-radius:9999px;background:${c.bg};font:600 12px/1.5 var(--font-cjk);color:${c.fg}`)}>{c.label}</span>

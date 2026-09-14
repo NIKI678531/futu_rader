@@ -38,7 +38,7 @@
 | **态度（attitude）** | 积极 / 中性 / 消极三分，**评论级**。有效样本少于 `LOW_SAMPLE` 不出倾向结论。 | PRD §3.4 | 「情绪」「sentiment」——中文一律「态度」 |
 | **观点主题（theme）** | 从评论里归纳出的讨论主题，分正负极性。 | `themesFor` | 「话题」——「话题」是富途的 `topic_items` |
 | **动态负面类别（negCat）** | 帖子级的负面分类，带新增／持续／消退生命周期。 | `negCatsFor` | 「负面标签」 |
-| **重点舆情（需合规关注）** | 需合规关注的信号，AI 识别后**未经人工确认前一律标「待确认」**。 | PRD §3.4、`complianceFor` | 「风险事件」「预警」 |
+| **重点舆情（需合规关注）** | 需合规关注的信号。命中即展示，徽章**恒为**「AI 识别 · 待人工确认」——不随 `review_state` 变，人批过也不改口（[ADR-0019](docs/adr/0019-ai-auto-publish-no-human-gate.md) §2）。 | PRD §3.4、`complianceFor` | 「风险事件」「预警」 |
 | **基准区间（benchmark）** | 与当前区间等长的前一段，用于算环比。**后端下发，前端不自行算桶**。 | PRD §3.1、`buildRange` | 「对比期」「上期」 |
 | **全市场评论量排名** | 基于完整活跃 ETF 池计算，**板块筛选不重算**，同一产品名次必须稳定；热力图色阶标尺同理。 | 铁律 3、PRD §3.8/§4.1 | 「排名」不加限定——KOL 声量排名是另一套，不受此约束 |
 | **KOL 声量排名** | 账号域的独立指标，**不受全市场排名约束**。 | PRD §4.3 M5 | 与上一条混称「排名」 |
@@ -52,7 +52,7 @@
 | **`0` 的专用语义** | 「已取得数据且统计值确实为零」。**用 0 代替未知就是撒谎**（铁律 2）。 | PRD §3.6 |
 | **三套缺失文案（不可互换）** | 图例／短徽章用「暂不可用」「暂无内容」；数值位与环比位用「**数据暂不可用**」；空态用「**暂无相关内容**」。 | PRD §3.6/§3.1/§4.1 |
 | **样本不足** | 有效产品态度评论少于 `LOW_SAMPLE`（当前 10）。**这个数字逐字印在页面上**，改它等于改可见文案。 | PRD §3.5 |
-| **待确认** | AI 自动识别、尚未人工确认的结论。**口径有冲突，待项目负责人裁决**：PRD §3.5/§3.9 与 `backend/fixtures/meta.json` 仍写「置信度低于 `lowConfidence`（0.7）」，而 [ADR-0017](docs/adr/0017-ai-annotation-pipeline-production.md) §4 废止了该阈值（模型自报的信心不是校准概率，拿它画线等于给随机数画线），改由 `review_state` 驱动。CLAUDE.md 定 PRD 效力最高，所以这里不自行取舍。 | PRD §3.6、ADR-0017（取代 ADR-0010 §3） |
+| **待确认** | **已裁决**（项目负责人 2026-09-11，[ADR-0019](docs/adr/0019-ai-auto-publish-no-human-gate.md) §2）：徽章「AI 生成 · 待确认」的**唯一**触发是 `review_state = 'needs_review'`，即**模型自己举手说存疑**，不是「还没人看过」。`lowConfidence`（0.7）在 `calibrated_confidence` 存在之前**不生效**，而它当前全为 NULL；PRD §3.5/§3.9 与 `fixtures/meta.json` 的阈值文案由 PRD 维护者另行处理，ADR-0019 不替 PRD 改字。合规类是另一套，见上表「重点舆情」。 | PRD §3.6、ADR-0019（取代 ADR-0017 §4 的门槛含义） |
 
 ## 4. 工程词汇
 
@@ -68,7 +68,8 @@
 | **原始事实表** | worker 从 `raw_json` 拆出的 feeds / comments / mentions / users 四张表。**只落事实，不算口径**。 | [ADR-0009](docs/adr/0009-worker-scope.md) |
 | **瘦库** | 从 10GB 全量 dump 派生出的项目库：120 只标的 × 最近 N 天（实际 504,400 篇帖子 × 120 天）。本地是 SQLite 文件，生产是 MySQL 8，schema 共用 `radar_db/schema.py`。原始 dump 与瘦库**都不进 git**（含真实用户数据），默认落在仓库树外。 | [ADR-0008](docs/adr/0008-dump-import-and-slim-db.md)、[ADR-0016](docs/adr/0016-sqlite-local-mysql-prod.md) |
 | **判定单元** | AI 标注的最小粒度：`(comment_id, subject_code)`。一条评论可以对 3033 正面、对 2800 负面 —— 竞品对比场景下这是常态，不是边缘情况。不涉及具体标的时 `subject_code = ''`（不用 `NULL`，否则唯一索引失效、幂等失效）。 | [ADR-0017](docs/adr/0017-ai-annotation-pipeline-production.md) |
-| **`annotations` 表** | AI 标注结果的唯一落点，`backend/core/` 的 AI 派生字段一律从这里读。**没有「模型自报 confidence」这一列** —— 只有 `calibrated_confidence`，且只能由校准过的模型写入，当前全为 NULL。「待确认」态由 `review_state` 驱动（那是事实：有没有人看过），不由伪概率驱动。 | [ADR-0017](docs/adr/0017-ai-annotation-pipeline-production.md)（取代 [ADR-0010](docs/adr/0010-annotations-and-ai-pipeline.md)） |
+| **`annotations` 表** | AI 标注结果的唯一落点，`backend/core/` 的 AI 派生字段一律从这里读。**没有「模型自报 confidence」这一列** —— 只有 `calibrated_confidence`，且只能由校准过的模型写入，当前全为 NULL。「待确认」态由 `review_state` 驱动，不由伪概率驱动。 | [ADR-0017](docs/adr/0017-ai-annotation-pipeline-production.md)（取代 [ADR-0010](docs/adr/0010-annotations-and-ai-pipeline.md)） |
+| **现行结论** | 同一判定单元可能有多行（重跑、人工改写）。算数的那一行 = **链末**（没有被任何一行 `supersedes_id` 指向）**且 `review_state != 'rejected'`**；同一链末有多行取 `created_at` 最新；链末被 `--reject` 掉 ⇒ 该单元**当前没有结论**（走「暂不可用」，不回退到旧行）。`pending` 与 `needs_review` 一样可读 —— **模型写下即发布，没有人工批准门槛**。唯一实现处：`backend/providers/sql.py` 的 `_current_annotations()`。 | [ADR-0019](docs/adr/0019-ai-auto-publish-no-human-gate.md)（取代 ADR-0017 §4） |
 | **证据（evidence）** | 结论在原文里的 `(start, end)` 偏移，**由程序定位**而非模型自报。模型给的引文只是线索：能在原文精确匹配上才存，匹配不上则不存证据并把结论标 `needs_review`。存偏移不存文本 —— 原文一旦漂移，对不上会立刻炸而不是静默出错。 | [ADR-0017](docs/adr/0017-ai-annotation-pipeline-production.md) |
 | **锚点（ANCHOR）** | 「今天」＝**最近一个完整自然日**。由 `/meta` 下发，前端不自算，系统时间从不参与。值随 provider 走：`demo` 冻结在 `2026-09-01`（`NOW` ＝ `2026-09-02 09:00 HKT`），`sql` 取导入实测的 `2026-08-25`（数据实际止于 `2026-08-26 03:00`，另记在 `meta_kv.data_max_ts`）。 | [ADR-0012](docs/adr/0012-frozen-demo-anchor.md) |
 

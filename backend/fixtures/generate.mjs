@@ -65,8 +65,35 @@ dump('ranges', RANGE_KEYS.map((k) => {
   return [k, { ...r, dates }]
 }))
 
+/* ── 帖子上的 reviewState（ADR-0019 §2） ──────────────────────────────────
+ *
+ * 设计源没有这一列 —— 它是 2026-09-11 才随 ADR-0019 进入契约的：徽章文案由
+ * `review_state` 驱动，不再由 `confidence` 驱动（校准置信度当前全为 NULL）。
+ * `sql` provider 从 `annotations.review_state` 直接取；演示这边没有标注表，所以按设计源
+ * 自己的那条规则翻译过来：它的 `annotate()` 里「置信度低于阈值 ⇒ 标待确认」
+ * （`radar-data.js:1233` 的 `low`），对应的就是 `needs_review`。
+ *
+ * 这样翻译的结果是**被标「待确认」的帖子集合和从前逐字相同**，于是 KPI 小字、脚注、
+ * 「仅看待确认」筛选、CSV 列一个都不用动，逐字比对也不会因此多出白名单条目。
+ *
+ * 阈值不在这里写死：它在 meta.json 的 thresholds.lowConfidence，前端从 /meta 拿的
+ * 也是那一个（铁律 1 的同一个理由 —— 一个数只有一个来源）。
+ *
+ * 这是本文件对设计源返回值的第四处**有意不一致**（前三处见下面 pool/ranks 那段）。 */
+const LOW_CONF = JSON.parse(readFileSync(join(here, 'meta.json'), 'utf8')).thresholds.lowConfidence
+/** 就地补键，**不复制对象**：`kolImpact` 的 `leaders[].posts` / `leaders[].top` 与
+ *  `posts` 是同一批对象引用，换成 `{...post}` 会让同一篇帖子在两处序列化成两个值。 */
+function stampReview(posts) {
+  for (const p of posts) {
+    // confidence 为 null 的帖子在演示数据里不存在；真出现时给 null 而不是 'pending' ——
+    // 「不知道复核状态」和「模型给了结论且未举手」是两回事（铁律 2）。
+    p.reviewState = p.confidence == null ? null : p.confidence < LOW_CONF ? 'needs_review' : 'pending'
+  }
+  return posts
+}
+
 /* ── officialPosts(range) ── 官号帖子级内容流。 */
-dump('official_posts', RANGE_KEYS.map((k) => [k, R.officialPosts(k)]))
+dump('official_posts', RANGE_KEYS.map((k) => [k, stampReview(R.officialPosts(k))]))
 
 /* ── etfMentionsFor(account, range) ── 官号 × ETF 提及统计。
    参数键 "<account>|<range>"；账号全集来自 OFFICIAL 主数据，20 × 5 = 100 条。 */
@@ -78,7 +105,11 @@ dump(
 /* ── kolImpact(range) ── 全部合作 KOL 的帖子全集（含 AI 标注）＋后端算好的画像榜。
    一次把整个区间的帖子发下去，是因为 KOL 页的四级级联筛选、类型多选、表内关键词都在
    前端对同一份帖子做子集运算（PRD §4.3）——按筛选组合切端点会变成组合爆炸。 */
-dump('kol_impact', RANGE_KEYS.map((k) => [k, R.kolImpact(k)]))
+dump('kol_impact', RANGE_KEYS.map((k) => {
+  const v = R.kolImpact(k)
+  stampReview(v.posts)
+  return [k, v]
+}))
 
 /* ── kolOpinions(kol, range) ── 这位 KOL 对**发帖记录之外**的产品的观点与操作。
    参数键 "<kol>|<range>"；KOL 全集来自 KOLS 主数据，32 × 5 = 160 条。

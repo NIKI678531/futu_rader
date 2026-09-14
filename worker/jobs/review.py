@@ -1,13 +1,26 @@
 """人工复核 —— 把 `annotations` 里的结论过一遍人眼，结果写进 `review_decisions`。
 
-为什么这一步不是可选的：`SqlProvider` 只读 `approved` / `corrected` 的标注（Gate 4）。
-模型跑完写下的是 `pending` 或 `needs_review`，**在有人看过之前，界面上什么都不出现**。
-所以这支 CLI 不是「质量改进工具」，它是标注结果到页面之间唯一的那道门。
+**这一步是可选的**（[ADR-0019](../../docs/adr/0019-ai-auto-publish-no-human-gate.md)）。
+它曾经不是：ADR-0017 §4 把 `review_state ∈ {approved, corrected}` 定为发布条件，于是
+这支 CLI 是标注结果到页面之间唯一的那道门。ADR-0019 取消了那道门槛 —— 模型写下即
+发布，没有人看过也照样上界面，页面另有一句「未经人工验证」如实说明这件事。
+
+所以现在它是一件工具，不是一道闸口，但仍然有两个用处，都不可替代：
+
+1. **`--reject` 是把一条错结论从页面上拿下来的唯一通道。** 发布规则的第二条就是
+   「不是 `rejected`」（`backend/providers/sql.py` 的 `_current_annotations`）。除此
+   之外没有第二种下线方式 —— 除了改库。
+2. **`--correct` 留下的是 Gate 3 训练金标时唯一的人工对照。** 模型判了什么、人改成
+   了什么，两行都在库里。
+
+`--approve` 在本 ADR 下不改变任何显示：批过的那一条和没批过的长得一模一样，页面
+**不**因此多一枚「已核验」（PRD §3.9 没有这枚徽章）。它只在库里留痕。
 
 它同时是 ADR-0017 §4 的落点。那一条废掉了「置信度低于 0.7 标待确认」：模型自报的
 「我有 0.85 的把握」不是概率，拿它画线等于给随机数画线。「待确认」于是改由
-`review_state` 驱动 —— 那是一件**事实**（有没有人看过），不是一个伪概率。
-这支 CLI 就是产生那件事实的地方。
+`review_state` 驱动 —— 但驱动的是**徽章文案**而不是可见性（ADR-0019 §2）：页面上那句
+「AI 生成 · 待确认」的唯一触发是 `needs_review`，也就是**模型自己举的手**，不是
+「还没有人看过」。
 
     python -m jobs.review --queue                       # 看待复核队列
     python -m jobs.review --next                        # 看队首那条的详情与证据
@@ -83,9 +96,12 @@ class ReviewError(ValueError):
 def _superseded():
     """子查询：被别的行取代过的 annotation_id。
 
-    旧行被新一轮重跑取代后就不再是当前值了。让人去裁决它没有意义，更糟的是
-    `--approve` 会把一个已经作废的值标成「人工通过」，而 `SqlProvider` 恰好只读
-    approved —— 于是一个过期结论被人工背书着送上了界面。
+    旧行被新一轮重跑取代后就不再是当前值了，让人去裁决它没有意义。
+
+    ADR-0019 之前这里还有一个更糟的后果：`--approve` 会把一个已经作废的值标成
+    「人工通过」，而当时的 `SqlProvider` 恰好只读 approved —— 于是一个过期结论被
+    人工背书着送上了界面。现在发布看的是链末，那条路已经堵上了；但反过来的坑还在：
+    对旧行 `--reject` 不会让链末那条下线，队列只列链末就是为了不让人误以为它会。
     """
     return select(annotations.c.supersedes_id).where(
         annotations.c.supersedes_id.isnot(None)

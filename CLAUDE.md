@@ -25,11 +25,11 @@
 ```bash
 cd frontend && npm install
 cd frontend && npm run dev      # React 移植版 → http://localhost:5173
-cd frontend && npm run design   # 设计源静态站 → http://localhost:5174/official-activity.dc.html
 cd frontend && npm run build    # 产出 frontend/dist
 ```
 
-- `npm run design` 直接把 `design/` 当静态目录服务，用于与移植版并排比对；该目录没有 `index.html`，必须访问具体 `.dc.html` 路径。
+- 日常只启动真实数据后端 `8008` 与前端 `5173`。后端默认 `sql`，前端默认连接 `8008`，不再另起 `8019`；缺失数据按缺失态展示。
+- `demo` fixture 与 `npm run design` 仅保留给显式回归测试／设计验收，日常启动任务不启动演示服务。测试服务与日常端口隔离，完成后关闭。
 - 网络盘（P: 盘）首启慢／HMR 需轮询的原因与适配，见 `frontend/vite.env.js` 顶部注释。
 - `npm run build` 的 `@import` 告警属预期，原因见 [README.md](README.md)。
 
@@ -38,8 +38,7 @@ cd frontend && npm run build    # 产出 frontend/dist
 ```bash
 cd backend && python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
 cd backend && .venv/Scripts/python -m pytest -q
-cd backend && DATA_PROVIDER=demo .venv/Scripts/python app.py   # fixture 供数，不需要库
-cd backend && DATA_PROVIDER=sql  .venv/Scripts/python app.py   # 瘦库真实供数
+cd backend && .venv/Scripts/python app.py   # 默认 sql，8008，瘦库真实供数
 cd worker  && .venv/Scripts/python -m pytest -q
 cd worker  && .venv/Scripts/python scheduler.py
 
@@ -75,11 +74,13 @@ cd worker && .venv/Scripts/python -m jobs.etl
 
 `backend/` 内部：`app.py`（`create_app()`）、`api/v1/`（蓝图，22 个端点）、`core/`（口径）、`providers/`（`demo` 读 fixture／`sql` 读瘦库，见 [ADR-0001](docs/adr/0001-dual-provider.md)）、`fixtures/`、`tests/`。PRD 第 5 章 23 组函数→端点的完整映射在 [plan.md](plan.md) §2.1。
 
-`sql` provider 下，**能数出来的字段都是真的，要 AI 标注或行情源的一律 `null`**（态度、主题、摘要、合规、K 线、日线价格 —— 标注管线见 [ADR-0017](docs/adr/0017-ai-annotation-pipeline-production.md)，取代 [ADR-0010](docs/adr/0010-annotations-and-ai-pipeline.md)）。前端的空值适配**已完成**（2026-09-11，[runbook](docs/ai-data-integration-runbook.md) §16 Gate 1）：五页在真实库上不再抛错，缺失态逐块按 PRD §3.6 渲染。
+`sql` provider 下，**能数出来的字段都是真的；要 AI 标注的随库里有没有标注走；要行情源的一律 `null`**（K 线、日线价格）。标注管线见 [ADR-0017](docs/adr/0017-ai-annotation-pipeline-production.md)（取代 [ADR-0010](docs/adr/0010-annotations-and-ai-pipeline.md)）。有写入方的是帖子类型／摘要／操作方向、评论态度、合规命中、证据引文；主题聚类、负面类别、热议话题、KOL 提及、阶段观点还没有任何任务在写，所以仍是 `null`。前端的空值适配**已完成**（2026-09-11，[runbook](docs/ai-data-integration-runbook.md) §16 Gate 1）：五页在真实库上不再抛错，缺失态逐块按 PRD §3.6 渲染。
 
-标注怎么跑、跑到哪一步、每道闸口卡在什么上，都在 [docs/ai-data-integration-runbook.md](docs/ai-data-integration-runbook.md) §16（Gate 0–6），那里是这条管线唯一的操作文档。要记住的是它的出口：`SqlProvider` **只读 `approved` / `corrected`**，模型写下的是 `pending` / `needs_review`，在有人用 `worker/jobs/review.py` 看过之前，界面上一个字都不会出现。
+标注怎么跑、跑到哪一步、每道闸口卡在什么上，都在 [docs/ai-data-integration-runbook.md](docs/ai-data-integration-runbook.md) §16（Gate 0–6），那里是这条管线唯一的操作文档。要记住的是它的出口（[ADR-0019](docs/adr/0019-ai-auto-publish-no-human-gate.md)）：**模型写下即发布，没有人工批准门槛**。现行结论 = 链末（没被任何一行 supersede）且不是 `rejected`；同一链末多行取 `created_at` 最新。唯一实现处是 `backend/providers/sql.py` 的 `_current_annotations()`，`worker/jobs/review.py --reject` 是仅剩的下线通道。
 
-改这一带时注意两件事。一是 `annotations` 里**没有**模型自报的 `confidence`，只有 `calibrated_confidence` 且当前全为 NULL —— 「待确认」由 `review_state` 驱动，那是事实（有没有人看过），不是伪概率。二是这里的缺失**经常是整块容器为 `null`**，不是字段为 `null`（热议总结整池一份、主题聚类整个双极对象）；字段判空一条都拦不住它们。防线是 `src/lib/view.js` 的 `naBox()` ＋ 屏内显式 null 分支，回归靠 `cd frontend && npm run real-data-check`（opt-in，需要本机瘦库）。
+代价是页面上的 AI 结论**没有经过任何人工验证**，所以三处必须一起如实说出来：`/meta` 的 `aiValidation`（恒为 `none`）、板块总览 S6、产品监控 P7。**不许出现「已核验」「准确率 xx%」或任何暗示人工确认过的表述。**
+
+改这一带时注意两件事。一是 `annotations` 里**没有**模型自报的 `confidence`，只有 `calibrated_confidence` 且当前全为 NULL —— 徽章由 `review_state` 驱动，「待确认」的唯一触发是 `needs_review`（**模型自己举手**，不是「还没人看过」），`lowConfidence = 0.7` 在校准概率存在之前不生效。二是这里的缺失**经常是整块容器为 `null`**，不是字段为 `null`（热议总结整池一份、主题聚类整个双极对象）；字段判空一条都拦不住它们。防线是 `src/lib/view.js` 的 `naBox()` ＋ 屏内显式 null 分支，回归靠 `cd frontend && npm run real-data-check`（opt-in，需要本机瘦库）。
 
 设计变更一律**从设计源重新拷贝，不要照着新设计手推一遍**；再导入流程见 [README.md](README.md) 的 *Re-importing from Claude Design*。
 
