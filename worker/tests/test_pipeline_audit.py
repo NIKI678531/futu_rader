@@ -106,9 +106,8 @@ def test_extract_then_pipeline_end_to_end(engine, cfg, tmp_path):
     assert ext["comments"]["dropped"]["offpool_stock_only"] == 1   # 騰訊那条
     assert ext["comments"]["kept"] == 13
 
-    # KOL 评论也排进去（pipeline 第二步要它）
-    from jobs import annotate
-    assert annotate.enqueue_kol_comments(engine, cfg, [KOL], codes=[CODE], scope_id=sid) == 2
+    # 抽取时顺手把合作 KOL 的评论排进了 kol_comment_opinion（pipeline 第二步要它）
+    assert ext["kol_comments"] == 2
 
     prov = UniversalFake()
     out = pipeline.run(engine, cfg, sid, provider=prov, ranges=["d7"])
