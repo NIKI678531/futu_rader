@@ -22,13 +22,23 @@
 `input_hash` 含正文与四个版本号。所以：同样的输入＋同样的版本重复排队会被唯一键挡掉；
 正文改了或 Prompt 换了版本，hash 变，是一件**新的**待办。这正是 §17.3 要的
 「同一输入和版本重跑不产生冲突重复」。
+
+## 并发（ADR-0020）
+
+`AI_CONCURRENCY` 路线程各自处理一批。领取（`claim`）在进程内用一把锁串行化 —— SQLite 下
+两个事务同时 SELECT 到同一批再各自 UPDATE，会把同一条任务发两遍。锁是进程内的：这版
+只支持**单进程多线程**；要跨进程就得换 `SELECT … FOR UPDATE SKIP LOCKED`（MySQL）。
+统计按批各记一份，回到主线程再合并，不在线程里碰共享的 dict。
 """
 
 import json
 import logging
+import math
 import os
 import sys
+import threading
 import uuid
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import timedelta
 
 from sqlalchemy import and_, func, insert, or_, select, update
@@ -41,7 +51,8 @@ if os.path.isdir(os.path.join(REPO_ROOT, "radar_db")) and REPO_ROOT not in sys.p
 
 import clock  # noqa: E402
 from ai import config, evidence as ev, redact, schemas  # noqa: E402
-from ai.prompts import get as get_prompt  # noqa: E402
+from ai.lexicon import product_aliases  # noqa: E402
+from ai.prompts import SCHEMA_OF, get as get_prompt  # noqa: E402
 from ai.providers import PermanentError, TransientError, build as build_provider  # noqa: E402
 from radar_db import make_engine  # noqa: E402
 from radar_db.schema import (  # noqa: E402
@@ -61,6 +72,25 @@ _HUMAN_SETTLED = ("approved", "corrected")
 
 LEASE_MINUTES = 15
 
+# 帖子正文作为评论上下文时只带开头这么多字。一批 30 条常来自同一篇帖子，正文按 feed_id
+# 只放一次（见 `_user_message_with_context`），但仍要有上限 —— 长文会把系统提示挤出缓存窗口。
+POST_CONTEXT_CHARS = 200
+
+# 用量估算常数：Gate 2 实测 129 条 ⇒ 14,491 输入 / 9,711 输出 token（含 2,206 推理）。
+# v2 Prompt 更长、输出多三个字段，按 1.4 倍放大。只用于 `--dry-run`，不进任何报表。
+EST_IN_PER_ITEM = 112 * 1.4
+EST_OUT_PER_ITEM = 75 * 1.4
+
+_CLAIM_LOCK = threading.Lock()
+_LEXICON = None
+
+
+def _lexicon():
+    global _LEXICON  # noqa: PLW0603  进程内单例，词表 120 只，构造一次即可
+    if _LEXICON is None:
+        _LEXICON = product_aliases.ProductLexicon()
+    return _LEXICON
+
 
 class _Abort(Exception):
     """中止整轮，不是中止一批。
@@ -71,19 +101,33 @@ class _Abort(Exception):
     """
 
 
+# ── 版本解析 ────────────────────────────────────────────────────────────
+
+
+def resolve(task, cfg):
+    """取该任务要用的 Prompt 模块与 schema 版本。
+
+    Prompt 由 `cfg.prompt_version` 选（不认识的版本会报错，见 `ai.prompts.get`）；
+    schema 版本以 `cfg.schema_version` 为准，但与该 Prompt 配对的版本不一致时出声 ——
+    v2 Prompt 要求七个字段，用 v1 schema 校验会整批失败，而错误信息看起来像模型的问题。
+    """
+    prompt = get_prompt(task, cfg.prompt_version)
+    paired = SCHEMA_OF.get(prompt.VERSION)
+    if paired and paired != cfg.schema_version:
+        log.warning(
+            "Prompt %s 配对的 schema 是 %s，但 AI_SCHEMA_VERSION=%s；以配置为准",
+            prompt.VERSION, paired, cfg.schema_version,
+        )
+    return prompt, cfg.schema_version
+
+
 def prompt_version(prompt, cfg):
     """Prompt 版本以**模块里的 `VERSION` 为准**，不以 `AI_PROMPT_VERSION` 为准。
 
     runbook §6.2 的环境模板只有一个 `AI_PROMPT_VERSION`，但这里有两个任务、两套 Prompt，
     一个变量盖不住两个版本。模块常量跟 Prompt 正文在同一个文件里，改正文时不改它需要
-    刻意视而不见；改环境变量则可以在完全不碰正文的情况下发生。两者不一致时出声 ——
-    不一致意味着 `.env` 已经过期，而 `input_hash` 里落的是模块值。
+    刻意视而不见；改环境变量则可以在完全不碰正文的情况下发生。
     """
-    if cfg.prompt_version and cfg.prompt_version != prompt.VERSION:
-        log.warning(
-            "AI_PROMPT_VERSION=%s 与 Prompt 模块的 %s 不一致，以模块为准",
-            cfg.prompt_version, prompt.VERSION,
-        )
     return prompt.VERSION
 
 
@@ -96,7 +140,77 @@ def new_run_id():
 # ── 排队 ───────────────────────────────────────────────────────────────
 
 
-def enqueue_comments(engine, cfg, *, codes=None, limit=None, since=None, priority=0):
+def _comment_candidates(engine, *, codes=None, limit=None, since=None, until=None, authors=None):
+    """评论×挂载产品的候选行。`until` 为半开上界（`posted_at < until`）；`authors` 限定评论作者名。"""
+    parent = comments.alias("parent")
+    q = (
+        select(
+            comments.c.comment_id,
+            comments.c.content,
+            comments.c.author_uid,
+            comments.c.feed_id,
+            feeds.c.code,
+            feeds.c.title,
+            feeds.c.content.label("post_content"),
+            parent.c.content.label("parent_content"),
+        )
+        .select_from(
+            comments
+            .join(feeds, feeds.c.feed_id == comments.c.feed_id)
+            # 父评论是可选的，外连接 —— 内连接会把所有非回复的评论排除在队列外。
+            .outerjoin(parent, parent.c.comment_id == comments.c.reply_to_comment_id)
+        )
+        .where(comments.c.content.isnot(None), comments.c.content != "")
+    )
+    if codes:
+        q = q.where(feeds.c.code.in_(list(codes)))
+    if authors:
+        q = q.where(comments.c.author_name.in_(list(authors)))
+    if since:
+        q = q.where(feeds.c.posted_at >= since)
+    if until:
+        q = q.where(feeds.c.posted_at < until)
+    # 稳定顺序：同样的参数每次取到同一批，重跑可复现。
+    q = q.order_by(comments.c.comment_id)
+    if limit:
+        q = q.limit(limit)
+    with engine.connect() as conn:
+        yield from conn.execute(q)
+
+
+def job_row_for_comment(cfg, prompt, schema_version, row, *, priority=0, scope_id=None, now=None,
+                        task="comment_product"):
+    """一行候选 → 一条待办。指纹用的是**将来真正会发出去的那个 payload**。"""
+    now = now or clock.now()
+    payload = _build_payload(
+        task,
+        {"target_id": row.comment_id, "subject_code": row.code},
+        {"text": row.content, "title": row.title, "parent": row.parent_content,
+         "post_content": getattr(row, "post_content", None)},
+    )
+    return {
+        "target_type": "comment",
+        "target_id": row.comment_id,
+        "subject_code": row.code,
+        "task": task,
+        "input_hash": schemas.input_hash(
+            payload,
+            model=cfg.model,
+            prompt_version=prompt_version(prompt, cfg),
+            taxonomy_version=cfg.taxonomy_version,
+            schema_version=schema_version,
+        ),
+        "status": "pending",
+        "priority": priority,
+        "attempts": 0,
+        "scope_id": scope_id,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def enqueue_comments(engine, cfg, *, codes=None, limit=None, since=None, until=None,
+                     priority=0, scope_id=None):
     """把「评论 × 产品」组合排进待办。
 
     判定单元是 `(comment_id, subject_code)`（§10.1），所以同一条评论评价两只 ETF
@@ -106,74 +220,21 @@ def enqueue_comments(engine, cfg, *, codes=None, limit=None, since=None, priorit
     一篇提到八只 ETF 的帖子，它下面的每条评论都排八条待办，成本是八倍，而其中大多数
     评论并没有在评价那八只。这条口径写在这里是有意的 —— 扩大范围是一个要单独决策的事。
 
-    指纹用的是**将来真正会发出去的那个 payload**（含父评论与帖子标题）。§11.3 把
-    「上下文」列进了缓存键，这不是形式要求：同一条「有」，挂在不同的父评论下就是不同
-    的输入，应当各判一次。指纹只取正文的话，两者会被判成同一件待办，先来的那个结论
-    会被沿用到另一个语境上。
+    **不做规则预过滤。** 按 ETF × 时间段抽取并过滤的入口是 `jobs/extract.py`；
+    这里保留为「把范围内一切非空评论排进队」的原始入口，给测试与影子运行用。
     """
-    task = "comment_product"
-    prompt = get_prompt(task)
+    prompt, schema_version = resolve("comment_product", cfg)
     now = clock.now()
-    rows = []
-
-    with engine.connect() as conn:
-        parent = comments.alias("parent")
-        q = (
-            select(
-                comments.c.comment_id,
-                comments.c.content,
-                feeds.c.code,
-                feeds.c.title,
-                parent.c.content.label("parent_content"),
-            )
-            .select_from(
-                comments
-                .join(feeds, feeds.c.feed_id == comments.c.feed_id)
-                # 父评论是可选的，外连接 —— 内连接会把所有非回复的评论排除在队列外。
-                .outerjoin(parent,
-                           parent.c.comment_id == comments.c.reply_to_comment_id)
-            )
-            .where(comments.c.content.isnot(None), comments.c.content != "")
-        )
-        if codes:
-            q = q.where(feeds.c.code.in_(list(codes)))
-        if since:
-            q = q.where(feeds.c.posted_at >= since)
-        # 稳定顺序：同样的参数每次取到同一批，重跑可复现。
-        q = q.order_by(comments.c.comment_id)
-        if limit:
-            q = q.limit(limit)
-
-        for comment_id, content, code, title, parent_content in conn.execute(q):
-            payload = _build_payload(
-                task,
-                {"target_id": comment_id, "subject_code": code},
-                {"text": content, "title": title, "parent": parent_content},
-            )
-            rows.append(
-                {
-                    "target_type": "comment",
-                    "target_id": comment_id,
-                    "subject_code": code,
-                    "task": task,
-                    "input_hash": schemas.input_hash(
-                        payload,
-                        model=cfg.model,
-                        prompt_version=prompt_version(prompt, cfg),
-                        taxonomy_version=cfg.taxonomy_version,
-                        schema_version=cfg.schema_version,
-                    ),
-                    "status": "pending",
-                    "priority": priority,
-                    "attempts": 0,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-            )
+    rows = [
+        job_row_for_comment(cfg, prompt, schema_version, r, priority=priority,
+                            scope_id=scope_id, now=now)
+        for r in _comment_candidates(engine, codes=codes, limit=limit, since=since, until=until)
+    ]
     return _insert_jobs(engine, rows)
 
 
-def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, priority=0):
+def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None,
+                  authors=None, priority=0, scope_id=None):
     """把帖子排进待办（§11.2：类型／操作方向／摘要）。
 
     与评论任务有三处结构性不同，不是参数差异：
@@ -181,24 +242,22 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, priority=0
     **判定单元只有帖子本身，没有 subject。** 帖子类型是「这篇文章是什么」，
     不是「这篇文章对哪只 ETF 什么态度」—— 一篇同时挂着三只标的的行情解读，
     它仍然只是一篇行情解读。所以 `subject_code` 写 `NO_SUBJECT` 而不是逐标的排三条。
-    这也是为什么排队时**不按 `mentions` 展开**：展开会让同一篇帖子被判三次，
-    三次还可能判出三个不同的类型。
 
     **正文可能为空，标题不能。** 富途社区有大量只有标题的帖子。所以过滤条件落在
-    「标题与正文至少有一个非空」上，而不是像评论那样只看正文 —— 只看正文会把这些
-    帖子整类排除在外，而它们恰恰是官号动态那一屏的主要内容。
+    「标题与正文至少有一个非空」上，而不是像评论那样只看正文。
 
-    **指纹覆盖标题＋正文。** `_build_payload` 发出去的就是这两样（`redact.post_payload`），
-    §11.3 要求缓存键覆盖真正发出去的输入。只按正文算指纹的话，改了标题的帖子会被
-    当成已排过队而跳过，而模型看到的输入其实变了。
+    **指纹覆盖标题＋正文＋挂载产品。** `_build_payload` 发出去的就是这些。
+
+    `authors`：只排这些作者名的帖子（KOL 32 位＋官号 20 个）。全量 38 万篇帖子里页面只用
+    得上这两类作者的，其余不排 —— 那是一笔没有消费方的开销。
     """
     task = "post_annotation"
-    prompt = get_prompt(task)
+    prompt, schema_version = resolve(task, cfg)
     now = clock.now()
     rows = []
 
     with engine.connect() as conn:
-        q = select(feeds.c.feed_id, feeds.c.title, feeds.c.content).where(
+        q = select(feeds.c.feed_id, feeds.c.title, feeds.c.content, feeds.c.code).where(
             or_(
                 and_(feeds.c.content.isnot(None), feeds.c.content != ""),
                 and_(feeds.c.title.isnot(None), feeds.c.title != ""),
@@ -208,14 +267,17 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, priority=0
             q = q.where(feeds.c.code.in_(list(codes)))
         if since:
             q = q.where(feeds.c.posted_at >= since)
-        # 同 enqueue_comments：稳定顺序，同样的参数每次取到同一批。
+        if until:
+            q = q.where(feeds.c.posted_at < until)
+        if authors:
+            q = q.where(feeds.c.author_name.in_(list(authors)))
         q = q.order_by(feeds.c.feed_id)
         if limit:
             q = q.limit(limit)
 
-        for feed_id, title, content in conn.execute(q):
+        for feed_id, title, content, code in conn.execute(q):
             job = {"target_id": feed_id, "subject_code": None}
-            payload = _build_payload(task, job, {"text": content, "title": title})
+            payload = _build_payload(task, job, {"text": content, "title": title, "code": code})
             rows.append(
                 {
                     "target_type": "feed",
@@ -227,15 +289,36 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, priority=0
                         model=cfg.model,
                         prompt_version=prompt_version(prompt, cfg),
                         taxonomy_version=cfg.taxonomy_version,
-                        schema_version=cfg.schema_version,
+                        schema_version=schema_version,
                     ),
                     "status": "pending",
                     "priority": priority,
                     "attempts": 0,
+                    "scope_id": scope_id,
                     "created_at": now,
                     "updated_at": now,
                 }
             )
+    return _insert_jobs(engine, rows)
+
+
+def enqueue_kol_comments(engine, cfg, kol_names, *, codes=None, limit=None, since=None, until=None,
+                         priority=0, scope_id=None):
+    """把合作 KOL 写的评论排进 `kol_comment_opinion`（PRD §4.4 M7）。
+
+    判定单元、payload、指纹都与 comment_product 同构 —— 只是作者被限定在 KOL 名单内，
+    任务名不同。32 位 KOL 的评论量很小，这是全套里最便宜的一个任务。
+    """
+    task = "kol_comment_opinion"
+    prompt, schema_version = resolve(task, cfg)
+    now = clock.now()
+    rows = []
+    for r in _comment_candidates(engine, codes=codes, limit=None, since=since, until=until,
+                                 authors=list(kol_names)):
+        rows.append(job_row_for_comment(cfg, prompt, schema_version, r, priority=priority,
+                                        scope_id=scope_id, now=now, task=task))
+        if limit and len(rows) >= limit:
+            break
     return _insert_jobs(engine, rows)
 
 
@@ -261,16 +344,19 @@ def _insert_jobs(engine, rows):
 # ── 领取 ───────────────────────────────────────────────────────────────
 
 
-def claim(engine, task, n, *, now=None):
+def claim(engine, task, n, *, now=None, scope_id=None):
     """领取至多 n 条待办，打上租约。
 
     可领取 = `pending`，或 `claimed` 但租约已过期。后者是 worker 崩溃后的回收路径 ——
     没有它，进程被 Ctrl-C 掉的那一刻正在处理的 30 条会永远卡在 claimed。
+
+    `scope_id` 给了就只领这个抽取范围的任务（ADR-0020）：跑「3033 近 7 天」时，
+    队列里别的产品、别的日期的待办一条都不该被带走。
     """
     now = now or clock.now()
     lease_until = now + timedelta(minutes=LEASE_MINUTES)
     claimed = []
-    with engine.begin() as conn:
+    with _CLAIM_LOCK, engine.begin() as conn:
         q = (
             select(annotation_jobs)
             .where(
@@ -281,44 +367,74 @@ def claim(engine, task, n, *, now=None):
                     annotation_jobs.c.lease_until < now,
                 ),
             )
+        )
+        if scope_id is not None:
+            q = q.where(annotation_jobs.c.scope_id == scope_id)
+        q = (
             # 同一批尽量属于同一产品（§11.3）：按 subject_code 排，固定上下文能被
             # 供应商的 prompt cache 命中，也让模型少切换产品语境。
-            .order_by(
+            q.order_by(
                 annotation_jobs.c.priority.desc(),
                 annotation_jobs.c.subject_code,
                 annotation_jobs.c.job_id,
             )
             .limit(n)
         )
-        for row in conn.execute(q).mappings():
+        # 先把 SELECT 取完再 UPDATE。游标没读完就写，SQLite 会把这个连接当作「持有读快照
+        # 的事务要升级成写」—— 若别的线程在快照之后写过，它**立刻**返回 BUSY_SNAPSHOT，
+        # 不经过 busy_timeout。单线程时代这个写法侥幸没炸。
+        picked = [dict(r) for r in conn.execute(q).mappings().all()]
+        for row in picked:
             conn.execute(
                 update(annotation_jobs)
                 .where(annotation_jobs.c.job_id == row["job_id"])
                 .values(status="claimed", claimed_at=now, lease_until=lease_until)
             )
-            claimed.append(dict(row))
+            claimed.append(row)
     return claimed
 
 
 # ── 跑一批 ─────────────────────────────────────────────────────────────
 
 
-def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=None):
-    """跑一轮标注。返回 run 统计。"""
+def _fresh_stats(cfg, run_id, task):
+    return {
+        "run_id": run_id, "task": task, "input": 0, "success": 0, "error": 0,
+        "requests": 0, "tok_in": 0, "tok_out": 0, "tok_reason": 0, "tok_cached": 0,
+        "usage_known": True, "model": cfg.model, "aborted": None,
+    }
+
+
+def _local_stats():
+    return {"success": 0, "error": 0, "requests": 0, "tok_in": 0, "tok_out": 0,
+            "tok_reason": 0, "tok_cached": 0, "usage_known": True, "model": None}
+
+
+def _merge(stats, local):
+    for k in ("success", "error", "requests", "tok_in", "tok_out", "tok_reason", "tok_cached"):
+        stats[k] += local[k]
+    stats["usage_known"] = stats["usage_known"] and local["usage_known"]
+    if local["model"]:
+        stats["model"] = local["model"]
+
+
+def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=None,
+        scope_id=None, budget_requests=None):
+    """跑一轮标注。返回 run 统计。
+
+    `budget_requests`：本轮最多**领取**多少批（≈ 请求数，不含重试与二分）。
+    价格未知时这是唯一能卡住花费的旋钮 —— 条数×批大小算出来的请求数是可以对着账单核的。
+    """
     cfg = cfg or config.load()
     provider = provider or build_provider(cfg)
-    prompt = get_prompt(task)
+    prompt, schema_version = resolve(task, cfg)
 
     batch_size = cfg.micro_batch_size
     budget = max_items if max_items is not None else batch_size
     run_id = new_run_id()
     started = clock.now()
-
-    stats = {
-        "run_id": run_id, "input": 0, "success": 0, "error": 0,
-        "tok_in": 0, "tok_out": 0, "tok_reason": 0, "usage_known": True,
-        "model": cfg.model, "aborted": None,
-    }
+    stats = _fresh_stats(cfg, run_id, task)
+    workers = max(1, int(cfg.concurrency or 1))
 
     with engine.begin() as conn:
         conn.execute(
@@ -327,24 +443,50 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
                 model_id=cfg.model, model_revision=None,
                 prompt_version=prompt_version(prompt, cfg),
                 taxonomy_version=cfg.taxonomy_version,
-                schema_version=cfg.schema_version,
+                schema_version=schema_version,
                 started_at=started, status="running",
                 input_count=0, success_count=0, error_count=0,
             )
         )
 
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="annotate")
+    inflight = {}
+    batches_started = 0
     try:
-        while budget > 0:
-            jobs = claim(engine, task, min(batch_size, budget))
-            if not jobs:
+        while True:
+            # 补满在途：始终保持 `workers` 批在跑，直到预算或队列耗尽。
+            while (
+                len(inflight) < workers and budget > 0 and stats["aborted"] is None
+                and (budget_requests is None or batches_started < budget_requests)
+            ):
+                jobs = claim(engine, task, min(batch_size, budget), scope_id=scope_id)
+                if not jobs:
+                    break
+                budget -= len(jobs)
+                batches_started += 1
+                stats["input"] += len(jobs)
+                fut = pool.submit(
+                    _process, engine, cfg, provider, prompt, schema_version, task, run_id,
+                    jobs, _local_stats(),
+                )
+                inflight[fut] = len(jobs)
+            if not inflight:
                 break
-            budget -= len(jobs)
-            stats["input"] += len(jobs)
-            _process(engine, cfg, provider, prompt, task, run_id, jobs, stats)
-    except _Abort as exc:
-        stats["aborted"] = str(exc)
-        log.error("整轮中止：%s", exc)
+            done, _ = wait(list(inflight), return_when=FIRST_COMPLETED)
+            for fut in done:
+                inflight.pop(fut)
+                try:
+                    _merge(stats, fut.result())
+                except _Abort as exc:
+                    # 别的线程可能同时撞上同一个永久错误；记第一条即可。
+                    if stats["aborted"] is None:
+                        stats["aborted"] = str(exc)
+                        log.error("整轮中止：%s", exc)
+                    _merge(stats, exc.local)
+            if stats["aborted"] is not None and not inflight:
+                break
     finally:
+        pool.shutdown(wait=True)
         _close_run(engine, run_id, stats)
 
     return stats
@@ -378,28 +520,33 @@ def _close_run(engine, run_id, stats):
         )
 
 
-def _process(engine, cfg, provider, prompt, task, run_id, jobs, stats, depth=0):
-    """处理一批。失败时按 §11.3 二分，而不是整批判死。"""
+def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, local, depth=0):
+    """处理一批。失败时按 §11.3 二分，而不是整批判死。返回本批的局部统计。"""
     sources = _load_sources(engine, task, jobs)
     payloads, usable = [], []
     for job in jobs:
         src = sources.get((job["target_type"], job["target_id"]))
-        if src is None or not (src.get("text") or "").strip():
+        has_text = src is not None and (
+            (src.get("text") or "").strip()
+            or (task == "post_annotation" and (src.get("title") or "").strip())
+        )
+        if not has_text:
             # 正文取不到 —— 规则层就该拦下（§6.5「空文本」不调 GPT）。判死不重试。
             _fail(engine, job, "源文本为空或不存在，不应进队列", dead=True)
-            stats["error"] += 1
+            local["error"] += 1
             continue
         payloads.append(_build_payload(task, job, src))
         usable.append((job, src))
 
     if not payloads:
-        return
+        return local
 
     try:
+        local["requests"] += 1
         comp = provider.complete_json(
             prompt.SYSTEM,
             prompt.user_message(payloads),
-            schemas.batch_json_schema(task),
+            schemas.batch_json_schema(task, schema_version),
             f"{task}_batch",
         )
     except PermanentError as exc:
@@ -407,41 +554,45 @@ def _process(engine, cfg, provider, prompt, task, run_id, jobs, stats, depth=0):
         # **不判死** —— 把 30 条因为一个 Key 打错而判死，改完配置后还得手动复活。
         for job, _ in usable:
             _release(engine, job, f"永久错误：{exc}")
-        stats["error"] += len(usable)
-        raise _Abort(f"永久错误，{len(usable)} 条已放回待办：{exc}") from exc
+        local["error"] += len(usable)
+        abort = _Abort(f"永久错误，{len(usable)} 条已放回待办：{exc}")
+        abort.local = local
+        raise abort from exc
     except TransientError as exc:
         # 供应商层已经退避重试过 max_retries 次了，到这里说明确实不通。
-        _retry_or_dead(engine, cfg, usable, stats, f"传输失败：{exc}")
-        return
+        _retry_or_dead(engine, cfg, usable, local, f"传输失败：{exc}")
+        return local
 
-    _record_usage(comp, stats)
-    stats["model"] = comp.model
+    _record_usage(comp, local)
+    local["model"] = comp.model
 
     try:
-        by_id = schemas.parse_batch(task, comp.data, [p["item_id"] for p in payloads])
+        by_id = schemas.parse_batch(task, comp.data, [p["item_id"] for p in payloads],
+                                    schema_version)
     except schemas.SchemaError as exc:
         # §11.3：JSON/Schema 失败先重试；连续失败后将批次二分。
         if len(usable) > 1 and depth < 6:
             mid = len(usable) // 2
             log.warning("批输出不合格（%s），二分为 %d + %d", exc, mid, len(usable) - mid)
-            _process(engine, cfg, provider, prompt, task, run_id,
-                     [j for j, _ in usable[:mid]], stats, depth + 1)
-            _process(engine, cfg, provider, prompt, task, run_id,
-                     [j for j, _ in usable[mid:]], stats, depth + 1)
+            _process(engine, cfg, provider, prompt, schema_version, task, run_id,
+                     [j for j, _ in usable[:mid]], local, depth + 1)
+            _process(engine, cfg, provider, prompt, schema_version, task, run_id,
+                     [j for j, _ in usable[mid:]], local, depth + 1)
         else:
-            _retry_or_dead(engine, cfg, usable, stats, f"schema 失败：{exc}")
-        return
+            _retry_or_dead(engine, cfg, usable, local, f"schema 失败：{exc}")
+        return local
 
     for job, src in usable:
         item = by_id[_item_id(task, job)]
         try:
-            _write(engine, task, job, src, item, run_id)
+            _write(engine, task, job, src, item, run_id, schema_version)
             _done(engine, job)
-            stats["success"] += 1
+            local["success"] += 1
         except Exception as exc:  # noqa: BLE001
             log.exception("写库失败 job=%s", job["job_id"])
             _fail(engine, job, f"写库失败：{exc}")
-            stats["error"] += 1
+            local["error"] += 1
+    return local
 
 
 def _record_usage(comp, stats):
@@ -452,6 +603,7 @@ def _record_usage(comp, stats):
     stats["tok_in"] += u.input_tokens
     stats["tok_out"] += u.output_tokens
     stats["tok_reason"] += u.reasoning_tokens or 0
+    stats["tok_cached"] += u.cached_tokens or 0
 
 
 # ── 取源文本 ───────────────────────────────────────────────────────────
@@ -460,126 +612,166 @@ def _record_usage(comp, stats):
 def _load_sources(engine, task, jobs):
     """一次查回整批的源文本与上下文。逐条查会让 30 条变成 30 次往返。
 
-    评论还带两样上下文，都是 §11.4 明确许可外发的：**父评论**与**帖子标题**。
-    带它们不是锦上添花 —— 首轮 100 条影子运行里 40% 判成 `needs_context`，样本是
-    「有」「劲」「是股息」这种一两个字的回复。那个判断是**对的**：光看这三个字确实
-    判不出在夸哪只 ETF。缺的不是模型能力，是我们没把它该看的东西发过去。
-
-    帖子**正文**没有带（虽然 §11.4 也允许）。一批 30 条常常来自同一篇帖子，正文会被
-    重复发 30 次；要不要带、带多长是一个有成本的决策，且 Prompt 要相应交代它的地位，
-    不适合顺手塞进来。
+    评论带三样上下文，都是 §11.4 明确许可外发的：**父评论**、**帖子标题**、**帖子正文开头**。
+    前两样 Gate 2 就有了 —— 首轮 100 条影子运行里 40% 判成 `needs_context`，样本是
+    「有」「劲」「是股息」这种一两个字的回复，缺的不是模型能力，是我们没把它该看的东西发过去。
+    第三样是这次补的（ADR-0020）：只带开头 `POST_CONTEXT_CHARS` 字，且 Prompt 里交代了
+    它只用来理解语境，不代表评论者的观点。
     """
     ids = [j["target_id"] for j in jobs]
     out = {}
     if not ids:
         return out
     with engine.connect() as conn:
-        if task == "comment_product":
+        if task in COMMENT_TASKS:
             parent = comments.alias("parent")
             q = (
                 select(
                     comments.c.comment_id,
                     comments.c.content,
                     feeds.c.title,
+                    feeds.c.content.label("post_content"),
                     parent.c.content.label("parent_content"),
                 )
                 .select_from(
                     comments
                     # 外连接：取不到帖子或父评论时，这条评论**仍然要出现**在结果里。
-                    # 内连接会让它悄悄消失，然后被 `_process` 当成「源文本不存在」判死。
                     .outerjoin(feeds, feeds.c.feed_id == comments.c.feed_id)
-                    .outerjoin(parent,
-                               parent.c.comment_id == comments.c.reply_to_comment_id)
+                    .outerjoin(parent, parent.c.comment_id == comments.c.reply_to_comment_id)
                 )
                 .where(comments.c.comment_id.in_(ids))
             )
-            for cid, content, title, parent_content in conn.execute(q):
+            for cid, content, title, post_content, parent_content in conn.execute(q):
                 out[("comment", cid)] = {
                     "text": content,
                     "title": title,
                     "parent": parent_content,
+                    "post_content": post_content,
                 }
         else:
-            q = select(feeds.c.feed_id, feeds.c.title, feeds.c.content).where(
+            q = select(feeds.c.feed_id, feeds.c.title, feeds.c.content, feeds.c.code).where(
                 feeds.c.feed_id.in_(ids)
             )
-            for fid, title, content in conn.execute(q):
-                out[("feed", fid)] = {"text": content, "title": title}
+            for fid, title, content, code in conn.execute(q):
+                out[("feed", fid)] = {"text": content, "title": title, "code": code}
     return out
 
 
+# 以评论 × 产品为判定单元的任务；帖子任务是另一种形状。
+COMMENT_TASKS = ("comment_product", "kol_comment_opinion")
+
+
 def _item_id(task, job):
-    if task == "comment_product":
+    if task in COMMENT_TASKS:
         return f"comment:{job['target_id']}|product:{job['subject_code']}"
     return f"feed:{job['target_id']}"
 
 
+def _product_block(code):
+    """发给模型的产品块：代码＋名称＋别名（§11.4 白名单三键）。不在词表里的代码只给代码。"""
+    if not code:
+        return None
+    lex = _lexicon()
+    if code in lex.by_code:
+        return lex.product_block(code)
+    return {"code": code}
+
+
 def _build_payload(task, job, src):
-    if task == "comment_product":
+    if task in COMMENT_TASKS:
+        post_context = (src.get("post_content") or "").strip()[:POST_CONTEXT_CHARS] or None
         return redact.comment_payload(
             _item_id(task, job),
-            {"code": job["subject_code"]},
+            _product_block(job["subject_code"]),
             src["text"],
             post_title=src.get("title"),
             parent_comment=src.get("parent"),
+            post_context=post_context,
         )
-    return redact.post_payload(_item_id(task, job), src["text"], title=src.get("title"))
+    return redact.post_payload(
+        _item_id(task, job), src["text"], title=src.get("title"),
+        product=_product_block(src.get("code")),
+    )
 
 
 # ── 写结论 ─────────────────────────────────────────────────────────────
 
 
-def _write(engine, task, job, src, item, run_id):
-    """把一条标注写进库，连同通过校验的证据。
+def _kinds_for(task, item, src, schema_version):
+    """一条模型输出 → `[(kind, value, spans, expect_evidence)]`。
 
-    一条模型输出会拆成**多行** `annotations`（每个 kind 一行），因为
-    `relevance` / `attitude` / `aspect` 在 §9 里是不同的原子任务，
-    SqlProvider 与 `backend/core/` 按 kind 读，混在一行会逼每个读取方自己拆 JSON。
+    每个 kind 一行（`relevance` / `attitude` / `aspect` 在 §9 里是不同的原子任务），
+    各带自己的证据片段：合规命中的引文挂在 `compliance` 行上，态度的引文挂在 `relevance` 行上。
     """
-    now = clock.now()
-    source_text = src["text"] or ""
     if task == "post_annotation":
-        source_text = "\n".join(filter(None, [src.get("title"), src.get("text")]))
-
-    if task == "comment_product":
-        spans = [item.evidence] if item.evidence else []
-        kinds = [("relevance", item.relevance), ("attitude", item.attitude)]
-        if item.aspects:
-            kinds.append(("aspect", item.aspects))
-        # 相关但没给出可定位证据 ⇒ 存疑。无关/需上下文本来就没有证据可给，不算问题。
-        expect_evidence = item.relevance == "relevant"
-    else:
         spans = list(item.evidence_spans or [])
-        kinds = [("post_type", item.post_type)]
+        kinds = [("post_type", item.post_type, spans, True)]
         # `summary=null` 与 `direction=null` 都是模型的**结论**，不是它没回答：schema 里
         # 两个键都必填（`extra="forbid"` ＋ 无默认值），模型必须显式写 null，而 Prompt 给
         # 了它们各自的含义 ——「帖子没有可读正文（纯图片、纯链接）」「帖子没有表达任何操作」。
         #
         # 所以这两行不能因为值是 null 就不写。不写的后果不是少一行数据，是**两件事在库里
         # 变成同一个样子**：「已标注、确实没得摘」和「这帖压根没标注过」都表现为查不到行。
-        # 而页面上它们是相反的：前者照常渲染（只是不显示摘要），后者要显示「暂不可用」。
-        # 这也正好是 `direction_pending` 存在的理由 —— 同一个坑，那边已经填过一次了。
-        #
-        # 占位用 `false` 而不是某个字符串：它和摘要／方向枚举**类型不同**，读取方
-        # `json.loads` 之后一眼能分开，也不会跟一条正好写着「无」的摘要撞上。
-        kinds.append(("summary", item.summary if item.summary is not None else False))
+        # 占位用 `false` 而不是某个字符串：它和摘要／方向枚举**类型不同**。
+        kinds.append(("summary", item.summary if item.summary is not None else False, [], False))
         kinds.append(
-            ("direction", "pending" if item.direction_pending
-             else (item.direction if item.direction is not None else False))
+            ("direction",
+             "pending" if item.direction_pending
+             else (item.direction if item.direction is not None else False),
+             [], False)
         )
-        expect_evidence = True
+        return kinds
 
-    located = [(s, ev.locate(s, source_text)) for s in spans]
-    verified = [(s, loc) for s, loc in located if loc.found]
+    if task == "kol_comment_opinion":
+        spans = [item.evidence] if item.evidence else []
+        # `summary=null`＝「这条评论没有对该产品表达观点」，是结论，落 false 占位（同帖子 summary）。
+        return [
+            ("kol_summary", item.summary if item.summary is not None else False, spans, item.summary is not None),
+            ("kol_action", item.action, [], False),
+        ]
+
+    spans = [item.evidence] if item.evidence else []
+    # 相关但没给出可定位证据 ⇒ 存疑。无关/需上下文本来就没有证据可给，不算问题。
+    expect = item.relevance == "relevant"
+    kinds = [("relevance", item.relevance, spans, expect), ("attitude", item.attitude, [], False)]
+    if item.aspects:
+        kinds.append(("aspect", item.aspects, [], False))
+    if schema_version != "v1":
+        if item.market_direction is not None:
+            kinds.append(("market_direction", item.market_direction, [], False))
+        # 空数组也写：「查过了没有」和「没查过」在库里必须分得开（runbook §20.4）。
+        kinds.append((
+            "compliance",
+            {"tags": list(item.compliance_tags), "rationale": item.compliance_rationale},
+            [item.compliance_evidence] if item.compliance_evidence else [],
+            bool(item.compliance_tags),
+        ))
+    return kinds
+
+
+def _write(engine, task, job, src, item, run_id, schema_version="v1"):
+    """把一条标注写进库，连同通过校验的证据。"""
+    now = clock.now()
+    source_text = src["text"] or ""
+    if task == "post_annotation":
+        source_text = "\n".join(filter(None, [src.get("title"), src.get("text")]))
+
+    kinds = _kinds_for(task, item, src, schema_version)
+
+    # 先定位全部证据，再决定 review_state：任何一处证据编造 ⇒ 整条存疑。
     # 模型给了证据但一条都定位不到 ⇒ 证据是编的（Gate 0 复现过）。结论仍落库，
     # 但打 needs_review 交人工 —— 判断可能是对的，编造的只是引文。
-    bad_evidence = bool(spans) and not verified
-    missing_evidence = expect_evidence and not spans
-    needs_review = bool(item.needs_review) or bad_evidence or missing_evidence
+    located = {}
+    needs_review = bool(item.needs_review)
+    for kind, _value, spans, expect in kinds:
+        found = [(s, ev.locate(s, source_text)) for s in spans]
+        verified = [(s, loc) for s, loc in found if loc.found]
+        located[kind] = verified
+        if (spans and not verified) or (expect and not spans):
+            needs_review = True
 
     with engine.begin() as conn:
-        first_id = None
-        for kind, value in kinds:
+        for kind, value, _spans, _expect in kinds:
             if value is None:
                 continue
             prev = conn.execute(
@@ -616,22 +808,21 @@ def _write(engine, task, job, src, item, run_id):
                     supersedes_id=supersedes,
                 )
             )
-            first_id = first_id or res.inserted_primary_key[0]
-
-        for quote, loc in verified:
-            conn.execute(
-                insert(annotation_evidence).values(
-                    annotation_id=first_id,
-                    source_target_type=job["target_type"],
-                    source_target_id=job["target_id"],
-                    # 偏移是**程序定位**出来的，不采信模型自报的位置。
-                    start_offset=loc.start,
-                    end_offset=loc.end,
-                    # 落原文切片，不落模型给的那个串（可能差一个全角标点）。
-                    quote_text=loc.quote,
-                    quote_hash=ev.quote_hash(loc.quote),
+            ann_id = res.inserted_primary_key[0]
+            for _quote, loc in located.get(kind, []):
+                conn.execute(
+                    insert(annotation_evidence).values(
+                        annotation_id=ann_id,
+                        source_target_type=job["target_type"],
+                        source_target_id=job["target_id"],
+                        # 偏移是**程序定位**出来的，不采信模型自报的位置。
+                        start_offset=loc.start,
+                        end_offset=loc.end,
+                        # 落原文切片，不落模型给的那个串（可能差一个全角标点）。
+                        quote_text=loc.quote,
+                        quote_hash=ev.quote_hash(loc.quote),
+                    )
                 )
-            )
 
 
 # ── 任务状态流转 ───────────────────────────────────────────────────────
@@ -696,14 +887,37 @@ def _retry_or_dead(engine, cfg, usable, stats, err):
     log.warning("批失败（%s），%d 条已按重试策略处理", err, len(usable))
 
 
-def pending_count(engine, task):
+def pending_count(engine, task, scope_id=None):
     with engine.connect() as conn:
-        return conn.execute(
+        q = (
             select(func.count())
             .select_from(annotation_jobs)
             .where(annotation_jobs.c.task == task,
                    annotation_jobs.c.status.in_(("pending", "claimed")))
-        ).scalar_one()
+        )
+        if scope_id is not None:
+            q = q.where(annotation_jobs.c.scope_id == scope_id)
+        return conn.execute(q).scalar_one()
+
+
+def estimate(engine, cfg, task, scope_id=None):
+    """`--dry-run` 的用量估算。**不是报价**：网关没有给价格，这里只给条数、请求数与 token 区间。"""
+    n = pending_count(engine, task, scope_id)
+    prompt, _sv = resolve(task, cfg)
+    batch = max(1, cfg.micro_batch_size)
+    requests = math.ceil(n / batch) if n else 0
+    # 中文 1 字 ≈ 1–1.6 token，给区间不给点估计。
+    sys_chars = len(prompt.SYSTEM)
+    sys_tok_lo, sys_tok_hi = sys_chars / 1.6, sys_chars / 1.0
+    return {
+        "task": task, "scope_id": scope_id, "pending_items": n, "batch_size": batch,
+        "requests": requests,
+        "tokens_in_low": int(n * EST_IN_PER_ITEM + requests * sys_tok_lo),
+        "tokens_in_high": int(n * EST_IN_PER_ITEM * 1.3 + requests * sys_tok_hi),
+        "tokens_out_low": int(n * EST_OUT_PER_ITEM),
+        "tokens_out_high": int(n * EST_OUT_PER_ITEM * 1.3),
+        "note": "估算；网关未给价格，estimated_cost 仍为 NULL",
+    }
 
 
 # ── CLI ────────────────────────────────────────────────────────────────
@@ -714,21 +928,28 @@ def main(argv=None):
 
         python -m jobs.annotate --enqueue --codes 3033,2822 --limit 100
         python -m jobs.annotate --run --max-items 100
+        python -m jobs.annotate --run --scope <scope_id> --dry-run
 
     `--enqueue` 与 `--run` **分开两步**，不是一个命令里顺次做完：排队不花钱，跑标注花钱。
     分开之后可以先排队、看一眼 `--status` 的数量对不对，再决定要不要发出去。
+    按 ETF × 时间段抽取并预过滤请用 `python -m jobs.extract`。
     """
     import argparse
 
     ap = argparse.ArgumentParser(description="AI 标注作业")
-    ap.add_argument("--enqueue", action="store_true",
-                    help="排进待办；排哪种由 --task 决定")
+    ap.add_argument("--enqueue", action="store_true", help="排进待办；排哪种由 --task 决定")
     ap.add_argument("--run", action="store_true", help="领取待办并调模型")
     ap.add_argument("--status", action="store_true", help="只看队列状态")
+    ap.add_argument("--dry-run", action="store_true", help="只估算待办的请求数与 token，不调模型")
     ap.add_argument("--task", default="comment_product")
     ap.add_argument("--codes", help="逗号分隔的产品代码，留空＝全部")
+    ap.add_argument("--authors", help="逗号分隔的作者名（帖子任务），留空＝全部")
+    ap.add_argument("--since", help="起始日期 YYYY-MM-DD（含）")
+    ap.add_argument("--until", help="结束日期 YYYY-MM-DD（含）")
     ap.add_argument("--limit", type=int, help="排队条数上限")
     ap.add_argument("--max-items", type=int, help="本轮最多处理多少条")
+    ap.add_argument("--budget-requests", type=int, help="本轮最多领取多少批（≈请求数）")
+    ap.add_argument("--scope", help="只处理这个抽取范围（analysis_scopes.scope_id）")
     ap.add_argument("--priority", type=int, default=0)
     args = ap.parse_args(argv)
 
@@ -741,26 +962,49 @@ def main(argv=None):
     # 又不会把它写进任何一份可能被贴出去的日志（runbook §0）。
     log.info("配置：%s", json.dumps(cfg.redacted(), ensure_ascii=False))
 
+    since = _parse_day(args.since)
+    until = _parse_day(args.until, end=True)
+
     if args.enqueue:
         codes = [c.strip() for c in args.codes.split(",")] if args.codes else None
-        # 排队函数按 task 分派，而不是「评论固定、帖子加个开关」：两者的判定单元不同
-        # （评论是 (comment_id, subject_code)，帖子只有 feed_id），合成一个函数
-        # 加参数会让那个区别藏进一个 if 里。
-        enqueue = {"comment_product": enqueue_comments,
-                   "post_annotation": enqueue_posts}.get(args.task)
-        if enqueue is None:
+        authors = [a.strip() for a in args.authors.split(",")] if args.authors else None
+        if args.task == "comment_product":
+            n = enqueue_comments(engine, cfg, codes=codes, limit=args.limit, since=since,
+                                 until=until, priority=args.priority, scope_id=args.scope)
+        elif args.task == "post_annotation":
+            n = enqueue_posts(engine, cfg, codes=codes, limit=args.limit, since=since,
+                              until=until, authors=authors, priority=args.priority,
+                              scope_id=args.scope)
+        elif args.task == "kol_comment_opinion":
+            from jobs.extract import master_accounts
+            n = enqueue_kol_comments(engine, cfg, authors or master_accounts()[0], codes=codes,
+                                     limit=args.limit, since=since, until=until,
+                                     priority=args.priority, scope_id=args.scope)
+        else:
             ap.error(f"--task {args.task} 没有对应的排队函数")
-        annotate_n = enqueue(engine, cfg, codes=codes, limit=args.limit,
-                             priority=args.priority)
-        log.info("已排队 %d 条（%s）", annotate_n, args.task)
+        log.info("已排队 %d 条（%s）", n, args.task)
+
+    if args.dry_run:
+        print(json.dumps(estimate(engine, cfg, args.task, args.scope), ensure_ascii=False, indent=1))
+        return 0
 
     if args.run:
-        stats = run(engine, cfg, task=args.task, max_items=args.max_items)
+        stats = run(engine, cfg, task=args.task, max_items=args.max_items, scope_id=args.scope,
+                    budget_requests=args.budget_requests)
         log.info("本轮：%s", json.dumps(stats, ensure_ascii=False))
 
     if args.status or not (args.enqueue or args.run):
         _print_status(engine, args.task)
     return 0
+
+
+def _parse_day(s, end=False):
+    from datetime import datetime
+
+    if not s:
+        return None
+    d = datetime.strptime(s, "%Y-%m-%d")
+    return d + timedelta(days=1) if end else d
 
 
 def _print_status(engine, task):
