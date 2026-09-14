@@ -144,6 +144,13 @@ def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_
             engine, cfg, prompt, schema_version, scope_id, codes, windows, ownership,
             drop_offpool=drop_offpool, dry_run=dry_run, now=now,
         )
+        # 合作 KOL 的评论顺手排进 `kol_comment_opinion`（KOL 详情 M7 要它；量很小）。
+        kols, _officials = master_accounts()
+        stats["kol_comments"] = 0 if dry_run else sum(
+            annotate.enqueue_kol_comments(engine, cfg, kols, codes=codes, since=since, until=until,
+                                          scope_id=scope_id, priority=1 if name == "current" else 0)
+            for name, since, until in windows
+        )
     if task in ("post_annotation", "both"):
         stats["posts"] = _extract_posts(
             engine, cfg, scope_id, codes, windows, authors, dry_run=dry_run,
