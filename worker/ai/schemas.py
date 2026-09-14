@@ -120,10 +120,125 @@ class PostAnnotation(BaseModel):
         return self
 
 
+# ── 评论×产品 v2：一次调用堆七个维度（ADR-0020） ─────────────────────────
+#
+# 在 v1 的相关性／态度／aspect／证据之外加了三样：
+#
+# - `market_direction`：对大盘／指数／宏观的方向判断，与产品态度**独立**。PRD §3.4 逐字：
+#   「单纯预测指数或价格涨跌归入产品话题情绪」—— 这一列就是「产品话题情绪」（P13）的原料。
+#   相关性为 irrelevant 的评论照样可以有方向（「大盘要崩」对产品无关，对市场看空）。
+# - `compliance_tags` / `compliance_rationale` / `compliance_evidence`：重点舆情五类
+#   （runbook §20）。合规不再是一个单独任务 —— 每条评论本来就要发给模型，再为合规发一遍等于
+#   两倍请求。空数组＝「查过了，不是重点舆情」，**必须落库**（§20.4）。
+#
+# 七个维度在文献给出的安全区内（arXiv 2604.03684：≤10 维精度损失 <2pp）。
+
+MARKET_DIRECTIONS = ("bullish", "bearish", "neutral")
+COMPLIANCE_TAGS = (
+    "regulatory_complaint", "serious_allegation", "unverified_claim",
+    "mobilization", "compliance_concern",
+)
+COMPLIANCE_RATIONALE_MAX = 40
+
+
+class CommentAnnotationV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str
+    relevance: Literal[RELEVANCE]  # type: ignore[valid-type]
+    attitude: Optional[Literal[ATTITUDES]]  # type: ignore[valid-type]
+    aspects: list[Literal[ASPECTS]]  # type: ignore[valid-type]
+    evidence: Optional[str]
+    market_direction: Optional[Literal[MARKET_DIRECTIONS]]  # type: ignore[valid-type]
+    compliance_tags: list[Literal[COMPLIANCE_TAGS]]  # type: ignore[valid-type]
+    # PRD 的「AI 命中依据」：允许是模型自己的话，≤40 字；`compliance_evidence` 必须是原文。
+    compliance_rationale: Optional[str]
+    compliance_evidence: Optional[str]
+    needs_review: bool
+    uncertainty_reasons: list[str]
+
+    @model_validator(mode="after")
+    def _cross_field_rules(self):
+        if self.relevance == "irrelevant" and self.attitude is not None:
+            raise ValueError(
+                f"{self.item_id}: relevance=irrelevant 时 attitude 必须为 null，收到 {self.attitude!r}"
+            )
+        if self.relevance == "needs_context" and self.attitude is not None:
+            raise ValueError(
+                f"{self.item_id}: 判不出是否相关就判不出态度，attitude 必须为 null，收到 {self.attitude!r}"
+            )
+        if self.relevance == "relevant" and self.attitude is None:
+            raise ValueError(f"{self.item_id}: relevance=relevant 但没有给出 attitude")
+        if self.compliance_tags:
+            if not (self.compliance_rationale or "").strip():
+                raise ValueError(f"{self.item_id}: 标了合规信号却没有命中依据（rationale）")
+            if len(self.compliance_rationale) > COMPLIANCE_RATIONALE_MAX:
+                raise ValueError(
+                    f"{self.item_id}: 命中依据 {len(self.compliance_rationale)} 字，"
+                    f"超过 {COMPLIANCE_RATIONALE_MAX} 字上限（runbook §20.4）"
+                )
+        else:
+            if self.compliance_rationale is not None or self.compliance_evidence is not None:
+                raise ValueError(
+                    f"{self.item_id}: 没有合规信号时 rationale／compliance_evidence 必须为 null"
+                )
+        return self
+
+
+# ── KOL 评论观点（PRD §4.4 M7「其他产品观点及操作」） ─────────────────────
+#
+# 只跑合作 KOL 的评论。`summary` 是这条评论对该产品观点的一句话（≤30 字），`action` 是设计源
+# `ACTIONS` 的 8 个枚举之一（逐字）。它是评论 × 产品的判定单元，与 comment_product 同键。
+
+KOL_ACTIONS = ("加仓", "建仓", "减仓", "清仓", "转投其他产品", "持有不动", "观望", "未提及操作")
+KOL_SUMMARY_MAX = 30
+
+
+class KolOpinionAnnotation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str
+    # 评论没有对该产品表达任何观点 ⇒ null（那是结论，写库时落 false 占位，同帖子 summary）。
+    summary: Optional[str]
+    action: Literal[KOL_ACTIONS]  # type: ignore[valid-type]
+    evidence: Optional[str]
+    needs_review: bool
+
+    @model_validator(mode="after")
+    def _rules(self):
+        if self.summary is not None and len(self.summary) > KOL_SUMMARY_MAX:
+            raise ValueError(f"{self.item_id}: 观点摘要 {len(self.summary)} 字，超过 {KOL_SUMMARY_MAX} 字上限")
+        return self
+
+
+class KolOpinionBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    results: list[KolOpinionAnnotation]
+
+
 TASKS = {
     "comment_product": CommentAnnotation,
     "post_annotation": PostAnnotation,
+    "kol_comment_opinion": KolOpinionAnnotation,
 }
+
+# 按 schema 版本选模型。`v1` 是 Gate 0–2 的形状，保留给回放与对照实验；生产默认 `v2`
+# （`AI_SCHEMA_VERSION`）。post_annotation 两版形状相同。
+VERSIONED = {
+    "comment_product": {"v1": CommentAnnotation, "v2": CommentAnnotationV2},
+    "post_annotation": {"v1": PostAnnotation, "v2": PostAnnotation},
+    "kol_comment_opinion": {"v1": KolOpinionAnnotation, "v2": KolOpinionAnnotation},
+}
+
+
+def model_for(task, version="v1"):
+    try:
+        return VERSIONED[task][version]
+    except KeyError:
+        raise SchemaError(
+            f"任务 {task!r} 没有 schema 版本 {version!r}，"
+            f"可选：{sorted(VERSIONED.get(task, {}))}"
+        ) from None
 
 
 # ── 批处理信封 ───────────────────────────────────────────────────────────
@@ -138,6 +253,11 @@ class CommentBatch(BaseModel):
     results: list[CommentAnnotation]
 
 
+class CommentBatchV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    results: list[CommentAnnotationV2]
+
+
 class PostBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     results: list[PostAnnotation]
@@ -146,7 +266,21 @@ class PostBatch(BaseModel):
 BATCHES = {
     "comment_product": CommentBatch,
     "post_annotation": PostBatch,
+    "kol_comment_opinion": KolOpinionBatch,
 }
+
+VERSIONED_BATCHES = {
+    "comment_product": {"v1": CommentBatch, "v2": CommentBatchV2},
+    "post_annotation": {"v1": PostBatch, "v2": PostBatch},
+    "kol_comment_opinion": {"v1": KolOpinionBatch, "v2": KolOpinionBatch},
+}
+
+
+def batch_model_for(task, version="v1"):
+    try:
+        return VERSIONED_BATCHES[task][version]
+    except KeyError:
+        raise SchemaError(f"任务 {task!r} 没有批 schema 版本 {version!r}") from None
 
 
 class IdSetMismatch(SchemaError):
@@ -159,9 +293,9 @@ class IdSetMismatch(SchemaError):
     """
 
 
-def parse_batch(task, raw, expected_ids):
+def parse_batch(task, raw, expected_ids, version="v1"):
     """校验整批输出，并确认 id 集合与输入完全一致。返回 `{item_id: 标注对象}`。"""
-    model = BATCHES[task]
+    model = batch_model_for(task, version)
     try:
         batch = model.model_validate(raw)
     except ValidationError as exc:
@@ -183,9 +317,9 @@ def parse_batch(task, raw, expected_ids):
     return by_id
 
 
-def batch_json_schema(task):
+def batch_json_schema(task, version="v1"):
     """整批发给供应商的 JSON Schema。"""
-    return _strictify(copy.deepcopy(BATCHES[task].model_json_schema()))
+    return _strictify(copy.deepcopy(batch_model_for(task, version).model_json_schema()))
 
 
 # ── wire schema ─────────────────────────────────────────────────────────
@@ -214,15 +348,15 @@ _UNSUPPORTED = frozenset({"default", "maxLength", "minLength", "pattern", "forma
                           "minimum", "maximum", "minItems", "maxItems", "title"})
 
 
-def json_schema(task):
+def json_schema(task, version="v1"):
     """该任务发给供应商的 JSON Schema。与本地校验同源，不是抄的。"""
-    model = TASKS[task]
+    model = model_for(task, version)
     return _strictify(copy.deepcopy(model.model_json_schema()))
 
 
-def parse(task, raw):
+def parse(task, raw, version="v1"):
     """校验一条模型输出。失败抛 `SchemaError`，**不返回半个对象**。"""
-    model = TASKS[task]
+    model = model_for(task, version)
     try:
         return model.model_validate(raw)
     except ValidationError as exc:

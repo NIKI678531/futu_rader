@@ -112,6 +112,8 @@ class OpenAiCompatibleProvider(Provider):
             }
         if self._cfg.reasoning_effort:
             body["reasoning"] = {"effort": self._cfg.reasoning_effort}
+        if getattr(self._cfg, "service_tier", ""):
+            body["service_tier"] = self._cfg.service_tier
         return body
 
     # ── 传输层重试（runbook §11.3） ─────────────────────────────────────

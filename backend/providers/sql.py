@@ -79,18 +79,22 @@ if (REPO_ROOT / "radar_db").is_dir() and str(REPO_ROOT) not in sys.path:
 from sqlalchemy import select  # noqa: E402
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
-from core.attitude import sample_sufficient  # noqa: E402
+from core import stages as core_stages, themes as core_themes, topics as core_topics  # noqa: E402
+from core.attitude import LOW_SAMPLE, sample_sufficient  # noqa: E402
 from core.calendar import PRESETS, build, parse_anchor  # noqa: E402
 from core.delta import delta  # noqa: E402
 from core.heat import heat_of  # noqa: E402
 from radar_db import make_engine  # noqa: E402
+from radar_db.annotations_read import current_annotations  # noqa: E402
 from radar_db.schema import (  # noqa: E402
+    NO_SUBJECT,
     annotation_evidence,
     annotations,
     comments,
     feeds,
     mentions,
     meta_kv,
+    synthesis_outputs,
 )
 
 # 产品池／官号／KOL 名单是**客户维护的主数据**，当前仓库里唯一一份在这里。
@@ -546,17 +550,9 @@ class SqlProvider:
             "updated": self.updated_at,
         }
 
-    def kol_opinions(self, kol, range_key):
-        # 「这位 KOL 对发帖记录之外的产品的观点与操作」——观点、操作、情绪净值三项全部
-        # 来自 AI 标注（ADR-0017）。一条都算不出来，整份 None 而不是空列表：
-        # 空列表是在说「他对别的产品没有观点」。
-        if not any(k["name"] == kol for k in self._kols):
-            return MISSING
-        return None
-
-    # ── 需要 AI 标注或行情源，本期一律 None ─────────────────────────
+    # ── 需要行情源的字段，本期一律 None ──────────────────────────────
     #
-    # 但**先验产品代码**。「这只产品的这个字段要 AI」和「没有这只产品」是两件事：
+    # **先验产品代码**。「这只产品的这个字段要行情源」和「没有这只产品」是两件事：
     # 前者是 200 +「暂不可用」，后者是 404。整段都回 None 的话，URL 里把 3033 敲成
     # 3O33 会得到一屏「暂不可用」—— 看起来像采集掉了数据，于是人去查采集，
     # 而那边一切正常。demo provider 查不到 fixture 键时回的就是 MISSING，
@@ -566,34 +562,402 @@ class SqlProvider:
         """产品在池里但该字段要 AI／行情源 → None；产品不在池里 → MISSING。"""
         return None if code in self._by_code else MISSING
 
-    def hot_summaries(self, range_key):
-        # 整池一份，没有 code 参数，所以没有「产品不存在」这一说。
-        return None
-
-    def summary_for(self, code, range_key):
-        return self._unannotated(code)
-
-    def themes_for(self, code, range_key):
-        return self._unannotated(code)
-
-    def neg_cats_for(self, code, range_key):
-        return self._unannotated(code)
-
-    def competitors_for(self, code, range_key):
-        return self._unannotated(code)
-
-    def topics_for(self, code, range_key):
-        return self._unannotated(code)
-
-    def kol_mentions_for(self, code, range_key):
-        # 提及本身能数，但每行要 dominantAttitude / representativeExcerpt（AI）才成立。
-        return self._unannotated(code)
-
     def candles_for(self, code, range_key):
         return self._unannotated(code)
 
+    # ── 市场域：Layer B 生成物驱动的叙述组（ADR-0020） ────────────────
+    #
+    # 数（计数、分桶、环比、生命周期、阶段合并）全部在 `backend/core/`；`synthesis_outputs`
+    # 里只有模型写的**字**（名字、句子）与它引用的证据 id。这里把两者拼起来，并且严格分三态：
+    #
+    # - 这只产品这个区间**一条态度标注都没有** ⇒ 整块 None（暂不可用）；
+    # - 标注过但模型还没生成文字 ⇒ 数照给，文字位 None／固定名，`labelStatus='unavailable'`；
+    # - 生成过 ⇒ 真值。
+    #
+    # 「标注过」的判据与 `_scan` 同源（`att is None` 即没标过），不另写一套。
+
+    def _synth(self, code, range_key, kind):
+        """现行生成物：`{subkey: {value, evidenceIds, reviewState}}`。链末、非 rejected；同链末取最新。"""
+        if self._anchor is None:
+            return {}
+        key = ("synth", code, range_key, kind, self._anchor)
+        if key in self._cache:
+            return self._cache[key]
+        newer = synthesis_outputs.alias("newer")
+        chain_end = ~(
+            select(newer.c.synthesis_id)
+            .where(newer.c.supersedes_id == synthesis_outputs.c.synthesis_id)
+            .exists()
+        )
+        out = {}
+        try:
+            with self._engine.connect() as conn:
+                q = (
+                    select(synthesis_outputs)
+                    .where(
+                        synthesis_outputs.c.code == code,
+                        synthesis_outputs.c.range_key == range_key,
+                        synthesis_outputs.c.anchor == self._anchor.isoformat(),
+                        synthesis_outputs.c.kind == kind,
+                        synthesis_outputs.c.review_state != "rejected",
+                        chain_end,
+                    )
+                    .order_by(synthesis_outputs.c.created_at, synthesis_outputs.c.synthesis_id)
+                )
+                for r in conn.execute(q).mappings():
+                    out[r["subkey"]] = {
+                        "value": json.loads(r["value_json"]),
+                        "evidenceIds": json.loads(r["evidence_ids_json"] or "[]"),
+                        "reviewState": r["review_state"],
+                    }
+        except SQLAlchemyError:
+            out = {}
+        self._cache[key] = out
+        return out
+
+    def _units(self, code, rng):
+        """区间内这只产品的判定单元（相关＋有态度），以及市场方向单元。整块 None＝没标过。"""
+        key = ("units", code, rng["key"])
+        if key in self._cache:
+            return self._cache[key]
+        lo, hi = _window(rng)
+        att = current_annotations(self._engine, "attitude", "comment", window=(lo, hi), subject_code=code)
+        if not att:
+            self._cache[key] = None
+            return None
+        rel = current_annotations(self._engine, "relevance", "comment", window=(lo, hi), subject_code=code)
+        asp = current_annotations(self._engine, "aspect", "comment", window=(lo, hi), subject_code=code)
+        mkt = current_annotations(self._engine, "market_direction", "comment", window=(lo, hi), subject_code=code)
+        units = []
+        for unit, a in att.items():
+            if (rel.get(unit) or {}).get("value") != "relevant":
+                continue
+            units.append({
+                "comment_id": unit[0], "attitude": a["value"],
+                "aspects": (asp.get(unit) or {}).get("value") or [], "posted_at": a["posted_at"],
+                "annotation_id": (rel.get(unit) or {}).get("annotation_id"),
+            })
+        market = [
+            {"comment_id": unit[0], "market_direction": m["value"], "posted_at": m["posted_at"]}
+            for unit, m in mkt.items() if m["value"] in ("bullish", "bearish", "neutral")
+        ]
+        out = {"units": units, "market": market}
+        self._cache[key] = out
+        return out
+
+    def _base_units(self, code, rng):
+        """基准期的判定单元；基准期一条态度标注都没有 ⇒ None（环比与生命周期暂不可用）。"""
+        blo = datetime.combine(date.fromisoformat(rng["benchFrom"]), time.min)
+        bhi = datetime.combine(date.fromisoformat(rng["benchTo"]) + timedelta(days=1), time.min)
+        att = current_annotations(self._engine, "attitude", "comment", window=(blo, bhi), subject_code=code)
+        if not att:
+            return None
+        rel = current_annotations(self._engine, "relevance", "comment", window=(blo, bhi), subject_code=code)
+        asp = current_annotations(self._engine, "aspect", "comment", window=(blo, bhi), subject_code=code)
+        return [
+            {"attitude": a["value"], "aspects": (asp.get(unit) or {}).get("value") or [], "posted_at": a["posted_at"]}
+            for unit, a in att.items() if (rel.get(unit) or {}).get("value") == "relevant"
+        ]
+
+    @staticmethod
+    def _bucket_index(rng):
+        origin = date.fromisoformat(rng["from"])
+        gran = rng["gran"]
+
+        def bi(u):
+            ts = u.get("posted_at")
+            return None if ts is None else _bucket(gran, origin, ts)
+        return bi
+
+    def _labels(self, code, range_key, kind, split=False):
+        out = {}
+        for subkey, row in self._synth(code, range_key, kind).items():
+            v = row["value"]
+            if not isinstance(v, dict) or "title" not in v:
+                continue
+            k = tuple(subkey.split("|", 1)) if split else subkey
+            out[k] = {"title": v.get("title"), "summary": v.get("summary"),
+                      "evidence_ids": row["evidenceIds"], "reviewState": row["reviewState"]}
+        return out
+
+    def hot_summaries(self, range_key):
+        rng = self.build_range(range_key)
+        if rng is None:
+            return None
+        scan = self._scan(rng["from"], rng["to"], rng)
+        out = {}
+        for code in self._by_code:
+            att = scan[code]["att"]
+            if att is None:
+                out[code] = {"status": "unavailable", "text": "数据暂不可用", "sample": None, "ok": False}
+                continue
+            valid = att["positive"] + att["negative"]
+            if valid == 0 and att["neutral"] == 0:
+                out[code] = {"status": "empty", "text": "暂无相关内容", "sample": 0, "ok": False}
+                continue
+            if not sample_sufficient(att["positive"], att["negative"]):
+                out[code] = {"status": "low_sample", "text": "样本不足，暂无主流观点", "sample": valid, "ok": False}
+                continue
+            row = self._synth(code, range_key, "hot_summary").get(NO_SUBJECT)
+            if row is None or not isinstance(row["value"], dict) or "text" not in row["value"]:
+                out[code] = {"status": "unavailable", "text": "数据暂不可用", "sample": valid, "ok": False}
+                continue
+            net = att["positive"] - att["negative"]
+            out[code] = {
+                "status": "ok", "text": row["value"]["text"], "sample": valid,
+                "tone": "pos" if net > 0 else "neg" if net < 0 else "neu", "ok": True,
+                "reviewState": row["reviewState"], "evidenceIds": row["evidenceIds"],
+            }
+        return out
+
+    def summary_for(self, code, range_key):
+        """`{text, sample, low}`。计数句由后端按事实拼，观点句来自模型要点（Layer B）。"""
+        if code not in self._by_code:
+            return MISSING
+        rng = self.build_range(range_key)
+        if rng is None:
+            return None
+        s = self._scan(rng["from"], rng["to"], rng)[code]
+        att = s["att"]
+        if att is None:
+            return None
+        valid = att["positive"] + att["negative"]
+        name = self._by_code[code]["name"]
+        sentences = [
+            f"数据显示，{name}（{code}）在 {rng['from']} 至 {rng['to']} 共识别到 {s['mentions']} 条去重提及。"
+        ]
+        if not s["mentions"] and valid == 0 and att["neutral"] == 0:
+            return {"text": "暂无相关内容 — 在所选区间内已完成检查，该产品没有识别到提及内容。",
+                    "sample": 0, "low": True, "points": [], "evidenceIds": []}
+        if not sample_sufficient(att["positive"], att["negative"]):
+            sentences.append(
+                f"针对产品本身的有效态度提及为 {valid} 条，低于 {LOW_SAMPLE} 条的判定阈值，本区间不输出整体倾向结论。"
+            )
+            sentences.append(f"原始数量为积极 {att['positive']} 条、消极 {att['negative']} 条、中性 {att['neutral']} 条。")
+            return {"text": "".join(sentences), "sample": valid, "low": True, "points": [], "evidenceIds": []}
+        diff = att["positive"] - att["negative"]
+        sentences.append(
+            f"产品态度分类中积极 {att['positive']} 条、消极 {att['negative']} 条、中性 {att['neutral']} 条，"
+            + ("积极与消极条数持平" if diff == 0 else f"积极比消极多 {diff} 条" if diff > 0 else f"消极比积极多 {-diff} 条")
+            + "。"
+        )
+        row = self._synth(code, range_key, "summary").get(NO_SUBJECT)
+        points, ev_ids = [], []
+        if row and isinstance(row["value"], dict) and row["value"].get("points"):
+            for p in row["value"]["points"]:
+                t = p["text"].rstrip("。；;") + "。"
+                points.append({"text": t, "evidenceIds": p.get("evidence_ids", [])})
+                ev_ids.extend(p.get("evidence_ids", []))
+            sentences.extend(p["text"] for p in points)
+        return {
+            "text": "".join(sentences), "sample": valid, "low": False, "points": points,
+            "evidenceIds": list(dict.fromkeys(ev_ids)),
+            "aiStatus": "ok" if points else "unavailable",
+            "reviewState": row["reviewState"] if row else None,
+        }
+
+    def themes_for(self, code, range_key):
+        if code not in self._by_code:
+            return MISSING
+        rng = self.build_range(range_key)
+        if rng is None:
+            return None
+        u = self._units(code, rng)
+        if u is None:
+            return None
+        return core_themes.themes(
+            code, core_themes.group_by_polarity(u["units"]), self._base_units_grouped(code, rng),
+            rng["buckets"], self._bucket_index(rng), self._labels(code, range_key, "theme_label", split=True),
+        )
+
+    def _base_units_grouped(self, code, rng):
+        base = self._base_units(code, rng)
+        return None if base is None else core_themes.group_by_polarity(base)
+
+    def neg_cats_for(self, code, range_key):
+        if code not in self._by_code:
+            return MISSING
+        rng = self.build_range(range_key)
+        if rng is None:
+            return None
+        u = self._units(code, rng)
+        if u is None:
+            return None
+        neg = [x for x in u["units"] if x["attitude"] == "negative"]
+        base = self._base_units(code, rng)
+        base_neg = None if base is None else [x for x in base if x["attitude"] == "negative"]
+        return core_themes.neg_categories(
+            code, neg, base_neg, rng["buckets"], self._bucket_index(rng),
+            self._labels(code, range_key, "neg_category"),
+        )
+
+    def topics_for(self, code, range_key):
+        if code not in self._by_code:
+            return MISSING
+        rng = self.build_range(range_key)
+        if rng is None:
+            return None
+        u = self._units(code, rng)
+        if u is None:
+            return None
+        label = self._labels(code, range_key, "topic_label").get(core_topics.MARKET_SUBKEY)
+        return core_topics.market_topic(code, u["market"], rng["buckets"], self._bucket_index(rng), label)
+
     def stages_for(self, code, range_key):
-        return self._unannotated(code)
+        if code not in self._by_code:
+            return MISSING
+        rng = self.build_range(range_key)
+        if rng is None:
+            return None
+        if self._scan(rng["from"], rng["to"], rng)[code]["att"] is None:
+            return None
+        series = self.heat_series_for(code, range_key)
+        units_rows = self._synth(code, range_key, "stage_unit")
+        stage_rows = self._synth(code, range_key, "stage_summary")
+
+        def cat_of(u):
+            return (units_rows.get(core_stages.unit_key(u)) or {}).get("value", {}).get("category")
+
+        def digest_of(u):
+            return (units_rows.get(core_stages.unit_key(u)) or {}).get("value", {}).get("digest")
+
+        def summary_of(s):
+            return (stage_rows.get(core_stages.stage_key(s)) or {}).get("value", {}).get("summary")
+
+        return core_stages.build(code, series, rng["gran"], rng["days"], cat_of, digest_of, summary_of)
+
+    def competitors_for(self, code, range_key):
+        """双向：固定对位（CMAP，不经模型）＋ 模型从评论区共现识别的候选（待确认）。"""
+        p = self._by_code.get(code)
+        if p is None:
+            return MISSING
+        rng = self.build_range(range_key)
+        if rng is None:
+            return None
+        if self._units(code, rng) is None:
+            return None
+        fixed = (
+            [q["code"] for q in self._products if q.get("ownCode") == code]
+            if p["ownership"] == "own" else ([p["ownCode"]] if p.get("ownCode") else [])
+        )
+        rows = self._synth(code, range_key, "competitor_reason")
+        scan = self._scan(rng["from"], rng["to"], rng)
+        items = []
+        for c in fixed + [k for k in rows if k not in fixed]:
+            q = self._by_code.get(c)
+            if q is None:
+                continue
+            r = rows.get(c)
+            v = (r or {}).get("value") or {}
+            like, dislike = v.get("like_reasons") or [], v.get("dislike_reasons") or []
+            n_ev = len((r or {}).get("evidenceIds") or [])
+            confirmed = c in fixed
+            items.append({
+                "code": c, "name": q["name"], "issuer": q["issuer"], "ownership": q["ownership"],
+                "relation": "confirmed" if confirmed else "auto_candidate",
+                "reason": (f"客户维护的固定对位映射 · {q['issuer']}" if confirmed
+                           else "AI 依据本产品评论区的共现识别 · 待确认"),
+                "mentions": scan[c]["mentions"], "comments": scan[c]["comments"],
+                "delta": delta(scan[c]["comments"], self._scan(rng["benchFrom"], rng["benchTo"])[c]["comments"]),
+                "positiveThemes": [{"id": f"{c}-like-{i}", "title": t, "mentions": n_ev} for i, t in enumerate(like)],
+                "negativeThemes": [{"id": f"{c}-dislike-{i}", "title": t, "mentions": n_ev} for i, t in enumerate(dislike)],
+                "evidencePos": n_ev if like else 0, "evidenceNeg": n_ev if dislike else 0,
+                "evidenceIds": (r or {}).get("evidenceIds") or [],
+                "reasonStatus": "ok" if r else "unavailable",
+                "reviewState": (r or {}).get("reviewState"),
+            })
+        return {"status": "ok" if items else "empty", "list": items}
+
+    # ── 账号域：产品相关 KOL 与 KOL 其他产品观点 ─────────────────────
+
+    def kol_mentions_for(self, code, range_key):
+        """在该产品评论区实际提及它的合作 KOL，按有效提及评论数降序（PRD §4.2 P8）。"""
+        if code not in self._by_code:
+            return MISSING
+        rng = self.build_range(range_key)
+        if rng is None:
+            return None
+        u = self._units(code, rng)
+        if u is None:
+            return None
+        src = self._sources("comment", [x["comment_id"] for x in u["units"]])
+        by_kol = defaultdict(list)
+        for x in u["units"]:
+            r = src.get(x["comment_id"])
+            if r and r["authorName"] in self._kol_names:
+                by_kol[r["authorName"]].append((x, r))
+        quotes = self._evidence_rows([x["annotation_id"] for xs in by_kol.values() for x, _ in xs if x["annotation_id"]])
+        kols = {k["name"]: k for k in self._kols}
+        items = []
+        for name, xs in by_kol.items():
+            xs.sort(key=lambda t: (t[1]["postedAt"] or datetime.min), reverse=True)
+            counts = defaultdict(int)
+            for x, _ in xs:
+                counts[x["attitude"]] += 1
+            n = len(xs)
+            dominant = max(counts, key=counts.get) if n >= 3 else None
+            latest_x, latest_r = xs[0]
+            quote = (quotes.get(latest_x["annotation_id"]) or [(None, None, None)])[0][2]
+            items.append({
+                "productCode": code, "kolAccountId": f"kol-{name}", "kolName": name,
+                "kolTags": kols[name].get("tags"), "kolType": "partner", "kolTypeLabel": "合作 KOL",
+                "mentionCommentCount": n, "lastMentionedAt": _stamp(latest_r["postedAt"]),
+                "dominantAttitude": dominant,
+                "dominantLabel": {"positive": "积极", "negative": "消极", "neutral": "中性"}.get(dominant) if dominant else None,
+                "representativeExcerpt": quote or latest_r["text"],
+                "evidenceCount": n,
+                "evidence": [
+                    {
+                        "id": f"{code}-km-{name}-{x['comment_id']}", "productCodes": [code],
+                        "publishedAt": _stamp(r["postedAt"]), "authorName": name, "authorType": "合作 KOL",
+                        "isKnownKol": True, "kolType": "partner", "excerpt": r["text"], "attitude": x["attitude"],
+                        "comments": r["comments"], "interactions": r["interactions"], "sourceUrl": r["url"],
+                    }
+                    for x, r in xs[:10]
+                ],
+            })
+        items.sort(key=lambda i: (-i["mentionCommentCount"], i["kolName"]))
+        return {"status": "ok" if items else "empty", "scope": "合作 KOL 名单", "list": items}
+
+    def kol_opinions(self, kol, range_key):
+        """该 KOL 在评论里对其他产品的观点与操作（PRD §4.4 M7）。原料是 `kol_comment_opinion` 任务。"""
+        if not any(k["name"] == kol for k in self._kols):
+            return MISSING
+        rng = self.build_range(range_key)
+        if rng is None:
+            return None
+        lo, hi = _window(rng)
+        summ = current_annotations(self._engine, "kol_summary", "comment", window=(lo, hi))
+        if not summ:
+            return None
+        act = current_annotations(self._engine, "kol_action", "comment", window=(lo, hi))
+        src = self._sources("comment", [cid for cid, _ in summ])
+        quotes = self._evidence_rows([a["annotation_id"] for a in summ.values()])
+        tone = {"加仓": "pos", "建仓": "pos", "减仓": "neg", "清仓": "neg", "转投其他产品": "neg",
+                "持有不动": "neu", "观望": "neu", "未提及操作": "neu"}
+        out = []
+        for (cid, code), a in summ.items():
+            r = src.get(cid)
+            p = self._by_code.get(code)
+            if r is None or p is None or r["authorName"] != kol:
+                continue
+            action = (act.get((cid, code)) or {}).get("value")
+            quote = (quotes.get(a["annotation_id"]) or [(None, None, None)])[0][2]
+            ts = r["postedAt"]
+            out.append({
+                "code": code, "name": p["name"], "issuer": p["issuer"], "own": p["ownership"] == "own",
+                "sector": p["sector"], "sectorName": p.get("sectorName"),
+                "summary": a["value"] if isinstance(a["value"], str) else None,
+                "excerpt": quote or r["text"],
+                "action": action, "actionTone": tone.get(action), "direction": action,
+                "postType": None, "typeLabel": None, "confidence": None,
+                "dateText": ts.strftime("%Y/%-m/%-d") if ts else None,
+                "timeText": ts.strftime("%H:%M:%S") if ts else None,
+                "engagement": r["interactions"], "url": r["url"], "net": None,
+                "reviewState": a["review_state"],
+            })
+        out.sort(key=lambda o: (o["dateText"] or "", o["timeText"] or ""), reverse=True)
+        return out
 
     # ── 市场域：标注驱动的证据与合规（ADR-0019 §1） ────────────────
 
@@ -782,108 +1146,15 @@ class SqlProvider:
     def _current_annotations(self, kind, target_type, ids=None, window=None):
         """某个 kind 的**现行结论**，键为判定单元的后两半 `(target_id, subject_code)`。
 
-        ADR-0019 §1 逐条，整个 provider 只在这里实现一次：
+        ADR-0019 §1 的规则（链末、非 rejected、同链末取最新、rejected 链末＝无结论）
+        **只实现一次**，在 `radar_db/annotations_read.current_annotations` —— worker 的
+        Layer B（`jobs/synthesize.py`）按同一条规则取评论标注组事实，两侧共用那一份。
+        这里只是把 provider 的引擎递过去。
 
-        ① **链末** —— 没有任何一行 supersede 它；
-        ② `review_state != 'rejected'`；
-        ③ 链末有多条（ADR-0017 遗留的双现行情况）时取 `created_at` 最新的一条；
-        ④ 链末是 rejected ⇒ 该单元**当前没有结论**，不回退到旧行。
-
-        ④ 是 ① 与 ② 的乘积，不用另写分支：rejected 的那一行被 ② 滤掉，而被它
-        supersede 的旧行被 ① 滤掉，于是这个单元一行都不剩 —— 调用方拿不到键，页面
-        照常渲染「暂不可用」。**判链末的子查询里不能再加 `review_state` 条件**，
-        加了就等于「被 rejected 的行不算数」，旧结论会自己爬回页面上，`--reject`
-        这唯一的下线通道当场失效。
-
-        ## 三个参数
-
-        - `target_type` 是**必需**的，不是可选的收窄：`annotations.target_id` 在
-          `feed` 与 `comment` 两个命名空间里各自取值，不区分就会拿一条评论的标注去
-          回填一篇恰好同号的帖子。
-        - `ids` 按 900 一批切（SQLite 绑定变量上限 999，ADR-0016）；给了空集合就一条
-          查询都不发（`IN ()` 在两个方言下行为不同）。
-        - `window=(lo, hi)` 是 ADR 签名之外的一个参数：按**帖子的** `posted_at` 收窗口。
-          市场域一扫就是几万条评论，把 id 列表灌进 `IN (...)` 要切几十批；按窗口过滤
-          让库去做这件事，也正好和 `_scan` / `_posts` 用的是同一个半开区间。
-
-        评论的 `posted_at` 一路取自它所在的**帖子**（`comments.posted_at` 在瘦库里大量
-        为 NULL），与 `_scan` 对评论的归桶口径一致。
+        `window=(lo, hi)` 按**帖子的** `posted_at` 收半开窗口，与 `_scan` / `_posts` 用的
+        是同一个区间；评论的 `posted_at` 在瘦库里大量为 NULL。
         """
-        if ids is not None and not ids:
-            return {}
-
-        if target_type == "comment":
-            src = annotations.join(
-                comments, comments.c.comment_id == annotations.c.target_id
-            ).join(feeds, feeds.c.feed_id == comments.c.feed_id)
-        else:
-            src = annotations.join(feeds, feeds.c.feed_id == annotations.c.target_id)
-
-        newer = annotations.alias("newer")
-        chain_end = ~(
-            select(newer.c.annotation_id)
-            .where(newer.c.supersedes_id == annotations.c.annotation_id)
-            .exists()
-        )
-        stmt = (
-            select(
-                annotations.c.annotation_id,
-                annotations.c.target_id,
-                annotations.c.subject_code,
-                annotations.c.value_json,
-                annotations.c.review_state,
-                annotations.c.calibrated_confidence,
-                annotations.c.created_at,
-                feeds.c.feed_id,
-                feeds.c.posted_at,
-            )
-            .select_from(src)
-            .where(
-                annotations.c.kind == kind,
-                annotations.c.target_type == target_type,
-                annotations.c.review_state != "rejected",
-                chain_end,
-            )
-        )
-        if window is not None:
-            stmt = stmt.where(feeds.c.posted_at >= window[0], feeds.c.posted_at < window[1])
-
-        chunks = [None] if ids is None else _chunked(list(ids), 900)
-        out = {}
-        try:
-            with self._engine.connect() as conn:
-                for chunk in chunks:
-                    q = stmt if chunk is None else stmt.where(annotations.c.target_id.in_(chunk))
-                    for r in conn.execute(q):
-                        unit = (r.target_id, r.subject_code)
-                        prev = out.get(unit)
-                        # ③ 同一链末多行取最新。`created_at` 同秒时按 annotation_id
-                        # 兜底，不然「最新」会随库的返回顺序变，两次请求两个答案。
-                        if prev is not None and (prev["created_at"], prev["annotation_id"]) >= (
-                            r.created_at,
-                            r.annotation_id,
-                        ):
-                            continue
-                        out[unit] = {
-                            "annotation_id": r.annotation_id,
-                            "created_at": r.created_at,
-                            "review_state": r.review_state,
-                            # 校准置信度，当前全库为 NULL（ADR-0017 §4）。照取不硬编码
-                            # None：Gate 3 真把校准跑起来时，这里不用再改一次。
-                            "confidence": r.calibrated_confidence,
-                            # 坏 JSON 是坏库，不是缺失态：吞掉它等于把一条写错的标注
-                            # 伪装成「这条还没标」，而后者页面上是有话说的。
-                            "value": json.loads(r.value_json),
-                            "feed_id": r.feed_id,
-                            "posted_at": r.posted_at,
-                        }
-        except SQLAlchemyError:
-            # 标注五张表可能根本不存在（只跑过 import_dump、没跑过 Alembic 的库）。
-            # 那是「这批数据还没标注」，不是 500 —— 返回空 ⇒ 页面照旧「暂不可用」，
-            # 和 `_read_meta` 对空库的态度一致。**只吞库层异常**：`value_json` 不是
-            # 合法 JSON 是库坏了，那一条要炸出来，不能伪装成「这条还没标」。
-            return {}
-        return out
+        return current_annotations(self._engine, kind, target_type, ids=ids, window=window)
 
     # ── 内部：扫描与聚合 ─────────────────────────────────────────────
 

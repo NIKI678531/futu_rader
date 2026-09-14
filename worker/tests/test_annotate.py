@@ -151,7 +151,7 @@ def test_changing_prompt_version_makes_a_new_job(engine, cfg, monkeypatch):
     annotate.enqueue_comments(engine, cfg)
     # 换 Prompt 版本 ⇒ input_hash 变 ⇒ 是一件新的待办，不是重复。
     # 反过来（被判成重复而跳过）正是「改了 Prompt 但结果没变」那类查不出原因的 bug。
-    prompt = annotate.get_prompt("comment_product")
+    prompt = annotate.get_prompt("comment_product", cfg.prompt_version)
     monkeypatch.setattr(prompt, "VERSION", "comment-product-v2")
     assert annotate.enqueue_comments(engine, cfg) == 2
     assert len(rows(engine, annotation_jobs)) == 4
@@ -458,7 +458,7 @@ def test_human_approved_annotation_is_not_superseded(engine, cfg):
         )
 
     # 换 Prompt 版本重跑（否则会被幂等挡掉），这次模型给出相反的态度。
-    prompt = annotate.get_prompt("comment_product")
+    prompt = annotate.get_prompt("comment_product", cfg.prompt_version)
     old = prompt.VERSION
     try:
         prompt.VERSION = "comment-product-v2"
@@ -490,7 +490,7 @@ def test_unreviewed_annotation_is_superseded_on_rerun(engine, cfg):
     first = {a["annotation_id"] for a in rows(engine, annotations,
                                               annotations.c.kind == "attitude")}
 
-    prompt = annotate.get_prompt("comment_product")
+    prompt = annotate.get_prompt("comment_product", cfg.prompt_version)
     old = prompt.VERSION
     try:
         prompt.VERSION = "comment-product-v2"

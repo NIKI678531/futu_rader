@@ -52,7 +52,8 @@ def scrub_text(text):
     return out
 
 
-def comment_payload(item_id, product, comment, post_title=None, parent_comment=None):
+def comment_payload(item_id, product, comment, post_title=None, parent_comment=None,
+                    post_context=None):
     """构造一条评论×产品的请求体（runbook §11.1 的输入形状）。
 
     只有这里构造的 dict 才准进请求。调用方**不要**自己拼一个 dict 传下去 ——
@@ -62,18 +63,23 @@ def comment_payload(item_id, product, comment, post_title=None, parent_comment=N
         raise RedactionError("item_id 不能为空：输出要靠它对回输入（§11.3）")
     if comment is None:
         raise RedactionError(f"{item_id}: 评论正文为空，这条不该进队列")
+    if not product:
+        raise RedactionError(f"{item_id}: 产品块缺失，判定单元不成立（§10.1）")
 
     p = {k: product[k] for k in _PRODUCT_KEYS if product.get(k) is not None}
     if "code" not in p:
         raise RedactionError(f"{item_id}: 产品代码缺失，判定单元不成立（§10.1）")
 
     payload = {"item_id": item_id, "product": p, "comment": scrub_text(comment)}
-    # 标题与父评论是**可选**上下文：只在确有值时带上，不要发 null 占位 ——
+    # 标题、父评论、帖子正文开头是**可选**上下文：只在确有值时带上，不要发 null 占位 ——
     # 模型看到 "post_title": null 会以为帖子没有标题，那是一个我们没验证过的事实。
+    # 三样都在 §11.4 的许可清单里（「必需的帖子标题／父评论」，正文与标题同源）。
     if post_title:
         payload["post_title"] = scrub_text(post_title)
     if parent_comment:
         payload["parent_comment"] = scrub_text(parent_comment)
+    if post_context:
+        payload["post_context"] = scrub_text(post_context)
     return payload
 
 

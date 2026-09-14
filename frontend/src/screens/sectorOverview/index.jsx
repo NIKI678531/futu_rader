@@ -713,9 +713,10 @@ export default class SectorOverview extends React.Component {
         rank: String(rk.map[code]), rankTotal: String(rk.total),
         hasNegCats: cats.length > 0, noNegCats: !catsNa && cats.length === 0, negCatsUnavailable: catsNa,
         negCats: cats.map(function (c) {
+          /* 基准期没标注时后端给 null（生命周期未知），不是「持续」——徽章写「暂不可用」（PRD §3.6 短文案）。 */
           var st = lifeStyle[c.lifecycleLabel] || lifeStyle['持续'];
           return {
-            label: c.label, summary: c.summary, life: c.lifecycleLabel,
+            label: c.label, summary: c.summary, life: c.lifecycleLabel == null ? '暂不可用' : c.lifecycleLabel,
             lbg: st[0], lfg: st[1],
             mentions: String(c.mentions), share: '占负面 ' + c.shareOfNegative.toFixed(0) + '%'
           };
