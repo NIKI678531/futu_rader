@@ -82,6 +82,9 @@ def make_engine(url=None, bulk=False):
             cur = dbapi_conn.cursor()
             cur.execute("PRAGMA journal_mode=WAL")
             cur.execute("PRAGMA foreign_keys=ON")
+            # 多线程标注（AI_CONCURRENCY）下写事务会互相等锁。不设这个，第二个线程
+            # 立刻拿到 "database is locked" 而不是等几毫秒。
+            cur.execute("PRAGMA busy_timeout=5000")
             if bulk:
                 cur.execute("PRAGMA synchronous=OFF")
                 cur.execute("PRAGMA cache_size=-262144")  # 256 MiB

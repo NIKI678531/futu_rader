@@ -74,6 +74,9 @@ class AiConfig:
     # 供应商是否保存请求。**默认 false**：库里是真实富途用户的评论，即使已按 §11.4
     # 去标识，也没有理由让它们多躺在一个我们不控制的日志里。
     store: bool
+    # OpenAI 的 `service_tier`（`flex` ＝ Batch 价、同步接口、可能 429）。网关是否透传
+    # 未知，由 `scripts/probe_gateway.py` 探明后再在 .env 里开；默认空＝不带这个字段。
+    service_tier: str = ""
 
     def redacted(self):
         """可以安全写进日志与 run 记录的形态。Key 只留尾四位，用于分辨「换过 Key 没有」。"""
@@ -124,10 +127,12 @@ def load(**overrides):
         micro_batch_size=_int("AI_MICRO_BATCH_SIZE", 30),
         max_input_tokens=_int("AI_MAX_INPUT_TOKENS", 8000),
         concurrency=_int("AI_CONCURRENCY", 4),
-        prompt_version=os.getenv("AI_PROMPT_VERSION", "comment-product-v1").strip(),
-        taxonomy_version=os.getenv("AI_TAXONOMY_VERSION", "v1").strip(),
-        schema_version=os.getenv("AI_SCHEMA_VERSION", "v1").strip(),
+        # 生产默认 v2（ADR-0020：一次调用七个维度）。v1 保留给回放与对照实验。
+        prompt_version=os.getenv("AI_PROMPT_VERSION", "comment-product-v2").strip(),
+        taxonomy_version=os.getenv("AI_TAXONOMY_VERSION", "v2").strip(),
+        schema_version=os.getenv("AI_SCHEMA_VERSION", "v2").strip(),
         structured_output=_bool("AI_STRUCTURED_OUTPUT", True),
         reasoning_effort=os.getenv("AI_REASONING_EFFORT", "low").strip(),
         store=_bool("AI_STORE", False),
+        service_tier=os.getenv("AI_SERVICE_TIER", "").strip(),
     )
