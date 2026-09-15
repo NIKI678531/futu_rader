@@ -225,6 +225,9 @@ class SqlProvider:
                 "likes": s["likes"],
                 "shares": s["shares"],
                 "discussionHeat": s["heat"],
+                # 窗口内转发数未知的帖子数（ADR-0022）。大于零时上面三个数是下限，前端
+                # 要把它标出来；等于零是「没有未知」，不是缺失。demo 下没有这个键。
+                "heatUnknownPosts": s["heatUnknownPosts"],
                 "activeAccounts": s["active"],
                 "activeByBucket": s["activeByBucket"],
                 "attitude": _attitude_block(s["att"]),
@@ -249,6 +252,8 @@ class SqlProvider:
         3. **没有 `heat`。** 桶级热度另有专门端点（`heat-series`），契约里的观测桶
            只有五条计数序列 ＋ 三条态度。这里多发一个 `heat` 就是契约漂移：
            它会让人以为可以直接拿观测桶画热度曲线，而 demo provider 下没有这个键。
+           `heatUnknownPosts` 不在此列：它不是热度，是 `shares` / `interactions`
+           这两条序列的下限标记（ADR-0022），少了它这两个数就成了没有标注的近似值。
         """
         return [
             {
@@ -261,6 +266,7 @@ class SqlProvider:
                 "interactions": sb["interactions"],
                 "likes": sb["likes"],
                 "shares": sb["shares"],
+                "heatUnknownPosts": sb["heatUnknownPosts"],
                 "active": sb["active"],
                 # 这只产品在窗口内一条态度标注都没有时是 None（「还没标」），
                 # 标过但这一桶没命中时是 0（「数过了，这一桶没有」）。
@@ -285,7 +291,10 @@ class SqlProvider:
             items.append(self._observation(p, s, rng))
 
         own = [o for o in items if o["ownership"] == "own"]
+        # 自家热度合计：每只的热度在转发未知时已是下限（ADR-0022），合计照常求和，
+        # 并把 61 只的未知帖数也加起来一起下发 —— 合计是下限的话，读的人要知道差几帖。
         heat = _add_all(o["discussionHeat"] for o in own)
+        heat_unknown = sum(o["heatUnknownPosts"] for o in own)
         base_heat_own = _add_all(base[o["code"]]["heat"] for o in own)
         # 自家产品的积极内容数合计（板块总览顶部第二张卡）。有一只没标过 ⇒ 合计未知
         # （`_add_all` 的 None 传染），不是把它当 0 加进去 —— 那个数看着完全正常。
@@ -305,6 +314,7 @@ class SqlProvider:
             "own": {
                 "count": len(own),
                 "heat": heat,
+                "heatUnknownPosts": heat_unknown,
                 "neg": None,
                 "pos": pos,
                 # 「没扫过」（None）与「扫了零条」（0）都不能当 0 加进合计，前者让合计未知。
@@ -344,10 +354,13 @@ class SqlProvider:
         return {
             "mentions": delta(cur["mentions"], base["mentions"]),
             "comments": delta(cur["comments"], base["comments"]),
+            # 转发／互动／热度两侧同口径：各自按已知项算（ADR-0022），任一侧有未知帖时
+            # 这条环比也是下限之间的比较；差了几帖在 `heatUnknownPosts` 里分侧说清。
             "interactions": delta(cur["interactions"], base["interactions"]),
             "likes": delta(cur["likes"], base["likes"]),
             "shares": delta(cur["shares"], base["shares"]),
             "heat": delta(cur["heat"], base["heat"]),
+            "heatUnknownPosts": {"current": cur["heatUnknownPosts"], "base": base["heatUnknownPosts"]},
             "positive": delta(_att(cur, "positive"), _att(base, "positive")),
             "negative": delta(_att(cur, "negative"), _att(base, "negative")),
             "neutral": delta(_att(cur, "neutral"), _att(base, "neutral")),
@@ -387,7 +400,8 @@ class SqlProvider:
                     "hour": b.get("hour"),
                     "label": b["label"],
                     "tip": b["tip"],
-                    "heat": heat_of(bk["comments"], bk["likes"], bk["shares"]),
+                    "heat": heat_of(bk["comments"], bk["likes"], bk["shares"], bk["heatUnknownPosts"]),
+                    "heatUnknownPosts": bk["heatUnknownPosts"],
                     "mentions": bk["mentions"],
                     "comments": bk["comments"],
                     "positive": _att(bk, "positive"),
@@ -1630,15 +1644,16 @@ def _blank(nb):
         "mentions": 0,
         "comments": 0,
         "likes": 0,
+        # `shares` 只累计**已知**的转发数；转发未知的帖子另计条数（ADR-0022）。
         "shares": 0,
-        "sharesUnknown": False,
+        "sharesUnknownPosts": 0,
         "authors": set(),
         # 先按 0 数，`_finish` 再决定这三个 0 是「数出来的零」还是「还没标注」。
         "att": _zero_att(),
         "attSeen": False,
         "buckets": [
             {"i": i, "mentions": 0, "comments": 0, "likes": 0, "shares": 0,
-             "sharesUnknown": False, "authors": set(), "att": _zero_att()}
+             "sharesUnknownPosts": 0, "authors": set(), "att": _zero_att()}
             for i in range(nb)
         ],
     }
@@ -1651,8 +1666,9 @@ def _bump(s, bi, mentions, n_comments, likes, shares, author, comment_authors):
         t["comments"] += n_comments
         t["likes"] += likes
         if shares is None:
-            # raw_json 坏掉 ⇒ 这条帖子的转发数是**未知**。整桶的转发与热度随之未知。
-            t["sharesUnknown"] = True
+            # raw_json 坏掉 ⇒ 这条帖子的转发数是**未知**。它不进已知和，只把未知帖数
+            # 加一：产品与桶的转发／互动／热度随之成为下限，并披露差了几帖（ADR-0022）。
+            t["sharesUnknownPosts"] += 1
         else:
             t["shares"] += shares
         if author:
@@ -1671,12 +1687,15 @@ def _bump_att(s, bi, val):
 
 def _finish(s):
     def close(t):
-        shares = None if t["sharesUnknown"] else t["shares"]
-        t["shares"] = shares
-        t["interactions"] = None if shares is None else t["likes"] + shares
+        # 转发未知的帖子数随观测一起下发（`heatUnknownPosts`）。它大于零时 `shares` /
+        # `interactions` / `heat` 三个数都是**下限**：算的是已知项，差的部分已经说出来了
+        # （ADR-0022）。等于零时它们就是完整的数 —— 两种情形前端按同一个键分辨。
+        unknown = t.pop("sharesUnknownPosts")
+        t["heatUnknownPosts"] = unknown
+        t["interactions"] = t["likes"] + t["shares"]
         t["active"] = len(t["authors"])
-        t["heat"] = heat_of(t["comments"], t["likes"], shares)
-        del t["authors"], t["sharesUnknown"]
+        t["heat"] = heat_of(t["comments"], t["likes"], t["shares"], unknown)
+        del t["authors"]
 
     for b in s["buckets"]:
         close(b)
