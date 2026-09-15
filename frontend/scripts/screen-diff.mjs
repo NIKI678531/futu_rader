@@ -39,6 +39,8 @@
  *   npm run diff -- --keep   # 不关站点（本地反复调试时用）
  *   npm run diff -- official # 只比某一页（写路由名即可；别写前导斜杠，
  *                            #   Git Bash 会把 /official 当路径改写成 C:/Program Files/…）
+ *   API_ORIGIN=http://127.0.0.1:8031 npm run diff
+ *                            # 不自起 demo 后端，对着一个已经在跑的（联调别的分支的后端时用）
  */
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -49,7 +51,9 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const FRONTEND = path.resolve(HERE, '..')
 const BACKEND = path.resolve(FRONTEND, '..', 'backend')
 
-const API_ORIGIN = 'http://127.0.0.1:8017'
+/* 给了 API_ORIGIN 就不自起后端，直接对着它比（它必须已经是 DATA_PROVIDER=demo）。 */
+const EXTERNAL_API = process.env.API_ORIGIN || null
+const API_ORIGIN = EXTERNAL_API || 'http://127.0.0.1:8017'
 const REACT_ORIGIN = 'http://localhost:5177'
 const DESIGN_ORIGIN = 'http://localhost:5174'
 
@@ -355,10 +359,14 @@ let comparisons = 0
 try {
   const python = path.join(BACKEND, '.venv', 'Scripts', process.platform === 'win32' ? 'python.exe' : 'python')
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-  spawned.push(await up(API_ORIGIN, python, [path.join(BACKEND, 'app.py')], {
-    cwd: BACKEND,
-    env: { DATA_PROVIDER: 'demo', DEMO_SCENARIO: 'demo', APP_PORT: '8017', APP_ENV: 'production' },
-  }))
+  if (EXTERNAL_API) {
+    if (!(await alive(EXTERNAL_API))) throw new Error(`API_ORIGIN=${EXTERNAL_API} 连不上`)
+  } else {
+    spawned.push(await up(API_ORIGIN, python, [path.join(BACKEND, 'app.py')], {
+      cwd: BACKEND,
+      env: { DATA_PROVIDER: 'demo', DEMO_SCENARIO: 'demo', APP_PORT: '8017', APP_ENV: 'production' },
+    }))
+  }
   spawned.push(await up(REACT_ORIGIN, npm, ['run', 'dev', '--', '--port', '5177', '--strictPort'], {
     cwd: FRONTEND,
     env: { VITE_API_BASE: `${API_ORIGIN}/api/v1` },
