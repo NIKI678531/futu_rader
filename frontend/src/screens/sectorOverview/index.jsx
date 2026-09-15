@@ -11,12 +11,16 @@
      - `{{ }}` holes became JSX; `style="…"` strings are parsed by `s()` and `style-hover`
        by `hover()`.
      - `key` fields were added to the treemap tiles, theme rows and risk rows: JSX needs a
-       key per list item and the dc runtime did not. */
+       key per list item and the dc runtime did not.
+     - 加载态由真实取数驱动（withTransition.jsx）：go() 里那个 520ms 的假 loading 定时器
+       删掉，`loading`／`bodyOpacity` 改读 transition 的 isPending；切区间／开抽屉时旧内容
+       保持可见并变淡。构造函数里把本屏已知端点一次性预取（radar.js `urlsFor`）。 */
 import React from 'react'
-import R from '../../data/radar'
-import { shortName, navGroups, num, numRaw, stamp, naBox, aiValidationNote } from '../../lib/view'
+import R, { prefetchScreen } from '../../data/radar'
+import { shortName, navGroups, num, numRaw, stamp, naBox, aiValidationNote, heatLowerBoundNote, staleSuffix, rowsStale, STALE_TITLE } from '../../lib/view'
 import { s } from '../../lib/dc'
 import Shell from '../../components/Shell'
+import withTransition, { split } from '../../components/withTransition'
 import FilterBar from './FilterBar'
 import Notes from './Notes'
 import Kpis from './Kpis'
@@ -39,13 +43,18 @@ function heatWhy(o) {
     : '讨论热度暂不可用。';
 }
 
-export default class SectorOverview extends React.Component {
+class SectorOverview extends React.Component {
   state = {
     sel: null, sector: 'all', rangeKey: 'd7', notes: false,
     sort: 'comments', heatMode: 'net', scope: 'all', view: 'sector', q: '', listAll: false,
     onlyNew: false, onlyNeg: false, onlyRisk: false, scrollRisk: false,
-    secOpen: {}, secAll: {}, flatAll: false, tip: null, loading: false, bucket: null
+    secOpen: {}, secAll: {}, flatAll: false, tip: null, bucket: null
   };
+  constructor(props) {
+    super(props);
+    /* 首次 render 之前把本屏端点并行发出去，理由见 productMonitor 同处。 */
+    prefetchScreen('sector', { rangeKey: this.state.rangeKey });
+  }
   heatRef = React.createRef();
   drawerBodyRef = React.createRef();
   riskRef = React.createRef();
@@ -59,7 +68,9 @@ export default class SectorOverview extends React.Component {
       if (st.scope === 'peer' && o.ownership !== 'peer') return false;
       if (st.sector !== 'all' && o.sector !== st.sector) return false;
       if (st.onlyNew && !o.isNew) return false;
-      if (st.onlyNeg && !P.alerts[o.code]) return false;
+      /* `alerts[code]` 是关注程度为高的负面类别数：没标过 null、标过 0 或正数。筛选按 `> 0`
+         判：null 与 0 都不算「有舆情」（没查过不能报警），但两者在舆情列上要分开渲染（rows 里）。 */
+      if (st.onlyNeg && !(P.alerts[o.code] > 0)) return false;
       if (st.onlyRisk && !(P.complianceCount[o.code] > 0)) return false;
       if (q && o.code.toLowerCase().indexOf(q) < 0 && o.name.toLowerCase().indexOf(q) < 0) return false;
       return true;
@@ -80,7 +91,8 @@ export default class SectorOverview extends React.Component {
           y: r.top - 8, title: o.code + ' · ' + o.name,
           rows: [
             { k: '评论量', v: num(o.comments), fg: '#fff' },
-            { k: '讨论热度', v: num(o.discussionHeat) + ' · 全市场第 ' + hr + ' ／ ' + poolN + ' 名', fg: '#fff' },
+            /* `heatUnknownPosts > 0` 时热度是下限，悬浮卡里说出来；demo 下没有这个键，一个字不多。 */
+            { k: '讨论热度', v: num(o.discussionHeat) + ' · 全市场第 ' + hr + ' ／ ' + poolN + ' 名' + heatLowerBoundNote(o.heatUnknownPosts), fg: '#fff' },
             { k: '点赞 ／ 转发', v: num(o.likes) + ' ／ ' + num(o.shares), fg: 'rgba(255,255,255,0.88)' },
             /* attitude 整块可能为 null（AI 标注未建，ADR-0017）。三态同出一块标注，
                要缺一起缺，所以整行一句长文案，不写三遍。 */
@@ -171,14 +183,21 @@ export default class SectorOverview extends React.Component {
       || (patch.sector && patch.sector !== s.sector)
       || (patch.scope && patch.scope !== s.scope)
       || (patch.view && patch.view !== s.view);
-    if (changed) {
-      patch = Object.assign({}, patch, { loading: true, tip: null });
-      clearTimeout(this._lt);
-      this._lt = setTimeout(() => this.setState({ loading: false }), 520);
+    /* 会触发新取数的两件事：切区间（整池换一份）、打开抽屉（摘要／主题／负面归类／竞品／
+       合规五块现取）。它们走 transition：旧内容留着变淡，数据到了再换，不退回骨架。
+       板块／范围／视图切换只是池上的子集运算，设计源也给它们演 loading，一并进 transition
+       （isPending 只会亮一帧）。搜索框的字紧急提交，理由见 withTransition.jsx。 */
+    var opening = patch.sel != null && patch.sel !== s.sel;
+    if (changed || opening) {
+      patch = Object.assign({}, patch, { tip: null });
+      var parts = split(patch, ['q']);
+      if (parts.hasUrgent) this.setState(parts.urgent);
+      this.props.startTransition(() => this.setState(parts.deferred));
+      return;
     }
     this.setState(patch);
   }
-  componentWillUnmount() { clearTimeout(this._lt); if (this._ro) this._ro.disconnect(); }
+  componentWillUnmount() { if (this._ro) this._ro.disconnect(); }
 
   seg(active, label, patch) {
     return {
@@ -284,7 +303,9 @@ export default class SectorOverview extends React.Component {
       comments: { label: '评论量', note: '按区间评论量降序', get: function (o) { return o.comments; } },
       growth: { label: '环比', note: '按' + range.benchLabel + '评论量增速降序 · 基准期不足 5 条不参与', get: function (o) { var g = growthPct(o); return g == null ? -1e9 : g; } },
       heat: { label: '讨论热度', note: '按区间讨论热度降序', get: function (o) { return o.discussionHeat; } },
-      neg: { label: '舆情', note: '按舆情条数（可归类为需关注问题的内容）降序', get: function (o) { return P.negMentions[o.code]; } },
+      /* null 用与态度列同一个哨兵排到最末：`null - 5` 在 JS 里是 -5，不挡就会把「没标过」
+         混进「0 条」那一段里排。 */
+      neg: { label: '舆情', note: '按舆情条数（可归类为需关注问题的内容）降序', get: function (o) { var n = P.negMentions[o.code]; return n == null ? -1e9 : n; } },
       /* `-1e9` 是「不参与排序」的哨兵，排到最末。标注整块缺失与样本不足在**排序**上
          同样处理（都排不出名次），但在**显示**上必须分开 —— 分开的地方在下面 rows 里。 */
       att: { label: '正面／负面', note: '按正面占比（正面÷(正面＋负面)）降序 · 样本不足不参与', get: function (o) { var a = o.attitude; if (a == null) return -1e9; var v = a.positive + a.negative; return (a.sampleSufficient && v) ? a.positive / v : -1e9; } }
@@ -331,8 +352,10 @@ export default class SectorOverview extends React.Component {
         growth: g == null ? '—' : (g > 0 ? '+' : '') + g.toFixed(0) + '%',
         gfg: g == null ? 'var(--ink-300)' : (g > 2 ? 'var(--positive-700)' : (g < -2 ? 'var(--negative-600)' : 'var(--ink-500)')),
         heat: num(o.discussionHeat),
-        /* undefined ⇒ React 干脆不写这个属性，demo 下与设计源一模一样。 */
-        heatWhy: o.discussionHeat == null ? heatWhy(o) : undefined,
+        /* undefined ⇒ React 干脆不写这个属性，demo 下与设计源一模一样。
+           有值但 `heatUnknownPosts > 0` 时是下限，title 里说出来（demo 下没有这个键）。 */
+        heatWhy: o.discussionHeat == null ? heatWhy(o)
+          : (o.heatUnknownPosts > 0 ? '讨论热度 ' + num(o.discussionHeat) + heatLowerBoundNote(o.heatUnknownPosts) : undefined),
         hasAttitude: att != null && att.sampleSufficient,
         lowSample: att != null && !att.sampleSufficient,
         attNa: att == null,
@@ -340,11 +363,19 @@ export default class SectorOverview extends React.Component {
         posW: valid ? (att.positive / valid * 100).toFixed(1) : '0',
         negW: valid ? (att.negative / valid * 100).toFixed(1) : '0',
         /* `negMentions` 也要 AI（舆情条数来自负面类别）。`null > 0` 为假，红标不出现 ——
-           这是对的：没扫过就不该报警。但 `alertN` 不能是 `String(null)`。 */
-        alert: negN > 0, alertN: numRaw(negN),
+           这是对的：没扫过就不该报警。但 `alertN` 不能是 `String(null)`。
+           三态分开渲染：正数红标、0 留空（扫过了、没有需关注的内容）、null 灰字「暂不可用」
+           （这只产品还没做负面类别标注）。null 与 0 在这一格长得一样，就是把「没查」说成
+           「查了没有」（PRD §3.6）。demo 里没有 null，逐字比对不受影响。 */
+        alert: negN > 0, alertN: numRaw(negN), alertNa: negN == null,
         /* 热议总结：AI 一句话归纳区间内该 ETF 的主流具体观点；样本不足／不可用按统一状态文案灰字显示 */
         hot: hsText, hotFg: hsOk ? 'var(--ink-800)' : 'var(--ink-400)',
-        hotTitle: hsOk ? hs.text + '（AI 生成 · 基于 ' + hs.sample + ' 条有效态度样本）' : hsText,
+        /* `stale === true`：底层标注已更新、这句总结还没重新生成。title 说出来，格内加一枚
+           小徽章；demo 下没有这个键，两处都不出现。 */
+        hotStale: hs != null && hs.stale === true, staleTitle: STALE_TITLE,
+        hotTitle: hsOk
+          ? (hs.stale === true ? STALE_TITLE + ' — ' : '') + hs.text + '（AI 生成' + staleSuffix(hs.stale) + ' · 基于 ' + hs.sample + ' 条有效态度样本）'
+          : hsText,
         bg: on ? 'var(--csop-blue-50)' : (i % 2 ? 'var(--canvas)' : '#fff'),
         codeFg: on ? 'var(--csop-blue-700)' : 'var(--ink-900)',
         hoverIn: self.productHover(o, heatRankOf(o), poolN, true),
@@ -446,7 +477,8 @@ export default class SectorOverview extends React.Component {
        环比同理 —— delta 是 PRD 第 3 章的全局口径，只在后端实现一份（铁律 1）。 */
     var own = P.own;
     var dOH = own.dHeat, dON = own.dNeg, dOP = own.dPos;
-    var k1 = { value: num(own.heat), delta: dOH.short, dfg: self.dfg(dOH), sub: '仅统计 CSOP 自家 ' + own.count + ' 只 · ' + range.benchLabel + ' · ' + R.HEAT_FORMULA.replace('讨论热度 ＝ ', '热度＝').split(' ').join('') };
+    /* 自家合计里有几帖转发数未知（`own.heatUnknownPosts > 0`）⇒ 合计是下限，备注里追加一句；demo 下没有这个键。 */
+    var k1 = { value: num(own.heat), delta: dOH.short, dfg: self.dfg(dOH), sub: '仅统计 CSOP 自家 ' + own.count + ' 只 · ' + range.benchLabel + ' · ' + R.HEAT_FORMULA.replace('讨论热度 ＝ ', '热度＝').split(' ').join('') + heatLowerBoundNote(own.heatUnknownPosts) };
     var pnTot = own.neg == null || own.pos == null ? null : own.neg + own.pos;
     var k2 = {
       neg: num(own.neg), negDelta: dON.short, negDfg: dON.dir > 0 ? 'var(--negative-600)' : (dON.dir < 0 ? 'var(--positive-700)' : 'var(--ink-400)'),
@@ -480,7 +512,8 @@ export default class SectorOverview extends React.Component {
       navGroups: navGroups('portfolio', 'sector'), presets: presets, chips: chips,
       rangeText: range.text, rangeFrom: range.from, rangeTo: range.to,
       granLabel: range.granLabel, updated: stamp(R.UPDATED),
-      loading: s.loading, bodyOpacity: s.loading ? '0.45' : '1',
+      /* 真实的「还在等」：transition 提交前为 true（withTransition.jsx），不再是 520ms 定时器。 */
+      loading: !!self.props.isPending, bodyOpacity: self.props.isPending ? '0.45' : '1',
       visibleCount: String(visible.length),
       k1: k1, k2: k2, topOwn: topOwn, topPeer: topPeer, topOwnEmpty: topOwn.length === 0, topPeerEmpty: topPeer.length === 0,
       topNote: '评论量' + range.benchLabel + ' · 前 3',
@@ -564,7 +597,9 @@ export default class SectorOverview extends React.Component {
            不是某一格而是整页：上面几块每一块都写着「AI 判定」「AI 生成」，读的人默认
            这些结论上线前被人看过。本期没有人看过，这句得自己说出来。
            文案由 /meta 的 `aiValidation` 决定，不在这里写死 —— 见 lib/view.js。 */
-        { title: 'AI 结论的验证程度', body: aiValidationNote(R.AI_VALIDATION) + '本期未安排人工复核，也没有金标集 —— 页面上任何一条 AI 结论都没有经过人工确认，对不对请点开证据以原文为准。' },
+        { title: 'AI 结论的验证程度', body: aiValidationNote(R.AI_VALIDATION, R.AI_VALIDATION_DETAIL) + (R.AI_VALIDATION === 'spot_check' && R.AI_VALIDATION_DETAIL
+          ? '抽检是样本统计，不是对页面上每一条结论的逐条确认 —— 对不对请点开证据以原文为准。'
+          : '本期未安排人工复核，也没有金标集 —— 页面上任何一条 AI 结论都没有经过人工确认，对不对请点开证据以原文为准。') },
         { title: '重点舆情（需合规关注）与同业产品', body: '重点舆情为 AI 识别的高风险言论信号，标签包括监管举报、严重指控、疑似未经证实指控、煽动扩散、合规质疑；系统只识别信号并保留原文与命中依据，不判定言论真伪或产品是否违规，状态统一为「AI 识别 · 待人工确认」。同一条评论可同时属于消极观点与重点舆情。识别范围为自家产品，同业产品不适用。「仅看同业产品」对应产品池中已标记为非自家的产品，不由 AI 临时推断关系。' }
       ],
       tipOpen: !!s.tip,
@@ -603,6 +638,8 @@ export default class SectorOverview extends React.Component {
       var posRaw = R.themesFor(code, s.rangeKey, 'positive');
       var negRaw = R.themesFor(code, s.rangeKey, 'negative');
       var catsRaw = R.negCatsFor(code, s.rangeKey);
+      /* 负面类别仍是数组，`stale` 逐行挂在每个元素上（后端契约），整块判定见 lib/view.js rowsStale。 */
+      var catsStale = rowsStale(catsRaw);
       var posNa = posRaw == null, negNa = negRaw == null, catsNa = catsRaw == null;
       var pos = (posNa ? [] : posRaw).slice(0, 3).map(themeRow);
       var neg = (negNa ? [] : negRaw).slice(0, 3).map(themeRow);
@@ -687,6 +724,10 @@ export default class SectorOverview extends React.Component {
         obg: o.ownership === 'own' ? 'var(--csop-blue-50)' : 'var(--ink-100)',
         ofg: o.ownership === 'own' ? 'var(--csop-blue-700)' : 'var(--ink-600)',
         summary: sum.text, sample: sumNa ? '数据暂不可用' : String(sum.sample), sampleOk: !sumNa, rangeText: range.text,
+        /* 徽章：`aiStatus === 'unavailable'`（只有计数句、AI 要点没生成）不许写「AI 生成」；
+           `stale === true` 追加「 · 待更新」。两个键 demo 下都不存在。 */
+        sumAiLabel: (sum.aiStatus === 'unavailable' ? '计数句 · AI 要点待生成' : 'AI 生成 · 可追溯原文') + staleSuffix(sum.stale),
+        sumStale: sum.stale === true, staleTitle: STALE_TITLE,
         posThemes: pos, negThemes: neg,
         noPos: !posNa && pos.length === 0, noNeg: !negNa && neg.length === 0,
         posUnavailable: posNa, negUnavailable: negNa,
@@ -704,14 +745,19 @@ export default class SectorOverview extends React.Component {
             : '样本不足 · 不输出倾向结论'),
         netFg: !attNa && att.sampleSufficient ? (att.positive >= att.negative ? 'var(--positive-700)' : 'var(--negative-700)') : 'var(--ink-500)',
         heat: num(o.discussionHeat),
-        heatWhy: o.discussionHeat == null ? heatWhy(o) : undefined,
+        heatWhy: o.discussionHeat == null ? heatWhy(o)
+          : (o.heatUnknownPosts > 0 ? '讨论热度 ' + num(o.discussionHeat) + heatLowerBoundNote(o.heatUnknownPosts) : undefined),
         heatDelta: b.heat.short, heatDfg: self.dfg(b.heat),
+        heatDeltaTitle: b.heatUnknownPosts && (b.heatUnknownPosts.current > 0 || b.heatUnknownPosts.base > 0)
+          ? '环比按下限计算：当期 ' + num(b.heatUnknownPosts.current) + ' 帖、基准期 ' + num(b.heatUnknownPosts.base) + ' 帖转发数未知'
+          : undefined,
         comments: num(o.comments),
         likes: num(o.likes),
         shares: num(o.shares),
         interactions: num(o.interactions),
         rank: String(rk.map[code]), rankTotal: String(rk.total),
         hasNegCats: cats.length > 0, noNegCats: !catsNa && cats.length === 0, negCatsUnavailable: catsNa,
+        negCatsStale: catsStale, themesStale: R.themesStale(code, s.rangeKey) === true, compsStale: comps.stale === true,
         negCats: cats.map(function (c) {
           /* 基准期没标注时后端给 null（生命周期未知），不是「持续」——徽章写「暂不可用」（PRD §3.6 短文案）。 */
           var st = lifeStyle[c.lifecycleLabel] || lifeStyle['持续'];
@@ -799,3 +845,5 @@ export default class SectorOverview extends React.Component {
     )
   }
 }
+
+export default withTransition(SectorOverview)

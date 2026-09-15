@@ -211,16 +211,52 @@ export function needsReview(state) {
  * 文案跟着枚举走而不是写死，是因为这句话必须和 `/meta`、和汇报口径**同一个来源** ——
  * 三处分头写死，改了一处另外两处就开始撒谎。
  *
- * 只有 `none` 有现成文案：`spot_check` 与 `gold` 那两句都要带一个准确率，而那个数今天
- * 不存在。等它存在时连数一起下发，在这里补上对应的一支。在此之前认不出来的值一律
- * 退回 `none` 那句 —— 不知道验证到哪一步，就不能说验证过（往轻里说，不往重里说）。
+ * `none` 是现成文案。`spot_check` 那句要带抽检条数、日期与两个准确率，这些数随 /meta 的
+ * `aiValidationDetail` 一起下发（形状见 data/radar.js 的 AI_VALIDATION_DETAIL）；detail
+ * 缺失或缺关键字段时**退回 `none` 那句** —— 不知道验证到哪一步，就不能说验证过
+ * （往轻里说，不往重里说）。`gold` 与认不出来的值同样退回 `none`。
+ *
+ * 这句里没有、也不许有「已核验」（ADR-0019 §4）：抽检说的是「人工核对过 n 条、准确率
+ * 多少」，是一个可复核的样本统计，不是对页面上每一条结论的确认。
  */
 export var AI_VALIDATION_NOTE = {
   none: 'AI 结论由模型自动生成，未经人工验证；每条可回到原文。'
 };
 
-export function aiValidationNote(level) {
+/* 准确率下发的是 0–1 的小数；保留一位小数。大于 1 的值按已经是百分数处理，免得
+   契约在这一点上漂了之后页面上出现「8700.0%」。 */
+function accPct(v) {
+  var p = v > 1 ? v : v * 100;
+  return (Math.round(p * 10) / 10).toFixed(1) + '%';
+}
+
+export function aiValidationNote(level, detail) {
+  if (level === 'spot_check' && detail
+    && detail.n != null && detail.attitude_accuracy != null && detail.relevance_accuracy != null) {
+    return 'AI 结论由模型自动生成；人工核对 ' + detail.n + ' 条（' + stamp(detail.date) + '），'
+      + '态度准确率 ' + accPct(detail.attitude_accuracy) + '、相关性准确率 ' + accPct(detail.relevance_accuracy)
+      + '；学生模型蒸馏自 Luna 标注。';
+  }
   return AI_VALIDATION_NOTE[level] || AI_VALIDATION_NOTE.none;
+}
+
+/* 徽章后缀：后端说这块汇总的底层标注已经更新、汇总还没重新生成（`stale: true`）。
+   只认 `=== true`：demo 下没有这个键，`undefined` 不是「旧了」，不加字，逐字比对照旧。 */
+export function staleSuffix(flag) { return flag === true ? ' · 待更新' : ''; }
+export var STALE_TITLE = '标注已更新，汇总待重新生成';
+
+/* 逐行带旗标的数组（负面类别、热议话题）：后端仍下发数组，`stale` 挂在**每个元素**上，
+   同产品同区间所有行同值。整块「待更新」＝有行且每一行都 `=== true`；空数组不是「旧了」
+   （没有东西可旧），demo 的元素没有这个键 ⇒ every 为假 ⇒ 不加字。 */
+export function rowsStale(rows) {
+  return Array.isArray(rows) && rows.length > 0 && rows.every(function (r) { return r != null && r.stale === true; });
+}
+
+/* 讨论热度的下限注记。`heatUnknownPosts` 是区间内转发数未知的帖子数（0＝无）：>0 时
+   热度／互动／转发都是**下限**，得说出来。缺键（demo）或 0 都不加字。
+   读的是后端数好的字段，不在前端重算公式（铁律 1）。 */
+export function heatLowerBoundNote(n) {
+  return n > 0 ? '（' + n + ' 帖转发数未知 · 下限）' : '';
 }
 
 /* 操作方向（双标签第二维）：加仓／建仓 绿、减仓／清仓 红、持有观望 灰 */

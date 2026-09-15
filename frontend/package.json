@@ -13,6 +13,8 @@
     "guards": "node scripts/guards.mjs",
     "test": "npm run guards && npm run six-state && npm run diff",
     "real-data-check": "node scripts/real-data-check.mjs",
+    "progress-check": "node scripts/progress-drawer-check.mjs",
+    "mock-progress": "node scripts/mock-progress-server.mjs",
     "mirror": "node scripts/mirror.mjs",
     "mirror:test": "node scripts/mirror.mjs --test"
   },

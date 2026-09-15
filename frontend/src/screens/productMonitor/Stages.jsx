@@ -12,7 +12,7 @@ export default function Stages({ v }) {
           <span style={s('min-width:0;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500);text-wrap:pretty')}>讨论热度随时间变化 · AI 按时段归纳主流观点（{v.stageGranLabel}）· 与上方趋势面板同一时间轴</span>
         </div>
         <div style={s('flex:none;display:flex;align-items:center;gap:8px')}>
-          <span style={s('padding:3px 10px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>AI 生成 · 可追溯原文</span>
+          <span title={v.stageStale ? v.staleTitle : undefined} style={s('padding:3px 10px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>{v.stageAiLabel}</span>
           <span style={s('padding:3px 10px;border-radius:9999px;background:var(--csop-blue-50);font:500 12px/1.6 var(--font-cjk);color:var(--csop-blue-700);white-space:nowrap')}>折线粒度 {v.heatGranLabel}</span>
         </div>
       </div>
@@ -129,7 +129,7 @@ export default function Stages({ v }) {
               </React.Fragment>
             ))}
           </div>
-          <div style={s('padding:12px 20px 14px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>{v.stageRule} 热度口径与全站一致（{v.heatFormulaText}）；点阶段行展开逐时段摘要，「证据 →」打开该阶段区间的原文侧栏，每条可跳转 Futu 原文。{R.DATA_PROVIDER === 'sql' ? '阶段观点由 AI 生成，未经人工验证。' : '阶段观点为演示数据。'}</div>
+          <div style={s('padding:12px 20px 14px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>{v.stageRule} 热度口径与全站一致（{v.heatFormulaText}{/* 尾句拼成一个字符串，理由见 Trend.jsx 同处：独立的 `{cond ? a : b}` 会多出一个文本节点，逐字比对变红。 */}{'）；点阶段行展开逐时段摘要，「证据 →」打开该阶段区间的原文侧栏，每条可跳转 Futu 原文。' + (R.DATA_PROVIDER === 'sql' ? '阶段观点由 AI 生成，未经人工验证。' : '阶段观点为演示数据。')}</div>
         </>
       )}
     </div>

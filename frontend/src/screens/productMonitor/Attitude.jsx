@@ -56,6 +56,8 @@ export default function Attitude({ v }) {
         <div style={s('display:flex;align-items:baseline;gap:11px')}>
           <span style={s('font:600 18px/1.3 var(--font-cjk)')}>积极 ／ 消极整体态度</span>
           <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>赞／踩为 AI 对内容中产品态度的分类，不是 Futu 平台的点赞／点踩行为</span>
+          {/* 主题聚类顶层 `stale === true`（标注已更新、汇总待重新生成）才渲染；demo 下没有这个键。 */}
+          {v.themesStale && <span title={v.staleTitle} style={s('padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>AI 生成 · 待更新</span>}
         </div>
         <span style={s(`font:600 14px/1.4 var(--font-cjk);color:${v.netFg}`)}>{v.netText}</span>
       </div>
