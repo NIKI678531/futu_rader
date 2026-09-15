@@ -583,7 +583,8 @@ class TestAiAndPriceSurfacesAreNone:
         榜单每一行都要一个状态可渲染（PRD §4.1 S8）。"""
         hs = provider.hot_summaries("d1")
         assert set(hs) == {p["code"] for p in provider._products}
-        assert all(v == {"status": "unavailable", "text": "数据暂不可用", "sample": None, "ok": False}
+        assert all(v == {"status": "unavailable", "text": "数据暂不可用", "sample": None, "ok": False,
+                         "stale": False}
                    for v in hs.values())
 
     @pytest.mark.parametrize(

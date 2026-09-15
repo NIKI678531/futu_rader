@@ -146,13 +146,22 @@ class TestTopicsAndHot:
 
 
 class TestSummary:
-    def test_dirty_source_does_not_mix_old_summary_with_new_counts(self, provider):
+    def test_dirty_source_keeps_the_old_points_and_marks_them_stale(self, provider):
+        """脏标记不再让生成物消失：旧要点照发，`stale=True` 让页面挂「待更新」。
+
+        原来脏了就整块 `unavailable`：每一批标注落库到下一次汇总跑完之间，页面上的总结
+        会消失几分钟到几小时，而库里明明有一份昨天的结论。
+        """
         p = annotated(provider)
         add_synth(p, [{"kind": "summary", "value": {"points": [
             {"text": "多条评论认可费率", "evidence_ids": ["c100"]}]} }])
-        assert p.summary_for(OWN_CODE, "d1")["aiStatus"] == "ok"
+        s = p.summary_for(OWN_CODE, "d1")
+        assert s["aiStatus"] == "ok" and s["stale"] is False
         p._meta[f"synth_dirty_{OWN_CODE}_d1"] = "1"
-        assert p.summary_for(OWN_CODE, "d1")["aiStatus"] == "unavailable"
+        s = p.summary_for(OWN_CODE, "d1")
+        assert s["aiStatus"] == "ok" and s["stale"] is True
+        assert s["points"][0]["text"] == "多条评论认可费率。", "旧要点还在"
+        assert "积极 8 条、消极 4 条" in s["text"], "计数句是刚扫的事实，不随脏标记变"
 
     def test_summary_text_is_facts_plus_model_points(self, provider):
         p = annotated(provider)
@@ -172,6 +181,88 @@ class TestSummary:
         s = p.summary_for(OWN_CODE, "d1")
         assert s["low"] is True
         assert "有效态度提及为 5 条，低于 10 条的判定阈值，本区间不输出整体倾向结论" in s["text"]
+
+
+class TestStale:
+    """`synth_dirty_{code}_{range}=="1"` 时七个叙述面板照常给出现行生成物，并标 `stale=True`；
+    不脏、或没有生成物可过期时 `stale=False`。"""
+
+    @staticmethod
+    def _dirty(p, on=True):
+        p._meta[f"synth_dirty_{OWN_CODE}_d1"] = "1" if on else "0"
+
+    def test_hot_summary_keeps_its_text_and_flags_stale(self, provider):
+        p = annotated(provider)
+        add_synth(p, [{"kind": "hot_summary", "value": {"text": "费率获认可，倾向长期持有", "needs_review": False}}])
+        assert p.hot_summaries("d1")[OWN_CODE]["stale"] is False
+        self._dirty(p)
+        hs = p.hot_summaries("d1")[OWN_CODE]
+        assert hs["status"] == "ok" and hs["text"].startswith("费率") and hs["stale"] is True
+        # 没生成物的产品：unavailable，不是 stale —— 没有什么可过期的
+        assert p.hot_summaries("d1")[PEER_CODE] == {
+            "status": "unavailable", "text": "数据暂不可用", "sample": None, "ok": False, "stale": False,
+        }
+
+    def test_themes_carry_a_top_level_flag(self, provider):
+        p = annotated(provider)
+        add_synth(p, [{"kind": "theme_label", "subkey": "positive|fee",
+                       "value": {"key": "positive|fee", "title": "费率同类最低", "summary": "…"}}])
+        assert p.themes_for(OWN_CODE, "d1")["stale"] is False
+        self._dirty(p)
+        th = p.themes_for(OWN_CODE, "d1")
+        assert th["stale"] is True
+        assert th["positive"][0]["title"] == "费率同类最低" and th["positive"][0]["mentions"] == 8
+
+    def test_neg_categories_and_topics_carry_the_flag_per_row(self, provider):
+        p = annotated(provider)
+        add_synth(p, [
+            {"kind": "neg_category", "subkey": "spread", "value": {"title": "点差过宽", "summary": "…"}},
+            {"kind": "topic_label", "subkey": "market", "value": {"title": "恒指方向争论", "summary": "…"}},
+        ])
+        assert p.neg_cats_for(OWN_CODE, "d1")[0]["stale"] is False
+        assert p.topics_for(OWN_CODE, "d1")[0]["stale"] is False
+        self._dirty(p)
+        nc = p.neg_cats_for(OWN_CODE, "d1")[0]
+        assert nc["label"] == "点差过宽" and nc["mentions"] == 4 and nc["stale"] is True
+        tp = p.topics_for(OWN_CODE, "d1")[0]
+        assert tp["title"] == "恒指方向争论" and tp["stale"] is True
+
+    def test_stages_and_competitors_carry_a_top_level_flag(self, provider):
+        p = annotated(provider)
+        add_synth(p, [
+            {"kind": "stage_unit", "subkey": "2026-08-25|am",
+             "value": {"key": "2026-08-25|am", "category": "add_opportunity", "digest": "费率优势", "needs_review": False}},
+            {"kind": "competitor_reason", "subkey": "2800",
+             "value": {"code": "2800", "like_reasons": ["费率更低"], "dislike_reasons": [], "needs_review": False}},
+        ])
+        assert p.stages_for(OWN_CODE, "d1")["stale"] is False
+        assert p.competitors_for(OWN_CODE, "d1")["stale"] is False
+        self._dirty(p)
+        st = p.stages_for(OWN_CODE, "d1")
+        assert st["status"] == "ok" and st["stages"][0]["category"] == "add_opportunity" and st["stale"] is True
+        c = p.competitors_for(OWN_CODE, "d1")
+        assert c["stale"] is True
+        assert next(x for x in c["list"] if x["code"] == "2800")["positiveThemes"][0]["title"] == "费率更低"
+
+    def test_dirty_without_any_output_is_not_stale(self, provider):
+        """脏了但模型从没写过 ⇒ 仍是 unavailable / 固定名，`stale=False`。"""
+        p = annotated(provider)
+        self._dirty(p)
+        assert p.summary_for(OWN_CODE, "d1")["stale"] is False
+        assert p.themes_for(OWN_CODE, "d1")["stale"] is False
+        assert p.stages_for(OWN_CODE, "d1")["stale"] is False
+        assert p.competitors_for(OWN_CODE, "d1")["stale"] is False
+        assert p.hot_summaries("d1")[OWN_CODE]["stale"] is False
+        assert all(r["stale"] is False for r in p.neg_cats_for(OWN_CODE, "d1"))
+        assert all(r["stale"] is False for r in p.topics_for(OWN_CODE, "d1"))
+
+    def test_clearing_the_flag_clears_stale(self, provider):
+        p = annotated(provider)
+        add_synth(p, [{"kind": "hot_summary", "value": {"text": "费率获认可", "needs_review": False}}])
+        self._dirty(p)
+        assert p.hot_summaries("d1")[OWN_CODE]["stale"] is True
+        self._dirty(p, on=False)
+        assert p.hot_summaries("d1")[OWN_CODE]["stale"] is False
 
 
 class TestStages:
