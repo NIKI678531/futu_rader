@@ -190,7 +190,7 @@ def _cluster_members(conn, jobs):
     return out
 
 
-def _route_all_to_llm(engine, scope_id, limit, reason):
+def route_all_to_llm(engine, scope_id, limit, reason):
     """没有学生模型时的退化路径：把 student 任务整体放行给 Luna。返回改了多少条。"""
     q = select(annotation_jobs.c.job_id).where(
         annotation_jobs.c.task == TASK, annotation_jobs.c.stage == annotate.STAGE_STUDENT,
@@ -342,7 +342,7 @@ def run(engine, cfg=None, *, scope_id=None, limit=None, batch_size=BATCH_SIZE, s
         except Exception as exc:  # noqa: BLE001  StudentUnavailable 或依赖缺失都走同一条退化路径
             if require_model:
                 raise
-            n = _route_all_to_llm(engine, scope_id, limit, str(exc))
+            n = route_all_to_llm(engine, scope_id, limit, str(exc))
             stats.update(student_available=False, routed=n, input=n, reason=str(exc)[:300])
             emit(engine, "L1", f"学生模型不可用，{n:,} 条评论任务放行 Luna：{str(exc)[:120]}",
                  level="warn", scope_id=scope_id, data={"routed": n})
