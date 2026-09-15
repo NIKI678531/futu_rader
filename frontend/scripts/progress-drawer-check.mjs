@@ -28,6 +28,7 @@
  * 端口特意跟常规站点（8008／5173）与其他脚本（8017／8018／5174／5175／5177）岔开。
  *
  * 用法：npm run progress-check
+ *       DEMO_ORIGIN=http://127.0.0.1:8031 npm run progress-check   # 对着已在跑的 demo 后端
  */
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -41,7 +42,9 @@ const REPO = path.resolve(FRONTEND, '..')
 const DEMO_PORT = 8020
 const MOCK_PORT = 8021
 const WEB_PORT = 5179
-const DEMO = `http://127.0.0.1:${DEMO_PORT}`
+/* 给了 DEMO_ORIGIN 就不自起 demo 后端，mock 透传到它（联调别的分支的后端时用）。 */
+const EXTERNAL_DEMO = process.env.DEMO_ORIGIN || null
+const DEMO = EXTERNAL_DEMO || `http://127.0.0.1:${DEMO_PORT}`
 const MOCK = `http://127.0.0.1:${MOCK_PORT}`
 const WEB = `http://localhost:${WEB_PORT}`
 const TICK = 700
@@ -322,10 +325,14 @@ async function main() {
   const procs = []
   let browser
   try {
-    procs.push(await boot('demo 后端', DEMO, python(), [path.join(REPO, 'backend', 'app.py')], {
-      cwd: path.join(REPO, 'backend'),
-      env: { DATA_PROVIDER: 'demo', APP_PORT: String(DEMO_PORT), APP_ENV: 'production' },
-    }))
+    if (EXTERNAL_DEMO) {
+      if (!(await alive(EXTERNAL_DEMO))) throw new Error(`DEMO_ORIGIN=${EXTERNAL_DEMO} 连不上`)
+    } else {
+      procs.push(await boot('demo 后端', DEMO, python(), [path.join(REPO, 'backend', 'app.py')], {
+        cwd: path.join(REPO, 'backend'),
+        env: { DATA_PROVIDER: 'demo', APP_PORT: String(DEMO_PORT), APP_ENV: 'production' },
+      }))
+    }
     procs.push(await boot('mock', MOCK + '/api/v1/progress', process.execPath,
       [path.join(HERE, 'mock-progress-server.mjs'), '--port', String(MOCK_PORT), '--upstream', DEMO, '--tick', String(TICK)],
       { cwd: FRONTEND, env: {} }))
