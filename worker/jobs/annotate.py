@@ -39,7 +39,7 @@ import sys
 import threading
 import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import and_, func, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -56,6 +56,7 @@ from ai.lexicon import product_aliases  # noqa: E402
 from ai.prompts import SCHEMA_OF, get as get_prompt  # noqa: E402
 from ai.providers import PermanentError, TransientError, build as build_provider  # noqa: E402
 from radar_db import make_engine  # noqa: E402
+from radar_db.events import emit  # noqa: E402
 from radar_db.schema import (  # noqa: E402
     NO_SUBJECT,
     annotation_evidence,
@@ -72,6 +73,43 @@ log = logging.getLogger("worker.annotate")
 _HUMAN_SETTLED = ("approved", "corrected")
 
 LEASE_MINUTES = 15
+
+# 漏斗分段（ADR-0021）。评论任务从 `student` 进，其余任务没有学生模型，直接 `llm`。
+STAGE_STUDENT = "student"
+STAGE_LLM = "llm"
+
+
+def default_stage(task):
+    return STAGE_STUDENT if task == "comment_product" else STAGE_LLM
+
+
+# 最近窗口优先（ADR-0021）：距锚点越近的评论越早被标，页面「近 7 天」先亮。
+# 档位差拉到 10 以上，是为了让它压过 own(+2)/current(+1) 两个旧加分 —— 一条 30 天前的
+# 自家评论不该排在 3 天前的同业评论前面。
+RECENCY_TIERS = ((7, 30), (14, 20), (30, 10))
+
+
+def recency_tier(posted_at, anchor):
+    """`posted_at` 距 `anchor` 的天数 → 优先级加分。`anchor` 是 date 或 datetime。"""
+    if posted_at is None or anchor is None:
+        return 0
+    day = posted_at.date() if isinstance(posted_at, datetime) else posted_at
+    anchor_day = anchor.date() if isinstance(anchor, datetime) else anchor
+    age = (anchor_day - day).days
+    if age < 0:
+        age = 0
+    for max_days, bonus in RECENCY_TIERS:
+        if age <= max_days:
+            return bonus
+    # 30 天外但仍在本月截至数据日（mtd）窗内：月初的评论对 mtd 页面同样是「当前期」。
+    if anchor_day.month == day.month and anchor_day.year == day.year:
+        return 10
+    return 0
+
+
+def job_priority(posted_at, anchor, *, own, current):
+    """抽取时的任务优先级：距锚点分档 ＋ 自家 +2 ＋ 当前期 +1。三类任务同一个函数。"""
+    return recency_tier(posted_at, anchor) + (2 if own else 0) + (1 if current else 0)
 
 # 帖子正文作为评论上下文时只带开头这么多字。一批 30 条常来自同一篇帖子，正文按 feed_id
 # 只放一次（见 `_user_message_with_context`），但仍要有上限 —— 长文会把系统提示挤出缓存窗口。
@@ -153,6 +191,7 @@ def _comment_candidates(engine, *, codes=None, limit=None, since=None, until=Non
             feeds.c.code,
             feeds.c.title,
             feeds.c.content.label("post_content"),
+            feeds.c.posted_at,
             parent.c.content.label("parent_content"),
         )
         .select_from(
@@ -205,6 +244,7 @@ def job_row_for_comment(cfg, prompt, schema_version, row, *, priority=0, scope_i
         "priority": priority,
         "attempts": 0,
         "scope_id": scope_id,
+        "stage": default_stage(task),
         "created_at": now,
         "updated_at": now,
     }
@@ -235,7 +275,7 @@ def enqueue_comments(engine, cfg, *, codes=None, limit=None, since=None, until=N
 
 
 def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None,
-                  authors=None, priority=0, scope_id=None):
+                  authors=None, priority=0, scope_id=None, priority_of=None):
     """把帖子排进待办（§11.2：类型／操作方向／摘要）。
 
     与评论任务有三处结构性不同，不是参数差异：
@@ -251,6 +291,9 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None
 
     `authors`：只排这些作者名的帖子（KOL 32 位＋官号 20 个）。全量 38 万篇帖子里页面只用
     得上这两类作者的，其余不排 —— 那是一笔没有消费方的开销。
+
+    `priority_of(posted_at, code)`：给了就逐帖算优先级（`extract` 用它接最近窗口分档），
+    没给用固定的 `priority`。
     """
     task = "post_annotation"
     prompt, schema_version = resolve(task, cfg)
@@ -258,7 +301,7 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None
     rows = []
 
     with engine.connect() as conn:
-        q = select(feeds.c.feed_id, feeds.c.title, feeds.c.content, feeds.c.code).where(
+        q = select(feeds.c.feed_id, feeds.c.title, feeds.c.content, feeds.c.code, feeds.c.posted_at).where(
             or_(
                 and_(feeds.c.content.isnot(None), feeds.c.content != ""),
                 and_(feeds.c.title.isnot(None), feeds.c.title != ""),
@@ -276,7 +319,7 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None
         if limit:
             q = q.limit(limit)
 
-        for feed_id, title, content, code in conn.execute(q):
+        for feed_id, title, content, code, posted_at in conn.execute(q):
             job = {"target_id": feed_id, "subject_code": None}
             payload = _build_payload(task, job, {"text": content, "title": title, "code": code})
             rows.append(
@@ -293,9 +336,10 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None
                         schema_version=schema_version,
                     ),
                     "status": "pending",
-                    "priority": priority,
+                    "priority": priority_of(posted_at, code) if priority_of else priority,
                     "attempts": 0,
                     "scope_id": scope_id,
+                    "stage": STAGE_LLM,
                     "created_at": now,
                     "updated_at": now,
                 }
@@ -304,7 +348,7 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None
 
 
 def enqueue_kol_comments(engine, cfg, kol_names, *, codes=None, limit=None, since=None, until=None,
-                         priority=0, scope_id=None):
+                         priority=0, scope_id=None, priority_of=None):
     """把合作 KOL 写的评论排进 `kol_comment_opinion`（PRD §4.4 M7）。
 
     判定单元、payload、指纹都与 comment_product 同构 —— 只是作者被限定在 KOL 名单内，
@@ -316,7 +360,8 @@ def enqueue_kol_comments(engine, cfg, kol_names, *, codes=None, limit=None, sinc
     rows = []
     for r in _comment_candidates(engine, codes=codes, limit=None, since=since, until=until,
                                  authors=list(kol_names)):
-        rows.append(job_row_for_comment(cfg, prompt, schema_version, r, priority=priority,
+        prio = priority_of(r.posted_at, r.code) if priority_of else priority
+        rows.append(job_row_for_comment(cfg, prompt, schema_version, r, priority=prio,
                                         scope_id=scope_id, now=now, task=task))
         if limit and len(rows) >= limit:
             break
@@ -360,7 +405,7 @@ def _insert_jobs(engine, rows):
 # ── 领取 ───────────────────────────────────────────────────────────────
 
 
-def claim(engine, task, n, *, now=None, scope_id=None):
+def claim(engine, task, n, *, now=None, scope_id=None, stage=None):
     """领取至多 n 条待办，打上租约。
 
     可领取 = `pending`，或 `claimed` 但租约已过期。后者是 worker 崩溃后的回收路径 ——
@@ -368,6 +413,9 @@ def claim(engine, task, n, *, now=None, scope_id=None):
 
     `scope_id` 给了就只领这个抽取范围的任务（ADR-0020）：跑「3033 近 7 天」时，
     队列里别的产品、别的日期的待办一条都不该被带走。
+
+    `stage` 给了就只领这一段的任务（ADR-0021）：Luna 通道传 `llm`，学生通道传 `student`。
+    不给＝不分段（旧调用方与测试的行为不变）。
     """
     now = now or clock.now()
     lease_until = now + timedelta(minutes=LEASE_MINUTES)
@@ -384,6 +432,8 @@ def claim(engine, task, n, *, now=None, scope_id=None):
                 ),
             )
         )
+        if stage is not None:
+            q = q.where(annotation_jobs.c.stage == stage)
         if scope_id is not None:
             from radar_db.scope_jobs import scope_condition
             q = q.where(scope_condition(scope_id))
@@ -436,11 +486,13 @@ def _merge(stats, local):
 
 
 def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=None,
-        scope_id=None, budget_requests=None):
+        scope_id=None, budget_requests=None, stage=None):
     """跑一轮标注。返回 run 统计。
 
     `budget_requests`：本轮最多**领取**多少批（≈ 请求数，不含重试与二分）。
     价格未知时这是唯一能卡住花费的旋钮 —— 条数×批大小算出来的请求数是可以对着账单核的。
+
+    `stage`：只领这一段的任务（`pipeline.run` 对评论任务传 `llm`，不给＝不分段）。
     """
     cfg = cfg or config.load()
     provider = provider or build_provider(cfg)
@@ -451,6 +503,7 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
     run_id = new_run_id()
     started = clock.now()
     stats = _fresh_stats(cfg, run_id, task)
+    stats["stage"] = stage
     workers = max(1, int(cfg.concurrency or 1))
 
     with engine.begin() as conn:
@@ -478,7 +531,7 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
                 and not stop_event.is_set()
                 and (budget_requests is None or batches_started < budget_requests)
             ):
-                jobs = claim(engine, task, min(batch_size, budget), scope_id=scope_id)
+                jobs = claim(engine, task, min(batch_size, budget), scope_id=scope_id, stage=stage)
                 if not jobs:
                     break
                 if stop_event.is_set():
@@ -493,14 +546,16 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
                     jobs, _local_stats(),
                     stop_event=stop_event,
                 )
-                inflight[fut] = len(jobs)
+                inflight[fut] = (len(jobs), jobs[0]["subject_code"] or None)
             if not inflight:
                 break
             done, _ = wait(list(inflight), return_when=FIRST_COMPLETED)
             for fut in done:
-                inflight.pop(fut)
+                n_jobs, batch_code = inflight.pop(fut)
                 try:
-                    _merge(stats, fut.result())
+                    local = fut.result()
+                    _merge(stats, local)
+                    _emit_batch(engine, task, run_id, scope_id, batch_code, n_jobs, local)
                 except _Abort as exc:
                     # 别的线程可能同时撞上同一个永久错误；记第一条即可。
                     if stats["aborted"] is None:
@@ -512,16 +567,73 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
     finally:
         pool.shutdown(wait=True)
         _close_run(engine, run_id, stats)
+        if stats["aborted"]:
+            emit(engine, _STAGE_OF.get(task, "L2"), f"{task} 中止：{stats['aborted'][:160]}",
+                 level="error", scope_id=scope_id, run_id=run_id)
 
     return stats
 
 
+# 事件流里各任务归属的阶段：评论／KOL 评论／帖子都是 Luna 通道（L2）。
+_STAGE_OF = {"comment_product": "L2", "kol_comment_opinion": "L2", "post_annotation": "L2"}
+
+_TASK_LABEL = {"comment_product": "评论", "kol_comment_opinion": "KOL 评论", "post_annotation": "帖子"}
+
+
+def _emit_batch(engine, task, run_id, scope_id, code, n_jobs, local):
+    """一批处理完记一条事件。失败数是「这一批里没写成的」，含二分后判死的。"""
+    label = _TASK_LABEL.get(task, task)
+    msg = f"{code or '—'} Luna {label}批 {n_jobs} → 写入 {local['success']}"
+    if local["error"]:
+        msg += f" / 失败 {local['error']}"
+    if local["requests"] > 1:
+        msg += f"（{local['requests']} 次请求）"
+    emit(engine, _STAGE_OF.get(task, "L2"), msg, level="warn" if local["error"] else "info",
+         code=code, scope_id=scope_id, run_id=run_id,
+         data={"task": task, "n": n_jobs, "success": local["success"], "error": local["error"],
+               "requests": local["requests"]})
+
+
+def _mark_touched_ranges(conn, run_id, mark_synthesis, ranges_touching):
+    """只把与本轮变更评论日期相交的区间标脏（ADR-0021）。
+
+    按 run_id 把 annotations → comments → feeds 连起来取每只产品的帖子日期范围，再问
+    `ranges_touching` 哪些预设区间（当前窗或基准窗）碰到了这段日期。取不到锚点就退回全标 ——
+    宁可多标几块「待更新」，不可少标一块让旧汇总冒充新的。
+    """
+    from datetime import date
+
+    from radar_db.schema import meta_kv
+
+    anchor_s = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar()
+    anchor = date.fromisoformat(anchor_s[:10]) if anchor_s else None
+    spans = conn.execute(
+        select(annotations.c.subject_code, func.min(feeds.c.posted_at), func.max(feeds.c.posted_at))
+        .select_from(
+            annotations
+            .join(comments, and_(annotations.c.target_type == "comment",
+                                 comments.c.comment_id == annotations.c.target_id))
+            .join(feeds, feeds.c.feed_id == comments.c.feed_id)
+        )
+        .where(annotations.c.run_id == run_id)
+        .group_by(annotations.c.subject_code)
+    ).all()
+    for code, lo, hi in spans:
+        if not code:
+            continue
+        if anchor is None or lo is None or hi is None:
+            mark_synthesis(conn, [code], True)
+            continue
+        touched = ranges_touching(anchor, lo.date(), hi.date())
+        if touched:
+            mark_synthesis(conn, [code], True, touched)
+
+
 def _close_run(engine, run_id, stats):
-    from radar_db.revisions import bump_revision, mark_synthesis
+    from radar_db.revisions import bump_revision, mark_synthesis, ranges_touching
     with engine.begin() as conn:
         bump_revision(conn, "annotation")
-        changed_codes = conn.execute(select(annotations.c.subject_code).where(annotations.c.run_id == run_id).distinct()).scalars()
-        mark_synthesis(conn, list(changed_codes), True)
+        _mark_touched_ranges(conn, run_id, mark_synthesis, ranges_touching)
         conn.execute(
             update(annotation_runs)
             .where(annotation_runs.c.run_id == run_id)
@@ -625,6 +737,7 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
         return local
 
     latest_sources = _load_sources(engine, task, [job for job, _ in usable])
+    to_write = []
     for job, src in usable:
         item = by_id[_item_id(task, job)]
         latest = latest_sources.get((job["target_type"], job["target_id"]))
@@ -634,15 +747,46 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
                              .values(status="superseded", lease_until=None, last_error="Source changed during inference"))
             local["error"] += 1
             continue
-        try:
-            _write(engine, task, job, src, item, run_id, schema_version)
-            _done(engine, job)
-            local["success"] += 1
-        except Exception as exc:  # noqa: BLE001
+        to_write.append((job, src, item))
+    ok, bad = _write_batch(engine, task, to_write, run_id, schema_version)
+    local["success"] += ok
+    local["error"] += bad
+    return local
+
+
+def _write_batch(engine, task, items, run_id, schema_version="v1"):
+    """整批一个事务：写全部标注＋证据，再把任务置 done。返回 `(成功数, 失败数)`。
+
+    原来每条 `_write` 一个事务、`_done` 再一个事务，一批 30 条就是 60 次拿写锁；
+    `AI_CONCURRENCY=16` 时 SQLite 的 busy_timeout 会被排队吃掉一大截。合成一个事务后
+    一批只拿一次写锁。语义与逐条写完全一致（人工裁决不覆盖、证据程序定位、needs_review），
+    `_write` 本身不动，这里只是把它的连接借过去。
+
+    **整批失败就整批不写。** 一条写不进去（列超长、唯一键冲突）而其余 29 条已提交，
+    等于承认了一批「部分成功」—— 而 `annotation_runs` 只记 run 级的成败。回滚后按逐条
+    路径退化重试，把真正坏的那一条隔离出来（同 §11.3 的二分思路）。
+    """
+    if not items:
+        return 0, 0
+    try:
+        with engine.begin() as conn:
+            for job, src, item in items:
+                _write(engine, task, job, src, item, run_id, schema_version, conn=conn)
+                _done(engine, job, conn=conn)
+        return len(items), 0
+    except Exception as exc:  # noqa: BLE001
+        if len(items) == 1:
+            job = items[0][0]
             log.exception("写库失败 job=%s", job["job_id"])
             _fail(engine, job, f"写库失败：{exc}")
-            local["error"] += 1
-    return local
+            return 0, 1
+        log.warning("整批写库失败（%s），退化为逐条写", str(exc)[:120])
+        ok = bad = 0
+        for one in items:
+            a, b = _write_batch(engine, task, [one], run_id, schema_version)
+            ok += a
+            bad += b
+        return ok, bad
 
 
 def _record_usage(comp, stats):
@@ -799,8 +943,10 @@ def _kinds_for(task, item, src, schema_version):
     return kinds
 
 
-def _write(engine, task, job, src, item, run_id, schema_version="v1"):
-    """把一条标注写进库，连同通过校验的证据。"""
+def _write(engine, task, job, src, item, run_id, schema_version="v1", conn=None):
+    """把一条标注写进库，连同通过校验的证据。`conn` 给了就用调用方的事务（`_write_batch`）。"""
+    from contextlib import nullcontext
+
     now = clock.now()
     source_text = src["text"] or ""
     if task == "post_annotation":
@@ -820,7 +966,8 @@ def _write(engine, task, job, src, item, run_id, schema_version="v1"):
         if (spans and not verified) or (expect and not spans):
             needs_review = True
 
-    with engine.begin() as conn:
+    written_rows = []
+    with (nullcontext(conn) if conn is not None else engine.begin()) as conn:
         for kind, value, _spans, _expect in kinds:
             if value is None:
                 continue
@@ -859,6 +1006,8 @@ def _write(engine, task, job, src, item, run_id, schema_version="v1"):
                 )
             )
             ann_id = res.inserted_primary_key[0]
+            written_rows.append((kind, json.dumps(value, ensure_ascii=False), None,
+                                 "needs_review" if needs_review else "pending", ann_id))
             for _quote, loc in located.get(kind, []):
                 conn.execute(
                     insert(annotation_evidence).values(
@@ -873,13 +1022,19 @@ def _write(engine, task, job, src, item, run_id, schema_version="v1"):
                         quote_hash=ev.quote_hash(loc.quote),
                     )
                 )
+        # 近重复簇的成员抄代表的结论（ADR-0021）。只有评论 × 产品任务有簇。
+        if task == "comment_product" and written_rows:
+            from ai import neardup
+            neardup.propagate(conn, job["target_id"], job["subject_code"], written_rows, run_id, now)
 
 
 # ── 任务状态流转 ───────────────────────────────────────────────────────
 
 
-def _done(engine, job):
-    with engine.begin() as conn:
+def _done(engine, job, conn=None):
+    from contextlib import nullcontext
+
+    with (nullcontext(conn) if conn is not None else engine.begin()) as conn:
         conn.execute(
             update(annotation_jobs)
             .where(annotation_jobs.c.job_id == job["job_id"])
@@ -937,7 +1092,7 @@ def _retry_or_dead(engine, cfg, usable, stats, err):
     log.warning("批失败（%s），%d 条已按重试策略处理", err, len(usable))
 
 
-def pending_count(engine, task, scope_id=None):
+def pending_count(engine, task, scope_id=None, stage=None):
     with engine.connect() as conn:
         q = (
             select(func.count())
@@ -945,10 +1100,78 @@ def pending_count(engine, task, scope_id=None):
             .where(annotation_jobs.c.task == task,
                    annotation_jobs.c.status.in_(("pending", "claimed")))
         )
+        if stage is not None:
+            q = q.where(annotation_jobs.c.stage == stage)
         if scope_id is not None:
             from radar_db.scope_jobs import scope_condition
             q = q.where(scope_condition(scope_id))
         return conn.execute(q).scalar_one()
+
+
+# ── 重排优先级 ──────────────────────────────────────────────────────────
+
+
+def reprioritize(engine, *, anchor=None, ownership=None, dry_run=False):
+    """按 `job_priority` 重算全部 pending/claimed 任务的 priority。幂等：第二次跑改 0 条。
+
+    抽取时的优先级是相对当时的锚点算的；锚点往前推一天，「近 7 天」的边界就变了，
+    队列里的顺序却不会自己变。`full_own.py --watch` 长期跑时锚点会变，所以这一步要能
+    随时重跑。`current` 的判定沿用抽取时的窗口：scope 带基准期的，基准窗内的任务不算当前期。
+    """
+    from datetime import date
+
+    from radar_db.schema import analysis_scopes, meta_kv
+
+    with engine.connect() as conn:
+        if anchor is None:
+            a = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar()
+            anchor = date.fromisoformat(a[:10]) if a else None
+        scopes = {r.scope_id: r for r in conn.execute(select(analysis_scopes))}
+    if ownership is None:
+        from jobs.import_dump import pool_codes
+        ownership = pool_codes()
+
+    def current_from(scope_id):
+        sc = scopes.get(scope_id)
+        if sc is None or not sc.with_baseline:
+            return None  # 没有基准期：全部算当前期
+        # extract 里 date_from 是基准窗起点、date_to 是当前窗终点，两窗等长。
+        total_days = (sc.date_to.date() - sc.date_from.date()).days + 1
+        return sc.date_from.date() + timedelta(days=total_days // 2)
+
+    live = annotation_jobs.c.status.in_(("pending", "claimed"))
+    comment_q = (
+        select(annotation_jobs.c.job_id, annotation_jobs.c.priority, annotation_jobs.c.scope_id,
+               feeds.c.code, feeds.c.posted_at)
+        .select_from(annotation_jobs
+                     .join(comments, comments.c.comment_id == annotation_jobs.c.target_id)
+                     .join(feeds, feeds.c.feed_id == comments.c.feed_id))
+        .where(live, annotation_jobs.c.target_type == "comment")
+    )
+    feed_q = (
+        select(annotation_jobs.c.job_id, annotation_jobs.c.priority, annotation_jobs.c.scope_id,
+               feeds.c.code, feeds.c.posted_at)
+        .select_from(annotation_jobs.join(feeds, feeds.c.feed_id == annotation_jobs.c.target_id))
+        .where(live, annotation_jobs.c.target_type == "feed")
+    )
+    changes = []
+    with engine.connect() as conn:
+        for q in (comment_q, feed_q):
+            for job_id, old, scope_id, code, posted_at in conn.execute(q):
+                cf = current_from(scope_id)
+                current = cf is None or (posted_at is not None and posted_at.date() >= cf)
+                new = job_priority(posted_at, anchor, own=ownership.get(code) == "own", current=current)
+                if new != old:
+                    changes.append((job_id, new))
+    if not dry_run and changes:
+        now = clock.now()
+        with engine.begin() as conn:
+            for i in range(0, len(changes), 500):
+                for job_id, new in changes[i:i + 500]:
+                    conn.execute(update(annotation_jobs).where(annotation_jobs.c.job_id == job_id)
+                                 .values(priority=new, updated_at=now))
+    log.info("重排优先级：%d 条改动%s", len(changes), "（dry-run 未写）" if dry_run else "")
+    return len(changes)
 
 
 def estimate(engine, cfg, task, scope_id=None):
@@ -1001,13 +1224,20 @@ def main(argv=None):
     ap.add_argument("--max-items", type=int, help="本轮最多处理多少条")
     ap.add_argument("--budget-requests", type=int, help="本轮最多领取多少批（≈请求数）")
     ap.add_argument("--scope", help="只处理这个抽取范围（analysis_scopes.scope_id）")
+    ap.add_argument("--stage", choices=(STAGE_STUDENT, STAGE_LLM), help="只领这一段的任务（ADR-0021）")
     ap.add_argument("--priority", type=int, default=0)
+    ap.add_argument("--reprioritize", action="store_true",
+                    help="按最近窗口分档重算全部 pending 任务的 priority（幂等，不调模型）")
     args = ap.parse_args(argv)
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s"
     )
     engine = make_engine()
+    if args.reprioritize:
+        n = reprioritize(engine, dry_run=args.dry_run)
+        print(json.dumps({"reprioritized": n, "dry_run": args.dry_run}, ensure_ascii=False))
+        return 0
     cfg = config.load()
     # 配置里唯一敏感的是 Key，`redacted()` 只留尾四位 —— 够分辨「换过 Key 没有」，
     # 又不会把它写进任何一份可能被贴出去的日志（runbook §0）。
@@ -1041,7 +1271,7 @@ def main(argv=None):
 
     if args.run:
         stats = run(engine, cfg, task=args.task, max_items=args.max_items, scope_id=args.scope,
-                    budget_requests=args.budget_requests)
+                    budget_requests=args.budget_requests, stage=args.stage)
         log.info("本轮：%s", json.dumps(stats, ensure_ascii=False))
 
     if args.status or not (args.enqueue or args.run):
