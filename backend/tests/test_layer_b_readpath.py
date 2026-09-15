@@ -110,6 +110,91 @@ class TestThemesAndNegCats:
         assert th["positive"][0]["delta"]["short"] == "新增"   # 基准期 0 条积极
 
 
+class TestPoolNegativeRollup:
+    """`pool()` 的 `alerts`／`negMentions`／`own.neg`／`dNeg` 从负面类别派生（原来硬编码 None）。
+
+    数只有一份口径：`core/themes.neg_categories`。`pool()` 整窗批量走一遍
+    （`_neg_units_by_code` → `_neg_rollup`），产品监控页逐只走 `neg_cats_for` ——
+    两条路对同一只产品必须给同一个数。
+    """
+
+    def test_neg_mentions_and_alerts_equal_the_neg_category_rows(self, provider):
+        p = annotated(provider)  # 4 条消极全在 spread ⇒ 占比 100%、关注程度「高」
+        pool = p.pool("d1")
+        cats = p.neg_cats_for(OWN_CODE, "d1")
+        assert pool["negMentions"][OWN_CODE] == 4 == sum(c["mentions"] for c in cats)
+        assert pool["alerts"][OWN_CODE] == 1 == sum(1 for c in cats if c["severity"] == "high")
+
+    def test_unannotated_products_stay_none_not_zero(self, provider):
+        p = annotated(provider)
+        pool = p.pool("d1")
+        assert pool["negMentions"][PEER_CODE] is None and pool["alerts"][PEER_CODE] is None
+        assert sum(v is not None for v in pool["negMentions"].values()) == 1, "只有 3033 标过"
+
+    def test_annotated_without_any_negative_is_zero(self, provider):
+        """标过态度、一条消极都没有 ⇒ 0（查过了确实为零），与「没标过」的 None 分开。"""
+        p = annotated(provider)
+        add_annotations(p, [
+            {"annotation_id": 800, "target_id": 13, "subject_code": PEER_CODE, "kind": "attitude", "value": "neutral"},
+            {"annotation_id": 801, "target_id": 13, "subject_code": PEER_CODE, "kind": "relevance", "value": "relevant"},
+        ])
+        pool = p.pool("d1")
+        assert pool["negMentions"][PEER_CODE] == 0 and pool["alerts"][PEER_CODE] == 0
+        assert p.neg_cats_for(PEER_CODE, "d1") == []
+
+    def test_below_high_severity_is_not_an_alert(self, provider):
+        """`alerts` 数的是关注程度为「高」的类别（设计源），不是「有没有消极」。"""
+        p = annotated(provider, n_pos=8, n_neg=0)
+        # 十条消极分散在五个类别，各占 20% —— 都够不上「高」（≥25%）。
+        aspects = ["fee", "liquidity", "spread", "tracking", "dividend"]
+        add_comments(p, [{"comment_id": 200 + i} for i in range(10)])
+        rows = []
+        for i in range(10):
+            rows += [
+                {"annotation_id": 700 + 3 * i, "target_id": 200 + i, "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 701 + 3 * i, "target_id": 200 + i, "kind": "attitude", "value": "negative"},
+                {"annotation_id": 702 + 3 * i, "target_id": 200 + i, "kind": "aspect", "value": [aspects[i % 5]]},
+            ]
+        add_annotations(p, rows)
+        pool = p.pool("d1")
+        assert pool["negMentions"][OWN_CODE] == 10 and pool["alerts"][OWN_CODE] == 0
+        assert all(c["severity"] == "medium" for c in p.neg_cats_for(OWN_CODE, "d1"))
+
+    def test_own_total_is_unknown_while_any_own_product_is_unannotated(self, provider):
+        """`own.neg` 是「已标注子集」的计数：61 只里有一只没标过，合计就是未知，不是把它当 0。"""
+        p = annotated(provider)
+        own = p.pool("d1")["own"]
+        assert own["neg"] is None and own["dNeg"]["text"] == "数据暂不可用"
+
+    def test_own_total_and_delta_once_every_own_product_is_annotated(self, provider):
+        p = annotated(provider)
+        own_codes = [x["code"] for x in p._products if x["ownership"] == "own"]
+        rows, aid = [], 2000
+        for code in own_codes:
+            # 当期（c12 在 08-25）与基准期（c14 在 08-24）各给一条中性态度：标过、但不是消极。
+            rows += [
+                {"annotation_id": aid, "target_id": 12, "subject_code": code, "kind": "attitude", "value": "neutral"},
+                {"annotation_id": aid + 1, "target_id": 14, "subject_code": code, "kind": "attitude", "value": "neutral"},
+            ]
+            aid += 2
+        # 3033 基准期另有 1 条消极点差 ⇒ 基准 1、当期 4。
+        rows += [
+            {"annotation_id": aid, "target_id": 14, "kind": "relevance", "value": "relevant"},
+            {"annotation_id": aid + 1, "target_id": 14, "kind": "attitude", "value": "negative"},
+            {"annotation_id": aid + 2, "target_id": 14, "kind": "aspect", "value": ["spread"]},
+        ]
+        add_annotations(p, rows)
+        own = p.pool("d1")["own"]
+        assert own["neg"] == 4
+        assert own["dNeg"]["abs"] == 3 and own["dNeg"]["text"] == "+3（+300.0%）"
+
+    def test_base_unannotated_leaves_delta_unavailable_but_current_counts_given(self, provider):
+        p = annotated(provider)
+        pool = p.pool("d1")
+        assert pool["negMentions"][OWN_CODE] == 4
+        assert p._neg_rollup(p.build_range("d1"))[OWN_CODE]["base"] is None
+
+
 class TestTopicsAndHot:
     def test_market_topic_counts_direction_not_attitude(self, provider):
         p = annotated(provider)

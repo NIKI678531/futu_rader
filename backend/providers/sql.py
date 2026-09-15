@@ -362,12 +362,17 @@ class SqlProvider:
         pos = _add_all(_pos_of(o) for o in own)
         base_pos = _add_all(_att(base[o["code"]], "positive") for o in own)
         risk = self._compliance_counts(rng)
+        # 负面舆情条数与「有舆情」标记从负面类别派生（`_neg_rollup`，口径在 core/themes）。
+        # 自家合计走 `_add_all`：这是「已标注子集」的计数，有一只没标过合计就是未知 ——
+        # 与热度不同，这里没有裁决过披露口径，None 照常传染（铁律 2）。
+        neg_rollup = self._neg_rollup(rng)
+        neg = _add_all(neg_rollup[o["code"]]["mentions"] for o in own)
+        base_neg = _add_all(neg_rollup[o["code"]]["base"] for o in own)
         return {
             "list": items,
             "globalMax": global_max,
-            # alerts 与 negMentions 来自负面舆情类别（kind=`neg_category`），当前没有写入方。
-            "alerts": {p["code"]: None for p in self._products},
-            "negMentions": {p["code"]: None for p in self._products},
+            "alerts": {c: neg_rollup[c]["alerts"] for c in self._by_code},
+            "negMentions": {c: neg_rollup[c]["mentions"] for c in self._by_code},
             "complianceCount": risk,
             "baseMentions": {c: base[c]["mentions"] for c in self._by_code},
             "baseComments": {c: base[c]["comments"] for c in self._by_code},
@@ -376,12 +381,12 @@ class SqlProvider:
                 "count": len(own),
                 "heat": heat,
                 "heatUnknownPosts": heat_unknown,
-                "neg": None,
+                "neg": neg,
                 "pos": pos,
                 # 「没扫过」（None）与「扫了零条」（0）都不能当 0 加进合计，前者让合计未知。
                 "risk": _add_all(risk[o["code"]] for o in own),
                 "dHeat": delta(heat, base_heat_own),
-                "dNeg": delta(None, None),
+                "dNeg": delta(neg, base_neg),
                 "dPos": delta(pos, base_pos),
             },
         }
@@ -935,6 +940,41 @@ class SqlProvider:
             r["stale"] = stale
         return rows
 
+    def _neg_rollup(self, rng):
+        """全池每一只的负面舆情类别汇总 `{code: {"mentions", "alerts", "base"}}`，`pool()` 用。
+
+        三个数都从 `core/themes.neg_categories` 的行里加出来（分桶与关注程度的唯一口径），
+        这里不另数一遍：`mentions` ＝ 各类别 `mentions` 之和，`alerts` ＝ 关注程度为「高」
+        的类别数（设计源 `radar-data.js:435` 逐字：`cats.filter(c => c.severity === 'high').length`；
+        前端「仅有舆情」开关按真值判），`base` ＝ 基准期按同一口径算出来的 `mentions`。
+        名字与摘要不取（`labels` 留空）—— 这三个数不看模型写了什么字。
+
+        没标过（`_neg_units_by_code` 给 None）的产品三个数都是 None，不是 0：那是
+        「暂不可用」。基准期没标过则只有 `base` 是 None，当期的数照给。
+        """
+        key = ("neg_rollup", rng["from"], rng["to"], rng["gran"])
+        hit = self._cache.get(key)
+        if hit is not None:
+            return hit
+        cur_units = self._neg_units_by_code(rng["from"], rng["to"])
+        base_units = self._neg_units_by_code(rng["benchFrom"], rng["benchTo"])
+        bi = self._bucket_index(rng)
+        hit = {}
+        for code in self._by_code:
+            cur, base = cur_units[code], base_units[code]
+            if cur is None:
+                hit[code] = {"mentions": None, "alerts": None, "base": None}
+                continue
+            rows = core_themes.neg_categories(code, cur, base, rng["buckets"], bi)
+            base_rows = None if base is None else core_themes.neg_categories(code, base, None, [], bi)
+            hit[code] = {
+                "mentions": sum(r["mentions"] for r in rows),
+                "alerts": sum(1 for r in rows if r["severity"] == "high"),
+                "base": None if base_rows is None else sum(r["mentions"] for r in base_rows),
+            }
+        self._cache[key] = hit
+        return hit
+
     def topics_for(self, code, range_key):
         if code not in self._by_code:
             return MISSING
@@ -1329,6 +1369,41 @@ class SqlProvider:
         hit = self._cache.get(key)
         if hit is None:
             hit = self._current_annotations("attitude", "comment", window=_window({"from": frm, "to": to}))
+            self._cache[key] = hit
+        return hit
+
+    def _neg_units_by_code(self, frm, to):
+        """窗口内全池的**消极判定单元**按产品归组：`{code: [unit, …] | None}`。
+
+        与 `_units(code, rng)["units"]` 里 `attitude == "negative"` 的那一部分**逐条相同**
+        （相关 ＋ 有态度，aspects 与 posted_at 同源），只是整窗一次取回、120 只一起分：
+        `pool()` 要给全池每一只的 `negMentions`／`alerts`，逐只走 `_units` 是 120 × 4 条
+        带 `subject_code` 的查询，再加基准期一倍。
+
+        None 与 `[]` 分得开：None ＝ 这只产品在窗口内一条态度标注都没有（没标过 ⇒
+        「暂不可用」），`[]` ＝ 标过但一条消极都没有（那是 0）。判据与 `_units` 一致 ——
+        看的是有没有态度标注，不是有没有消极。
+        """
+        key = ("neg_units", frm, to)
+        hit = self._cache.get(key)
+        if hit is None:
+            window = _window({"from": frm, "to": to})
+            att = self._window_attitude(frm, to)
+            rel = self._current_annotations("relevance", "comment", window=window)
+            asp = self._current_annotations("aspect", "comment", window=window)
+            hit = {c: None for c in self._by_code}
+            for unit, a in att.items():
+                code = unit[1]
+                if code not in hit:
+                    continue
+                if hit[code] is None:
+                    hit[code] = []
+                if a["value"] != "negative" or (rel.get(unit) or {}).get("value") != "relevant":
+                    continue
+                hit[code].append({
+                    "comment_id": unit[0], "attitude": "negative",
+                    "aspects": (asp.get(unit) or {}).get("value") or [], "posted_at": a["posted_at"],
+                })
             self._cache[key] = hit
         return hit
 
