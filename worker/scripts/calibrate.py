@@ -182,8 +182,11 @@ def main(argv=None):
               "offpool_dropped": len(dropped_offpool),
               "strata": dict(Counter(f"{_script(r.content)}|{ownership.get(r.code)}" for r, _ in items))}
 
-    # 实验 1：b=30 基线 与 b=1
+    # 实验 1：b=N 基线 与 b=1（N 取 --batch；ADR-0021 后本机跑的是 --batch 5，键名跟着 N 走，
+    # 免得报告里写着 b30 实际是 b5）。
+    key_bn = f"b1_vs_b{args.batch}"
     b30, f30 = label_batch(provider, v2, "v2", items, args.batch)
+    report["batch"] = args.batch
     report["v2_b30"] = {"labeled": len(b30), "failed": f30,
                         "attitude_dist": dict(Counter(a.attitude for a in b30.values())),
                         "relevance_dist": dict(Counter(a.relevance for a in b30.values())),
@@ -194,11 +197,11 @@ def main(argv=None):
         b1, f1 = label_batch(provider, v2, "v2", items, 1)
         rel, n_rel = agreement(b30, b1, "relevance")
         att, n_att = agreement(b30, b1, "attitude")
-        report["b1_vs_b30"] = {"labeled_b1": len(b1), "failed_b1": f1,
-                               "relevance_agreement": rel, "attitude_agreement": att, "n": n_att}
+        report[key_bn] = {"labeled_b1": len(b1), "failed_b1": f1,
+                          "relevance_agreement": rel, "attitude_agreement": att, "n": n_att}
         for k in b30:
             if k in b1 and (b30[k].attitude != b1[k].attitude or b30[k].relevance != b1[k].relevance):
-                disagreements.append(("b1_vs_b30", k, b30[k].relevance, b30[k].attitude, b1[k].relevance, b1[k].attitude))
+                disagreements.append((key_bn, k, b30[k].relevance, b30[k].attitude, b1[k].relevance, b1[k].attitude))
 
     # 实验 2：v1 vs v2
     if not args.skip_v1:
@@ -214,7 +217,7 @@ def main(argv=None):
                 disagreements.append(("v1_vs_v2", k, b30[k].relevance, b30[k].attitude, bv1[k].relevance, bv1[k].attitude))
 
     verdict = []
-    for key in ("b1_vs_b30", "v1_vs_v2"):
+    for key in (key_bn, "v1_vs_v2"):
         if key in report and report[key]["attitude_agreement"] is not None and report[key]["attitude_agreement"] < 0.9:
             verdict.append(f"{key} 态度一致率 {report[key]['attitude_agreement']:.1%} < 90%：先改 Prompt 再放量")
     report["verdict"] = verdict or ["一致率达标；仅个股误杀率待人工翻 CSV 后填写"]
