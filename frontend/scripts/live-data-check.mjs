@@ -18,12 +18,15 @@ try {
     status: 'ok', data: { dataProvider: 'sql', dataRevision: String(revision) },
   } }))
   await page.goto('http://127.0.0.1:5173/product?code=3033&range=mtd', { waitUntil: 'domcontentloaded' })
-  await page.getByText('Refresh verification 0', { exact: true }).waitFor({ timeout: 90000 })
+  /* `analysisProgress.text` 不再是 Shell 底下的常显横幅，而是右上角「处理进度」入口按钮的
+     title（ProgressDrawer.jsx）；按属性等它，验证的仍是「版本刷新后 /meta 重新读了一遍」。 */
+  const progressTitle = (n) => page.locator(`[data-progress-button][title="Refresh verification ${n}"]`)
+  await progressTitle(0).waitFor({ timeout: 90000 })
   await page.getByText('2026-08-01 ～ 2026-08-25', { exact: true }).first().waitFor()
   await page.waitForLoadState('networkidle')
   revision = 1
   await page.evaluate(() => window.dispatchEvent(new Event('focus')))
-  await page.getByText('Refresh verification 1', { exact: true }).waitFor({ timeout: 90000 })
+  await progressTitle(1).waitFor({ timeout: 90000 })
   assert.equal(page.url(), 'http://127.0.0.1:5173/product?code=3033&range=mtd')
   assert.equal(errors.length, 0, errors.join('\n'))
   const pixels = await page.locator('canvas').first().evaluate(canvas => {
