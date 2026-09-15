@@ -685,10 +685,15 @@ class SqlProvider:
     # 「标注过」的判据与 `_scan` 同源（`att is None` 即没标过），不另写一套。
 
     def _synth(self, code, range_key, kind):
-        """现行生成物：`{subkey: {value, evidenceIds, reviewState}}`。链末、非 rejected；同链末取最新。"""
+        """现行生成物：`{subkey: {value, evidenceIds, reviewState}}`。链末、非 rejected；同链末取最新。
+
+        `synth_dirty_{code}_{range}` 脏标记**不再**让这里返回空：底层标注变了、Layer B 还没
+        重新汇总时，旧结论照常返回，由 `_stale()` 告诉调用方它已经过期。原来的做法是脏了就
+        藏起来 —— 页面上的总结与主题名会在每一批标注落库后消失几分钟到几小时，直到下一次
+        汇总跑完；读的人看到的是「暂不可用」，而库里明明有一份昨天的结论。过期的结论加一枚
+        「待更新」比消失诚实：它说清了自己是什么。
+        """
         if self._anchor is None:
-            return {}
-        if self._meta.get(f"synth_dirty_{code}_{range_key}") == "1":
             return {}
         key = ("synth", code, range_key, kind, self._anchor)
         if key in self._cache:
@@ -724,6 +729,17 @@ class SqlProvider:
             out = {}
         self._cache[key] = out
         return out
+
+    def _stale(self, code, range_key, *kinds):
+        """这只产品这个区间的生成物是否已过期：脏标记为 `"1"` 且至少有一类生成物在。
+
+        没有生成物就没有什么可过期的 —— 那是 `unavailable`，不是 `stale`；两枚徽章说的
+        是两件事（「模型还没写」vs「模型写过、但底层又变了」）。脏标记由 worker 写进
+        `meta_kv`（`radar_db/revisions.mark_synthesis`），标注落库时置 1、汇总跑完置 0。
+        """
+        if self._meta.get(f"synth_dirty_{code}_{range_key}") != "1":
+            return False
+        return any(self._synth(code, range_key, kind) for kind in kinds)
 
     def _units(self, code, rng):
         """区间内这只产品的判定单元（相关＋有态度），以及市场方向单元。整块 None＝没标过。"""
@@ -799,24 +815,28 @@ class SqlProvider:
         for code in self._by_code:
             att = scan[code]["att"]
             if att is None:
-                out[code] = {"status": "unavailable", "text": "数据暂不可用", "sample": None, "ok": False}
+                out[code] = {"status": "unavailable", "text": "数据暂不可用", "sample": None, "ok": False, "stale": False}
                 continue
             valid = att["positive"] + att["negative"]
             if valid == 0 and att["neutral"] == 0:
-                out[code] = {"status": "empty", "text": "暂无相关内容", "sample": 0, "ok": False}
+                out[code] = {"status": "empty", "text": "暂无相关内容", "sample": 0, "ok": False, "stale": False}
                 continue
             if not sample_sufficient(att["positive"], att["negative"]):
-                out[code] = {"status": "low_sample", "text": "样本不足，暂无主流观点", "sample": valid, "ok": False}
+                out[code] = {"status": "low_sample", "text": "样本不足，暂无主流观点", "sample": valid, "ok": False,
+                             "stale": False}
                 continue
             row = self._synth(code, range_key, "hot_summary").get(NO_SUBJECT)
             if row is None or not isinstance(row["value"], dict) or "text" not in row["value"]:
-                out[code] = {"status": "unavailable", "text": "数据暂不可用", "sample": valid, "ok": False}
+                out[code] = {"status": "unavailable", "text": "数据暂不可用", "sample": valid, "ok": False, "stale": False}
                 continue
             net = att["positive"] - att["negative"]
             out[code] = {
                 "status": "ok", "text": row["value"]["text"], "sample": valid,
                 "tone": "pos" if net > 0 else "neg" if net < 0 else "neu", "ok": True,
                 "reviewState": row["reviewState"], "evidenceIds": row["evidenceIds"],
+                # 计数（sample / tone）是刚扫出来的，文字是脏标记之前写的：两者可能对不上，
+                # 前端据此挂「待更新」而不是把这句话当成对当前计数的解释。
+                "stale": self._stale(code, range_key, "hot_summary"),
             }
         return out
 
@@ -838,13 +858,14 @@ class SqlProvider:
         ]
         if not s["mentions"] and valid == 0 and att["neutral"] == 0:
             return {"text": "暂无相关内容 — 在所选区间内已完成检查，该产品没有识别到提及内容。",
-                    "sample": 0, "low": True, "points": [], "evidenceIds": []}
+                    "sample": 0, "low": True, "points": [], "evidenceIds": [], "stale": False}
         if not sample_sufficient(att["positive"], att["negative"]):
             sentences.append(
                 f"针对产品本身的有效态度提及为 {valid} 条，低于 {LOW_SAMPLE} 条的判定阈值，本区间不输出整体倾向结论。"
             )
             sentences.append(f"原始数量为积极 {att['positive']} 条、消极 {att['negative']} 条、中性 {att['neutral']} 条。")
-            return {"text": "".join(sentences), "sample": valid, "low": True, "points": [], "evidenceIds": []}
+            return {"text": "".join(sentences), "sample": valid, "low": True, "points": [], "evidenceIds": [],
+                    "stale": False}
         diff = att["positive"] - att["negative"]
         sentences.append(
             f"产品态度分类中积极 {att['positive']} 条、消极 {att['negative']} 条、中性 {att['neutral']} 条，"
@@ -864,6 +885,9 @@ class SqlProvider:
             "evidenceIds": list(dict.fromkeys(ev_ids)),
             "aiStatus": "ok" if points else "unavailable",
             "reviewState": row["reviewState"] if row else None,
+            # 计数句是刚扫出来的事实，要点句是脏标记之前写的：脏时两半可能对不上，
+            # 要点照发并标 stale，让页面挂「待更新」而不是让这一段消失。
+            "stale": bool(points) and self._stale(code, range_key, "summary"),
         }
 
     def themes_for(self, code, range_key):
@@ -875,10 +899,14 @@ class SqlProvider:
         u = self._units(code, rng)
         if u is None:
             return None
-        return core_themes.themes(
+        out = core_themes.themes(
             code, core_themes.group_by_polarity(u["units"]), self._base_units_grouped(code, rng),
             rng["buckets"], self._bucket_index(rng), self._labels(code, range_key, "theme_label", split=True),
         )
+        # 数是刚从标注算的，名字与摘要是脏标记之前写的。stale 挂在顶层：`{positive, negative}`
+        # 两个列表共用同一批生成物，同脏同清。
+        out["stale"] = self._stale(code, range_key, "theme_label")
+        return out
 
     def _base_units_grouped(self, code, rng):
         base = self._base_units(code, rng)
@@ -896,10 +924,16 @@ class SqlProvider:
         neg = [x for x in u["units"] if x["attitude"] == "negative"]
         base = self._base_units(code, rng)
         base_neg = None if base is None else [x for x in base if x["attitude"] == "negative"]
-        return core_themes.neg_categories(
+        rows = core_themes.neg_categories(
             code, neg, base_neg, rng["buckets"], self._bucket_index(rng),
             self._labels(code, range_key, "neg_category"),
         )
+        # 返回的是列表，没有顶层可放 —— stale 逐行带。同一产品同一区间的类别共用一份
+        # 生成物，所以每行的值相同；前端读任意一行即可。
+        stale = self._stale(code, range_key, "neg_category")
+        for r in rows:
+            r["stale"] = stale
+        return rows
 
     def topics_for(self, code, range_key):
         if code not in self._by_code:
@@ -916,9 +950,13 @@ class SqlProvider:
             window=_window({"from": rng["benchFrom"], "to": rng["benchTo"]}),
         )
         base_units = [{"market_direction": row["value"]} for row in baseline.values()] if baseline else None
-        return core_topics.market_topic(
+        rows = core_topics.market_topic(
             code, u["market"], rng["buckets"], self._bucket_index(rng), label, base_units,
         )
+        stale = self._stale(code, range_key, "topic_label")
+        for r in rows:
+            r["stale"] = stale
+        return rows
 
     def stages_for(self, code, range_key):
         if code not in self._by_code:
@@ -941,7 +979,9 @@ class SqlProvider:
         def summary_of(s):
             return (stage_rows.get(core_stages.stage_key(s)) or {}).get("value", {}).get("summary")
 
-        return core_stages.build(code, series, rng["gran"], rng["days"], cat_of, digest_of, summary_of)
+        out = core_stages.build(code, series, rng["gran"], rng["days"], cat_of, digest_of, summary_of)
+        out["stale"] = self._stale(code, range_key, "stage_unit", "stage_summary")
+        return out
 
     def competitors_for(self, code, range_key):
         """双向：固定对位（CMAP，不经模型）＋ 模型从评论区共现识别的候选（待确认）。"""
@@ -984,7 +1024,11 @@ class SqlProvider:
                 "reasonStatus": "ok" if r else "unavailable",
                 "reviewState": (r or {}).get("reviewState"),
             })
-        return {"status": "ok" if items else "empty", "list": items}
+        return {
+            "status": "ok" if items else "empty", "list": items,
+            # 固定对位不经模型，永远不脏；脏的只有模型识别的候选与它们的理由。
+            "stale": self._stale(code, range_key, "competitor_reason"),
+        }
 
     # ── 账号域：产品相关 KOL 与 KOL 其他产品观点 ─────────────────────
 
