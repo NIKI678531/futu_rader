@@ -32,10 +32,44 @@ def test_meta_returns_ok_envelope(client):
     assert r.get_json()["status"] == "ok"
 
 
+def test_sql_data_version_changes_without_restart(sql_provider):
+    from radar_db.revisions import bump_revision
+    before = dict(sql_provider._meta)
+    with sql_provider._engine.begin() as conn:
+        bump_revision(conn, "annotation")
+    assert sql_provider.refresh()
+    assert before != sql_provider._meta
+
+
+def test_progress_alone_does_not_invalidate_expensive_data(sql_provider):
+    from sqlalchemy import insert
+    from radar_db.schema import meta_kv
+    sql_provider._cache["probe"] = "cached"
+    with sql_provider._engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k="own_analysis_progress", v='{"status":"running"}'))
+    assert sql_provider.refresh() is False
+    assert sql_provider._cache["probe"] == "cached"
+
+
 def test_presets_are_the_five_ranges_with_d7_default(client):
     data = client.get("/api/v1/meta").get_json()["data"]
     assert [p["key"] for p in data["presets"]] == ["d1", "d2", "d7", "d14", "d30"]
     assert data["defaultRange"] == "d7"
+
+
+def test_sql_exposes_month_to_date_with_backend_computed_dates(sql_client):
+    data = sql_client.get("/api/v1/meta").get_json()["data"]
+    preset = next(preset for preset in data["presets"] if preset["key"] == "mtd")
+    response = sql_client.get("/api/v1/ranges/mtd")
+    assert response.status_code == 200
+    month = response.get_json()["data"]
+    assert month["from"].endswith("-01")
+    assert month["days"] == preset["days"]
+    assert len(month["buckets"]) == preset["bucketCount"]
+    assert sql_client.get("/api/v1/pool?range=mtd").status_code == 200
+    benchmark = sql_client.get("/api/v1/products/3033/benchmark?range=mtd").get_json()["data"]
+    assert "07-07" in benchmark["base"]["buckets"][0]["tip"]
+    assert "08-01" not in benchmark["base"]["buckets"][0]["tip"]
 
 
 def test_bucket_granularity_follows_prd_3_1(client):

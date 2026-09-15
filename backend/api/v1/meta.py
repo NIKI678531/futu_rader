@@ -5,7 +5,7 @@
 """
 
 from core.envelope import respond
-from core.meta import meta_payload
+from core.meta import meta_payload, version_payload
 
 from . import v1_bp
 
@@ -13,3 +13,8 @@ from . import v1_bp
 @v1_bp.get("/meta")
 def meta():
     return respond(meta_payload())
+
+
+@v1_bp.get("/version")
+def version():
+    return respond(version_payload())

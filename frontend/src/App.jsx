@@ -1,4 +1,6 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { cloneElement, startTransition, useEffect, useState } from 'react'
+import { startLiveUpdates } from './lib/api'
 import ScreenBoundary from './components/ScreenBoundary'
 import OfficialActivity from './screens/OfficialActivity'
 import KolActivity from './screens/KolActivity'
@@ -17,9 +19,11 @@ import SectorOverview from './screens/sectorOverview/index.jsx'
    change also clears a stuck error state. */
 export default function App() {
   const loc = useLocation()
+  const [dataVersion, setDataVersion] = useState(0)
+  useEffect(() => startLiveUpdates(() => startTransition(() => setDataVersion(version => version + 1))), [])
   const key = loc.pathname + loc.search
 
-  const screen = (element) => <ScreenBoundary key={key}>{element}</ScreenBoundary>
+  const screen = (element) => <ScreenBoundary key={key}>{cloneElement(element, { dataVersion })}</ScreenBoundary>
 
   return (
     <Routes>

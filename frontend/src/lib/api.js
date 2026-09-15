@@ -59,6 +59,7 @@ export function isApiError(err) {
 
 /** url → { state: 'pending' | 'ok' | 'error', promise, body, error } */
 const cache = new Map()
+let observedRevision
 
 function load(url) {
   const entry = { state: 'pending', promise: null, body: undefined, error: undefined }
@@ -95,6 +96,7 @@ function load(url) {
       }
       entry.state = 'ok'
       entry.body = body
+      if (url === '/meta' && observedRevision === undefined) observedRevision = body.data?.dataRevision
     })
     .catch((err) => {
       entry.state = 'error'
@@ -131,6 +133,42 @@ export function read(url) {
 /** 清空缓存，用于「重试」：下一次 read() 会重新打网络。 */
 export function clearCache() {
   cache.clear()
+}
+
+export function startLiveUpdates(onChange) {
+  let stopped = false
+  let busy = false
+  async function check() {
+    if (stopped || busy || document.visibilityState === 'hidden') return
+    if (Array.from(cache.values()).some(entry => entry.state === 'pending')) return
+    busy = true
+    try {
+      const response = await fetch(BASE + '/version', { cache: 'no-store' })
+      if (!response.ok) return
+      const body = await response.json()
+      const revision = body.data?.dataRevision
+      if (!revision || revision === 'demo') return
+      if (observedRevision === undefined) observedRevision = revision
+      else if (revision !== observedRevision && !stopped) {
+        observedRevision = revision
+        clearCache()
+        onChange()
+      }
+    } catch {
+      // Keep the last successful view during a transient version check failure.
+    } finally {
+      busy = false
+    }
+  }
+  const timer = window.setInterval(check, 30000)
+  window.addEventListener('focus', check)
+  document.addEventListener('visibilitychange', check)
+  return () => {
+    stopped = true
+    window.clearInterval(timer)
+    window.removeEventListener('focus', check)
+    document.removeEventListener('visibilitychange', check)
+  }
 }
 
 /** 拼查询串。值为 undefined 的键直接不出现，不会变成字符串 "undefined"。 */

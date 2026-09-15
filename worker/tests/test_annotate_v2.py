@@ -268,8 +268,8 @@ def test_claim_is_scoped(engine, cfg):
     annotate.enqueue_comments(engine, cfg, codes=[CODE], scope_id="scope-A")
     # 同样的候选换个 scope 不会重复排队（唯一键不含 scope）。
     assert annotate.enqueue_comments(engine, cfg, codes=[CODE], scope_id="scope-B") == 0
-    assert annotate.claim(engine, "comment_product", 10, scope_id="scope-B") == []
-    assert len(annotate.claim(engine, "comment_product", 10, scope_id="scope-A")) == 3
+    assert len(annotate.claim(engine, "comment_product", 10, scope_id="scope-B")) == 3
+    assert annotate.claim(engine, "comment_product", 10, scope_id="scope-A") == []
     assert annotate.pending_count(engine, "comment_product", "scope-A") == 3  # claimed 也算在途
 
 

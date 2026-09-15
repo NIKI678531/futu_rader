@@ -336,7 +336,12 @@ def _strictify(node):
     if not isinstance(node, dict):
         return node
 
-    out = {k: _strictify(v) for k, v in node.items() if k not in _UNSUPPORTED}
+    out = {
+        key: ({name: _strictify(schema) for name, schema in value.items()}
+              if key in ("properties", "$defs", "definitions") and isinstance(value, dict)
+              else _strictify(value))
+        for key, value in node.items() if key not in _UNSUPPORTED
+    }
     if out.get("type") == "object" or "properties" in out:
         out["additionalProperties"] = False
         out["required"] = list(out.get("properties", {}).keys())

@@ -25,7 +25,7 @@ FIXTURE = json.loads(
 DEMO_ANCHOR = date(2026, 9, 1)
 
 
-@pytest.mark.parametrize("key", list(PRESETS))
+@pytest.mark.parametrize("key", list(FIXTURE))
 def test_matches_the_design_source_byte_for_byte(key):
     assert build(key, DEMO_ANCHOR) == FIXTURE[key]
 
@@ -59,3 +59,14 @@ def test_no_fallback_to_today_when_the_anchor_is_missing():
     assert parse_anchor("") is None
     assert parse_anchor("not-a-date") is None
     assert parse_anchor("2026-08-25 23:59:59") == date(2026, 8, 25)
+
+
+@pytest.mark.parametrize("anchor", [date(2026, 8, 25), date(2026, 8, 31), date(2024, 2, 29), date(2026, 9, 1)])
+def test_month_to_date_stops_at_actual_data_anchor(anchor):
+    result = build("mtd", anchor)
+    assert result["from"] == anchor.replace(day=1).isoformat()
+    assert result["to"] == anchor.isoformat()
+    assert result["days"] == anchor.day
+    assert len(result["dates"]) == anchor.day
+    assert result["buckets"][0]["day"] == result["from"]
+    assert sum(bucket["span"] for bucket in result["buckets"]) == pytest.approx(anchor.day)

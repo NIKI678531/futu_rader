@@ -27,6 +27,15 @@ The backend defaults to `sql`; no demo service or separate `8019` backend is nee
 `npm run build` and `npm run preview` use the same real-data API default.
 Missing database data stays unavailable; it never falls back to fixtures.
 
+The full own-product AI worker and FMP price synchronization are described in
+[the runbook, section 23](docs/ai-data-integration-runbook.md#23-全自家产品与-fmp-行情自动链路2026-09-14).
+Run `worker/.venv/Scripts/python -X utf8 worker/jobs/full_own.py --watch` from the
+repository root after installing worker/backend requirements and migrating to head.
+This process makes paid model calls, resumes existing scopes, and synchronizes FMP
+hourly when its worker-only credentials are configured. The UI remains read-only.
+New normalized Futu exports enter via `worker/jobs/ingest.py`; unknown formats still
+require an adapter. No live Futu collection endpoint is assumed or fabricated.
+
 `npm run design` is a design/test-only command serving the read-only static reference
 on `5174`, not the application. Do not start it for daily use.
 

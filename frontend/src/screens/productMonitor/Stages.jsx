@@ -1,5 +1,6 @@
 import React from 'react'
 import { s, hover } from '../../lib/dc'
+import R from '../../data/radar'
 
 /* 热度变化与阶段观点 — 热度折线（SVG）＋ 阶段带 ＋ 可展开的阶段表 */
 export default function Stages({ v }) {
@@ -128,7 +129,7 @@ export default function Stages({ v }) {
               </React.Fragment>
             ))}
           </div>
-          <div style={s('padding:12px 20px 14px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>{v.stageRule} 热度口径与全站一致（{v.heatFormulaText}）；点阶段行展开逐时段摘要，「证据 →」打开该阶段区间的原文侧栏，每条可跳转 Futu 原文。阶段观点为演示数据。</div>
+          <div style={s('padding:12px 20px 14px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>{v.stageRule} 热度口径与全站一致（{v.heatFormulaText}）；点阶段行展开逐时段摘要，「证据 →」打开该阶段区间的原文侧栏，每条可跳转 Futu 原文。{R.DATA_PROVIDER === 'sql' ? '阶段观点由 AI 生成，未经人工验证。' : '阶段观点为演示数据。'}</div>
         </>
       )}
     </div>

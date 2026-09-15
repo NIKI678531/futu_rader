@@ -41,7 +41,8 @@ from ai import config  # noqa: E402
 from ai.providers import build as build_provider  # noqa: E402
 from jobs import annotate, audit, synthesize  # noqa: E402
 from radar_db import make_engine  # noqa: E402
-from radar_db.schema import analysis_scopes  # noqa: E402
+from radar_db.schema import analysis_scopes, annotation_jobs  # noqa: E402
+from radar_db.scope_jobs import scope_condition
 
 log = logging.getLogger("worker.pipeline")
 
@@ -75,12 +76,23 @@ def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=
             summary["aborted"] = stats["aborted"]
             return summary
 
-    if not skip_synth:
+    if not dry_run:
+        with engine.connect() as conn:
+            unfinished = conn.execute(
+                select(annotation_jobs.c.job_id).where(
+                    scope_condition(scope_id),
+                    annotation_jobs.c.status != "done",
+                ).limit(1)
+            ).first()
+        summary["complete"] = unfinished is None
+    if not skip_synth and (dry_run or summary["complete"]):
         st = synthesize.run(engine, cfg, codes=codes, ranges=ranges or synthesize.DEFAULT_RANGES,
                             provider=provider, dry_run=dry_run)
         summary["steps"].append({"task": "synthesize", **{k: st[k] for k in ("run_id", "calls", "written",
                                                                                 "skipped_same", "low_sample",
                                                                                 "errors", "tok_in", "tok_out")}})
+        if not dry_run and st["errors"]:
+            summary["complete"] = False
     if not dry_run:
         rep = audit.report(engine, scope_id)
         summary["audit"] = {"queue": rep["queue"], "needs_review_rate": rep["annotations"]["needs_review_rate"],
@@ -106,7 +118,7 @@ def main(argv=None):
               max_items=args.max_items, skip_synth=args.skip_synth,
               ranges=[r.strip() for r in args.ranges.split(",")] if args.ranges else None)
     print(json.dumps(out, ensure_ascii=False, indent=1, default=str))
-    return 0
+    return 0 if args.dry_run or out.get("complete", False) else 2
 
 
 if __name__ == "__main__":

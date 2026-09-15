@@ -77,7 +77,8 @@ async function main() {
       const page = await browser.newPage()
       const errs = []
       page.on('pageerror', (e) => errs.push(String(e.message || e)))
-      await page.goto(base + route, { waitUntil: 'networkidle' })
+      await page.goto(base + route, { waitUntil: 'domcontentloaded' })
+      await page.locator('[data-screen-label], [data-screen-error], [data-screen-crash]').first().waitFor({ state: 'visible', timeout: 90000 })
       await sleep(600)
       if (open) {
         const target = open.find(page)
@@ -88,7 +89,7 @@ async function main() {
       const hits = POISON.filter((w) => text.includes(w))
       const na = (text.match(/暂不可用/g) || []).length
       const empty = (text.match(/暂无相关内容|暂无内容/g) || []).length
-      const ok = errs.length === 0 && hits.length === 0
+      const ok = text.trim().length > 0 && errs.length === 0 && hits.length === 0
       if (!ok) bad++
       console.log(
         `${ok ? '✓' : '✗'} ${route.padEnd(12)} ${label.padEnd(12)}` +

@@ -14,12 +14,14 @@ kind=`topic_label`，subkey=`market`）。要分成多个话题得先有聚类 �
 设计源每个区间给三个话题；这里给一个真的，不给三个编的。
 """
 
+from .delta import delta
+
 DIRECTION_TO_TRICOLOR = {"bullish": "positive", "bearish": "negative", "neutral": "neutral"}
 DEFAULT_TITLE = "市场方向与指数走势讨论"
 MARKET_SUBKEY = "market"
 
 
-def market_topic(code, units, buckets, bucket_index, label=None):
+def market_topic(code, units, buckets, bucket_index, label=None, base_units=None):
     """`units`：带 `market_direction`（非 None）与 `posted_at` 的判定单元。返回话题列表（0 或 1 个）。"""
     if not units:
         return []
@@ -39,6 +41,9 @@ def market_topic(code, units, buckets, bucket_index, label=None):
         return []
     peak_i = max(range(nb), key=lambda i: per_bucket[i]) if nb else None
     lab = label or {}
+    base_mentions = None if base_units is None else sum(
+        unit.get("market_direction") in DIRECTION_TO_TRICOLOR for unit in base_units
+    )
     return [
         {
             "id": f"{code}-tp-{MARKET_SUBKEY}",
@@ -48,13 +53,16 @@ def market_topic(code, units, buckets, bucket_index, label=None):
             or f"区间内 {mentions} 条评论谈到市场或指数方向而未评价产品本身：看多 {tri['positive']}、看空 {tri['negative']}、无方向 {tri['neutral']}。",
             "labelStatus": "ok" if lab.get("title") else "unavailable",
             "mentions": mentions,
+            "delta": delta(mentions, base_mentions),
+            "evidenceCount": mentions,
+            "confidence": None,
             **tri,
             "buckets": [
                 {"label": b["label"], "tip": b["tip"], "mentions": n} for b, n in zip(buckets, per_bucket)
             ],
-            "peak": {"label": buckets[peak_i]["label"], "tip": buckets[peak_i]["tip"],
-                     "mentions": per_bucket[peak_i]} if peak_i is not None else None,
-            "split": {k: (v / mentions * 100) for k, v in tri.items()},
+            "peak": buckets[peak_i]["tip"] if peak_i is not None else None,
+            "split": f"看多 {tri['positive']} 条、看空 {tri['negative']} 条、无方向 {tri['neutral']} 条",
             "evidenceIds": lab.get("evidence_ids") or [],
+            "reviewState": lab.get("reviewState"),
         }
     ]

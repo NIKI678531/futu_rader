@@ -178,7 +178,7 @@ export default class ProductMonitor extends React.Component {
     var mode = this.props.candleColor || 'greenUp';
     var upC = mode === 'redUp' ? '#C53030' : (mode === 'neutral' ? '#6E7A8A' : '#1F8A5B');
     var dnC = mode === 'redUp' ? '#1F8A5B' : (mode === 'neutral' ? '#6E7A8A' : '#C53030');
-    var sig = s.code + '|' + s.rangeKey + '|' + s.hover + '|' + JSON.stringify(lg) + '|' + mode + '|' + s.trendW;
+    var sig = s.code + '|' + s.rangeKey + '|' + s.hover + '|' + JSON.stringify(lg) + '|' + mode + '|' + s.trendW + '|' + this.props.dataVersion;
     if (this._sig === sig) return;
     this._sig = sig;
     var range = R.buildRange(s.rangeKey);
@@ -401,6 +401,19 @@ export default class ProductMonitor extends React.Component {
     var sevStyle = { '高': ['var(--negative-100)', 'var(--negative-700)'], '中': ['var(--warning-100)', 'var(--warning-700)'], '低': ['var(--ink-100)', 'var(--ink-600)'] };
     var lifeStyleT = { '新增': ['var(--negative-100)', 'var(--negative-700)'], '持续': ['var(--warning-100)', 'var(--warning-700)'], '消退': ['var(--ink-100)', 'var(--ink-600)'] };
     var themeMeta = function (t) {
+      if ('hasMeta' in t) {
+        var severity = t.severityLabel, lifecycle = t.lifecycleLabel;
+        var severityStyle = sevStyle[severity] || ['var(--ink-100)', 'var(--ink-600)'];
+        var lifecycleStyle = lifeStyleT[lifecycle] || ['var(--ink-100)', 'var(--ink-600)'];
+        return {
+          hasMeta: t.hasMeta, severity: severity == null ? '暂不可用' : severity,
+          sevBg: severityStyle[0], sevFg: severityStyle[1],
+          life: lifecycle == null ? '暂不可用' : lifecycle,
+          lifeBg: lifecycleStyle[0], lifeFg: lifecycleStyle[1],
+          first: t.firstSeenAt == null ? '数据暂不可用' : t.firstSeenAt,
+          last: t.lastSeenAt == null ? '数据暂不可用' : t.lastSeenAt
+        };
+      }
       var sev = t.share >= 25 ? '高' : (t.share >= 12 ? '中' : '低');
       var isNewCat = String(t.delta.short).indexOf('新增') >= 0;
       var life = isNewCat ? '新增' : (t.delta.dir < 0 ? '消退' : '持续');
@@ -703,18 +716,20 @@ export default class ProductMonitor extends React.Component {
 
       posSummary: posAll.length ? posAll[0].summary : '',
       negSummary: negAll.length ? negAll[0].summary : '',
-      negActionable: negNa ? '数据暂不可用' : String(negAll.filter(function (t) { return t.share >= 12; }).length),
+      negActionable: negNa ? '数据暂不可用' : String(negAll.filter(function (t) { return 'hasMeta' in t ? t.hasMeta && t.severityLabel !== '低' : t.share >= 12; }).length),
       /* na 时导语留空，缺失态交给下面的 posUnavailable 框 —— 「区间内没有可归类的积极观点」
          是**空态**的话（已聚类、这一极没有），拿它盖 null 就是替没做过的事下结论。 */
       posLead: posNa ? '' : posAll.length
-        ? '主要集中于' + posAll.slice(0, 2).map(function (t) { return t.title; }).join('、')
+        ? ('hasMeta' in posAll[0] ? '主要集中于' + posAll.slice(0, 2).map(function (t) { return t.title; }).join('、') + '。'
+          : '主要集中于' + posAll.slice(0, 2).map(function (t) { return t.title; }).join('、')
           + '，合计 ' + posAll.slice(0, 2).reduce(function (a, t) { return a + t.mentions; }, 0) + ' 条，占积极内容 '
-          + Math.round(posAll.slice(0, 2).reduce(function (a, t) { return a + t.share; }, 0)) + '%。'
+          + Math.round(posAll.slice(0, 2).reduce(function (a, t) { return a + t.share; }, 0)) + '%。')
         : '区间内没有可归类的积极观点。',
       negLead: negNa ? '' : negAll.length
-        ? '主要集中于' + negAll.slice(0, 2).map(function (t) { return t.title; }).join('、')
+        ? ('hasMeta' in negAll[0] ? '主要集中于' + negAll.slice(0, 2).map(function (t) { return t.title; }).join('、') + '。'
+          : '主要集中于' + negAll.slice(0, 2).map(function (t) { return t.title; }).join('、')
           + '，合计 ' + negAll.slice(0, 2).reduce(function (a, t) { return a + t.mentions; }, 0) + ' 条，占消极内容 '
-          + Math.round(negAll.slice(0, 2).reduce(function (a, t) { return a + t.share; }, 0)) + '%。'
+          + Math.round(negAll.slice(0, 2).reduce(function (a, t) { return a + t.share; }, 0)) + '%。')
         : '区间内没有可归类的消极观点。',
       posThemes: posThemes, negThemes: negThemes,
       noPos: !posNa && posThemes.length === 0, noNeg: !negNa && negThemes.length === 0,

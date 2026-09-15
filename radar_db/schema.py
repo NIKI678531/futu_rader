@@ -36,6 +36,7 @@ from sqlalchemy import (
     Index,
     Integer,
     MetaData,
+    Numeric,
     String,
     Table,
     Text,
@@ -252,6 +253,28 @@ annotation_jobs = Table(
 # `annotation_runs` 记的是**一次执行**，`analysis_scopes` 记的是**一个业务窗口**：
 # 「3033 与 7226，2026-06-01 到 08-25，评论任务」。同一个 scope 可以被多次 run 分几天跑完，
 # 也可以在中断后续跑；覆盖率（候选多少、剔了多少、标了多少）挂在 scope 上，不挂在 run 上。
+analysis_scope_jobs = Table(
+    "analysis_scope_jobs", metadata,
+    Column("scope_id", String(40), primary_key=True),
+    Column("job_id", BigInteger, primary_key=True),
+)
+
+runtime_leases = Table(
+    "runtime_leases", metadata,
+    Column("name", String(80), primary_key=True),
+    Column("owner", String(40), nullable=False),
+    Column("expires_at", DateTime, nullable=False),
+)
+
+source_snapshots = Table(
+    "source_snapshots", metadata,
+    Column("feed_id", BigInteger, primary_key=True),
+    Column("source", String(80), nullable=False),
+    Column("input_hash", String(64), nullable=False),
+    Column("payload_json", LONGTEXT, nullable=False),
+    Column("observed_at", DateTime, nullable=False),
+)
+
 analysis_scopes = Table(
     "analysis_scopes",
     metadata,
@@ -305,6 +328,7 @@ synthesis_outputs = Table(
         name="uq_synthesis_unit",
     ),
     Index("ix_synthesis_lookup", "code", "range_key", "anchor", "kind"),
+    Index("ix_synthesis_supersedes", "supersedes_id"),
 )
 
 annotations = Table(
@@ -343,6 +367,8 @@ annotations = Table(
     Index("ix_annotations_target", "target_type", "target_id", "kind"),
     Index("ix_annotations_subject", "subject_code", "kind", "review_state"),
     Index("ix_annotations_run", "run_id"),
+    Index("ix_annotations_supersedes", "supersedes_id"),
+    Index("ix_annotations_kind_target", "kind", "target_type"),
 )
 
 annotation_evidence = Table(
@@ -380,4 +406,41 @@ meta_kv = Table(
     metadata,
     Column("k", String(60), primary_key=True),
     Column("v", Text),
+)
+
+price_instruments = Table(
+    "price_instruments", metadata,
+    Column("code", String(10), primary_key=True),
+    Column("provider", String(20), nullable=False),
+    Column("symbol", String(30), nullable=False),
+    Column("currency", String(10), nullable=False),
+    Column("exchange", String(20), nullable=False),
+    Column("name", String(255)),
+    Column("timezone", String(40), nullable=False),
+    Column("verified_at", DateTime, nullable=False),
+)
+
+price_bars = Table(
+    "price_bars", metadata,
+    Column("code", String(10), primary_key=True),
+    Column("provider", String(20), primary_key=True),
+    Column("interval", String(10), primary_key=True),
+    Column("timestamp", DateTime, primary_key=True),
+    Column("adjustment", String(30), primary_key=True),
+    Column("session_date", String(10), nullable=False),
+    *(Column(field, Numeric(20, 8), nullable=False) for field in ("open", "high", "low", "close")),
+    Column("volume", BigInteger),
+    Column("fetched_at", DateTime, nullable=False),
+)
+
+price_syncs = Table(
+    "price_syncs", metadata,
+    Column("code", String(10), primary_key=True),
+    Column("interval", String(10), primary_key=True),
+    Column("date_from", String(10), primary_key=True),
+    Column("date_to", String(10), primary_key=True),
+    Column("status", String(30), nullable=False),
+    Column("reason", String(80)),
+    Column("row_count", Integer, nullable=False),
+    Column("updated_at", DateTime, nullable=False),
 )

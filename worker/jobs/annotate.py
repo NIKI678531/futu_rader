@@ -42,6 +42,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import timedelta
 
 from sqlalchemy import and_, func, insert, or_, select, update
+from sqlalchemy.exc import IntegrityError
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -328,15 +329,30 @@ def _insert_jobs(engine, rows):
     没有用方言相关的 `INSERT OR IGNORE` / `ON DUPLICATE KEY`：这份代码要在 SQLite 和
     MySQL 8 上跑同一份（ADR-0016），而两边的写法不通用。排队是一次性动作，不在热路径上。
     """
+    if len(rows) > 300:
+        return sum(_insert_jobs(engine, rows[offset:offset + 300]) for offset in range(0, len(rows), 300))
     inserted = 0
+    from radar_db.schema import analysis_scope_jobs
     with engine.begin() as conn:
         for row in rows:
             try:
                 with conn.begin_nested():
-                    conn.execute(insert(annotation_jobs).values(**row))
+                    result = conn.execute(insert(annotation_jobs).values(**row))
+                    job_id = result.inserted_primary_key[0]
                 inserted += 1
-            except Exception:  # noqa: BLE001  唯一键冲突＝已排过队
-                continue
+            except IntegrityError:
+                job_id = conn.execute(select(annotation_jobs.c.job_id).where(*[
+                    annotation_jobs.c[key] == row[key]
+                    for key in ("target_type", "target_id", "subject_code", "task", "input_hash")
+                ])).scalar_one()
+            if row.get("scope_id"):
+                link = {"scope_id": row["scope_id"], "job_id": job_id}
+                exists = conn.execute(select(analysis_scope_jobs.c.job_id).where(
+                    analysis_scope_jobs.c.scope_id == link["scope_id"],
+                    analysis_scope_jobs.c.job_id == job_id,
+                )).first()
+                if not exists:
+                    conn.execute(insert(analysis_scope_jobs).values(**link))
     log.info("排队：新增 %d 条，跳过 %d 条（已存在）", inserted, len(rows) - inserted)
     return inserted
 
@@ -369,7 +385,8 @@ def claim(engine, task, n, *, now=None, scope_id=None):
             )
         )
         if scope_id is not None:
-            q = q.where(annotation_jobs.c.scope_id == scope_id)
+            from radar_db.scope_jobs import scope_condition
+            q = q.where(scope_condition(scope_id))
         q = (
             # 同一批尽量属于同一产品（§11.3）：按 subject_code 排，固定上下文能被
             # 供应商的 prompt cache 命中，也让模型少切换产品语境。
@@ -450,6 +467,7 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
         )
 
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="annotate")
+    stop_event = threading.Event()
     inflight = {}
     batches_started = 0
     try:
@@ -457,10 +475,15 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
             # 补满在途：始终保持 `workers` 批在跑，直到预算或队列耗尽。
             while (
                 len(inflight) < workers and budget > 0 and stats["aborted"] is None
+                and not stop_event.is_set()
                 and (budget_requests is None or batches_started < budget_requests)
             ):
                 jobs = claim(engine, task, min(batch_size, budget), scope_id=scope_id)
                 if not jobs:
+                    break
+                if stop_event.is_set():
+                    for job in jobs:
+                        _release(engine, job, stop_event.reason)
                     break
                 budget -= len(jobs)
                 batches_started += 1
@@ -468,6 +491,7 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
                 fut = pool.submit(
                     _process, engine, cfg, provider, prompt, schema_version, task, run_id,
                     jobs, _local_stats(),
+                    stop_event=stop_event,
                 )
                 inflight[fut] = len(jobs)
             if not inflight:
@@ -493,7 +517,11 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
 
 
 def _close_run(engine, run_id, stats):
+    from radar_db.revisions import bump_revision, mark_synthesis
     with engine.begin() as conn:
+        bump_revision(conn, "annotation")
+        changed_codes = conn.execute(select(annotations.c.subject_code).where(annotations.c.run_id == run_id).distinct()).scalars()
+        mark_synthesis(conn, list(changed_codes), True)
         conn.execute(
             update(annotation_runs)
             .where(annotation_runs.c.run_id == run_id)
@@ -520,7 +548,7 @@ def _close_run(engine, run_id, stats):
         )
 
 
-def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, local, depth=0):
+def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, local, depth=0, stop_event=None):
     """处理一批。失败时按 §11.3 二分，而不是整批判死。返回本批的局部统计。"""
     sources = _load_sources(engine, task, jobs)
     payloads, usable = [], []
@@ -535,7 +563,18 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
             _fail(engine, job, "源文本为空或不存在，不应进队列", dead=True)
             local["error"] += 1
             continue
-        payloads.append(_build_payload(task, job, src))
+        payload = _build_payload(task, job, src)
+        current_hash = schemas.input_hash(
+            payload, model=cfg.model, prompt_version=prompt_version(prompt, cfg),
+            taxonomy_version=cfg.taxonomy_version, schema_version=schema_version,
+        )
+        if current_hash != job["input_hash"]:
+            with engine.begin() as conn:
+                conn.execute(update(annotation_jobs).where(annotation_jobs.c.job_id == job["job_id"])
+                             .values(status="superseded", lease_until=None, last_error="Source input changed"))
+            local["error"] += 1
+            continue
+        payloads.append(payload)
         usable.append((job, src))
 
     if not payloads:
@@ -550,6 +589,9 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
             f"{task}_batch",
         )
     except PermanentError as exc:
+        if stop_event is not None:
+            stop_event.reason = str(exc)
+            stop_event.set()
         # 401/400 这类：重试无意义，而且多半是配置问题，整批放回 pending 等人改配置。
         # **不判死** —— 把 30 条因为一个 Key 打错而判死，改完配置后还得手动复活。
         for job, _ in usable:
@@ -575,15 +617,23 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
             mid = len(usable) // 2
             log.warning("批输出不合格（%s），二分为 %d + %d", exc, mid, len(usable) - mid)
             _process(engine, cfg, provider, prompt, schema_version, task, run_id,
-                     [j for j, _ in usable[:mid]], local, depth + 1)
+                     [j for j, _ in usable[:mid]], local, depth + 1, stop_event)
             _process(engine, cfg, provider, prompt, schema_version, task, run_id,
-                     [j for j, _ in usable[mid:]], local, depth + 1)
+                     [j for j, _ in usable[mid:]], local, depth + 1, stop_event)
         else:
             _retry_or_dead(engine, cfg, usable, local, f"schema 失败：{exc}")
         return local
 
+    latest_sources = _load_sources(engine, task, [job for job, _ in usable])
     for job, src in usable:
         item = by_id[_item_id(task, job)]
+        latest = latest_sources.get((job["target_type"], job["target_id"]))
+        if latest != src:
+            with engine.begin() as conn:
+                conn.execute(update(annotation_jobs).where(annotation_jobs.c.job_id == job["job_id"])
+                             .values(status="superseded", lease_until=None, last_error="Source changed during inference"))
+            local["error"] += 1
+            continue
         try:
             _write(engine, task, job, src, item, run_id, schema_version)
             _done(engine, job)
@@ -896,7 +946,8 @@ def pending_count(engine, task, scope_id=None):
                    annotation_jobs.c.status.in_(("pending", "claimed")))
         )
         if scope_id is not None:
-            q = q.where(annotation_jobs.c.scope_id == scope_id)
+            from radar_db.scope_jobs import scope_condition
+            q = q.where(scope_condition(scope_id))
         return conn.execute(q).scalar_one()
 
 

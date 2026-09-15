@@ -1,0 +1,130 @@
+{
+ "scope_id": "scope-20260914T101508-d474d8",
+ "generated_at": "2026-09-14 18:39",
+ "queue": {
+  "comment_product": {
+   "claimed": 1,
+   "done": 1399,
+   "completion": 0.9993
+  },
+  "kol_comment_opinion": {
+   "done": 3,
+   "pending": 19,
+   "completion": 0.1364
+  },
+  "post_annotation": {
+   "done": 3,
+   "pending": 39,
+   "completion": 0.0714
+  }
+ },
+ "dead_letter_top": [],
+ "usage_last_50_runs": {
+  "comment_product": {
+   "runs": 5,
+   "tok_in": 18644,
+   "tok_out": 10373,
+   "tok_reason": 2587,
+   "unknown_usage_runs": 1,
+   "input": 1601,
+   "success": 201,
+   "error": 0
+  },
+  "post_annotation": {
+   "runs": 1,
+   "tok_in": 6491,
+   "tok_out": 420,
+   "tok_reason": 0,
+   "unknown_usage_runs": 0,
+   "input": 3,
+   "success": 3,
+   "error": 0
+  },
+  "kol_comment_opinion": {
+   "runs": 1,
+   "tok_in": 1878,
+   "tok_out": 127,
+   "tok_reason": 0,
+   "unknown_usage_runs": 0,
+   "input": 3,
+   "success": 3,
+   "error": 0
+  }
+ },
+ "estimated_cost": null,
+ "annotations": {
+  "rows": 4132,
+  "by_review_state": {
+   "needs_review": 1608,
+   "pending": 2524
+  },
+  "by_kind": {
+   "aspect": 260,
+   "attitude": 261,
+   "compliance": 1399,
+   "direction": 3,
+   "kol_action": 3,
+   "kol_summary": 3,
+   "market_direction": 531,
+   "post_type": 3,
+   "relevance": 1597,
+   "summary": 3,
+   "text_quality": 69
+  },
+  "needs_review_rate": 0.3892,
+  "rule_rows": 138
+ },
+ "prefilter_dropped_by_rule": {
+  "sticker_only": 65,
+  "exact_duplicate": 3,
+  "tag_only": 1
+ },
+ "evidence_located_rate": 0.9847,
+ "attitude_by_product": {
+  "2802": {
+   "neutral": 33,
+   "negative": 77,
+   "positive": 69,
+   "irrelevant": 52,
+   "needs_context": 79
+  },
+  "3033": {
+   "positive": 16,
+   "neutral": 4,
+   "negative": 29,
+   "irrelevant": 661,
+   "needs_context": 468
+  },
+  "3416": {
+   "positive": 7,
+   "neutral": 5,
+   "negative": 2,
+   "irrelevant": 1,
+   "needs_context": 5
+  },
+  "3037": {
+   "neutral": 2,
+   "negative": 2,
+   "positive": 3,
+   "irrelevant": 5,
+   "needs_context": 8
+  },
+  "7709": {
+   "neutral": 2,
+   "irrelevant": 9,
+   "needs_context": 9
+  },
+  "7388": {
+   "positive": 1,
+   "irrelevant": 9,
+   "needs_context": 10
+  }
+ },
+ "compliance": {
+  "scanned_units": 1399,
+  "hits_by_tag": {
+   "compliance_concern": 1,
+   "serious_allegation": 2
+  }
+ }
+}

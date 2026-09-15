@@ -93,6 +93,9 @@ def themes(code, units_by_polarity, base_units_by_polarity, buckets, bucket_inde
         for asp, s in counts.items():
             lab = labels.get((pol, asp)) or {}
             base_n = None if base_counts is None else base_counts.get(asp, {}).get("mentions", 0)
+            share = (s["mentions"] / total * 100) if total else 0
+            life = lifecycle(s["mentions"], base_n)
+            sev = severity(share, life)
             rows.append(
                 {
                     "id": f"{code}-{pol}-{asp}",
@@ -103,7 +106,12 @@ def themes(code, units_by_polarity, base_units_by_polarity, buckets, bucket_inde
                     or f"区间内 {s['mentions']} 条{POLARITY_LABEL[pol]}评论涉及{ASPECT_LABEL.get(asp, asp)}。",
                     "labelStatus": "ok" if lab.get("title") else "unavailable",
                     "mentions": s["mentions"],
-                    "share": (s["mentions"] / total * 100) if total else 0,
+                    "share": share,
+                    "hasMeta": pol == "negative" and asp in NEG_CATEGORY_ASPECTS,
+                    "severityLabel": SEVERITY_LABEL.get(sev),
+                    "lifecycleLabel": LIFE_LABEL.get(life),
+                    "firstSeenAt": s["first"].strftime("%m-%d %H:%M") if s["first"] else None,
+                    "lastSeenAt": s["last"].strftime("%m-%d %H:%M") if s["last"] else None,
                     "delta": delta(s["mentions"], base_n),
                     "confidence": None,
                     "buckets": [

@@ -55,12 +55,25 @@ log = logging.getLogger("worker.audit")
 
 
 def _scope_filter(q, scope_id):
-    return q.where(annotation_jobs.c.scope_id == scope_id) if scope_id else q
+    from radar_db.scope_jobs import scope_condition
+    return q.where(scope_condition(scope_id)) if scope_id else q
 
 
 def report(engine, scope_id=None):
     out = {"scope_id": scope_id, "generated_at": clock.now().strftime("%Y-%m-%d %H:%M")}
+    from sqlalchemy import or_, true
+    from radar_db.scope_jobs import scope_condition
+    annotation_filter = true() if scope_id is None else or_(
+        select(annotation_jobs.c.job_id).where(
+            scope_condition(scope_id), annotation_jobs.c.target_type == annotations.c.target_type,
+            annotation_jobs.c.target_id == annotations.c.target_id,
+            annotation_jobs.c.subject_code == annotations.c.subject_code,
+            annotation_jobs.c.input_hash == annotations.c.input_hash,
+        ).exists(),
+        annotations.c.run_id == "rule-" + scope_id,
+    )
     with engine.connect() as conn:
+        scoped_ids = set(conn.execute(select(annotations.c.annotation_id).where(annotation_filter)).scalars()) if scope_id else None
         # 队列
         q = _scope_filter(select(annotation_jobs.c.task, annotation_jobs.c.status, func.count())
                           .group_by(annotation_jobs.c.task, annotation_jobs.c.status), scope_id)
@@ -78,7 +91,12 @@ def report(engine, scope_id=None):
         out["dead_letter_top"] = [{"error": (e or "")[:120], "n": n} for e, n in conn.execute(q)]
 
         # run 用量
-        runs = conn.execute(select(annotation_runs).order_by(annotation_runs.c.started_at.desc()).limit(50)).mappings().all()
+        runs_query = select(annotation_runs)
+        if scope_id:
+            runs_query = runs_query.where(annotation_runs.c.run_id.in_(
+                select(annotations.c.run_id).where(annotation_filter)))
+        runs = conn.execute(runs_query.order_by(annotation_runs.c.started_at.desc()).limit(50)).mappings().all()
+        out["usage_scope"] = "Runs containing scope results; shared run costs are not prorated" if scope_id else "Global last 50 runs"
         usage = defaultdict(lambda: {"runs": 0, "tok_in": 0, "tok_out": 0, "tok_reason": 0, "unknown_usage_runs": 0,
                                      "input": 0, "success": 0, "error": 0})
         for r in runs:
@@ -97,12 +115,12 @@ def report(engine, scope_id=None):
         out["estimated_cost"] = None  # 网关没有给价格。写 None，不写 0。
 
         # 标注质量信号
-        total = conn.execute(select(func.count()).select_from(annotations)).scalar_one()
-        by_state = dict(conn.execute(select(annotations.c.review_state, func.count()).group_by(annotations.c.review_state)).all())
-        by_kind = dict(conn.execute(select(annotations.c.kind, func.count()).group_by(annotations.c.kind)).all())
+        total = conn.execute(select(func.count()).select_from(annotations).where(annotation_filter)).scalar_one()
+        by_state = dict(conn.execute(select(annotations.c.review_state, func.count()).where(annotation_filter).group_by(annotations.c.review_state)).all())
+        by_kind = dict(conn.execute(select(annotations.c.kind, func.count()).where(annotation_filter).group_by(annotations.c.kind)).all())
         rule_rows = conn.execute(
             select(func.count()).select_from(annotations.join(annotation_runs, annotation_runs.c.run_id == annotations.c.run_id))
-            .where(annotation_runs.c.provider == "rule")
+            .where(annotation_runs.c.provider == "rule", annotation_filter)
         ).scalar_one()
         out["annotations"] = {
             "rows": total, "by_review_state": by_state, "by_kind": by_kind,
@@ -110,13 +128,13 @@ def report(engine, scope_id=None):
             "rule_rows": rule_rows,
         }
         # 规则剔除分布
-        tq = conn.execute(select(annotations.c.value_json).where(annotations.c.kind == "text_quality")).all()
+        tq = conn.execute(select(annotations.c.value_json).where(annotations.c.kind == "text_quality", annotation_filter)).all()
         out["prefilter_dropped_by_rule"] = dict(Counter(json.loads(v[0]).get("rule") for v in tq))
 
         # 证据定位率：相关（relevant）的 relevance 行里带证据的比例
         rel_ids = [r[0] for r in conn.execute(
             select(annotations.c.annotation_id).where(annotations.c.kind == "relevance",
-                                                      annotations.c.value_json == '"relevant"'))]
+                                                      annotations.c.value_json == '"relevant"', annotation_filter))]
         with_ev = 0
         for i in range(0, len(rel_ids), 900):
             chunk = rel_ids[i:i + 900]
@@ -129,6 +147,9 @@ def report(engine, scope_id=None):
     # 各产品态度分布（现行结论）
     att = current_annotations(engine, "attitude", "comment")
     rel = current_annotations(engine, "relevance", "comment")
+    if scoped_ids is not None:
+        att = {key: row for key, row in att.items() if row["annotation_id"] in scoped_ids}
+        rel = {key: row for key, row in rel.items() if row["annotation_id"] in scoped_ids}
     dist = defaultdict(Counter)
     for unit, a in att.items():
         if (rel.get(unit) or {}).get("value") == "relevant":
@@ -140,6 +161,8 @@ def report(engine, scope_id=None):
         for code, c in sorted(dist.items(), key=lambda kv: -sum(kv[1].values()))[:40]
     }
     comp = current_annotations(engine, "compliance", "comment")
+    if scoped_ids is not None:
+        comp = {key: row for key, row in comp.items() if row["annotation_id"] in scoped_ids}
     tags = Counter(t for c in comp.values() for t in ((c["value"] or {}).get("tags") or []))
     out["compliance"] = {"scanned_units": len(comp), "hits_by_tag": dict(tags)}
     return out

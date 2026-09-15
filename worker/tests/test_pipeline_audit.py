@@ -141,6 +141,18 @@ def test_pipeline_dry_run_estimates_only(engine, cfg, tmp_path):
         assert conn.execute(select(annotations).where(annotations.c.kind == "attitude")).first() is None
 
 
+def test_incomplete_pipeline_does_not_synthesize(engine, cfg, tmp_path):
+    ext = extract.run(engine, cfg, codes=[CODE], date_from=datetime(2026, 8, 19),
+                      date_to=datetime(2026, 8, 25), ownership={CODE: "own"}, report_dir=tmp_path)
+    provider = UniversalFake()
+    result = pipeline.run(engine, cfg, ext["scope_id"], provider=provider,
+                          max_items=1, ranges=["d7"])
+    assert result["complete"] is False
+    assert not any(call.startswith("synth_") for call in provider.calls)
+    with engine.connect() as conn:
+        assert conn.execute(select(synthesis_outputs)).first() is None
+
+
 def test_audit_report_never_reports_accuracy(engine, cfg, tmp_path):
     ext = extract.run(engine, cfg, codes=[CODE], date_from=datetime(2026, 8, 19), date_to=datetime(2026, 8, 25),
                       ownership={CODE: "own"}, report_dir=tmp_path)
