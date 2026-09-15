@@ -1886,6 +1886,7 @@ worker\.venv\Scripts\python.exe -X utf8 worker\jobs\repair_feed_metrics.py
 `detail_updated_at`，不是额外的转发列。缺失尾部只能由完整历史导出或获授权源API补采。
 不得用AI、当前累计转发、平均数或0替代当时的未知计数；FMP不提供社区互动数据。
 `backend/core/heat.py` 公式及未知传播保持不变，因此仍可能有热度暂不可用。
+**2026-09-15 更新**：ADR-0022 改为按已知项计算热度并披露转发数未知的帖子数（`heatUnknownPosts`），见 [ADR-0022](adr/0022-heat-lower-bound-disclosure.md)。
 
 ### 23.4 新来源规范化入口
 
@@ -1927,3 +1928,105 @@ node "$env:USERPROFILE\.futu-radar\mirror\frontend\scripts\live-data-check.mjs"
 用量按包含该scope结果的运行归集；共享运行未按比例拆分，不能当成严格独占成本。
 验证字段完整性、证据可定位与链路正确，不得把HTTP200或任务done称为准确率。
 
+## 24. 蒸馏漏斗与 30 分钟运行（2026-09-15）
+
+本节是 [ADR-0021](adr/0021-student-funnel.md) 的操作面：规则与近重复折叠（L0）→ 学生模型（L1）→ Luna 难例（L2，与 L1 并行）→ Layer B 逐区间并行（L3）。§23.1 的入口 `full_own.py --watch` 不变，内部顺序变了；§16 的 Gate 结论、§23 的边界与备份要求继续有效。**模型结论仍未经人工验证**：跑完 §24.4 的人工核对之前 `aiValidation=none`，之后是 `spot_check`（量尺，不是门槛，ADR-0019 不变）。
+
+### 24.1 本机操作顺序
+
+仓库根目录执行，前后顺序不能换（每步的验收数字在 §24.3）：
+
+```powershell
+git pull
+copy %LOCALAPPDATA%\futu-radar\radar.db %LOCALAPPDATA%\futu-radar\backups\radar-before-0008-<日期>.db
+worker\.venv\Scripts\python.exe -X utf8 -m alembic -c radar_db\alembic.ini upgrade head          # 到 0008
+uv pip install --python worker\.venv\Scripts\python.exe -r worker\requirements-ml.txt            # torch CPU 约 200 MB
+cd worker
+..\worker\.venv\Scripts\python.exe -X utf8 -m models.dataset                                     # 训练集 → <数据目录>\datasets\student-v1
+..\worker\.venv\Scripts\python.exe -X utf8 -m models.train                                       # CPU 1–2 小时；--model rbt3 约 3 倍快
+..\worker\.venv\Scripts\python.exe -X utf8 -m models.export                                      # ONNX → int8，校验与 fp32 一致
+..\worker\.venv\Scripts\python.exe -X utf8 -m scripts.probe_gateway --concurrency 16             # 再试 24
+..\worker\.venv\Scripts\python.exe -X utf8 -m scripts.calibrate --batch 5 --skip-v1 --n 300
+..\worker\.venv\Scripts\python.exe -X utf8 -m jobs.annotate --reprioritize
+..\worker\.venv\Scripts\python.exe -X utf8 jobs\full_own.py --watch --max-items 300
+..\worker\.venv\Scripts\python.exe -X utf8 -m scripts.gold_sample                                # → gold-400.xlsx（填表）
+..\worker\.venv\Scripts\python.exe -X utf8 -m scripts.evaluate_gold --file gold-400.xlsx         # → meta_kv.ai_validation
+```
+
+- 迁移 0008 加 `annotation_jobs.stage`（默认 `student`；已有的帖子与 KOL 评论任务置 `llm`）与 `worker_events`。合成库（37.8 万帖／19 万评论）上 0007→0008 耗时 0.6 秒；真库同量级，不需要停服务。
+- `models.train` 之后看 `<STUDENT_MODEL_DIR>\calibration.json`：`heads.relevance.agreement` 与 `heads.attitude.agreement` 是对照集上学生与 Luna 的一致率。**两者 ≥0.90 才进下一步**；不到就先把 `STUDENT_ROUTE_THRESHOLD` 抬到 0.90（多送 Luna），或换 `--model roberta-wwm` 重训。
+- `models.export` 之后看 `export.json`：每头 `use` 为 `int8` 且 `int8_vs_fp32_agreement ≥0.99`；不达标它会自动留 fp32 并在 `note` 里写明，推理慢约一倍，不影响正确性。
+- `probe_gateway --concurrency N`：报 `n_429`、`retry_after_headers`、`p50/p95`。无 429 的最大 N 写进 `AI_CONCURRENCY`（上限 24）。**N <24 时 30 分钟目标退为 40 分钟，如实写在下方表格旁**。
+- `calibrate --batch 5`：报告键 `b1_vs_b5`（随 `--batch` 走，不再叫 `b1_vs_b30`）。`attitude_agreement ≥0.90` 才把 `AI_MICRO_BATCH_SIZE` 从 1 改到 5；否则批留 1，L2 的预算按 5 倍请求数重估。
+- `annotate --reprioritize`：按 `recency_tier`（距锚点 ≤7 天 +30、≤14 +20、≤30 或 mtd 窗内 +10）＋ own +2 ＋ current +1 重算全部 pending 任务；幂等，第二次跑应打印「0 条改动」。
+- `full_own.py --watch`：学生通道是独立线程（按产品轮转 `classify.run`），调度器 tick 只跑 `pipeline.run(stage=llm)`；两个通道领不相交的任务集。不带 `--watch` 时每个 tick 顺序 classify → pipeline，跑一遍 61 只退出。`--no-student` 把全部评论任务放行给 Luna（没有学生模型时的退路；有模型但想临时关掉也用它）。
+- 进度看 `GET /api/v1/progress`（队列按 stage × status、Layer B 脏标与产出、近 5 分钟吞吐、最近 200 条事件）与 `/api/v1/progress/events?after=<id>` 增量；前端侧栏由另一位工程师接。这两个端点只读，没有任何启动／停止作业的控制。
+
+### 24.2 30 分钟预算（14 万条积压；每日增量约 3–5 千条则 <5 分钟）
+
+| 阶段 | 目标吞吐 | 预算 | 依赖什么 |
+|---|---|---|---|
+| L0 规则五条＋近重复折叠＋排队 | ≥2,000 候选/秒 | 2–3 min | 纯 Python；simhash 按 `(产品, 帖子日)` 分桶 |
+| L1 学生推理（`classify`） | ≥200 条/秒 | 10–12 min | ONNX int8、批 64、`intra_op_threads=核数`；不够换 `hfl/rbt3` |
+| L2 Luna 难例 | ≥20 条/秒 | 20–25 min，**与 L1 并行** | 批 5 × 并发 24（探测通过）；路由份额 ≤20% |
+| L3 Layer B | 8 线程 | 随区间就绪滚动，尾部 5–10 min | `low_sample`／指纹相同不发请求 |
+
+网关并发上限 <24 时：L2 按比例拉长（并发 16 ≈ 30–35 min），端到端目标改为 40 分钟。一次性成本不计入：学生训练 CPU 1–2 小时、`probe_gateway`／`calibrate` 各几分钟、填 400 条核对表 2–3 小时。
+
+### 24.3 每一步的验收数字
+
+| 步骤 | 看哪里 | 通过线 |
+|---|---|---|
+| 迁移 | `alembic current` | `0008`；`SELECT stage, COUNT(*) FROM annotation_jobs GROUP BY 1` 里帖子与 KOL 评论任务全在 `llm` |
+| 训练集 | `datasets\student-v1\meta.json` | `n_units` 与库里 Luna 现行判定单元数一致；`groups` ≥ 数百；`aspect_head` 为 true 时 `aspect_positive_train ≥5000` |
+| 训练 | `calibration.json` | relevance／attitude 对照集一致率 ≥0.90；每头温度写了非 1 的值 |
+| 导出 | `export.json` | 每头 `int8_vs_fp32_agreement ≥0.99`、`use=int8` |
+| 推理吞吐 | `classify` 的 L1 事件间隔 | 12 层模型 ≥200 条/秒；否则换 rbt3 |
+| 路由份额 | `classify` 输出的 `routed / input` | ≤20%；高了先看 `routes` 里哪条规则在贡献 |
+| 网关 | `probe_gateway --concurrency` | 选定 N 下 `n_429=0` |
+| 合批 | `calibrate --batch 5` 的 `b1_vs_b5` | `attitude_agreement ≥0.90` |
+| 端到端 | `/api/v1/progress` 的 `queue.llm.pending` 归零到最后一条 L3 事件 | ≤30 min（并发 24）；每日增量 <5 min |
+| 覆盖 | 板块总览／产品监控 | 61 只 d7 全部 ≥1 条态度、多数 ≥10；脏产品显示「待更新」而不是消失 |
+| 人工核对 | `/api/v1/meta` 的 `aiValidation` | `level=spot_check`、`n=400`、三套系统各有 relevance／attitude 准确率与 macro-F1 |
+
+### 24.4 人工核对集
+
+流程与判定规则见 [docs/gold-labeling-guide.md](gold-labeling-guide.md)。要点：只打开 `gold-400.xlsx`，不看同目录的 `gold-400-model-labels.xlsx`；一条 20–30 秒，可两人各 200；`evaluate_gold.py` 写 `meta_kv.ai_validation` 并 bump annotation 版本号让后端缓存失效。两个 xlsx 都在数据目录（仓库外），含评论原文，不进 git；`gold-eval-*.json` 只有计数，进 `.scratch/llm-90d/`。
+
+### 24.5 路由阈值起点：真库上要数的四个数
+
+ADR-0021 §4 的阈值 0.85／0.15 是起点，本机 `alembic upgrade head` 后先数这四个数并回填到 ADR-0021 §4：
+
+```sql
+-- 1. Luna 现行标注 relevance 三值占比（分母＝Luna 判过的判定单元）
+SELECT json_extract(a.value_json, '$') AS relevance, COUNT(*) FROM annotations a
+  JOIN annotation_runs r ON r.run_id = a.run_id
+ WHERE a.kind = 'relevance' AND r.provider = 'openai_compatible'
+   AND NOT EXISTS (SELECT 1 FROM annotations s WHERE s.supersedes_id = a.annotation_id)
+ GROUP BY 1;
+-- 2. attitude 分布（同上换 kind='attitude'）
+-- 3. 规则剔除占比：kind='text_quality' 且 provider='rule' 的判定单元数 / 候选总数（extract 报告里的「候选」）
+-- 4. 同产品同日近重复率：extract 报告「近重复折叠」/「候选」
+```
+
+规则剔除与近重复两项直接看 `python -m jobs.extract --own --range d30 --with-baseline --dry-run` 的报告；不写库。
+
+### 24.6 合成库实测（2026-09-15，4 核 Xeon、16 GB、Python 3.12、onnxruntime 1.30 / torch 2.14 CPU）
+
+合成库 `gen.py`：37.8 万帖／19.4 万评论／36 万标注，`create_all` 到 0007 后 `alembic upgrade head` 到 0008。**文本只有 10 个不同的句子**，所以近重复折叠率（50%）与规则剔除率毫无代表性，只看耗时；学生用 `--tiny`（随机初始化的一层 BERT），数字只证明管线通、**不代表任何准确率**。Luna 用假 provider（每次调用 2 ms），L2 的数字量的是写库路径，不是网络。
+
+| 步骤 | 输入 | 耗时 | 折算 | 备注 |
+|---|---|---|---|---|
+| alembic 0007→0008 | 37.8 万帖／19.4 万评论 | 0.6 s | — | 加列＋建表＋回填 stage |
+| L0 `extract --own --range d30 --with-baseline` | 74,918 候选 | 47.2 s | **约 1,590 候选/秒，0.63 s/千条** | 含五条规则、simhash 折叠 37,578 成员、写 22,589 规则单元（×2 行）＋37,578 簇行（×2 行）＋排队 14,751 任务。目标 ≥2,000/秒未到，差在写库；机器是 4 核 |
+| `models.dataset` | 67,565 现行判定单元 | 3.3 s | — | 853 个 `(产品, ISO 周)` 组，对照 6,635 |
+| `models.train --tiny --max-steps 40` | 3,000 条 | 8.1 s | — | 只测管线 |
+| `models.export` | 3 头 | 4.6 s | — | optimum 导出；int8 与 fp32 一致 1.0（随机权重下平凡） |
+| L1 推理 `infer.Student`（tiny，2 头，ONNX int8，批 64） | 6,400 条 | 4.3 s | **约 1,500 条/秒，0.67 s/千条** | 随机权重一层模型；12 层 mengzi 每条算力约为它的数十倍，真吞吐要在本机用 §24.3 的方法量 |
+| L1 `classify --scope`（端到端） | 14,751 任务 | 79.3 s | **5.4 s/千条** | 含加载、推理、每条写 2 行学生标注、全部路由到 Luna（随机权重必然低置信）、8 条 L1 事件 |
+| `annotate --reprioritize` ×2 | 14,751 pending | 0.4 s | — | 两次都是「0 条改动」（extract 已按同一函数排） |
+| L2 `pipeline.run(stage=llm)`（假 Luna，批 5 × 并发 4） | 14,751 任务／2,951 请求 | 121 s | **约 122 条/秒** | 写库路径上限：`_write_batch` 整批一事务、Luna 行 supersede 学生行 23,634 条、成员传播 |
+| L3 `synthesize`（8 线程，假 Luna） | 366 对 `(code, range)`／2,034 次调用 | 48 s | — | 写 4,889 条生成物；226 次 `low_sample` 不发请求；366 对全部清脏 |
+| `GET /api/v1/progress` | 3,324 条事件在表 | 9 ms | — | `/progress/events?after=` 2 ms |
+
+跑完后的库状态与契约一致：`annotation_jobs` 14,751 条全部 `stage=llm, status=done`；`annotation_runs.provider` 出现 `rule`／`local_model`／`propagated`／`openai_compatible` 四种；学生行 `calibrated_confidence` 全部非空、Luna 行与规则行全部 NULL；每个近重复成员的 relevance 链末只有一行（第二次传播 supersede 第一次）；`synthesis_outputs` 覆盖 61 只 × 6 档；`meta_kv` 里没有残留的 `synth_dirty_*=1`。

@@ -1,7 +1,7 @@
 import argparse
 import json
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import insert, select, update
@@ -10,12 +10,18 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "worker"))
 
+import clock
 from ai import config
 from market_data.fmp import FmpClient, MarketDataError
 from radar_db import make_engine
 from radar_db.revisions import bump_revision
 from radar_db.schema import meta_kv, price_bars, price_instruments, price_syncs
 
+
+
+def _utcnow():
+    """行情事实的时间戳历来存 UTC（naive）。读钟走 clock 那扇门（守卫③），再转成 UTC 保持列语义不变。"""
+    return clock.now().astimezone(timezone.utc).replace(tzinfo=None)
 
 def upsert(conn, table, row):
     match = [column == row[column.name] for column in table.primary_key.columns]
@@ -30,7 +36,7 @@ def sync(engine, client, codes, start, end, intraday_start=None, force=False):
             instrument = client.instrument(code)
             with engine.begin() as conn:
                 upsert(conn, price_instruments, {"code": code, "provider": "fmp", **instrument,
-                                               "verified_at": datetime.utcnow()})
+                                               "verified_at": _utcnow()})
         except MarketDataError as error:
             instrument = None
             identity_error = error.reason
@@ -56,16 +62,16 @@ def sync(engine, client, codes, start, end, intraday_start=None, force=False):
                         for bar in bars:
                             upsert(conn, price_bars, {
                                 "code": code, "provider": "fmp", "interval": interval,
-                                "adjustment": "split_adjusted", **bar, "fetched_at": datetime.utcnow(),
+                                "adjustment": "split_adjusted", **bar, "fetched_at": _utcnow(),
                             })
                         upsert(conn, price_syncs, {**key, "status": status, "reason": reason,
-                                                  "row_count": len(bars), "updated_at": datetime.utcnow()})
+                                                  "row_count": len(bars), "updated_at": _utcnow()})
                         bump_revision(conn, "price")
                 except MarketDataError as error:
                     bars, status, reason = [], "unavailable", error.reason
                     with engine.begin() as conn:
                         upsert(conn, price_syncs, {**key, "status": status, "reason": reason,
-                                                  "row_count": 0, "updated_at": datetime.utcnow()})
+                                                  "row_count": 0, "updated_at": _utcnow()})
                         bump_revision(conn, "price")
                 result.append({**key, "status": status, "reason": reason, "rows": len(bars)})
                 cursor = last + timedelta(days=1)

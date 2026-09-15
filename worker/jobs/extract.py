@@ -44,7 +44,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import clock  # noqa: E402
-from ai import config, prefilter  # noqa: E402
+from ai import config, neardup, prefilter  # noqa: E402
 from ai.lexicon import offpool_stocks, product_aliases  # noqa: E402
 from jobs import annotate  # noqa: E402
 from jobs.import_dump import pool_codes  # noqa: E402
@@ -118,14 +118,20 @@ def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_
         windows.append(("baseline", b_from, b_to))
 
     prompt, schema_version = annotate.resolve("comment_product", cfg)
+    anchor = _read_anchor(engine) or date_to.date()
     stats = {
         "scope_id": scope_id, "task": task, "codes": codes, "date_from": date_from.strftime("%Y-%m-%d"),
         "date_to": date_to.strftime("%Y-%m-%d"), "with_baseline": with_baseline,
-        "time_basis": "feed_posted_at", "dry_run": dry_run,
+        "time_basis": "feed_posted_at", "dry_run": dry_run, "anchor": anchor.isoformat(),
         "prompt_version": prompt.VERSION, "taxonomy_version": cfg.taxonomy_version,
         "schema_version": schema_version,
         "comments": None, "posts": None, "estimate": None,
     }
+
+    def priority_of(name):
+        # 最近窗口优先（ADR-0021）：距锚点分档 ＋ 自家 ＋ 当前期。三类任务同一个函数。
+        return lambda posted_at, code: annotate.job_priority(
+            posted_at, anchor, own=ownership.get(code) == "own", current=(name == "current"))
 
     if not dry_run:
         with engine.begin() as conn:
@@ -142,18 +148,18 @@ def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_
     if task in ("comment_product", "both"):
         stats["comments"] = _extract_comments(
             engine, cfg, prompt, schema_version, scope_id, codes, windows, ownership,
-            drop_offpool=drop_offpool, dry_run=dry_run, now=now,
+            drop_offpool=drop_offpool, dry_run=dry_run, now=now, priority_of=priority_of,
         )
         # 合作 KOL 的评论顺手排进 `kol_comment_opinion`（KOL 详情 M7 要它；量很小）。
         kols, _officials = master_accounts()
         stats["kol_comments"] = 0 if dry_run else sum(
             annotate.enqueue_kol_comments(engine, cfg, kols, codes=codes, since=since, until=until,
-                                          scope_id=scope_id, priority=1 if name == "current" else 0)
+                                          scope_id=scope_id, priority_of=priority_of(name))
             for name, since, until in windows
         )
     if task in ("post_annotation", "both"):
         stats["posts"] = _extract_posts(
-            engine, cfg, scope_id, codes, windows, authors, dry_run=dry_run,
+            engine, cfg, scope_id, codes, windows, authors, dry_run=dry_run, priority_of=priority_of,
         )
 
     if not dry_run:
@@ -171,14 +177,23 @@ def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_
     return stats
 
 
+def _read_anchor(engine):
+    from datetime import date
+
+    with engine.connect() as conn:
+        a = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar()
+    return date.fromisoformat(a[:10]) if a else None
+
+
 def _extract_comments(engine, cfg, prompt, schema_version, scope_id, codes, windows, ownership,
-                      *, drop_offpool, dry_run, now):
+                      *, drop_offpool, dry_run, now, priority_of=None, fold_neardup=True):
     plex = product_aliases.ProductLexicon()
     extra = offpool_stocks.load_from_db(engine, set(ownership))
     slex = offpool_stocks.StockLexicon(extra)
     pf = prefilter.Prefilter(plex, slex, drop_offpool=drop_offpool)
 
     counts = {"candidates": 0, "dropped": {r: 0 for r in prefilter.RULES}, "kept": 0,
+              "near_duplicate_members": 0, "cluster_rows_written": 0,
               "queued_new": 0, "already_queued_or_done": 0, "rule_rows_written": 0,
               "by_window": {}, "earliest": None, "latest": None, "offpool_stock_size": slex.size()}
     rule_run_id = None
@@ -188,8 +203,8 @@ def _extract_comments(engine, cfg, prompt, schema_version, scope_id, codes, wind
                                 taxonomy_version=cfg.taxonomy_version, schema_version=schema_version)
 
     for name, since, until in windows:
-        rows, decisions = [], []
-        n_cand = n_kept = 0
+        kept_rows, decisions = [], []
+        n_cand = 0
         for r in annotate._comment_candidates(engine, codes=codes, since=since, until=until):
             n_cand += 1
             d = pf.classify(r.content, r.code, comment_id=r.comment_id,
@@ -198,22 +213,41 @@ def _extract_comments(engine, cfg, prompt, schema_version, scope_id, codes, wind
                 counts["dropped"][d.rule] += 1
                 decisions.append((r.comment_id, r.code, r.content, d))
                 continue
-            n_kept += 1
-            # 自家优先、当前期优先：页面先亮再全。
-            priority = (2 if ownership.get(r.code) == "own" else 0) + (1 if name == "current" else 0)
+            kept_rows.append(r)
+        # 第 6 条：同产品同日近重复折叠（ADR-0021）。成员不排任务，只写簇行；代表照常排。
+        if fold_neardup:
+            reps, members = neardup.fold(
+                kept_rows,
+                key_of=lambda r: (r.code, r.posted_at.date() if r.posted_at else None),
+                id_of=lambda r: r.comment_id, text_of=lambda r: r.content,
+            )
+        else:
+            reps, members = kept_rows, []
+        counts["near_duplicate_members"] += len(members)
+        rows = []
+        for r in reps:
+            if priority_of is not None:
+                priority = priority_of(name)(r.posted_at, r.code)
+            else:
+                # 自家优先、当前期优先：页面先亮再全。
+                priority = (2 if ownership.get(r.code) == "own" else 0) + (1 if name == "current" else 0)
             rows.append(annotate.job_row_for_comment(cfg, prompt, schema_version, r,
                                                      priority=priority, scope_id=scope_id, now=now))
+        n_kept = len(rows)
         counts["candidates"] += n_cand
         counts["kept"] += n_kept
         counts["by_window"][name] = {"from": since.strftime("%Y-%m-%d"),
                                      "to": (until - timedelta(days=1)).strftime("%Y-%m-%d"),
-                                     "candidates": n_cand, "kept": n_kept}
+                                     "candidates": n_cand, "kept": n_kept,
+                                     "near_duplicate_members": len(members)}
         if not dry_run:
             inserted = annotate._insert_jobs(engine, rows)
             counts["queued_new"] += inserted
             counts["already_queued_or_done"] += len(rows) - inserted
             counts["rule_rows_written"] += prefilter.write_rule_annotations(
                 engine, rule_run_id, decisions, now)
+            counts["cluster_rows_written"] += neardup.write_cluster_rows(
+                engine, rule_run_id, [(r.comment_id, r.code, rep, d) for r, rep, d in members], now)
         else:
             counts["queued_new"] += len(rows)
 
@@ -228,7 +262,7 @@ def _extract_comments(engine, cfg, prompt, schema_version, scope_id, codes, wind
     return counts
 
 
-def _extract_posts(engine, cfg, scope_id, codes, windows, authors, *, dry_run):
+def _extract_posts(engine, cfg, scope_id, codes, windows, authors, *, dry_run, priority_of=None):
     kols, officials = master_accounts()
     if authors is None or authors == "both":
         names = kols + officials
@@ -256,7 +290,8 @@ def _extract_posts(engine, cfg, scope_id, codes, windows, authors, *, dry_run):
         else:
             n = annotate.enqueue_posts(engine, cfg, codes=codes, since=since, until=until,
                                        authors=names, scope_id=scope_id,
-                                       priority=1 if name == "current" else 0)
+                                       priority=1 if name == "current" else 0,
+                                       priority_of=priority_of(name) if priority_of else None)
         out["queued_new"] += n
         out["by_window"][name] = n
     return out
@@ -283,6 +318,7 @@ def _write_report(stats, report_dir):
                 "## 评论",
                 f"- 候选：{c['candidates']:,}",
                 "- 规则剔除：" + "、".join(f"{k} {v:,}" for k, v in c["dropped"].items()),
+                f"- 近重复折叠：{c.get('near_duplicate_members', 0):,} 条成员（抄代表结论，不排任务）",
                 f"- 交模型：{c['kept']:,}（新排队 {c['queued_new']:,}，已存在 {c['already_queued_or_done']:,}）",
                 f"- 规则结论落库：{c['rule_rows_written']:,} 个判定单元",
                 "- 分窗：" + "；".join(

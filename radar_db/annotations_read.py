@@ -69,6 +69,7 @@ def current_annotations(engine, kind, target_type, ids=None, window=None, subjec
             annotations.c.review_state,
             annotations.c.calibrated_confidence,
             annotations.c.created_at,
+            annotations.c.run_id,
             feeds.c.feed_id,
             feeds.c.posted_at,
         )
@@ -109,6 +110,8 @@ def current_annotations(engine, kind, target_type, ids=None, window=None, subjec
                         "value": json.loads(r.value_json),
                         "feed_id": r.feed_id,
                         "posted_at": r.posted_at,
+                        # 训练集要按写入方（rule／LLM／local_model／propagated）筛，run_id 是唯一线索。
+                        "run_id": r.run_id,
                     }
     except SQLAlchemyError:
         return {}
