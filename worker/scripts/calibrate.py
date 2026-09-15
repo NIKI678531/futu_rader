@@ -52,6 +52,7 @@ from ai.providers import build as build_provider  # noqa: E402
 from jobs import annotate  # noqa: E402
 from jobs.import_dump import pool_codes  # noqa: E402
 from radar_db import default_data_dir, make_engine  # noqa: E402
+from radar_db.scope_jobs import scope_condition
 from radar_db.schema import analysis_scopes, annotation_jobs  # noqa: E402
 
 log = logging.getLogger("worker.calibrate")
@@ -94,7 +95,7 @@ def candidates(engine, args, ownership):
         with engine.connect() as conn:
             sc = conn.execute(select(analysis_scopes).where(analysis_scopes.c.scope_id == args.scope)).mappings().one()
             ids = [r[0] for r in conn.execute(
-                select(annotation_jobs.c.target_id).where(annotation_jobs.c.scope_id == args.scope,
+                select(annotation_jobs.c.target_id).where(scope_condition(args.scope),
                                                           annotation_jobs.c.task == "comment_product"))]
         codes = json.loads(sc["codes_json"])
         since, until = sc["date_from"], sc["date_to"] + timedelta(days=1)
@@ -179,7 +180,7 @@ def main(argv=None):
     v2 = get_prompt("comment_product", "comment-product-v2")
     report = {"stamp": stamp, "n": len(items), "candidates": len(rows), "kept_after_rules": len(kept),
               "offpool_dropped": len(dropped_offpool),
-              "strata": dict(Counter((_script(r.content), ownership.get(r.code)) for r, _ in items))}
+              "strata": dict(Counter(f"{_script(r.content)}|{ownership.get(r.code)}" for r, _ in items))}
 
     # 实验 1：b=30 基线 与 b=1
     b30, f30 = label_batch(provider, v2, "v2", items, args.batch)

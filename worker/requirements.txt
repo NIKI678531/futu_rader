@@ -15,3 +15,6 @@ alembic==1.13.3
 
 # 结构化输出的唯一定义：wire JSON Schema 与本地校验同源导出（见 ai/schemas.py）。
 pydantic==2.9.2
+exchange-calendars==4.11.2
+pandas==2.3.3
+ijson==3.4.0.post0

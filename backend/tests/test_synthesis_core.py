@@ -156,8 +156,19 @@ class TestTopics:
         assert len(out) == 1
         t = out[0]
         assert (t["positive"], t["negative"], t["neutral"]) == (1, 2, 1)
-        assert t["mentions"] == 4 and t["peak"]["label"] == "08-19"
+        assert t["mentions"] == 4 and "08-19" in t["peak"]
+        assert isinstance(t["split"], str) and "看空 2 条" in t["split"]
+        assert t["evidenceCount"] == 4
+        assert t["delta"]["short"] == "暂不可用"
         assert t["labelStatus"] == "unavailable" and "看空 2" in t["summary"]
+
+    def test_topic_delta_distinguishes_unknown_and_known_empty_baseline(self):
+        rng = build("d7", datetime(2026, 8, 25).date())
+        units = [unit(None, [], 19, direction="bearish")]
+        args = ("3033", units, rng["buckets"], bucket_index_for(rng))
+        assert topics.market_topic(*args)[0]["delta"]["pct"] is None
+        assert topics.market_topic(*args, base_units=[])[0]["delta"]["short"] == "新增"
+        assert topics.market_topic(*args, base_units=units)[0]["delta"]["abs"] == 0
 
     def test_no_units_no_topic(self):
         rng = build("d7", datetime(2026, 8, 25).date())

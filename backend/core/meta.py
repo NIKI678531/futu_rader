@@ -41,6 +41,7 @@ officials 两个键**根本不出现**在响应里，前端据此渲染「暂不
 """
 
 import json
+import hashlib
 from pathlib import Path
 
 from providers import get_provider
@@ -52,9 +53,38 @@ def meta_payload():
     # 每次请求重读口径常量：改 fixture 不用重启，骨架阶段的调试成本比这点开销值钱。
     payload = json.loads(CONSTANTS.read_text(encoding="utf-8"))
 
-    master = get_provider().master()
+    provider = get_provider()
+    payload.update(version_payload())
+    master = provider.master()
     if master:
         # 只并入 provider 确实给出的键。缺的键不补空值——见模块头最后一段。
         payload.update(master)
 
+    if provider.name == "sql":
+        month = provider.build_range("mtd")
+        if month is not None:
+            payload["presets"].append({
+                key: month[key] for key in
+                ("key", "days", "label", "gran", "granLabel", "benchLabel", "trendTitle")
+            } | {"bucketCount": len(month["buckets"])})
+
     return payload
+
+
+def version_payload():
+    provider = get_provider()
+    if provider.name != "sql":
+        return {"dataProvider": provider.name, "dataRevision": "demo", "analysisProgress": None}
+    source = provider._meta
+    revision = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
+    progress = json.loads(source.get("own_analysis_progress", "null"))
+    summary = None
+    if progress:
+        products = progress.get("products", {})
+        done = sum(bool(row.get("complete")) for row in products.values())
+        state_text = {"configuration_error": "配置错误，已暂停", "lease_lost": "执行锁异常，已暂停",
+                  "source_changed": "数据范围已变化，已暂停"}.get(progress["status"], "处理中")
+        summary = {"completed": done, "total": len(products), "status": progress["status"],
+               "text": f"自家分析 {done}/{len(products)} · " + ("已完成" if done == len(products) else state_text),
+                   "anchor": progress["anchor"], "products": products}
+    return {"dataProvider": "sql", "dataRevision": revision, "analysisProgress": summary}

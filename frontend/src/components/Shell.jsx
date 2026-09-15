@@ -1,11 +1,13 @@
 import { s, hover } from '../lib/dc'
 import DcLink from './DcLink'
+import R from '../data/radar'
 
 /* Rows 1 and 2 of the sticky header — brand, domain tabs, sub-nav, range/updated.
    Byte-identical in all four .dc.html screens, so it lives here once. The third row
    (the filter bar) differs per screen and is passed in as children. */
 export default function Shell({ vals, children }) {
   const { navGroups = [], rangeText, updated } = vals
+  const progress = R.ANALYSIS_PROGRESS
 
   return (
     <div style={s('position:sticky;top:0;z-index:40;box-shadow:0 1px 0 var(--border-2)')}>
@@ -60,6 +62,7 @@ export default function Shell({ vals, children }) {
         ))}
       </div>
       {children}
+      {progress && <div role="status" style={s('padding:5px 24px;background:var(--canvas-alt);font:400 12px/1.4 var(--font-cjk);color:var(--ink-600)')}>{progress.text}</div>}
     </div>
   )
 }

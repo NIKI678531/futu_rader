@@ -256,7 +256,7 @@ class TestSeries:
     def test_daily_has_real_counts_and_no_prices(self, provider):
         """价格四项没有数据源 —— 写 None，不拿收盘价占位。"""
         d = provider.daily_for(OWN_CODE)
-        assert len(d) == 60
+        assert len(d) == 42
         assert d[-1]["iso"] == ANCHOR
         assert (d[-1]["comments"], d[-1]["active"]) == (5, 3)
         assert d[-2]["iso"] == "2026-08-24"
@@ -888,10 +888,21 @@ class TestComplianceFourStates:
         """
         assert provider.compliance_for(OWN_CODE, "d1")["status"] == "unavailable"
 
-    def test_a_scanned_window_with_no_hit_for_this_product_is_empty(self, provider):
-        """扫描覆盖了这个窗口（别的产品有命中），这只零命中 ⇒ 数出来的 `empty`。"""
+    def test_other_products_annotations_do_not_imply_this_product_was_scanned(self, provider):
         p = add_annotations(provider, [self.HIT])
-        assert p.compliance_for(OTHER_OWN_CODE, "d1") == {"status": "empty", "list": []}
+        assert p.compliance_for(OTHER_OWN_CODE, "d1") == {"status": "unavailable", "list": []}
+
+    def test_v2_empty_tags_are_not_risk_items(self, provider):
+        p = add_annotations(provider, [{**self.HIT, "value": {"tags": [], "rationale": None}}])
+        assert p.compliance_for(OWN_CODE, "d1") == {"status": "empty", "list": []}
+        assert p.pool("d1")["complianceCount"][OWN_CODE] == 0
+
+    def test_v2_tags_keep_the_actual_risk_label(self, provider):
+        p = add_annotations(provider, [{**self.HIT, "value": {"tags": ["regulatory_complaint"],
+                                                           "rationale": "明确投诉意图"}}])
+        hit = p.compliance_for(OWN_CODE, "d1")["list"][0]
+        assert hit["riskTags"] == ["regulatory_complaint"]
+        assert hit["riskLabels"] == ["监管举报"]
 
     def test_a_hit_comes_back_with_its_rationale_and_a_locatable_quote(self, provider):
         p = add_annotations(provider, [self.HIT])
@@ -945,9 +956,9 @@ class TestComplianceFourStates:
         p = add_annotations(provider, [self.HIT])
         pool = p.pool("d1")
         assert pool["complianceCount"][OWN_CODE] == 1
-        assert pool["complianceCount"][OTHER_OWN_CODE] == 0
+        assert pool["complianceCount"][OTHER_OWN_CODE] is None
         assert pool["complianceCount"][PEER_CODE] is None, "同业产品不适用，不是零条"
-        assert pool["own"]["risk"] == 1
+        assert pool["own"]["risk"] is None
 
     def test_the_pool_total_goes_unknown_when_nothing_was_scanned(self, provider):
         """一只都没扫过 ⇒ 合计未知，不是 0。"""

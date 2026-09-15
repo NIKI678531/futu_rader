@@ -75,6 +75,9 @@ class TestThemesAndNegCats:
         assert th["positive"][0]["title"] == "费率与管理费"      # 固定名兜底
         assert th["positive"][0]["confidence"] is None
         assert th["negative"][0]["aspect"] == "spread" and th["negative"][0]["mentions"] == 4
+        assert th["negative"][0]["hasMeta"] is True
+        assert th["negative"][0]["lifecycleLabel"] is None
+        assert th["positive"][0]["hasMeta"] is False
         # 基准期（08-24）没有态度标注 ⇒ 环比暂不可用，不是 0%。
         assert th["positive"][0]["delta"]["text"] == "数据暂不可用"
 
@@ -113,6 +116,9 @@ class TestTopicsAndHot:
         tp = p.topics_for(OWN_CODE, "d1")
         assert len(tp) == 1 and tp[0]["negative"] == 1 and tp[0]["mentions"] == 1
         assert tp[0]["labelStatus"] == "unavailable"
+        assert tp[0]["delta"]["short"] == "暂不可用"
+        assert tp[0]["evidenceCount"] == 1
+        assert isinstance(tp[0]["peak"], str) and isinstance(tp[0]["split"], str)
         add_synth(p, [{"kind": "topic_label", "subkey": "market",
                        "value": {"title": "恒指方向争论", "summary": "多条评论看空大市。"}}])
         assert p.topics_for(OWN_CODE, "d1")[0]["title"] == "恒指方向争论"
@@ -140,6 +146,14 @@ class TestTopicsAndHot:
 
 
 class TestSummary:
+    def test_dirty_source_does_not_mix_old_summary_with_new_counts(self, provider):
+        p = annotated(provider)
+        add_synth(p, [{"kind": "summary", "value": {"points": [
+            {"text": "多条评论认可费率", "evidence_ids": ["c100"]}]} }])
+        assert p.summary_for(OWN_CODE, "d1")["aiStatus"] == "ok"
+        p._meta[f"synth_dirty_{OWN_CODE}_d1"] = "1"
+        assert p.summary_for(OWN_CODE, "d1")["aiStatus"] == "unavailable"
+
     def test_summary_text_is_facts_plus_model_points(self, provider):
         p = annotated(provider)
         s = p.summary_for(OWN_CODE, "d1")

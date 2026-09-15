@@ -153,10 +153,13 @@ class SqlProvider:
         meta = self._read_meta()
         if meta == self._meta:
             return False
+        data_changed = ({key: value for key, value in meta.items() if key != "own_analysis_progress"}
+                        != {key: value for key, value in self._meta.items() if key != "own_analysis_progress"})
         self._meta = meta
         self._anchor = parse_anchor(meta.get("anchor"))
-        self._cache.clear()
-        return True
+        if data_changed:
+            self._cache.clear()
+        return data_changed
 
     @property
     def updated_at(self):
@@ -336,7 +339,8 @@ class SqlProvider:
         cur = self._scan(rng["from"], rng["to"], rng)[code]
         # 基准区间也切同样多的桶：环比要逐桶对齐同位（PRD §3.1），产品监控页的趋势图
         # 悬停要显示「这一桶较基准同位 +12（+25.0%）」。
-        base = self._scan(rng["benchFrom"], rng["benchTo"], rng)[code]
+        baseline_range = build(range_key, date.fromisoformat(rng["benchTo"]), days_override=rng["days"])
+        base = self._scan(rng["benchFrom"], rng["benchTo"], baseline_range)[code]
         return {
             "mentions": delta(cur["mentions"], base["mentions"]),
             "comments": delta(cur["comments"], base["comments"]),
@@ -350,7 +354,7 @@ class SqlProvider:
             "accounts": delta(cur["active"], base["active"]),
             # 基准期的**完整观测**，与 pool().list 的元素同形 —— 门面的
             # `observe(code, range, 'bench')` 返回的就是这一份，屏幕拿它当观测用。
-            "base": self._observation(self._by_code[code], base, rng),
+            "base": self._observation(self._by_code[code], base, baseline_range),
             # 与 `base.buckets` **逐桶同位**的 delta 束（`fixtures/generate.mjs:169`）。
             # 五条序列与趋势图的图例键一一对应，前端只按图例开关取用 —— 所以这里
             # 不能多发也不能少发：多发的（`mentions`/`likes`/`shares`/`i`）图例里没有
@@ -399,8 +403,15 @@ class SqlProvider:
             return MISSING
         if self._anchor is None:
             return None
-        frm = self._anchor - timedelta(days=59)
+        frm = self._anchor - timedelta(days=41)
         per_day = self._by_day(code, frm, self._anchor)
+        from radar_db.schema import price_bars
+        with self._engine.connect() as conn:
+            prices = {row["session_date"]: row for row in conn.execute(select(price_bars).where(
+                price_bars.c.code == code, price_bars.c.interval == "1d", price_bars.c.provider == "fmp",
+                price_bars.c.adjustment == "split_adjusted", price_bars.c.session_date >= frm.isoformat(),
+                price_bars.c.session_date <= self._anchor.isoformat(),
+            )).mappings()}
         out = []
         for i in range((self._anchor - frm).days + 1):
             d = frm + timedelta(days=i)
@@ -412,7 +423,8 @@ class SqlProvider:
                     "comments": n_comments,
                     "active": active,
                     # 行情序列不在这份 dump 里。写 None 而不是拿收盘价占位。
-                    "px": None, "o": None, "c": None, "h": None, "l": None,
+                          **{key: float(prices[d.isoformat()][field]) if d.isoformat() in prices else None
+                              for key, field in (("px", "close"), ("o", "open"), ("c", "close"), ("h", "high"), ("l", "low"))},
                 }
             )
         return out
@@ -563,7 +575,28 @@ class SqlProvider:
         return None if code in self._by_code else MISSING
 
     def candles_for(self, code, range_key):
-        return self._unannotated(code)
+        if code not in self._by_code:
+            return MISSING
+        rng = self.build_range(range_key)
+        if rng is None:
+            return None
+        from core.price_bars import aggregate_prices
+        from radar_db.schema import price_bars, price_instruments, price_syncs
+        interval = "30min" if rng["gran"] == "hour" else "1d"
+        with self._engine.connect() as conn:
+            instrument = conn.execute(select(price_instruments).where(price_instruments.c.code == code)).mappings().first()
+            sync = conn.execute(select(price_syncs).where(
+                price_syncs.c.code == code, price_syncs.c.interval == interval,
+            ).order_by(price_syncs.c.updated_at.desc()).limit(1)).mappings().first()
+            if instrument is None and sync is None:
+                return None
+            rows = list(conn.execute(select(price_bars).where(
+                price_bars.c.code == code, price_bars.c.interval == interval,
+                price_bars.c.provider == "fmp", price_bars.c.adjustment == "split_adjusted",
+                price_bars.c.session_date >= rng["from"], price_bars.c.session_date <= rng["to"],
+            )).mappings())
+        return aggregate_prices(rng, rows, instrument["currency"] if instrument else "HKD",
+                                sync["reason"] if sync else "not_synced")
 
     # ── 市场域：Layer B 生成物驱动的叙述组（ADR-0020） ────────────────
     #
@@ -579,6 +612,8 @@ class SqlProvider:
     def _synth(self, code, range_key, kind):
         """现行生成物：`{subkey: {value, evidenceIds, reviewState}}`。链末、非 rejected；同链末取最新。"""
         if self._anchor is None:
+            return {}
+        if self._meta.get(f"synth_dirty_{code}_{range_key}") == "1":
             return {}
         key = ("synth", code, range_key, kind, self._anchor)
         if key in self._cache:
@@ -801,7 +836,14 @@ class SqlProvider:
         if u is None:
             return None
         label = self._labels(code, range_key, "topic_label").get(core_topics.MARKET_SUBKEY)
-        return core_topics.market_topic(code, u["market"], rng["buckets"], self._bucket_index(rng), label)
+        baseline = current_annotations(
+            self._engine, "market_direction", "comment", subject_code=code,
+            window=_window({"from": rng["benchFrom"], "to": rng["benchTo"]}),
+        )
+        base_units = [{"market_direction": row["value"]} for row in baseline.values()] if baseline else None
+        return core_topics.market_topic(
+            code, u["market"], rng["buckets"], self._bucket_index(rng), label, base_units,
+        )
 
     def stages_for(self, code, range_key):
         if code not in self._by_code:
@@ -951,7 +993,7 @@ class SqlProvider:
                 "excerpt": quote or r["text"],
                 "action": action, "actionTone": tone.get(action), "direction": action,
                 "postType": None, "typeLabel": None, "confidence": None,
-                "dateText": ts.strftime("%Y/%-m/%-d") if ts else None,
+                "dateText": f"{ts.year}/{ts.month}/{ts.day}" if ts else None,
                 "timeText": ts.strftime("%H:%M:%S") if ts else None,
                 "engagement": r["interactions"], "url": r["url"], "net": None,
                 "reviewState": a["review_state"],
@@ -1038,7 +1080,7 @@ class SqlProvider:
         if p["ownership"] != "own":
             return {"status": "na", "list": []}
         scan = self._compliance_scan(rng)
-        if not scan["scanned"]:
+        if code not in scan["scannedCodes"]:
             return {"status": "unavailable", "list": []}
         hits = scan["byCode"].get(code, [])
         return {"status": "ok" if hits else "empty", "list": hits}
@@ -1054,35 +1096,17 @@ class SqlProvider:
         scan = self._compliance_scan(rng)
         out = {}
         for c, p in self._by_code.items():
-            if p["ownership"] != "own" or not scan["scanned"]:
+            if p["ownership"] != "own" or c not in scan["scannedCodes"]:
                 out[c] = None
             else:
                 out[c] = len(scan["byCode"].get(c, []))
         return out
 
     def _compliance_scan(self, rng):
-        """区间内全部现行合规结论，按产品分组，外加一个「这个区间扫没扫过」。
+        """按产品读取现行合规结论。v2 写 `tags`，兼容旧行的 `risk_tags`。
 
-        ## 「没扫过」是怎么判出来的
-
-        库里没有覆盖率记录：没有任何一行说「这批评论的合规识别跑过了」。所以
-        `unavailable` 只能从现有事实推 —— **这个区间内一条 `kind=compliance` 都没有**
-        ⇒ 识别没覆盖到这段时间，对任何产品都不能说「查过了，没有」。区间内有命中，
-        说明扫描覆盖了这个窗口，某只产品零命中才是数出来的 `empty`。
-
-        这是个近似，而且偏在保守那一侧（宁可说不知道，也不说零条）。等合规任务落地、
-        `annotation_runs` 能按「窗口 × 任务」查出覆盖范围，换成查覆盖范围即可 ——
-        这个函数是唯一要改的地方。
-
-        ## `value_json` 的形状
-
-        `kind=compliance` **当前没有写入方**（`worker/jobs/annotate.py` 只写
-        `comment_product` 与 `post_annotation` 两个任务）。这里把读取契约定下来，将来
-        写入方照它写：
-
-            {"risk_tags": ["regulatory_complaint", ...], "rationale": "命中依据一句话"}
-
-        标签取自 PRD §4.2 的五类（见 `_RISK_LABEL`），两个键都必填。
+        空标签是「已分析但未命中」，不是风险条目；只有该产品自己的标注能证明它已分析。
+        没有标注的产品仍是 unavailable，不因其他产品有结果就显示零条。
         """
         key = ("compliance", rng["key"])
         if key in self._cache:
@@ -1093,9 +1117,7 @@ class SqlProvider:
             tt: self._current_annotations("compliance", tt, window=window)
             for tt in ("comment", "feed")
         }
-        # 「扫没扫过」看的是**原始行数**，不是能不能组装成条目：一条 subject_code 不在
-        # 池里的命中同样证明扫描跑过了。
-        scanned = bool(rows["comment"] or rows["feed"])
+        scanned_codes = set()
         ev = self._evidence_rows(
             [a["annotation_id"] for table in rows.values() for a in table.values()]
         )
@@ -1107,7 +1129,12 @@ class SqlProvider:
                 if r is None or code not in self._by_code:
                     continue
                 value = a["value"]
-                tags = list(value.get("risk_tags") or [])
+                if not isinstance(value, dict) or not isinstance(value.get("tags", value.get("risk_tags")), list):
+                    continue
+                scanned_codes.add(code)
+                tags = list(value.get("tags", value.get("risk_tags")) or [])
+                if not tags:
+                    continue
                 quotes = ev.get(a["annotation_id"], [])
                 author = r["authorName"]
                 author_type = self._author_type(author)
@@ -1137,7 +1164,7 @@ class SqlProvider:
                 )
         for items in by_code.values():
             items.sort(key=lambda x: (x["publishedAt"] or "", x["id"]), reverse=True)
-        out = {"scanned": scanned, "byCode": dict(by_code)}
+        out = {"scannedCodes": scanned_codes, "byCode": dict(by_code)}
         self._cache[key] = out
         return out
 

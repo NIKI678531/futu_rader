@@ -1,0 +1,46 @@
+{
+ "stamp": "20260914T101627",
+ "n": 30,
+ "candidates": 1400,
+ "kept_after_rules": 1356,
+ "offpool_dropped": 44,
+ "strata": {
+  "yue|own": 12,
+  "zh-Hans|own": 10,
+  "zh-Hant|own": 8
+ },
+ "v2_b30": {
+  "labeled": 30,
+  "failed": 0,
+  "attitude_dist": {
+   "null": 19,
+   "negative": 2,
+   "neutral": 2,
+   "positive": 7
+  },
+  "relevance_dist": {
+   "irrelevant": 19,
+   "relevant": 11
+  },
+  "needs_review_rate": 0.1333,
+  "compliance_hit_rate": 0.0
+ },
+ "b1_vs_b30": {
+  "labeled_b1": 30,
+  "failed_b1": 0,
+  "relevance_agreement": 0.6333,
+  "attitude_agreement": 0.8333,
+  "n": 30
+ },
+ "v1_vs_v2": {
+  "labeled_v1": 30,
+  "failed_v1": 0,
+  "attitude_agreement": 0.6667,
+  "relevance_agreement": 0.6667,
+  "n": 30
+ },
+ "verdict": [
+  "b1_vs_b30 态度一致率 83.3% < 90%：先改 Prompt 再放量",
+  "v1_vs_v2 态度一致率 66.7% < 90%：先改 Prompt 再放量"
+ ]
+}

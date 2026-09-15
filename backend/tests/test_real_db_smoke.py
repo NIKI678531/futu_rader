@@ -231,7 +231,7 @@ def test_unknown_product_is_404_not_a_screen_of_unavailable(real):
     assert "status" not in res.get_json(), "传输层错误不该带 status 字段（app.py 模块头）"
 
 
-def test_ai_and_quote_fields_are_null_on_real_data(real, busiest_code):
+def test_ai_and_quote_fields_preserve_real_availability(real, busiest_code):
     """态度、摘要、K 线在 `sql` 下是 `None`，不是 0，也不是空串。
 
     这是 ADR-0017 的现状：标注管线还没铺满，行情源还没接。页面必须因此显示
@@ -243,19 +243,27 @@ def test_ai_and_quote_fields_are_null_on_real_data(real, busiest_code):
     # abs/pct 为 None ＋ 文案落成「数据暂不可用」／「暂不可用」，不是整个键为 None。
     for field in ("positive", "neutral", "negative"):
         d = bench[field]
-        assert d["abs"] is None and d["pct"] is None, f"{field} 在 sql 下不该有态度数字"
-        assert d["text"] == "数据暂不可用" and d["short"] == "暂不可用", (
-            f"{field} 的缺失文案是 {d['text']!r}/{d['short']!r} —— "
-            f"两套文案不可互换（PRD §3.1、§3.6）"
-        )
+        if d["abs"] is None:
+            assert d["pct"] is None
+            assert d["text"] == "数据暂不可用" and d["short"] == "暂不可用"
+        else:
+            assert isinstance(d["abs"], (int, float))
 
     # 桶里的态度三项同样一个都没有：折线要能画成断线，不是画成一条贴地的零线。
     for bucket in bench["base"]["buckets"]:
         for field in ("positive", "neutral", "negative"):
-            assert bucket[field] is None, f"桶内 {field} 应为 None，实得 {bucket[field]!r}"
+            assert bucket[field] is None or isinstance(bucket[field], (int, float))
 
     # 行情源还没接（ADR-0017）：K 线整块为 None，不是一条平的零线。
-    assert body(real, f"/api/v1/products/{busiest_code}/candles?range={RANGE}") is None
+    candles = body(real, f"/api/v1/products/{busiest_code}/candles?range={RANGE}")
+    if candles is not None:
+        rng = body(real, f"/api/v1/ranges/{RANGE}")
+        assert [row["bucket"] for row in candles["list"]] == [row["tip"] for row in rng["buckets"]]
+        for row in candles["list"]:
+            values = [row[field] for field in ("open", "high", "low", "close")]
+            assert all(value is None for value in values) or all(value > 0 for value in values)
+            if row["close"] is not None:
+                assert row["low"] <= min(row["open"], row["close"]) <= max(row["open"], row["close"]) <= row["high"]
 
 
 # ── KOL 影响力 ／ KOL 详情 ──────────────────────────────────────────────
@@ -288,7 +296,11 @@ def test_every_real_post_matches_what_the_provider_promises_to_omit(real):
     posts = body(real, f"/api/v1/kol/impact?range={RANGE}")["posts"]
     assert posts, "真库上 d7 一篇 KOL 帖子都没有"
     for post in posts:
-        assert {k: post[k] for k in _UNANNOTATED} == _UNANNOTATED
+        assert all(key in post for key in _UNANNOTATED)
+        assert post["confidence"] is None
+        if post["postType"] is not None:
+            assert isinstance(post["typeLabel"], str) and post["typeLabel"]
+            assert post["summary"] is None or isinstance(post["summary"], str)
 
 
 def test_kol_posts_keep_their_platform_counts(real):
@@ -313,7 +325,11 @@ def test_kol_opinions_is_null_not_an_empty_list(real):
     name = body(real, f"/api/v1/kol/impact?range={RANGE}")["leaders"][0]["kol"]
     from urllib.parse import quote
 
-    assert body(real, f"/api/v1/kol/{quote(name)}/opinions?range={RANGE}") is None
+    opinions = body(real, f"/api/v1/kol/{quote(name)}/opinions?range={RANGE}")
+    assert opinions is None or isinstance(opinions, list)
+    for item in opinions or []:
+        assert item["code"] and item["url"]
+        assert item["summary"] is None or isinstance(item["summary"], str)
 
 
 # ── 官号动态 ───────────────────────────────────────────────────────────

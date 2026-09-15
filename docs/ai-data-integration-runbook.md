@@ -1822,3 +1822,108 @@ L1 词表种子（实现时**按四种写法各写一份**，并允许词表版�
 公开数据只能让模型「见过中文金融社区」，不能让它知道「3033 的点差」算产品负面而
 「恒指要跌」不算。
 
+## 23. 全自家产品与 FMP 行情自动链路（2026-09-14）
+
+### 23.1 运行入口与边界
+
+本节是全量运行的现行入口。此前两产品试跑记录保留，但不代表全 61 只已经完成。
+首次导入的完整日仍为 `2026-08-25`；主月度窗口 `mtd` 为 `08-01..08-25`。
+六个日期档位及其基准窗口的并集起于 `2026-06-27`。这些额外数据只用于必要基准，
+不得称为完整 8 月，8 月 26 日不完整及 27..31 日缺失仍保留原状。
+
+仓库根目录执行：
+
+```powershell
+uv pip install --python backend\.venv\Scripts\python.exe -r backend\requirements.txt
+uv pip install --python worker\.venv\Scripts\python.exe -r worker\requirements.txt
+worker\.venv\Scripts\python.exe -X utf8 -m alembic -c radar_db\alembic.ini upgrade head
+worker\.venv\Scripts\python.exe -X utf8 worker\jobs\full_own.py --watch --max-items 300
+```
+
+- `--watch` 是持久 worker，会持续调用已配置的模型；没有模型费用上限，但继续遵守供应商限流、退避和错误检查。
+- 默认按主数据选择恰好 61 只自家产品，逐产品、逐轮处理；不扩展到同业全量分析。
+- 当前使用逐条推理，批量稳定性未达标不自动切回 30 条合批。模型结论未经人工验证，`aiValidation=none`。
+- 无 `--anchor` 时跟随源声明的完整日；带 `--anchor 2026-08-25` 可固定试验，源锚点变化时暂停。
+- 旧 scope 的同输入任务通过 `analysis_scope_jobs` 关联复用，不重复收费；任务完成后才生成该产品最终汇总。
+- 数据库租约阻止第二个全产品 worker；失去租约或遇到永久模型错误时暂停，不能把暂停当完成。
+- 中断后运行同一入口恢复；`failed/dead` 需要排查，不自动清空、假设成功或无上限重发。
+- 页面显示后端进度。`complete` 表示该产品候选已经处理完（包括确实没有候选），不是全部产品都有足够样本生成结论。
+- 本轮现场备份为 `%LOCALAPPDATA%\futu-radar\backups\radar-before-full-own-20260914-191830.db`，已通过 SQLite `quick_check`。
+- 数据库迁移至 `0007`：新增 scope 关联、运行租约、行情事实、来源快照和现行标注查询索引。不得重复导入/重建已有瘦库。
+
+### 23.2 FMP 行情
+
+密钥只放在被忽略的 `worker/.env` 或环境变量 `FMP_API_KEY`，禁止 `VITE_` 前缀、日志、URL导出、测试fixture保存密钥。
+`FMP_BASE_URL` 必须为 `https://financialmodelingprep.com/stable`，不要带 Markdown 链接括号。
+
+```powershell
+worker\.venv\Scripts\python.exe -X utf8 worker\jobs\sync_prices.py --from 2026-06-27 --to 2026-08-25
+```
+
+默认全自家；`--codes 3033,2802` 可定向；成功窗口幂等跳过，`--force` 重新同步而非删除旧数据。
+全产品 worker 在存在 FMP 配置时每小时同步一次。API 查询只读本地行情表，不现场调用 FMP。
+
+- 先用 profile 验证标的、港股交易所、HKD及ETF身份；不能单凭补零拼代码就使用结果。
+- 日线使用 `historical-price-eod/full`，小时图由 `historical-chart/30min` 聚合；默认补齐最近两个完整数据日的分钟线。
+- `price_bars.timestamp` 是标准化的港交所本地时间，`session_date` 为 HKT 交易日；不与 UTC 朴素时间混用。
+- `price_instruments` 保存验证映射，`price_syncs` 保存窗口状态和原因，`price_bars` 保存 OHLCV 与拆股调整口径。
+- 本轮已实测 3033、2802、7226 的月度与小时 K；7709 日线有值，分钟历史返回空。
+- 全池初轮约 19 只日线、17 只分钟线同步成功；其他产品分别为映射未验证或空响应，后续同步结果以 `price_syncs` 为准，不能声称 61 只行情均已覆盖。
+- 空响应不等同于休市或确认没有该标的；权限错误、无历史、缺分段均不补零。失败不覆盖已存在的有效价格。
+- XHKG 日历使用 `exchange-calendars==4.11.2`、`pandas==2.3.3`；不要自行升级至 Pandas 3，已实测会错误识别合法交易日。
+
+### 23.3 转发与热度
+
+```powershell
+worker\.venv\Scripts\python.exe -X utf8 worker\jobs\repair_feed_metrics.py
+```
+
+默认仅审计；只有结构完整、路径明确、非负整数且不冲突的记录才允许 `--apply`。
+报告在 `%LOCALAPPDATA%\futu-radar\metric-repair-report.json`，不含正文。
+
+本轮实测 167 条转发缺失均为坏 JSON。60 条虽有 `share_count` 文本，但保守结构校验
+没有找到可安全恢复的完整计数对象，因此**写回 0 条**。源 dump 第 14 列已核实为
+`detail_updated_at`，不是额外的转发列。缺失尾部只能由完整历史导出或获授权源API补采。
+不得用AI、当前累计转发、平均数或0替代当时的未知计数；FMP不提供社区互动数据。
+`backend/core/heat.py` 公式及未知传播保持不变，因此仍可能有热度暂不可用。
+
+### 23.4 新来源规范化入口
+
+```powershell
+worker\.venv\Scripts\python.exe -X utf8 worker\jobs\ingest.py --source futu-export --file C:\data\futu-normalized.jsonl
+```
+
+每行一个 `FeedRecord`，schema 位于 `worker/jobs/ingest.py`。必需字段：`feed_id`、`code`、
+`posted_at`、`observed_at`、`feed_type`、`like_count`、`comment_count`、`image_count`。
+可提供正文、作者、转发/浏览、`comments` 数组与 `mentioned_codes`。未知数显式 `null`，
+不由适配器补0；稳定 Futu ID 跨导出/API来源去重，逐记录事务更新，不删除整个事实库。
+导入是更新/追加语义，不是删除未出现在文件里的评论或提及。
+
+已有历史记录的计数修复要求同一个 `observed_at`，拒绝把当前回抓的累计数静默混入历史快照。
+只有上游明确声明一个自然日已完整收集时，才传 `--complete-through 2026-08-25`；
+部分导出必须省略此参数，不得根据最大一条帖子日期就宣称当天完整。
+
+源版本改变后 worker 建立新的范围检查，旧输入不变的任务复用，变化的输入重新分析；
+源或标注变化后旧汇总标记为待更新，完整汇总成功后才解除。`/version` 通知可见页面
+重取数据，保留产品和日期筛选；隐藏页面暂停检查，重新聚焦恢复。
+
+这提供规范化接入契约，并不代表任意格式无需适配，也没有凭空实现富途在线采集API。
+直接重跑旧的 `jobs.etl` 仍是一次性全量重建流程，日常增量不得用它替代 `ingest`。
+
+### 23.5 验证与排查
+
+```powershell
+backend\.venv\Scripts\python.exe -X utf8 -m pytest backend\tests -q
+worker\.venv\Scripts\python.exe -X utf8 -m pytest worker\tests -q
+npm --prefix frontend run mirror
+npm --prefix "$env:USERPROFILE\.futu-radar\mirror\frontend" run build
+npm --prefix "$env:USERPROFILE\.futu-radar\mirror\frontend" run real-data-check
+node "$env:USERPROFILE\.futu-radar\mirror\frontend\scripts\live-data-check.mjs"
+```
+
+`real-data-check` 已禁止空白页面假通过；自动刷新测试只在隔离浏览器里模拟版本，不写真实库。
+全量运行状态读取 `/api/v1/version` 的 `analysisProgress`，逐产品含 scope、队列和完成状态。
+审计某 scope：`worker\.venv\Scripts\python.exe -X utf8 worker\jobs\audit.py --report --scope <id>`。
+用量按包含该scope结果的运行归集；共享运行未按比例拆分，不能当成严格独占成本。
+验证字段完整性、证据可定位与链路正确，不得把HTTP200或任务done称为准确率。
+

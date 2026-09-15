@@ -30,6 +30,7 @@ stages / topics / calendar / attitude），它们不 import provider，在 worke
 """
 
 import argparse
+from contextlib import nullcontext
 import hashlib
 import json
 import logging
@@ -146,9 +147,11 @@ def detect_language(texts):
     return "zh-Hant" if trad > simp else "zh-Hans"
 
 
-def fingerprint(kind, ann_ids, facts):
+def fingerprint(kind, ann_ids, facts, cfg=None):
     material = json.dumps(
-        {"kind": kind, "ann_ids": sorted(ann_ids), "facts": facts, "prompt": synth.VERSION},
+        {"kind": kind, "ann_ids": sorted(ann_ids), "facts": facts, "prompt": synth.VERSION,
+         "model": cfg.model if cfg else None, "provider": cfg.provider if cfg else None,
+         "taxonomy": cfg.taxonomy_version if cfg else None, "schema": "synth-v1"},
         sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str,
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
@@ -588,7 +591,7 @@ class Synthesizer:
 
     def _generate(self, code, range_key, anchor, kind, subkey, ann_ids, facts, evidence, allowed,
                   product, rng_info, to_value):
-        fp = fingerprint(kind, ann_ids, facts)
+        fp = fingerprint(kind, ann_ids, facts, self.cfg)
         if not self.force and self._exists(code, range_key, anchor, kind, subkey, fp):
             self.stats["skipped_same"] += 1
             return None
@@ -612,9 +615,9 @@ class Synthesizer:
     def _generate_batch(self, code, range_key, anchor, kind, ann_ids, facts, evidence, allowed, keys,
                         product, rng_info, key_attr="key"):
         """批式 kind：一次调用给全部桶／时段／竞品，每个键落一行。指纹按整批算。"""
-        fp = fingerprint(kind, ann_ids, facts)
+        fp = fingerprint(kind, ann_ids, facts, self.cfg)
         existing = self._existing_rows(code, range_key, anchor, kind, fp)
-        if not self.force and existing:
+        if not self.force and {row[key_attr] for row in existing} == set(keys):
             self.stats["skipped_same"] += 1
             return existing
         if self.dry_run:
@@ -627,15 +630,16 @@ class Synthesizer:
             log.warning("%s %s %s 失败：%s", code, range_key, kind, str(exc)[:200])
             return None
         rows = []
-        for r in obj.results:
-            value = r.model_dump()
-            review = "needs_review" if value.get("needs_review") else "pending"
-            self._write(code, range_key, anchor, kind, getattr(r, key_attr), fp, value, r.evidence_ids, review)
-            rows.append(value)
+        with self.engine.begin() as conn:
+            for r in obj.results:
+                value = r.model_dump()
+                review = "needs_review" if value.get("needs_review") else "pending"
+                self._write(code, range_key, anchor, kind, getattr(r, key_attr), fp, value, r.evidence_ids, review, conn)
+                rows.append(value)
         return rows
 
     def _write_low_sample(self, code, range_key, anchor, kind, mat):
-        fp = fingerprint(kind, mat.ann_ids, {"status": "low_sample", "pos": mat.pos, "neg": mat.neg})
+        fp = fingerprint(kind, mat.ann_ids, {"status": "low_sample", "pos": mat.pos, "neg": mat.neg}, self.cfg)
         if self._exists(code, range_key, anchor, kind, NO_SUBJECT, fp):
             self.stats["skipped_same"] += 1
             return
@@ -665,9 +669,16 @@ class Synthesizer:
             ).all()
         return [json.loads(r[0]) for r in rows]
 
-    def _write(self, code, range_key, anchor, kind, subkey, fp, value, evidence_ids, review):
+    def _write(self, code, range_key, anchor, kind, subkey, fp, value, evidence_ids, review, connection=None):
         now = clock.now()
-        with self.engine.begin() as conn:
+        with (nullcontext(connection) if connection is not None else self.engine.begin()) as conn:
+            duplicate = conn.execute(select(synthesis_outputs.c.synthesis_id).where(
+                synthesis_outputs.c.code == code, synthesis_outputs.c.range_key == range_key,
+                synthesis_outputs.c.anchor == anchor.isoformat(), synthesis_outputs.c.kind == kind,
+                synthesis_outputs.c.subkey == subkey, synthesis_outputs.c.input_fingerprint == fp,
+            )).first()
+            if duplicate:
+                return
             newer = synthesis_outputs.alias("newer")
             prev = conn.execute(
                 select(synthesis_outputs.c.synthesis_id).where(
@@ -704,7 +715,10 @@ class Synthesizer:
         if self.dry_run:
             return
         s = self.stats
+        from radar_db.revisions import bump_revision
         with self.engine.begin() as conn:
+            if s["written"]:
+                bump_revision(conn, "synthesis")
             conn.execute(update(annotation_runs).where(annotation_runs.c.run_id == self.run_id).values(
                 finished_at=clock.now(), status="done" if s["errors"] == 0 else "partial",
                 model_id=s["model"], input_count=s["calls"], success_count=s["written"], error_count=s["errors"],
@@ -733,6 +747,11 @@ def run(engine, cfg, *, codes, ranges=DEFAULT_RANGES, kinds=KINDS, provider=None
                     raise
     finally:
         s.close_run()
+    if not dry_run and s.stats["errors"] == 0 and set(kinds) == set(KINDS):
+        from radar_db.revisions import mark_synthesis, bump_revision
+        with engine.begin() as conn:
+            mark_synthesis(conn, codes, False, ranges)
+            bump_revision(conn, "synthesis")
     return s.stats
 
 

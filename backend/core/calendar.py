@@ -22,6 +22,7 @@ PRESETS = {
     "d7": (7, "近 7 天"),
     "d14": (14, "近 14 天"),
     "d30": (30, "近 30 天"),
+    "mtd": (None, "本月截至数据日"),
 }
 
 # JS 的 getUTCDay()：周日 = 0。Python 的 weekday()：周一 = 0。桶里的 `dow` 字段前端在用，
@@ -41,7 +42,7 @@ def _dow_index(d):
     return (d.weekday() + 1) % 7
 
 
-def build(key, anchor):
+def build(key, anchor, *, days_override=None):
     """返回 `key` 这个预设区间在 `anchor` 这一天的完整描述。
 
     `anchor` 是 `datetime.date`（「最近一个完整自然日」）。返回结构与设计源
@@ -49,6 +50,10 @@ def build(key, anchor):
     —— 桶的粒度在时/日/周之间变，替代不了它）。
     """
     days, label = PRESETS[key]
+    if key == "mtd":
+        days = anchor.day
+    if days_override is not None:
+        days = days_override
     to = anchor
     frm = anchor - timedelta(days=days - 1)
     bench_to = frm - timedelta(days=1)

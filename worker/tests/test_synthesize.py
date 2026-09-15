@@ -27,6 +27,11 @@ CODE = "3033"
 
 
 class TestSynthSchemas:
+    def test_generation_fingerprint_tracks_model(self):
+        original = config.load(model="first-model")
+        replacement = config.load(model="second-model")
+        assert synthesize.fingerprint("summary", [1], {}, original) != synthesize.fingerprint("summary", [1], {}, replacement)
+
     def test_ratio_words_are_rejected_everywhere(self):
         with pytest.raises(SchemaError, match="比例"):
             synth.parse("hot_summary", {"text": "六成用户看好费率", "evidence_ids": ["c1"], "needs_review": False}, {"c1"})
@@ -61,6 +66,15 @@ class TestSynthSchemas:
             sch = synth.json_schema(kind)
             assert sch["additionalProperties"] is False
             assert set(sch["required"]) == set(sch["properties"])
+
+    def test_wire_schema_preserves_business_title_fields(self):
+        topic = synth.json_schema("topic_label")
+        bucket = synth.json_schema("theme_label")["$defs"]["BucketLabel"]
+        for schema in (topic, bucket):
+            assert "title" in schema["properties"]
+            assert "title" in schema["required"]
+            assert schema["properties"]["title"]["type"] == "string"
+            assert "title" not in schema["properties"]["title"]
 
 
 # ── job ─────────────────────────────────────────────────────────────────
@@ -160,10 +174,20 @@ def test_full_run_writes_each_kind_with_facts_only_from_core(engine, cfg):
     assert hot["facts"]["compliance"]["hits"] == 1
     assert all(e["id"].startswith("c") for e in hot["evidence"])
     assert hot["language"] in ("zh-Hant", "yue")
-    # 热议总结拿到的是刚起好的主题名，不是 aspect 固定名。
     assert hot["facts"]["themes"]["positive"][0]["title"] == "費率同類最低"
     run = rows(engine, annotation_runs)[0]
     assert run["task"] == "synthesize" and run["token_input"] == 100 * stats["calls"]
+
+
+def test_incomplete_batch_is_repaired_instead_of_skipped(engine, cfg):
+    from sqlalchemy import delete
+    synthesize.run(engine, cfg, codes=[CODE], ranges=["d7"], kinds=["theme_label"], provider=FakeSynthProvider())
+    with engine.begin() as conn:
+        conn.execute(delete(synthesis_outputs).where(synthesis_outputs.c.subkey == "negative|spread"))
+    provider = FakeSynthProvider()
+    result = synthesize.run(engine, cfg, codes=[CODE], ranges=["d7"], kinds=["theme_label"], provider=provider)
+    assert result["errors"] == 0 and provider.calls
+    assert {row["subkey"] for row in rows(engine, synthesis_outputs)} == {"positive|fee", "negative|spread"}
 
 
 def test_rerun_with_same_annotations_costs_nothing(engine, cfg):

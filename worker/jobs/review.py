@@ -191,6 +191,8 @@ def decide(engine, annotation_id, decision, reviewer, *, value=None, reason=None
 
     now = clock.now()
     with engine.begin() as conn:
+        from radar_db.revisions import bump_revision
+        bump_revision(conn, "annotation")
         row = conn.execute(
             select(annotations).where(annotations.c.annotation_id == annotation_id)
         ).mappings().first()
@@ -205,6 +207,10 @@ def decide(engine, annotation_id, decision, reviewer, *, value=None, reason=None
             raise ReviewError(
                 f"annotation {annotation_id} 已被 #{newer} 取代，请裁决新的那条"
             )
+
+        if decision in ("reject", "correct"):
+            from radar_db.revisions import mark_synthesis
+            mark_synthesis(conn, [row["subject_code"]], True)
 
         res = conn.execute(
             insert(review_decisions).values(
