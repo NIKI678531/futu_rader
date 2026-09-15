@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(REPO, "backend"))
 
 from ai import config  # noqa: E402
 from ai.providers.base import Completion, Usage  # noqa: E402
-from jobs import audit, extract, pipeline  # noqa: E402
+from jobs import audit, classify, extract, pipeline  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
 from radar_db.schema import annotations, comments, feeds, meta_kv, synthesis_outputs  # noqa: E402
 
@@ -45,6 +45,13 @@ def engine(tmp_path):
 def cfg():
     return config.load(model="m", prompt_version="comment-product-v2", schema_version="v2", taxonomy_version="v2",
                        micro_batch_size=30, concurrency=2)
+
+
+def route_to_llm(engine, cfg, scope_id, tmp_path):
+    """ADR-0021：评论任务默认 stage=student，pipeline 只领 llm 段。这里走「没有学生模型」的放行路径。"""
+    st = classify.run(engine, cfg, scope_id=scope_id, model_dir=tmp_path / "no-student-model")
+    assert st["student_available"] is False
+    return st
 
 
 class UniversalFake:
@@ -109,12 +116,21 @@ def test_extract_then_pipeline_end_to_end(engine, cfg, tmp_path):
     # 抽取时顺手把合作 KOL 的评论排进了 kol_comment_opinion（pipeline 第二步要它）
     assert ext["kol_comments"] == 2
 
+    # 没过学生这一段之前，Luna 通道领不到评论任务。
+    # KOL 评论与帖子任务只有 llm 一段，这一轮就跑掉了。
+    before = pipeline.run(engine, cfg, sid, provider=UniversalFake(), ranges=["d7"])
+    before_steps = {s["task"]: s for s in before["steps"]}
+    assert before_steps["comment_product"] == {"task": "comment_product", "skipped": "队列为空"}
+    assert before_steps["kol_comment_opinion"]["success"] == 2
+    assert before_steps["post_annotation"]["success"] == 1
+    assert before["complete"] is False and before["synth_pairs"] == 0
+    assert route_to_llm(engine, cfg, sid, tmp_path)["routed"] == 13
+
     prov = UniversalFake()
     out = pipeline.run(engine, cfg, sid, provider=prov, ranges=["d7"])
     steps = {s["task"]: s for s in out["steps"]}
     assert steps["comment_product"]["success"] == 13 and steps["comment_product"]["error"] == 0
-    assert steps["kol_comment_opinion"]["success"] == 2
-    assert steps["post_annotation"]["success"] == 1
+    assert out["synth_pairs"] == 1 and steps["synthesize"]["pairs_clean"] == 1
     assert steps["synthesize"]["errors"] == 0 and steps["synthesize"]["written"] >= 4
     assert "aborted" not in out
     assert out["audit"]["queue"]["comment_product"]["done"] == 13
@@ -134,6 +150,7 @@ def test_extract_then_pipeline_end_to_end(engine, cfg, tmp_path):
 def test_pipeline_dry_run_estimates_only(engine, cfg, tmp_path):
     ext = extract.run(engine, cfg, codes=[CODE], date_from=datetime(2026, 8, 19), date_to=datetime(2026, 8, 25),
                       ownership={CODE: "own"}, report_dir=tmp_path)
+    route_to_llm(engine, cfg, ext["scope_id"], tmp_path)
     out = pipeline.run(engine, cfg, ext["scope_id"], dry_run=True, ranges=["d7"])
     est = out["steps"][0]["estimate"]
     assert est["pending_items"] == 13 and est["requests"] == 1
@@ -144,10 +161,13 @@ def test_pipeline_dry_run_estimates_only(engine, cfg, tmp_path):
 def test_incomplete_pipeline_does_not_synthesize(engine, cfg, tmp_path):
     ext = extract.run(engine, cfg, codes=[CODE], date_from=datetime(2026, 8, 19),
                       date_to=datetime(2026, 8, 25), ownership={CODE: "own"}, report_dir=tmp_path)
+    route_to_llm(engine, cfg, ext["scope_id"], tmp_path)
     provider = UniversalFake()
     result = pipeline.run(engine, cfg, ext["scope_id"], provider=provider,
                           max_items=1, ranges=["d7"])
     assert result["complete"] is False
+    # 待判评论落在 8/22，d7 的当前窗（8/19–8/25）被挡住 ⇒ 这一对不就绪。
+    assert result["synth_pairs"] == 0
     assert not any(call.startswith("synth_") for call in provider.calls)
     with engine.connect() as conn:
         assert conn.execute(select(synthesis_outputs)).first() is None
@@ -156,6 +176,7 @@ def test_incomplete_pipeline_does_not_synthesize(engine, cfg, tmp_path):
 def test_audit_report_never_reports_accuracy(engine, cfg, tmp_path):
     ext = extract.run(engine, cfg, codes=[CODE], date_from=datetime(2026, 8, 19), date_to=datetime(2026, 8, 25),
                       ownership={CODE: "own"}, report_dir=tmp_path)
+    route_to_llm(engine, cfg, ext["scope_id"], tmp_path)
     pipeline.run(engine, cfg, ext["scope_id"], provider=UniversalFake(), skip_synth=True)
     rep = audit.report(engine, ext["scope_id"])
     text = json.dumps(rep, ensure_ascii=False, default=str)

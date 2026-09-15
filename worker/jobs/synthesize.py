@@ -37,8 +37,10 @@ import logging
 import os
 import random
 import sys
+import threading
 import uuid
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
@@ -62,6 +64,7 @@ from core.attitude import LOW_SAMPLE  # noqa: E402
 from core.calendar import PRESETS, build as build_range  # noqa: E402
 from radar_db import make_engine  # noqa: E402
 from radar_db.annotations_read import current_annotations  # noqa: E402
+from radar_db.events import emit  # noqa: E402
 from radar_db.schema import (  # noqa: E402
     NO_SUBJECT,
     analysis_scopes,
@@ -85,6 +88,7 @@ EVIDENCE_PER_BUCKET = 6  # 每桶抽几条引文
 EVIDENCE_MAX_CHARS = 140
 COMPETITOR_TOP_K = 3
 COMPETITOR_MIN_EVIDENCE = 3
+WORKERS = 8              # (code, range) 并行度；每对内部顺序不变
 
 
 # ── 工具 ────────────────────────────────────────────────────────────────
@@ -470,14 +474,29 @@ class Synthesizer:
                       "low_sample": 0, "no_material": 0, "errors": 0,
                       "tok_in": 0, "tok_out": 0, "usage_known": True, "model": cfg.model}
         self._names = {p["code"]: p["name"] for p in master["products"]}
+        # 多线程按 (code, range) 并行时，stats 的累加要加锁；每对的局部计数放线程本地
+        # （一对从头到尾都在同一个线程里跑），`one()` 结束时回报给调用方写事件与标脏。
+        self._lock = threading.Lock()
+        self._tls = threading.local()
+        self.stop = threading.Event()
 
-    # 一条 (code, range) 的全流程
+    def _inc(self, key, n=1):
+        with self._lock:
+            self.stats[key] += n
+        local = getattr(self._tls, "counts", None)
+        if local is not None and key in local:
+            local[key] += n
+
+    # 一条 (code, range) 的全流程。返回本对的局部计数 `{calls, written, errors, skipped_same, low_sample}`。
     def one(self, code, range_key, anchor, kinds):
+        self._tls.counts = {"calls": 0, "written": 0, "errors": 0, "skipped_same": 0, "low_sample": 0}
+        if self.stop.is_set():
+            return self._tls.counts
         rng = build_range(range_key, anchor)
         mat = Material(self.engine, code, rng, self.plex)
         if not mat.units and not mat.market_units:
-            self.stats["no_material"] += 1
-            return
+            self._inc("no_material")
+            return self._tls.counts
         product = {"code": code, "name": self._names.get(code, code)}
         rng_info = {"key": range_key, "from": rng["from"], "to": rng["to"], "label": rng["label"]}
         labels = {}
@@ -515,6 +534,7 @@ class Synthesizer:
                 facts, evidence, allowed, keys = cp
                 self._generate_batch(code, range_key, anchor, "competitor_reason", mat.ann_ids, facts, evidence,
                                      allowed, keys, product, rng_info, key_attr="code")
+        return self._tls.counts
 
     def _bucket_kind(self, mat, kind, product, rng_info, anchor):
         facts, evidence, allowed, keys = build_theme_payload(mat, kind)
@@ -570,16 +590,17 @@ class Synthesizer:
     # ── 调用与落库 ──
 
     def _call(self, kind, payload, allowed, expected_keys):
-        self.stats["calls"] += 1
+        self._inc("calls")
         comp = self.provider.complete_json(synth.system_prompt(kind), synth.user_message(kind, payload),
                                            synth.json_schema(kind), f"synth_{kind}")
         u = comp.usage
-        if u.input_tokens is None or u.output_tokens is None:
-            self.stats["usage_known"] = False
-        else:
-            self.stats["tok_in"] += u.input_tokens
-            self.stats["tok_out"] += u.output_tokens
-        self.stats["model"] = comp.model
+        with self._lock:
+            if u.input_tokens is None or u.output_tokens is None:
+                self.stats["usage_known"] = False
+            else:
+                self.stats["tok_in"] += u.input_tokens
+                self.stats["tok_out"] += u.output_tokens
+            self.stats["model"] = comp.model
         return synth.parse(kind, comp.data, allowed, expected_keys)
 
     def _payload(self, product, rng_info, facts, evidence):
@@ -593,7 +614,7 @@ class Synthesizer:
                   product, rng_info, to_value):
         fp = fingerprint(kind, ann_ids, facts, self.cfg)
         if not self.force and self._exists(code, range_key, anchor, kind, subkey, fp):
-            self.stats["skipped_same"] += 1
+            self._inc("skipped_same")
             return None
         if self.dry_run:
             log.info("[dry-run] %s %s %s subkey=%s 证据 %d 条", code, range_key, kind, subkey, len(evidence))
@@ -601,7 +622,7 @@ class Synthesizer:
         try:
             obj = self._call(kind, self._payload(product, rng_info, facts, evidence), allowed, None)
         except (SchemaError, TransientError) as exc:
-            self.stats["errors"] += 1
+            self._inc("errors")
             log.warning("%s %s %s 失败：%s", code, range_key, kind, str(exc)[:200])
             return None
         value = to_value(obj)
@@ -618,7 +639,7 @@ class Synthesizer:
         fp = fingerprint(kind, ann_ids, facts, self.cfg)
         existing = self._existing_rows(code, range_key, anchor, kind, fp)
         if not self.force and {row[key_attr] for row in existing} == set(keys):
-            self.stats["skipped_same"] += 1
+            self._inc("skipped_same")
             return existing
         if self.dry_run:
             log.info("[dry-run] %s %s %s ×%d 证据 %d 条", code, range_key, kind, len(keys), len(evidence))
@@ -626,7 +647,7 @@ class Synthesizer:
         try:
             obj = self._call(kind, self._payload(product, rng_info, facts, evidence), allowed, keys)
         except (SchemaError, TransientError) as exc:
-            self.stats["errors"] += 1
+            self._inc("errors")
             log.warning("%s %s %s 失败：%s", code, range_key, kind, str(exc)[:200])
             return None
         rows = []
@@ -641,9 +662,9 @@ class Synthesizer:
     def _write_low_sample(self, code, range_key, anchor, kind, mat):
         fp = fingerprint(kind, mat.ann_ids, {"status": "low_sample", "pos": mat.pos, "neg": mat.neg}, self.cfg)
         if self._exists(code, range_key, anchor, kind, NO_SUBJECT, fp):
-            self.stats["skipped_same"] += 1
+            self._inc("skipped_same")
             return
-        self.stats["low_sample"] += 1
+        self._inc("low_sample")
         if not self.dry_run:
             self._write(code, range_key, anchor, kind, NO_SUBJECT, fp,
                         {"status": "low_sample", "sample": mat.pos + mat.neg}, [], "pending")
@@ -696,7 +717,7 @@ class Synthesizer:
                     run_id=self.run_id, review_state=review, created_at=now, supersedes_id=prev,
                 )
             )
-        self.stats["written"] += 1
+        self._inc("written")
 
     # ── run 记录 ──
 
@@ -727,31 +748,70 @@ class Synthesizer:
             ))
 
 
-def run(engine, cfg, *, codes, ranges=DEFAULT_RANGES, kinds=KINDS, provider=None, dry_run=False, force=False,
-        master=None):
+def run(engine, cfg, *, codes=None, ranges=DEFAULT_RANGES, kinds=KINDS, provider=None, dry_run=False, force=False,
+        master=None, pairs=None, workers=WORKERS, scope_id=None):
+    """按 `(code, range)` 并行跑 Layer B。
+
+    `pairs` 给了就只做这些 `(code, range)`（`pipeline.run` 逐区间判「就绪」后传进来）；不给就是
+    `codes × ranges` 的全集。每对内部顺序不变（主题起名 → 总结 → 话题 → 阶段 → 竞品），对与对
+    之间用 `workers` 个线程并行：一对里的每次模型调用都在等网络，8 个线程让 61 只产品 × 6 个
+    区间的尾部从 40 分钟收到 5–10 分钟（runbook §24）。写库集中在 `_write`，每次自己
+    `engine.begin()` 拿连接；SQLite 的 busy_timeout 已在 `make_engine` 里设好。
+
+    每对写完记一条 L3 事件；没出错的对把 `synth_dirty_<code>_<range>` 清零。出过错的对**不清**：
+    脏标记保持「待更新」，下一轮再来。
+    """
     master = master or load_master()
     anchor = read_anchor(engine)
     if anchor is None:
         raise SystemExit("meta_kv 里没有 anchor：先跑 import_dump / etl")
+    if pairs is None:
+        if codes is None:
+            raise ValueError("给 codes 或 pairs")
+        pairs = [(code, rk) for code in codes for rk in ranges]
+    pairs = list(pairs)
     provider = provider or (None if dry_run else build_provider(cfg))
     s = Synthesizer(engine, cfg, provider, master, dry_run=dry_run, force=force)
     s.open_run()
+    clean, permanent = [], None
+    full_kinds = set(kinds) == set(KINDS)
     try:
-        for code in codes:
-            for rk in ranges:
+        with ThreadPoolExecutor(max_workers=max(1, int(workers or 1)), thread_name_prefix="synth") as pool:
+            futures = {pool.submit(s.one, code, rk, anchor, set(kinds)): (code, rk) for code, rk in pairs}
+            for fut in as_completed(futures):
+                code, rk = futures[fut]
                 try:
-                    s.one(code, rk, anchor, set(kinds))
+                    counts = fut.result()
                 except PermanentError as exc:
-                    log.error("永久错误，中止：%s", exc)
-                    s.stats["errors"] += 1
-                    raise
+                    # 401/400 这类：别的对再发也是同一个错。让还没开始的对直接返回，整轮报错。
+                    if permanent is None:
+                        permanent = exc
+                        log.error("永久错误，中止：%s", exc)
+                    s._inc("errors")
+                    s.stop.set()
+                    continue
+                if s.stop.is_set() and not counts["calls"] and not counts["written"]:
+                    continue
+                if not dry_run and counts["errors"] == 0:
+                    clean.append((code, rk))
+                if not dry_run and (counts["written"] or counts["errors"]):
+                    msg = f"{code} {rk} 汇总写入 {counts['written']}（调用 {counts['calls']}）"
+                    if counts["errors"]:
+                        msg += f" / 失败 {counts['errors']}"
+                    emit(engine, "L3", msg, level="warn" if counts["errors"] else "info", code=code,
+                         scope_id=scope_id, run_id=s.run_id, data={"range": rk, **counts})
     finally:
         s.close_run()
-    if not dry_run and s.stats["errors"] == 0 and set(kinds) == set(KINDS):
-        from radar_db.revisions import mark_synthesis, bump_revision
+    if permanent is not None:
+        raise permanent
+    if not dry_run and full_kinds and clean:
+        from radar_db.revisions import bump_revision, mark_synthesis
         with engine.begin() as conn:
-            mark_synthesis(conn, codes, False, ranges)
+            for code, rk in clean:
+                mark_synthesis(conn, [code], False, [rk])
             bump_revision(conn, "synthesis")
+    s.stats["pairs"] = len(pairs)
+    s.stats["pairs_clean"] = len(clean)
     return s.stats
 
 
@@ -771,6 +831,7 @@ def main(argv=None):
     ap.add_argument("--kinds", default=",".join(KINDS))
     ap.add_argument("--dry-run", action="store_true", help="只组原料不调模型")
     ap.add_argument("--force", action="store_true", help="指纹相同也重生成")
+    ap.add_argument("--workers", type=int, default=WORKERS, help="(code, range) 并行线程数")
     args = ap.parse_args(argv)
     if not args.scope and not args.codes:
         ap.error("给 --scope 或 --codes")
@@ -780,7 +841,8 @@ def main(argv=None):
     cfg = config.load(_allow_missing_key=args.dry_run)
     codes = scope_codes(engine, args.scope) if args.scope else [c.strip() for c in args.codes.split(",")]
     stats = run(engine, cfg, codes=codes, ranges=[r.strip() for r in args.ranges.split(",")],
-                kinds=[k.strip() for k in args.kinds.split(",")], dry_run=args.dry_run, force=args.force)
+                kinds=[k.strip() for k in args.kinds.split(",")], dry_run=args.dry_run, force=args.force,
+                workers=args.workers)
     print(json.dumps(stats, ensure_ascii=False, indent=1))
     return 0
 
