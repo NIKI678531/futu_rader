@@ -1886,6 +1886,7 @@ worker\.venv\Scripts\python.exe -X utf8 worker\jobs\repair_feed_metrics.py
 `detail_updated_at`，不是额外的转发列。缺失尾部只能由完整历史导出或获授权源API补采。
 不得用AI、当前累计转发、平均数或0替代当时的未知计数；FMP不提供社区互动数据。
 `backend/core/heat.py` 公式及未知传播保持不变，因此仍可能有热度暂不可用。
+**2026-09-15 更新**：ADR-0022 改为按已知项计算热度并披露转发数未知的帖子数（`heatUnknownPosts`），见 [ADR-0022](adr/0022-heat-lower-bound-disclosure.md)。
 
 ### 23.4 新来源规范化入口
 
