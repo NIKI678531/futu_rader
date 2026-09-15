@@ -9,6 +9,7 @@ export default function Competitors({ v }) {
         <div style={s('display:flex;align-items:baseline;gap:11px')}>
           <span style={s('font:600 18px/1.3 var(--font-cjk)')}>关联竞品观点</span>
           <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>{v.compScopeText} · 按当前区间评论量降序</span>
+          {v.compsStale && <span title={v.staleTitle} style={s('padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>AI 生成 · 待更新</span>}
         </div>
         <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>共 {v.compCount} 只关联产品</span>
       </div>

@@ -12,12 +12,17 @@
        `product-monitor.dc.html?…`. It still uses history.replaceState, which the router
        does not observe — the URL updates silently, exactly as in the design.
      - `{{ }}` holes became JSX; `style="…"` strings are parsed by `s()` and
-       `style-hover` by `hover()`. */
+       `style-hover` by `hover()`.
+     - 加载态由真实取数驱动（withTransition.jsx）：设计源 go() 里那个 520ms 的假 loading
+       定时器删掉，`loading`／`bodyOpacity` 改读 transition 的 isPending；切产品／切区间／
+       开抽屉时旧内容保持可见并变淡，不再退回整屏 fallback。构造函数里把本屏已知端点
+       一次性预取（radar.js `urlsFor`），首绘不再是十几次串行往返。 */
 import React from 'react'
-import R from '../../data/radar'
-import { rgba, num, numRaw, navGroups, stamp, naBox, aiValidationNote } from '../../lib/view'
+import R, { prefetchScreen } from '../../data/radar'
+import { rgba, num, numRaw, navGroups, stamp, naBox, aiValidationNote, heatLowerBoundNote, staleSuffix, STALE_TITLE } from '../../lib/view'
 import { s } from '../../lib/dc'
 import Shell from '../../components/Shell'
+import withTransition, { split } from '../../components/withTransition'
 import FilterBar from './FilterBar'
 import ProductHeader from './ProductHeader'
 import Overview from './Overview'
@@ -460,6 +465,13 @@ export default class ProductMonitor extends React.Component {
 
     /* 产品话题情绪 */
     var topicsAll = R.topicsFor(code, s.rangeKey);
+    /* 顶层 `stale` 旗标（标注已更新、汇总待重新生成）。话题今天下发的是数组，数组上放不了
+       旗标；后端若改成 `{list, stale}` 这里就地拆开，数组形状照旧走下面的 map。两种形状
+       都认，是为了这条契约落地时前端不用再动一次。 */
+    var topicsStale = false;
+    if (topicsAll != null && !Array.isArray(topicsAll) && Array.isArray(topicsAll.list)) {
+      topicsStale = topicsAll.stale === true; topicsAll = topicsAll.list;
+    }
     var topicsNa = topicsAll == null;
     var topics = (topicsNa ? [] : topicsAll).map(function (t) {
       var mx = Math.max(1, Math.max.apply(null, t.buckets.map(function (b) { return b.mentions; })));
@@ -671,10 +683,19 @@ export default class ProductMonitor extends React.Component {
 
       kpis: [
         { label: '评论量', value: num(o.comments), d: bench.comments, note: '区间内被识别为讨论该 ETF 的评论条数，同一账号同一条只计一次' },
-        { label: '讨论热度', value: num(o.discussionHeat), d: bench.heat, note: R.HEAT_FORMULA + '　·　点赞 ' + num(o.likes) + ' ／ 转发 ' + num(o.shares) },
+        /* `heatUnknownPosts > 0` 时热度／转发是**下限**（这些帖子的转发数没采到），备注里
+           说出来；环比的悬浮提示带上当期与基准期各有几帖未知（`bench.heatUnknownPosts`）。
+           demo 下没有这两个键，`undefined > 0` 为假、title 为 undefined ⇒ 一个字不多。 */
+        {
+          label: '讨论热度', value: num(o.discussionHeat), d: bench.heat,
+          note: R.HEAT_FORMULA + '　·　点赞 ' + num(o.likes) + ' ／ 转发 ' + num(o.shares) + heatLowerBoundNote(o.heatUnknownPosts),
+          deltaTitle: bench.heatUnknownPosts && (bench.heatUnknownPosts.current > 0 || bench.heatUnknownPosts.base > 0)
+            ? '环比按下限计算：当期 ' + num(bench.heatUnknownPosts.current) + ' 帖、基准期 ' + num(bench.heatUnknownPosts.base) + ' 帖转发数未知'
+            : undefined
+        },
         { label: '活跃账号数', value: num(o.activeAccounts), d: bench.accounts, note: o.activeAccounts == null ? '该产品的账号口径尚未核验' : '区间内发布或评论过的独立账号' },
         { label: '全市场评论量排名', value: '第 ' + rk.map[code], d: { short: '／ ' + rk.total + ' 只', dir: 0 }, note: '基于完整活跃 ETF 池计算，板块筛选不重算' }
-      ].map(function (k) { return { label: k.label, value: k.value, note: k.note, delta: k.d.short, dfg: self.dfg(k.d) }; }),
+      ].map(function (k) { return { label: k.label, value: k.value, note: k.note, delta: k.d.short, dfg: self.dfg(k.d), deltaTitle: k.deltaTitle }; }),
 
       summary: sum.text, sampleN: sumNa ? '数据暂不可用' : String(sum.sample), sampleOk: !sumNa,
       summaryNa: sumNa,
@@ -682,15 +703,21 @@ export default class ProductMonitor extends React.Component {
       summaryCountText: sumNa ? '数据暂不可用' : sumPts.length + ' 条要点 · 基于 ' + sum.sample + ' 条有效样本',
       /* P7 元信息末尾的如实声明（ADR-0019 §4）：徽章说的是这一条怎么来的，这句说的是
          整页的 AI 结论被验证到了什么程度。文案跟 /meta 的 `aiValidation` 走。 */
-      aiValidationNote: aiValidationNote(R.AI_VALIDATION),
-      aiLabel: sumNa ? '暂不可用' : (sum.low ? '样本不足 · 不输出倾向结论' : 'AI 生成 · 可追溯原文'),
+      aiValidationNote: aiValidationNote(R.AI_VALIDATION, R.AI_VALIDATION_DETAIL),
+      /* 徽章三件事按顺序说：整块缺失 → 样本不足 → `aiStatus === 'unavailable'`（后端只给了
+         计数句、AI 要点还没生成，这时不许写「AI 生成」）→ 正常；最后若 `stale` 为 true 追加
+         「 · 待更新」。后两个键 demo 下不存在，走不到。 */
+      aiLabel: sumNa ? '暂不可用' : (sum.low ? '样本不足 · 不输出倾向结论'
+        : (sum.aiStatus === 'unavailable' ? '计数句 · AI 要点待生成' : 'AI 生成 · 可追溯原文') + staleSuffix(sum.stale)),
       aiBg: sumNa ? 'var(--ink-100)' : (sum.low ? 'var(--ink-100)' : 'var(--warning-100)'),
       aiFg: sumNa ? 'var(--ink-500)' : (sum.low ? 'var(--ink-700)' : 'var(--warning-700)'),
-      hasSummaryEvidence: !sumNa && o.mentions > 0,
-      summaryEvidence: String(Math.round(o.mentions * 0.4)),
+      hasSummaryEvidence: !sumNa && (sum.evidenceCount != null ? sum.evidenceCount > 0 : o.mentions > 0),
+      /* 证据条数用后端的 `evidenceCount`。设计源那句 `Math.round(o.mentions * 0.4)` 是
+         演示稿的伪造系数，真库下是编数；没有这个键（demo）时沿用原写法以保持逐字比对。 */
+      summaryEvidence: String(sum.evidenceCount != null ? sum.evidenceCount : Math.round(o.mentions * 0.4)),
       openSummaryEvidence: () => self.openPanel({
         kind: 'summary', id: 'sum', polarity: 'neutral', title: '当前舆情总结的支撑原文',
-        filter: '全部产品相关内容', count: Math.round(o.mentions * 0.4)
+        filter: '全部产品相关内容', count: sum.evidenceCount != null ? sum.evidenceCount : Math.round(o.mentions * 0.4)
       }),
 
       netText: attNa
@@ -763,6 +790,9 @@ export default class ProductMonitor extends React.Component {
 
       axisCells: axisCells, dayBands: dayBands, hasDayBands: dayBands.length > 1,
       hasTopics: topics.length > 0, noTopics: !topicsNa && topics.length === 0, topicsUnavailable: topicsNa, topics: topics,
+      /* 各块汇总的「待更新」旗标（只认 `=== true`；demo 下没有这个键，全为 false，不渲染）。 */
+      topicsStale: topicsStale, themesStale: R.themesStale(code, s.rangeKey) === true,
+      compsStale: compsRes.stale === true, staleTitle: STALE_TITLE,
       hasComps: comps.length > 0, noComps: comps.length === 0, comps: comps,
       compCount: String(comps.length),
       compScopeText: o.ownership === 'own' ? '自家产品 · 固定关联竞品与 AI 自动候选' : '竞品产品 · 反向展示对位自家产品与同类竞品',
@@ -848,6 +878,7 @@ export default class ProductMonitor extends React.Component {
     Object.assign(out, {
       trendW: String(HG.W), heatGridW: String(hpw), axRX: String(HG.W - 127), axPX: String(HG.W - 72), trendBoxRef: self.trendBoxRef,
       stageOk: SG.status === 'ok' || SG.status === 'low_sample', stageUnavailable: SG.status === 'unavailable', stageEmpty: SG.status === 'empty',
+      stageAiLabel: 'AI 生成 · 可追溯原文' + staleSuffix(SG.stale), stageStale: SG.stale === true,
       stageGranLabel: SG.granLabel, heatGranLabel: isHalf ? '60 分钟' : '自然日', stageRule: SG.rule || R.STAGE_RULE, heatFormulaText: R.HEAT_FORMULA,
       heatPath: heatPath,
       heatArea: hsr.length ? heatPath + ' L' + hx(hsr.length - 1).toFixed(1) + ' ' + (HG.top + HG.ph).toFixed(1) + ' L' + hx(0).toFixed(1) + ' ' + (HG.top + HG.ph).toFixed(1) + ' Z' : '',
