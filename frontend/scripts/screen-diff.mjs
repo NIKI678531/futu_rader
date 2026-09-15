@@ -241,6 +241,10 @@ async function grab(page, url, act) {
       /* <script> / <style> 的内容也是文本节点，但它们不是页面上的字。 */
       const tag = n.parentElement && n.parentElement.tagName
       if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'TEMPLATE') continue
+      /* Suspense fallback 的骨架屏（LoadingSkeleton）里有一行「正在加载 x / y 个数据块」。
+         上面的稳定等待正常情况下已经等到它消失；这里再按属性排除一次，是为了它万一还在
+         （后端慢）时差异指向真正的页面内容，而不是这行过场文案。 */
+      if (n.parentElement && n.parentElement.closest('[data-loading-skeleton]')) continue
       const t = n.textContent.replace(/\s+/g, ' ').trim()
       if (t) text.push(t)
     }
