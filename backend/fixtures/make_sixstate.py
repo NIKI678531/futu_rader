@@ -155,8 +155,9 @@ def build_kol():
     全部理由（PRD §3.6）。
 
     **整块 AI 标注还没生成。** 这一态不是「某个字段缺了」，而是标注块整个没下发：
-    类型、置信度、方向、摘要、正文分句、判定依据句一起是 None（`providers/sql.py`
-    的 `_UNANNOTATED`，ADR-0017 §4）。它是 `DATA_PROVIDER=sql` 下**每一篇**帖子的
+    类型、置信度、方向、摘要、判定依据句一起是 None（`providers/sql.py`
+    的 `_UNANNOTATED`，ADR-0017 §4）；正文分句 `fullText` **不在**块里 —— 原文是帖子
+    自己的事实，sql 对每一篇都给，没标注也给。它是 `DATA_PROVIDER=sql` 下**每一篇**帖子的
     样子，却恰恰是演示数据一次都构造不出来的那一种：演示里 postType 永远有值，
     于是 `typeStyle(null)→「其他」`、`null < 0.7 →「待确认」`、`!hasSummary →
     「图片帖」`、`null.map` 这几处一个都不会被走到。六态样本不补这一篇，接真库
@@ -215,8 +216,9 @@ def build_kol():
              confidence=0.95, reviewState="pending", hasSummary=False, summary=""),
 
         # ⑥ 暂不可用（整块）—— AI 标注还没跑。逐字对齐 `providers/sql.py::_UNANNOTATED`，
-        #    十四个字段一起是 None；对不上就不是在演 sql 真正会发出来的东西了（这条对齐
-        #    由 tests/test_six_states.py 钉住，不靠这里的注释）。
+        #    十三个字段一起是 None；对不上就不是在演 sql 真正会发出来的东西了（这条对齐
+        #    由 tests/test_six_states.py 钉住，不靠这里的注释）。`fullText` 保留 donor 的
+        #    原文：sql 对没标注的帖子也给原文，「查看原文」不该跟着标注一起灰掉。
         #
         #    `reviewState=None` 是其中要害的一个：`null` **不是** `pending`。没标注过的
         #    帖子一枚 AI 徽章都不该出（ADR-0019 §2），落成 `pending` 就是替一次没跑过的
@@ -233,7 +235,7 @@ def build_kol():
              postType=None, typeLabel=None, confidence=None,
              direction=None, directionLabel=None, directionPending=None,
              hasDir=None, dir=None,
-             hasSummary=None, summary=None, fullText=None,
+             hasSummary=None, summary=None,
              evidenceIdx=None, typeEvidence=None, reviewState=None),
     ]
 
