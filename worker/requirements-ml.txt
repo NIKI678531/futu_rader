@@ -1,0 +1,22 @@
+# 学生模型（ADR-0021）的 ML 依赖。**单独一份，不并进 worker/requirements.txt，更不进 backend。**
+#
+# 为什么分开：torch CPU 轮子约 200 MB、transformers 拉起来再加 100 MB，而它们只在三处用 ——
+# `models.train`（一次性，本机）、`models.export`（一次性）、`jobs/classify.py`（推理，只要
+# onnxruntime）。backend 是只读 API，一行模型代码都没有；把这些装进它的镜像只会让每次部署
+# 多拉 300 MB 且多一堆 CVE 面。worker 的日常镜像同样不需要 torch：训好导出后推理走 onnxruntime。
+#
+#   pip install -r worker/requirements-ml.txt                       # 训练机（全部）
+#   pip install onnxruntime==1.30.0 transformers==4.57.6 openpyxl   # 只推理的 worker 最少够用
+#
+# torch 用 CPU 版索引，避免默认拉 CUDA 轮子（2 GB＋）：
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.14.0
+
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.0
+transformers==4.57.6
+optimum[onnxruntime]==2.1.0
+onnxruntime==1.30.0
+scikit-learn==1.9.1
+numpy>=1.26,<3
+# 人工核对集 xlsx（scripts/gold_sample.py、scripts/evaluate_gold.py）
+openpyxl==3.1.5
