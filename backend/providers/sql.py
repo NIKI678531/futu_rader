@@ -863,20 +863,41 @@ class SqlProvider:
         ]
         if not s["mentions"] and valid == 0 and att["neutral"] == 0:
             return {"text": "暂无相关内容 — 在所选区间内已完成检查，该产品没有识别到提及内容。",
-                    "sample": 0, "low": True, "points": [], "evidenceIds": [], "stale": False}
+                    "sample": 0, "low": True, "points": [], "evidenceIds": [], "evidenceCount": 0, "stale": False}
         if not sample_sufficient(att["positive"], att["negative"]):
             sentences.append(
                 f"针对产品本身的有效态度提及为 {valid} 条，低于 {LOW_SAMPLE} 条的判定阈值，本区间不输出整体倾向结论。"
             )
             sentences.append(f"原始数量为积极 {att['positive']} 条、消极 {att['negative']} 条、中性 {att['neutral']} 条。")
             return {"text": "".join(sentences), "sample": valid, "low": True, "points": [], "evidenceIds": [],
-                    "stale": False}
+                    "evidenceCount": 0, "stale": False}
         diff = att["positive"] - att["negative"]
         sentences.append(
             f"产品态度分类中积极 {att['positive']} 条、消极 {att['negative']} 条、中性 {att['neutral']} 条，"
             + ("积极与消极条数持平" if diff == 0 else f"积极比消极多 {diff} 条" if diff > 0 else f"消极比积极多 {-diff} 条")
             + "。"
         )
+        row, points, ev_ids = self._summary_points(code, range_key)
+        sentences.extend(p["text"] for p in points)
+        return {
+            "text": "".join(sentences), "sample": valid, "low": False, "points": points,
+            "evidenceIds": ev_ids,
+            # 侧栏入口上的条数。与 `evidence_for(code, "<range>|sum", …)` 给的是同一份 id
+            # 表，所以这里数几条，点开就是几条（ETL 重跑删掉的评论除外）。
+            "evidenceCount": len(ev_ids),
+            "aiStatus": "ok" if points else "unavailable",
+            "reviewState": row["reviewState"] if row else None,
+            # 计数句是刚扫出来的事实，要点句是脏标记之前写的：脏时两半可能对不上，
+            # 要点照发并标 stale，让页面挂「待更新」而不是让这一段消失。
+            "stale": bool(points) and self._stale(code, range_key, "summary"),
+        }
+
+    def _summary_points(self, code, range_key):
+        """区间总结生成物：`(row, points, evidenceIds)`。没有生成物 ⇒ `(None, [], [])`。
+
+        `summary_for()` 拼要点句、`evidence_for()` 的 `sum` 面板取原文，两处必须从同一份
+        id 表出发 —— `evidenceCount` 数的与侧栏点开给的才是一回事。
+        """
         row = self._synth(code, range_key, "summary").get(NO_SUBJECT)
         points, ev_ids = [], []
         if row and isinstance(row["value"], dict) and row["value"].get("points"):
@@ -884,16 +905,7 @@ class SqlProvider:
                 t = p["text"].rstrip("。；;") + "。"
                 points.append({"text": t, "evidenceIds": p.get("evidence_ids", [])})
                 ev_ids.extend(p.get("evidence_ids", []))
-            sentences.extend(p["text"] for p in points)
-        return {
-            "text": "".join(sentences), "sample": valid, "low": False, "points": points,
-            "evidenceIds": list(dict.fromkeys(ev_ids)),
-            "aiStatus": "ok" if points else "unavailable",
-            "reviewState": row["reviewState"] if row else None,
-            # 计数句是刚扫出来的事实，要点句是脏标记之前写的：脏时两半可能对不上，
-            # 要点照发并标 stale，让页面挂「待更新」而不是让这一段消失。
-            "stale": bool(points) and self._stale(code, range_key, "summary"),
-        }
+        return row, points, list(dict.fromkeys(ev_ids))
 
     def themes_for(self, code, range_key):
         if code not in self._by_code:
@@ -1169,7 +1181,16 @@ class SqlProvider:
         ctxKey ／ polarity ／ n 的合法性由 `core/evidence.py` 先验过了，这里只验产品。
         区间取 ctxKey 的头一段（它的形状就是 `<区间>|<面板 id>`）。
 
-        ## 面板 id 不参与选取，这是一处诚实的降级
+        ## 面板 `sum`：按总结生成物自己引的原文取
+
+        「当前舆情总结」的要点是模型写的，每一点都带 `evidence_ids`（`c<comment_id>`，
+        Layer B 汇总时从事实 JSON 里挑的）。侧栏点开这一段，给的就该是**这几条**，而不是
+        按极性另取一批 —— 那一批与要点句之间没有任何对应关系。所以 `sum` 面板下极性参数
+        不参与选取；`summary_for()` 的 `evidenceCount` 数的正是这份 id 表，两边对得上。
+        总结还没生成时退回下面的极性取法：那时页面上没有要点句，侧栏给的是「这只产品
+        这个极性的原文」，标题也是这么写的。
+
+        ## 其余面板 id 不参与选取，这是一处诚实的降级
 
         演示数据能给五个面板各配一批不同的摘录，因为它是编的。真库里「支撑这条结论的
         原文」目前只到**评论 × 产品 × 极性**这一层：主题、话题、阶段各自的证据要
@@ -1183,17 +1204,26 @@ class SqlProvider:
         """
         if code not in self._by_code:
             return MISSING
-        rng = self.build_range(str(ctx_key).split("|")[0])
+        range_key, panel = str(ctx_key).split("|", 1)
+        rng = self.build_range(range_key)
         if rng is None:
             return None
         by_comment = self._attitude_by_comment(rng)
+        if not any(s == code for pairs in by_comment.values() for s, _a in pairs):
+            return None
+        if panel == "sum":
+            _row, points, ev_ids = self._summary_points(code, range_key)
+            if points:
+                return self._evidence_items(code, _comment_ids(ev_ids), by_comment, n)
         hits = [
             cid
             for cid, pairs in by_comment.items()
             if any(s == code and a["value"] == polarity for s, a in pairs)
         ]
-        if not any(s == code for pairs in by_comment.values() for s, _a in pairs):
-            return None
+        return self._evidence_items(code, hits, by_comment, n)
+
+    def _evidence_items(self, code, hits, by_comment, n):
+        """把评论 id 列表装成证据卡，发布时间倒序取前 n 条。"""
         src = self._sources("comment", hits)
         items = []
         for cid in hits:
@@ -1202,7 +1232,7 @@ class SqlProvider:
                 continue
             # 同一条评论可能同时被标了别的产品，证据卡要把它们都带上（契约里
             # `productCodes` 是数组，演示数据也会出现第二个代码）。
-            others = sorted(s for s, _a in by_comment[cid] if s != code and s in self._by_code)
+            others = sorted(s for s, _a in by_comment.get(cid, ()) if s != code and s in self._by_code)
             items.append(
                 {
                     "id": f"ev-{cid}-{code}",
@@ -1874,6 +1904,20 @@ _UNANNOTATED = {
 def _chunked(items, n):
     """按 n 切批。SQLite 的绑定变量上限是 999（ADR-0016），`IN (...)` 一次塞不下整池。"""
     return [items[i : i + n] for i in range(0, len(items), n)]
+
+
+def _comment_ids(evidence_ids):
+    """生成物里的证据 id（`c<comment_id>`）→ 评论主键；不是这个形状的跳过，顺序与去重照原样。
+
+    Layer B 只引评论（`worker/jobs/synthesize.py` 组事实 JSON 时给的就是 `c` 前缀），
+    但模型偶尔会照抄成别的样子；抄坏的一条按「引不到」处理，不让整份证据表报错。
+    """
+    out = []
+    for x in evidence_ids:
+        s = str(x)
+        if s.startswith("c") and s[1:].isdigit():
+            out.append(int(s[1:]))
+    return list(dict.fromkeys(out))
 
 
 def _zero_att():
