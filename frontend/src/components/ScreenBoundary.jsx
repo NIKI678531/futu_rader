@@ -24,6 +24,7 @@
  */
 import React, { Suspense } from 'react'
 import { clearCache, isApiError } from '../lib/api'
+import LoadingSkeleton from './LoadingSkeleton'
 
 const BAR = {
   display: 'flex',
@@ -50,9 +51,10 @@ const BTN = {
   cursor: 'pointer',
 }
 
-/* 加载中不渲染任何文字：任何占位文案都会被逐字比对当成页面内容抓走。
-   比对脚本等的是屏幕自己的 [data-screen-label]，这里保持空白最安全。 */
-const LOADING = <div style={{ minHeight: '100vh', background: 'var(--canvas)' }} />
+/* 加载中的 fallback 是骨架屏（LoadingSkeleton）而不是空白：Shell 的导航照常可见，正文
+   几块灰条加一行「正在加载 x / y 个数据块」。文字全在 [data-loading-skeleton] 容器里，
+   逐字比对脚本按这个属性排除；六态脚本等的是屏幕自己的 [data-screen-label]。
+   `nav` 由 App 按路由传入（{domain, sub}），骨架用它静态算出导航高亮。 */
 
 const DETAIL = { flex: 'none', font: '400 12px/1.4 var(--font-mono)', opacity: 0.75 }
 
@@ -99,7 +101,14 @@ export default class ScreenBoundary extends React.Component {
 
   render() {
     const { error, stack } = this.state
-    if (!error) return <Suspense fallback={LOADING}>{this.props.children}</Suspense>
+    if (!error) {
+      const nav = this.props.nav || {}
+      return (
+        <Suspense fallback={<LoadingSkeleton domain={nav.domain} sub={nav.sub} />}>
+          {this.props.children}
+        </Suspense>
+      )
+    }
 
     /* 取数层抛的才是「后端连不上」。别的都是屏幕自己炸了 —— 报错方向必须不一样。 */
     if (isApiError(error)) {
