@@ -134,6 +134,15 @@ const INJECT = {
       for (const o of d.list) if (o.code === '3033') o.heatUnknownPosts = 3
     }
     if (d && d.own) d.own.heatUnknownPosts = 5
+    /* 舆情三态：`alerts`（关注程度为高的负面类别数）与 `negMentions` 没标过是 null、标过是
+       0 或正数。demo 里没有 null，这里按评论量降序把第 2 名改成 null、第 3 名改成 0，
+       让榜单默认排序的前三行就同时有正数／null／0 三态（3033 是第 1 名，留着当正数）。
+       选法与 progress-drawer-check.mjs 的 negTriple() 必须一致。 */
+    if (d && Array.isArray(d.list) && d.alerts && d.negMentions) {
+      const [, nul, zero] = d.list.slice().sort((a, b) => b.comments - a.comments)
+      if (nul) { d.alerts[nul.code] = null; d.negMentions[nul.code] = null }
+      if (zero) { d.alerts[zero.code] = 0; d.negMentions[zero.code] = 0 }
+    }
     return d
   },
   '/api/v1/hot-summaries': (d) => { if (d && d['3033']) d['3033'].stale = true; return d },
@@ -142,6 +151,9 @@ const INJECT = {
   '/api/v1/products/3033/benchmark': (d) => (d ? Object.assign(d, { heatUnknownPosts: { current: 3, base: 1 } }) : d),
   '/api/v1/products/3033/stages': (d) => (d ? Object.assign(d, { stale: true }) : d),
   '/api/v1/products/3033/competitors': (d) => (d ? Object.assign(d, { stale: true }) : d),
+  /* 负面类别与热议话题仍是数组，`stale` 逐行挂在每个元素上（同产品同区间同值）。 */
+  '/api/v1/products/3033/negative-categories': (d) => (Array.isArray(d) ? d.map((r) => Object.assign({}, r, { stale: true })) : d),
+  '/api/v1/products/3033/topics': (d) => (Array.isArray(d) ? d.map((r) => Object.assign({}, r, { stale: true })) : d),
 }
 
 /* ── HTTP ─────────────────────────────────────────────────────────────── */
