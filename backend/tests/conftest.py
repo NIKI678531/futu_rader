@@ -9,6 +9,11 @@ sys.path.insert(0, os.path.dirname(_HERE))
 # 不靠 pytest 的 rootdir 推断（那个推断会随调用目录变）。
 sys.path.insert(0, _HERE)
 
+# 测试里不起后台预热线程（`SqlProvider._start_prewarm`）。两个理由：内存 SQLite 的连接是
+# 线程私有的，另一个线程看到的是一个空库；而且断言 `_cache == {}` 之类的测试不能和一个
+# 正在往缓存里写东西的线程赛跑。要测预热本身的测试自己 monkeypatch 这个变量。
+os.environ.setdefault("RADAR_PREWARM", "0")
+
 import providers  # noqa: E402
 from app import create_app  # noqa: E402
 from providers import reset_provider  # noqa: E402
