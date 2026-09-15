@@ -140,41 +140,57 @@ class TestPool:
         assert pool["own"]["neg"] is None and pool["own"]["pos"] is None
 
 
-class TestUnknownSharesPropagate:
-    """转发数未知会一路传染到公司级 KPI —— 这是当前设计的**已知后果**，不是 bug。
+class TestUnknownSharesAreDisclosedAsLowerBound:
+    """转发数未知的帖子让热度成为**下限**并披露帖数，不再让整只产品的热度变成未知（ADR-0022）。
 
-    源库 raw_json 被 TEXT 列截断的行拿不到 `share_count`。热度公式里有转发项，所以那只
-    产品的热度是未知；`own.heat` 是所有自家产品热度之和，于是整张板块总览的标题卡片显示
-    「数据暂不可用」—— 哪怕 61 只里只有 1 只缺数。
+    源库 raw_json 被 TEXT 列截断的行拿不到 `share_count`（0.09%）。原来的规则是任一帖
+    未知 ⇒ 该产品整个窗口的转发／互动／热度全 None，`own.heat` 再把它传染到公司级 KPI：
+    合成库上 d30 有 99/120 只产品热度为 None、评论量前十名全灰。
 
-    传染是对的（把未知当 0 会让热度静默偏低且无人知晓），但代价集中在一个很显眼的位置。
-    真库里 d7 窗口 31,054 篇有 9 篇如此，影响 4 只产品。要改口径就改这里的断言。
+    新口径：`shares` / `interactions` / `discussionHeat` 按已知项算，`heatUnknownPosts`
+    说出差了几帖。前者是下限，后者让它是一句能核对的话而不是一个没标注的近似值。
+    `heatUnknownPosts == 0` 时三个数就是完整的数 —— 分辨两种情形靠这个键，不靠猜。
     """
 
-    def test_the_product_with_the_broken_row_goes_unknown(self, provider):
+    def test_the_product_with_the_broken_row_gets_a_lower_bound_and_the_count(self, provider):
         item = next(x for x in provider.pool("d1")["list"] if x["code"] == OWN_CODE)
-        assert item["shares"] is None
-        assert item["discussionHeat"] is None
-        assert item["interactions"] is None
-        # 但同一只产品的评论量、点赞、活跃账号都还是好的 —— 只污染依赖转发的那几项
+        # f1 转发 2、f2 未知 ⇒ 已知和 2、未知 1 帖；互动 = 13 + 2；热度 = 5 + 0.3×13 + 2 = 10.9 → 11
+        assert item["shares"] == 2
+        assert item["heatUnknownPosts"] == 1
+        assert item["interactions"] == 15
+        assert item["discussionHeat"] == 11
         assert item["comments"] == 5
+        # 桶级同样：09 点桶含 f1 与 f2，其余桶没有未知
+        assert item["buckets"][9]["heatUnknownPosts"] == 1
+        assert item["buckets"][9]["shares"] == 2
+        assert all(b["heatUnknownPosts"] == 0 for i, b in enumerate(item["buckets"]) if i != 9)
 
-    def test_the_company_wide_headline_goes_unknown_with_it(self, provider):
+    def test_products_without_broken_rows_report_zero_unknown(self, provider):
+        peer = next(x for x in provider.pool("d1")["list"] if x["code"] == PEER_CODE)
+        assert peer["heatUnknownPosts"] == 0
+        assert peer["discussionHeat"] == 14
+
+    def test_the_company_wide_headline_is_a_lower_bound_with_its_own_count(self, provider):
         own = provider.pool("d1")["own"]
-        assert own["heat"] is None
-        assert own["dHeat"]["text"] == "数据暂不可用"
-        assert own["dHeat"]["abs"] is None and own["dHeat"]["pct"] is None
+        # 3033 的 11 ＋ 其余自家产品 0；未知帖数合计 1。基准期 f4：10 + 0.3×100 + 1 = 41。
+        assert own["heat"] == 11
+        assert own["heatUnknownPosts"] == 1
+        assert own["dHeat"]["text"] == "-30（-73.2%）"
         assert own["count"] == sum(1 for p in MASTER["products"] if p["ownership"] == "own")
 
-    def test_without_the_broken_row_everything_is_a_number(self):
-        """同一批数据，只把那一行的转发数补上 —— 对照组。"""
+    def test_without_the_broken_row_the_numbers_are_the_same_and_the_count_is_zero(self):
+        """同一批数据，只把那一行的转发数补成 0 —— 对照组。
+
+        热度一样是 11：下限口径算的就是已知项。差别只在 `heatUnknownPosts`（0 vs 1），
+        这正是这个键存在的理由：没有它，两种情形在页面上无法区分。
+        """
         p = make_sql_provider(broken_share=False)
         item = next(x for x in p.pool("d1")["list"] if x["code"] == OWN_CODE)
-        # 评论 5 + 0.3×13 + 转发 2 = 10.9 → 11
         assert item["discussionHeat"] == 11
         assert item["shares"] == 2
-        # 其余自家产品热度都是 0（真的没人发），所以公司级合计就是这 11
+        assert item["heatUnknownPosts"] == 0
         assert p.pool("d1")["own"]["heat"] == 11
+        assert p.pool("d1")["own"]["heatUnknownPosts"] == 0
 
 
 class TestRanks:
@@ -202,9 +218,17 @@ class TestBenchmark:
         assert b["comments"]["dir"] == -1
         assert b["base"]["comments"] == 10
 
-    def test_unknown_current_value_makes_the_delta_unavailable(self, provider):
-        """当前热度未知 ⇒ 环比不是 0%，是「数据暂不可用」。"""
-        assert provider.benchmark(OWN_CODE, "d1")["heat"]["text"] == "数据暂不可用"
+    def test_heat_delta_compares_lower_bounds_and_discloses_both_sides(self, provider):
+        """当期有一帖转发未知 ⇒ 热度环比是两个下限之间的比较，两侧的未知帖数分开说（ADR-0022）。
+
+        当期 11（差 1 帖）vs 基准 41（完整）⇒ -30（-73.2%）。不是「数据暂不可用」——
+        那会把整张 KPI 卡因为千分之一的坏行抹掉；也不是不加标注的 -73.2%。
+        """
+        b = provider.benchmark(OWN_CODE, "d1")
+        assert b["heat"]["text"] == "-30（-73.2%）"
+        assert b["heatUnknownPosts"] == {"current": 1, "base": 0}
+        assert b["shares"]["text"] == "+1（+100.0%）"  # 已知和 2 vs 1
+        assert b["base"]["heatUnknownPosts"] == 0
 
     def test_attitude_deltas_are_unavailable_not_flat(self, provider):
         b = provider.benchmark(OWN_CODE, "d1")
@@ -249,8 +273,10 @@ class TestSeries:
         assert nine["tip"] == "08-25 09:00–10:00"
         assert nine["mentions"] == 2
         assert nine["comments"] == 5
-        assert nine["heat"] is None  # f2 转发未知
+        assert nine["heat"] == 11  # f2 转发未知 ⇒ 下限，未知帖数随桶下发（ADR-0022）
+        assert nine["heatUnknownPosts"] == 1
         assert s[0]["heat"] == 0 and s[0]["mentions"] == 0
+        assert s[0]["heatUnknownPosts"] == 0
         assert all(x["positive"] is None for x in s)
 
     def test_daily_has_real_counts_and_no_prices(self, provider):

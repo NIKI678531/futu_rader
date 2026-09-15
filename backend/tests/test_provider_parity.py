@@ -134,14 +134,34 @@ def _shape(payload):
     return shape + (statuses,)
 
 
-# ADR-0020 加进契约的**扩展键**：sql 侧在 Layer B 生成物上附带的可追溯信息（徽章要的
-# `reviewState`、证据侧栏要的 `evidenceIds`、「模型还没写这一段」的 `labelStatus` /
-# `aiStatus` / `reasonStatus`、以及 core 分桶的稳定键 `key` / `subkey` / `aspect` / `units`）。
+# sql 侧比设计源契约**多出来**的键（白名单，不是放宽：除此之外的新键仍然判失败）。
 # demo fixture 冻结自设计源，不会有它们；前端读不到就是 undefined，与 null 同义，不会炸。
-# 除此之外的新键仍然判失败 —— 这张表是白名单，不是放宽。
+#
+# ADR-0020 Layer B 生成物附带的可追溯信息：
+# - `reviewState`   徽章要的 review_state（ADR-0019 §2）
+# - `evidenceIds`   证据侧栏要的生成物引用 id
+# - `labelStatus` / `aiStatus` / `reasonStatus`   「模型还没写这一段」的三个位置
+# - `key` / `subkey` / `aspect` / `units` / `points` / `category`   core 分桶的稳定键
+#
+# ADR-0022 热度下限口径：
+# - `heatUnknownPosts`   窗口／桶／自家合计里转发数未知的帖子数；大于零时 shares /
+#                        interactions / discussionHeat 是下限。benchmark 上是
+#                        `{current, base}` 两侧分说。demo 的转发数永远已知，没有这个键。
+#
+# Layer B 脏标记（`synth_dirty_*`）：
+# - `stale`   现行生成物写下之后底层标注又变了、还没重新汇总。原来这时整块生成物被藏起来
+#             （页面上总结突然消失），现在照常下发并标 stale，让前端挂「待更新」。
+#
+# 事实字段脱离 AI 门控：
+# - `evidenceCount`   summary_for 的证据条数。demo 在 topics / themes 上本来就有这个键，
+#                     进白名单意味着那两处的键集比对也跳过它 —— 已知的覆盖缺口。
+# - `aiValidationDetail`   /meta 上 `meta_kv.ai_validation` 的整份 JSON（demo 下 None）。
 EXTENSION_KEYS = frozenset({
     "reviewState", "evidenceIds", "labelStatus", "aiStatus", "reasonStatus",
     "key", "subkey", "aspect", "units", "points", "category",
+    "heatUnknownPosts",
+    "stale",
+    "evidenceCount", "aiValidationDetail",
 })
 
 
