@@ -19,7 +19,7 @@
        一次性预取（radar.js `urlsFor`），首绘不再是十几次串行往返。 */
 import React from 'react'
 import R, { prefetchScreen } from '../../data/radar'
-import { rgba, num, numRaw, navGroups, stamp, naBox, aiValidationNote, heatLowerBoundNote, staleSuffix, STALE_TITLE } from '../../lib/view'
+import { rgba, num, numRaw, navGroups, stamp, naBox, aiValidationNote, heatLowerBoundNote, staleSuffix, rowsStale, STALE_TITLE } from '../../lib/view'
 import { s } from '../../lib/dc'
 import Shell from '../../components/Shell'
 import withTransition, { split } from '../../components/withTransition'
@@ -485,13 +485,9 @@ class ProductMonitor extends React.Component {
 
     /* 产品话题情绪 */
     var topicsAll = R.topicsFor(code, s.rangeKey);
-    /* 顶层 `stale` 旗标（标注已更新、汇总待重新生成）。话题今天下发的是数组，数组上放不了
-       旗标；后端若改成 `{list, stale}` 这里就地拆开，数组形状照旧走下面的 map。两种形状
-       都认，是为了这条契约落地时前端不用再动一次。 */
-    var topicsStale = false;
-    if (topicsAll != null && !Array.isArray(topicsAll) && Array.isArray(topicsAll.list)) {
-      topicsStale = topicsAll.stale === true; topicsAll = topicsAll.list;
-    }
+    /* 话题仍是数组，`stale`（标注已更新、汇总待重新生成）逐行挂在每个元素上（后端契约），
+       整块判定见 lib/view.js rowsStale。 */
+    var topicsStale = rowsStale(topicsAll);
     var topicsNa = topicsAll == null;
     var topics = (topicsNa ? [] : topicsAll).map(function (t) {
       var mx = Math.max(1, Math.max.apply(null, t.buckets.map(function (b) { return b.mentions; })));

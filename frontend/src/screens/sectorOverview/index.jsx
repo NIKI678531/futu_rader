@@ -17,7 +17,7 @@
        保持可见并变淡。构造函数里把本屏已知端点一次性预取（radar.js `urlsFor`）。 */
 import React from 'react'
 import R, { prefetchScreen } from '../../data/radar'
-import { shortName, navGroups, num, numRaw, stamp, naBox, aiValidationNote, heatLowerBoundNote, staleSuffix, STALE_TITLE } from '../../lib/view'
+import { shortName, navGroups, num, numRaw, stamp, naBox, aiValidationNote, heatLowerBoundNote, staleSuffix, rowsStale, STALE_TITLE } from '../../lib/view'
 import { s } from '../../lib/dc'
 import Shell from '../../components/Shell'
 import withTransition, { split } from '../../components/withTransition'
@@ -68,7 +68,9 @@ class SectorOverview extends React.Component {
       if (st.scope === 'peer' && o.ownership !== 'peer') return false;
       if (st.sector !== 'all' && o.sector !== st.sector) return false;
       if (st.onlyNew && !o.isNew) return false;
-      if (st.onlyNeg && !P.alerts[o.code]) return false;
+      /* `alerts[code]` 是关注程度为高的负面类别数：没标过 null、标过 0 或正数。筛选按 `> 0`
+         判：null 与 0 都不算「有舆情」（没查过不能报警），但两者在舆情列上要分开渲染（rows 里）。 */
+      if (st.onlyNeg && !(P.alerts[o.code] > 0)) return false;
       if (st.onlyRisk && !(P.complianceCount[o.code] > 0)) return false;
       if (q && o.code.toLowerCase().indexOf(q) < 0 && o.name.toLowerCase().indexOf(q) < 0) return false;
       return true;
@@ -636,12 +638,8 @@ class SectorOverview extends React.Component {
       var posRaw = R.themesFor(code, s.rangeKey, 'positive');
       var negRaw = R.themesFor(code, s.rangeKey, 'negative');
       var catsRaw = R.negCatsFor(code, s.rangeKey);
-      /* 负面类别顶层 `stale`：今天下发的是数组，后端若改成 `{list, stale}` 就地拆开（同产品监控
-         的话题处）。 */
-      var catsStale = false;
-      if (catsRaw != null && !Array.isArray(catsRaw) && Array.isArray(catsRaw.list)) {
-        catsStale = catsRaw.stale === true; catsRaw = catsRaw.list;
-      }
+      /* 负面类别仍是数组，`stale` 逐行挂在每个元素上（后端契约），整块判定见 lib/view.js rowsStale。 */
+      var catsStale = rowsStale(catsRaw);
       var posNa = posRaw == null, negNa = negRaw == null, catsNa = catsRaw == null;
       var pos = (posNa ? [] : posRaw).slice(0, 3).map(themeRow);
       var neg = (negNa ? [] : negRaw).slice(0, 3).map(themeRow);

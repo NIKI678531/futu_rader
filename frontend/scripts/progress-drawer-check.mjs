@@ -207,6 +207,22 @@ async function checkDrawer(browser) {
   }
 }
 
+/* mock 改过之后的池：评论量第 1 名正数（列上红标）、第 2 名 null、第 3 名 0；再找一只
+   `alerts > 0` 的当「仅有舆情」的正例（列上的红标看 negMentions，筛选看 alerts，两个不是
+   同一个数）。直接问 mock 而不是把代码写死：demo fixture 换一版这里就不用跟着改。 */
+async function negTriple() {
+  const body = await (await fetch(MOCK + '/api/v1/pool?range=d7')).json()
+  const d = body.data
+  const sorted = d.list.slice().sort((a, b) => b.comments - a.comments)
+  const [pos, nul, zero] = sorted.map((o) => o.code)
+  if (d.negMentions[nul] !== null || d.negMentions[zero] !== 0 || !(d.negMentions[pos] > 0)) {
+    throw new Error(`mock 的舆情三态没按约定注入：${nul}=${d.negMentions[nul]} ${zero}=${d.negMentions[zero]} ${pos}=${d.negMentions[pos]}`)
+  }
+  const firm = sorted.find((o) => d.alerts[o.code] > 0)
+  if (!firm) throw new Error('demo 池里没有 alerts > 0 的产品，「仅有舆情」正例找不到')
+  return { pos, nul, zero, posN: d.negMentions[pos], firm: firm.code }
+}
+
 async function checkFields(browser) {
   const page = await browser.newPage({ viewport: { width: 1600, height: 1400 } })
   const errors = []
@@ -223,8 +239,11 @@ async function checkFields(browser) {
     /* 只查那一句：设计源里「KOL 身份来自已核验名单」说的是名单，不是 AI 结论，那是合法文案。 */
     const note = (text.match(/AI 结论由模型自动生成[^\n]*/) || [''])[0]
     ok(note.length > 0 && !note.includes('已核验'), '⑨ 验证程度那句里不得出现「已核验」', note)
-    /* 主题块（正负观点）与阶段观点的「待更新」：mock 给 themes／stages 顶层 stale */
-    ok((text.match(/待更新/g) || []).length >= 3, '⑨ 主题／阶段等块也挂「待更新」', `出现 ${(text.match(/待更新/g) || []).length} 次`)
+    /* 「待更新」该出现在：舆情总结徽章（summary.stale）、正负观点（themes 顶层）、话题
+       （topics **逐行** stale）、关联竞品（competitors 顶层）、阶段观点（stages 顶层）—— 五处。
+       少一处就是某条契约的读法错了。 */
+    const staleN = (text.match(/待更新/g) || []).length
+    ok(staleN === 5, '⑨ 总结／主题／话题（逐行）／竞品／阶段五处都挂「待更新」', `出现 ${staleN} 次，期望 5`)
 
     await page.goto(WEB + '/sector', { waitUntil: 'networkidle', timeout: 60_000 })
     await page.locator('[data-screen-label]').waitFor({ timeout: 30_000 })
@@ -232,6 +251,38 @@ async function checkFields(browser) {
     text = await page.evaluate(() => document.body.innerText)
     ok(text.includes('（5 帖转发数未知 · 下限）'), '⑨ 板块总览 KPI 备注带自家合计下限注记', '')
     ok(text.includes('待更新'), '⑨ 榜单热议总结格有「待更新」小徽章', '')
+
+    /* ⑪ 舆情三态。mock 把评论量第 2 名的 alerts／negMentions 改成 null、第 3 名改成 0，
+       第 1 名（3033）保持正数。列上：正数红标、null 灰字「暂不可用」、0 走设计源原路径
+       （不出红标也不出灰字 —— 0 是「查过了、没有」，不是缺失）。 */
+    const { nul, zero, pos, posN, firm } = await negTriple()
+    const row = (code) => page.locator(`xpath=//div[contains(@style,"54px")]/span[normalize-space(text())="${code}"]/parent::div`).first()
+    const NA_TITLE = 'span[title="舆情条数暂不可用：该产品尚未做负面类别标注"]'
+    const BADGE = 'span[title="可归类为需关注问题的内容条数"]'
+    ok((await row(nul).locator(NA_TITLE).count()) === 1 && (await row(nul).locator(BADGE).count()) === 0,
+      '⑪ negMentions 为 null 的行：灰字「暂不可用」、无红标', `code ${nul}`)
+    ok((await row(zero).locator(NA_TITLE).count()) === 0 && (await row(zero).locator(BADGE).count()) === 0,
+      '⑪ negMentions 为 0 的行：无红标、也不写「暂不可用」', `code ${zero}`)
+    ok((await row(pos).locator(BADGE).count()) === 1 && (await row(pos).locator(BADGE).innerText()) === String(posN),
+      '⑪ negMentions 为正数的行：红标带数字', `code ${pos} 期望 ${posN}`)
+    ok((await page.locator(NA_TITLE).count()) === 1, '⑪ 整表只有那一行是「暂不可用」', `实际 ${await page.locator(NA_TITLE).count()} 处`)
+
+    /* 抽屉：总结徽章（summary.stale）、正负观点（themes 顶层）、负面舆情摘要（negCats **逐行**）、
+       关联竞品（competitors 顶层）四处「待更新」。 */
+    await row(pos).click()
+    await page.getByText('当前舆情总结', { exact: true }).first().waitFor({ timeout: 30_000 })
+    await page.waitForTimeout(300)
+    const drawerStale = (await page.evaluate(() => document.body.innerText).then((t) => t.match(/待更新/g)) || []).length
+    ok(drawerStale === 5, '⑪ 抽屉里总结／主题／负面摘要（逐行）／竞品四处「待更新」（加榜单那枚共 5）', `出现 ${drawerStale} 次`)
+    await page.getByText('✕', { exact: true }).first().click()
+    await page.getByText('当前舆情总结', { exact: true }).first().waitFor({ state: 'hidden', timeout: 5000 })
+
+    /* 「仅有舆情」按 `alerts > 0` 判：null 与 0 都被筛掉，alerts 为正的留下。 */
+    await page.getByText('仅有舆情', { exact: true }).first().click()
+    await row(firm).waitFor({ timeout: 5000 })
+    ok((await row(nul).count()) === 0, '⑪ 「仅有舆情」筛掉 alerts 为 null 的产品', `code ${nul}`)
+    ok((await row(zero).count()) === 0, '⑪ 「仅有舆情」筛掉 alerts 为 0 的产品', `code ${zero}`)
+    ok((await row(firm).count()) === 1, '⑪ 「仅有舆情」留下 alerts 为正的产品', `code ${firm}`)
     for (const e of errors) fail.push({ name: '新增字段 · JS 报错', detail: e })
   } finally {
     await page.close()

@@ -245,6 +245,13 @@ export function aiValidationNote(level, detail) {
 export function staleSuffix(flag) { return flag === true ? ' · 待更新' : ''; }
 export var STALE_TITLE = '标注已更新，汇总待重新生成';
 
+/* 逐行带旗标的数组（负面类别、热议话题）：后端仍下发数组，`stale` 挂在**每个元素**上，
+   同产品同区间所有行同值。整块「待更新」＝有行且每一行都 `=== true`；空数组不是「旧了」
+   （没有东西可旧），demo 的元素没有这个键 ⇒ every 为假 ⇒ 不加字。 */
+export function rowsStale(rows) {
+  return Array.isArray(rows) && rows.length > 0 && rows.every(function (r) { return r != null && r.stale === true; });
+}
+
 /* 讨论热度的下限注记。`heatUnknownPosts` 是区间内转发数未知的帖子数（0＝无）：>0 时
    热度／互动／转发都是**下限**，得说出来。缺键（demo）或 0 都不加字。
    读的是后端数好的字段，不在前端重算公式（铁律 1）。 */
