@@ -14,12 +14,13 @@
 
 | 类别 | 例子 | 现状 |
 |---|---|---|
-| 计数 | 提及数、评论量、点赞、转发、互动、热度、活跃账号、排名、环比 | **真实** |
+| 计数 | 提及数、评论量、点赞、转发、互动、热度、活跃账号、排名、环比 | **真实**。转发数未知的帖子让转发／互动／热度成为**下限**并披露 `heatUnknownPosts`（ADR-0022），不再整窗 None |
 | 主数据 | 产品池、官号名单、KOL 名单 | 真实（客户维护，见下） |
 | 日历 | 区间、时间桶、基准区间 | 真实（`core/calendar.py`，锚点来自 `meta_kv`） |
-| 内容 | 帖子标题正文、评论正文、作者、链接 | **真实** |
-| AI 标注（有写入方） | 帖子类型／摘要／操作方向、评论态度、合规命中、证据引文 | **随标注走**：库里有现行结论就是真值，没有就是 None |
-| AI 标注（无写入方） | 主题聚类、负面类别、热议话题、KOL 提及、阶段观点 | **None**（对应的 kind 还没有任何任务在写） |
+| 内容 | 帖子标题正文与分句（`fullText`）、评论正文、作者、链接 | **真实**，对每一篇都给，不随标注块 |
+| Layer A 逐条标注 | 帖子类型／摘要／操作方向、评论相关性／态度／aspect／市场方向、合规命中、证据引文 | **随标注走**：库里有现行结论就是真值，没有就是 None |
+| Layer A 派生的数 | 态度三计数、主题与负面类别的条数、话题条数、KOL 提及、阶段时段、`negMentions`／`alerts`／`own.neg` | **随标注走**：数在 `core/`（themes／topics／stages）里从判定单元算出，没标过整块 None |
+| Layer B 生成物 | 热议总结、舆情总结要点、主题名、负面类别名、话题名、阶段观点、竞品原因 | **随生成物走**：有就给并带 `reviewState`／`evidenceIds`；底层标注变了还没重汇总时照给并标 `stale=True` |
 | 行情 | K 线、日线价格 | **None**（dump 里没有本产品池的价格序列） |
 
 None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲染「暂不可用」。
@@ -36,11 +37,13 @@ None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲�
 （`needs_review` ⇒ 「AI 生成 · 待确认」，见 `frontend/src/lib/view.js`）。`rejected`
 是仅剩的下线通道（`worker/jobs/review.py --reject`）。
 
-页面因此必须如实声明这些结论没有经过人工验证：`/meta` 的 `aiValidation` 恒为 `none`
-（`core/meta.py`），板块总览与产品监控各有一句相应的文案。
+页面因此必须如实声明这些结论验证到了什么程度：`/meta` 的 `aiValidation` 读
+`meta_kv.ai_validation`（抽检脚本写的一份 JSON，`core/meta.py`），没有记录就是 `none`；
+板块总览与产品监控各有一句相应的文案。
 
 口径公式一个都不在这里实现：热度在 `core/heat.py`，环比在 `core/delta.py`，区间与桶在
-`core/calendar.py`。这里只负责把行数出来（铁律 1）。
+`core/calendar.py`，主题／负面类别／话题／阶段的分桶在 `core/themes.py` 等。这里只负责
+把行数出来、把判定单元喂进去（铁律 1）。
 
 ## 三条实测出来的、影响读数的事
 
@@ -51,13 +54,32 @@ None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲�
 2. **评论量用帖子级 `comment_count`，态度用解析出的评论表**（ADR-0011）。近 30 天实测
    两者差 11%（平台计数 109,870 / 解析到 97,730 ＝ 89.0% 覆盖），被上游截断的热帖占
    1.9%。这个差是**可陈述的**，不是隐藏的近似。
-3. **`share_count` 只在 raw_json 坏掉的 0.03% 行上是未知**，那些行让所在桶的转发数与
-   热度变成 None。`like_count` 与 `comment_count` 是 dump 的列，永远有值。
+3. **`share_count` 只在 raw_json 坏掉的行上是未知**（真库 0.03%，合成库按 0.09% 造），
+   `like_count` 与 `comment_count` 是 dump 的列，永远有值。原来的规则是任一帖未知 ⇒
+   该产品整个窗口的转发／互动／热度 None，再经 `_add_all` 传染到 `own.heat`：合成库上 d30 有
+   99/120 只产品热度 None、评论量前十名全灰 —— 头部产品帖子多，撞上坏行的概率最大，
+   于是最该有读数的地方最先灰掉。ADR-0022 改为**按已知项算、披露未知帖数**：
+   `shares`／`interactions`／`discussionHeat` 在 `heatUnknownPosts > 0` 时是下限，前端据此
+   标注；0 才是「没有未知」。`_blank` / `_bump` / `_finish` 三个累加器是这条口径的落点。
 
 ## 缓存
 
-锚点冻结、底库只读且静态，所以按区间整份算一次就缓存住（和演示 provider 把 fixture
-读进内存是同一个道理）。d30 一次全池扫描约 27 万行 × 0.4 秒，缓存后为 0。
+锚点冻结、底库只读且静态（写入方一动就改 `meta_kv`，`refresh()` 据此整份失效），所以按
+窗口整份算一次就缓存住（和演示 provider 把 fixture 读进内存是同一个道理）。
+
+- `_scan` 的键是 `(from, to, gran)`，永远带桶：`pool()`／`ranks()`／`benchmark()`／
+  `hot_summaries()`／`competitors_for()` 对同一窗口只扫一次，当前期与基准期各一次。
+  每个键一把锁，请求线程与预热线程要同一窗口时第二个等第一个，不各算一遍。
+- 缓存被清空后（含首次构造）起一个守护线程按 `core.ranges.VALID_KEYS` 预热 `pool()`
+  （`RADAR_PREWARM=0` 关闭）。丢缓存的那一刻正是页面最可能在看的时候。
+- 窗口级的态度结论（`_window_attitude`）、按评论归组的索引（`_attitude_by_comment`）、
+  全池消极单元（`_neg_units_by_code`）与负面汇总（`_neg_rollup`）各缓存一份，`_scan`、
+  `evidence_for`、`pool()` 共用，不再各查一遍整窗。
+
+真实规模合成库（37.8 万帖／19 万评论／90 万提及／36 万标注）上：d7 冷 `pool` 约 1.9 s、
+d30 约 8 s（扫描 4.6 s ＋ 合规 1.1 s ＋ 负面汇总 2.3 s），缓存后毫秒级。扫描的耗时几乎全在
+SQLite 取行本身（30 万行的 join），Python 侧的累加只占零头 —— 再快要靠 SQL 侧聚合，
+但那要写两份方言，不在这一轮。
 """
 
 import json
