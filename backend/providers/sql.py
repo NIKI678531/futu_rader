@@ -61,8 +61,11 @@ None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲�
 """
 
 import json
+import logging
+import os
 import re
 import sys
+import threading
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -101,6 +104,8 @@ from radar_db.schema import (  # noqa: E402
 # worker/jobs/import_dump.py 用的是同一个文件（导入按它过滤），换成正式名单时两处一起换。
 MASTER = BACKEND_ROOT / "fixtures" / "demo" / "master.json"
 
+log = logging.getLogger(__name__)
+
 
 class SqlProvider:
     name = "sql"
@@ -121,6 +126,14 @@ class SqlProvider:
         self._meta = self._read_meta()
         self._anchor = parse_anchor(self._meta.get("anchor"))
         self._cache = {}
+        # `_generation` 每清一次缓存加一：正在算的扫描与预热线程据此判断自己的结果还
+        # 算不算数（见 `_scan` / `_prewarm`）。`_scan_locks` 按缓存键各一把锁，让同一
+        # 窗口的第二个调用者等第一个算完，而不是再算一遍。
+        self._generation = 0
+        self._locks_guard = threading.Lock()
+        self._scan_locks = {}
+        self._prewarm_thread = None
+        self._start_prewarm()
 
     # ── 底层：库 ──────────────────────────────────────────────────────
 
@@ -149,6 +162,10 @@ class SqlProvider:
         判据是整份 `meta_kv` 相等，不是某一个键：导入会整表重写，ETL 改 generation，
         两条路径都落在这一个比较里。相等就一行不动 —— 缓存是这个 provider
         唯一的性能来源（一次全池扫描按秒计），不能因为一次探测就白白丢掉。
+
+        缓存被清空之后立刻起一个守护线程把六个区间的 `pool()` 预热回来（`_prewarm`）：
+        丢缓存的那一刻正是页面最可能在看的时候（worker 刚写完一批标注），不预热的话
+        下一个打开 d30 的人要等好几秒。
         """
         meta = self._read_meta()
         if meta == self._meta:
@@ -158,8 +175,41 @@ class SqlProvider:
         self._meta = meta
         self._anchor = parse_anchor(meta.get("anchor"))
         if data_changed:
-            self._cache.clear()
+            self._invalidate()
+            self._start_prewarm()
         return data_changed
+
+    def _invalidate(self):
+        """清缓存并换代。正在算的扫描看到代数变了就不把结果写回来（它读的可能是半新半旧的库）。"""
+        with self._locks_guard:
+            self._generation += 1
+            self._cache.clear()
+            self._scan_locks.clear()
+
+    def _start_prewarm(self):
+        """后台预热六个区间的 `pool()`。`RADAR_PREWARM=0` 关闭（测试里默认关：内存库
+        的连接是线程私有的，另起一个线程看到的是一个空库）。没锚点就不起：`pool()` 会
+        直接返回 None，没有什么可热的。"""
+        if os.getenv("RADAR_PREWARM", "1").strip() == "0" or self._anchor is None:
+            return
+        t = threading.Thread(
+            target=self._prewarm, args=(self._generation,), name="radar-prewarm", daemon=True,
+        )
+        self._prewarm_thread = t
+        t.start()
+
+    def _prewarm(self, generation):
+        # `core.ranges` import `providers`，模块顶层 import 会绕成环；到这里时两边都已加载完。
+        from core.ranges import VALID_KEYS
+
+        for key in VALID_KEYS:
+            if self._generation != generation:
+                return  # 库又变了：新一代的预热线程已经起了，这一代到此为止。
+            try:
+                self.pool(key)
+            except Exception:  # noqa: BLE001 —— 预热失败只记日志，请求线程照常自己算。
+                log.exception("预热 pool(%s) 失败", key)
+                return
 
     @property
     def updated_at(self):
@@ -192,6 +242,17 @@ class SqlProvider:
             # 锚点取不到 ⇒ 整个区间是未知，不用今天兜底（见 core/calendar.parse_anchor）。
             return None
         return build(key, self._anchor)
+
+    @staticmethod
+    def _baseline_range(rng):
+        """基准区间的完整描述：与当前区间等长、紧邻其前，切**一样多**的桶。
+
+        环比要逐桶对齐同位（PRD §3.1），所以基准期也按当前区间的天数与粒度切桶。
+        `pool()` / `benchmark()` / `competitors_for()` 都从这里取，三处才会落在
+        `_scan` 的同一个缓存键上 —— 原来 `pool()` 用不带桶的 `(benchFrom, benchTo, None)`、
+        `benchmark()` 用带桶的 `(…, range_key)`，同一个窗口被扫两遍。
+        """
+        return build(rng["key"], date.fromisoformat(rng["benchTo"]), days_override=rng["days"])
 
     # ── 市场域：计数 ─────────────────────────────────────────────────
 
@@ -281,8 +342,8 @@ class SqlProvider:
         rng = self.build_range(range_key)
         if rng is None:
             return None
-        cur = self._scan(rng["from"], rng["to"], rng)
-        base = self._scan(rng["benchFrom"], rng["benchTo"])
+        cur = self._scan(rng)
+        base = self._scan(self._baseline_range(rng))
 
         items, global_max = [], 1
         for p in self._products:
@@ -334,7 +395,7 @@ class SqlProvider:
         rng = self.build_range(range_key)
         if rng is None:
             return None
-        cur = self._scan(rng["from"], rng["to"])
+        cur = self._scan(rng)
         order = sorted(self._by_code, key=lambda c: (-cur[c]["comments"], c))
         return {"map": {c: i + 1 for i, c in enumerate(order)}, "total": len(order)}
 
@@ -346,11 +407,11 @@ class SqlProvider:
         rng = self.build_range(range_key)
         if rng is None:
             return None
-        cur = self._scan(rng["from"], rng["to"], rng)[code]
+        cur = self._scan(rng)[code]
         # 基准区间也切同样多的桶：环比要逐桶对齐同位（PRD §3.1），产品监控页的趋势图
         # 悬停要显示「这一桶较基准同位 +12（+25.0%）」。
-        baseline_range = build(range_key, date.fromisoformat(rng["benchTo"]), days_override=rng["days"])
-        base = self._scan(rng["benchFrom"], rng["benchTo"], baseline_range)[code]
+        baseline_range = self._baseline_range(rng)
+        base = self._scan(baseline_range)[code]
         return {
             "mentions": delta(cur["mentions"], base["mentions"]),
             "comments": delta(cur["comments"], base["comments"]),
@@ -390,7 +451,7 @@ class SqlProvider:
         rng = self.build_range(range_key)
         if rng is None:
             return None
-        s = self._scan(rng["from"], rng["to"], rng)[code]
+        s = self._scan(rng)[code]
         out = []
         for b, bk in zip(rng["buckets"], s["buckets"]):
             out.append(
@@ -733,7 +794,7 @@ class SqlProvider:
         rng = self.build_range(range_key)
         if rng is None:
             return None
-        scan = self._scan(rng["from"], rng["to"], rng)
+        scan = self._scan(rng)
         out = {}
         for code in self._by_code:
             att = scan[code]["att"]
@@ -766,7 +827,7 @@ class SqlProvider:
         rng = self.build_range(range_key)
         if rng is None:
             return None
-        s = self._scan(rng["from"], rng["to"], rng)[code]
+        s = self._scan(rng)[code]
         att = s["att"]
         if att is None:
             return None
@@ -865,7 +926,7 @@ class SqlProvider:
         rng = self.build_range(range_key)
         if rng is None:
             return None
-        if self._scan(rng["from"], rng["to"], rng)[code]["att"] is None:
+        if self._scan(rng)[code]["att"] is None:
             return None
         series = self.heat_series_for(code, range_key)
         units_rows = self._synth(code, range_key, "stage_unit")
@@ -897,7 +958,8 @@ class SqlProvider:
             if p["ownership"] == "own" else ([p["ownCode"]] if p.get("ownCode") else [])
         )
         rows = self._synth(code, range_key, "competitor_reason")
-        scan = self._scan(rng["from"], rng["to"], rng)
+        scan = self._scan(rng)
+        base = self._scan(self._baseline_range(rng))
         items = []
         for c in fixed + [k for k in rows if k not in fixed]:
             q = self._by_code.get(c)
@@ -914,7 +976,7 @@ class SqlProvider:
                 "reason": (f"客户维护的固定对位映射 · {q['issuer']}" if confirmed
                            else "AI 依据本产品评论区的共现识别 · 待确认"),
                 "mentions": scan[c]["mentions"], "comments": scan[c]["comments"],
-                "delta": delta(scan[c]["comments"], self._scan(rng["benchFrom"], rng["benchTo"])[c]["comments"]),
+                "delta": delta(scan[c]["comments"], base[c]["comments"]),
                 "positiveThemes": [{"id": f"{c}-like-{i}", "title": t, "mentions": n_ev} for i, t in enumerate(like)],
                 "negativeThemes": [{"id": f"{c}-dislike-{i}", "title": t, "mentions": n_ev} for i, t in enumerate(dislike)],
                 "evidencePos": n_ev if like else 0, "evidenceNeg": n_ev if dislike else 0,
@@ -1040,10 +1102,7 @@ class SqlProvider:
         rng = self.build_range(str(ctx_key).split("|")[0])
         if rng is None:
             return None
-        att = self._current_annotations("attitude", "comment", window=_window(rng))
-        by_comment = defaultdict(list)
-        for (cid, subject), a in att.items():
-            by_comment[cid].append((subject, a))
+        by_comment = self._attitude_by_comment(rng)
         hits = [
             cid
             for cid, pairs in by_comment.items()
@@ -1076,6 +1135,23 @@ class SqlProvider:
         # 与设计源同序：发布时间倒序。同刻的按 id 兜底，免得两次请求两个顺序。
         items.sort(key=lambda x: (x["publishedAt"] or "", x["id"]), reverse=True)
         return items[:n]
+
+    def _attitude_by_comment(self, rng):
+        """窗口内的态度结论按评论归组：`{comment_id: [(subject_code, annotation), …]}`。
+
+        证据侧栏每开一次都要这份索引（同一条评论可能被标了两只产品，卡片要把两个代码
+        都带上），原来每次都重查整窗再重组，d30 一次半秒。按窗口缓存；键里带锚点，
+        与 `_synth` 同一个理由 —— 锚点一变整份都不算数。
+        """
+        key = ("att_by_comment", rng["from"], rng["to"], self._anchor)
+        hit = self._cache.get(key)
+        if hit is None:
+            hit = defaultdict(list)
+            for (cid, subject), a in self._window_attitude(rng["from"], rng["to"]).items():
+                hit[cid].append((subject, a))
+            hit = dict(hit)
+            self._cache[key] = hit
+        return hit
 
     def compliance_for(self, code, range_key):
         """需合规关注（PRD §4.2 P10）。四态各有各的意思，一个都不能合并：
@@ -1199,22 +1275,63 @@ class SqlProvider:
 
     # ── 内部：扫描与聚合 ─────────────────────────────────────────────
 
-    def _scan(self, frm, to, rng=None):
-        """`[frm, to]`（含两端，自然日）内按产品聚合。`rng` 给出时同时切桶。
+    def _window_attitude(self, frm, to):
+        """窗口内全池的现行态度结论 `{(comment_id, code): {...}}`，按窗口缓存。
+
+        `_scan`、`evidence_for`、`_neg_units_by_code` 三处要的是同一份；d30 这一查约
+        半秒，各查一遍就是三个半秒。
+        """
+        key = ("att", frm, to)
+        hit = self._cache.get(key)
+        if hit is None:
+            hit = self._current_annotations("attitude", "comment", window=_window({"from": frm, "to": to}))
+            self._cache[key] = hit
+        return hit
+
+    def _scan(self, rng):
+        """区间 `rng` 内按产品聚合，**同时切桶**（`rng["buckets"]`）。
 
         返回的 dict **含产品池全部 120 只**，一条帖子都没有的也在里面（全 0）。
         缺席和零在这里必须分得开：窗口内的底库是全的，所以「没人发」是查出来的结论，
         那个 0 是真的 0；而 `KeyError` 意味着代码不在池里，是另一回事。
-        """
-        key = (frm, to, rng["key"] if rng else None)
-        if key in self._cache:
-            return self._cache[key]
 
-        nb = len(rng["buckets"]) if rng else 0
-        gran = rng["gran"] if rng else None
+        ## 缓存键是 `(from, to, gran)`，永远带桶
+
+        原来的键带 `rng["key"]`，而 `ranks()` 与 `pool()` 的基准期传的是 `rng=None`：
+        同一个窗口在 `pool()` / `ranks()` / `benchmark()` 里被扫了四遍（合成库 d30 一遍
+        2 秒多，四遍近 10 秒）。窗口一样、粒度一样，切出来的桶就一样 —— 键里不该有
+        别的东西。不带桶的扫描也不再提供：多算一列桶的代价可以忽略，少一个键就少一次
+        重扫。
+
+        ## 同一窗口只算一次
+
+        请求线程与 `_prewarm` 线程会同时要同一个窗口。每个键一把锁：第二个调用者等
+        第一个算完直接取缓存，而不是各算一遍再互相覆盖。算完写回前再对一次 `_generation`
+        —— 中途 `refresh()` 清过缓存的话，这份结果读的可能是半新半旧的库，只用不存。
+        """
+        key = (rng["from"], rng["to"], rng["gran"])
+        hit = self._cache.get(key)
+        if hit is not None:
+            return hit
+        with self._locks_guard:
+            generation = self._generation
+            lock = self._scan_locks.setdefault(key, threading.Lock())
+        with lock:
+            hit = self._cache.get(key)
+            if hit is not None:
+                return hit
+            out = self._scan_uncached(rng)
+            with self._locks_guard:
+                if self._generation == generation:
+                    self._cache[key] = out
+        return out
+
+    def _scan_uncached(self, rng):
+        frm, to = rng["from"], rng["to"]
+        nb = len(rng["buckets"])
+        gran = rng["gran"]
         origin = date.fromisoformat(frm)
-        lo = datetime.combine(origin, time.min)
-        hi = datetime.combine(date.fromisoformat(to) + timedelta(days=1), time.min)
+        lo, hi = _window(rng)
 
         # 帖子级：评论获赞与评论作者。评论挂在帖子上，所以按帖子的 posted_at 取窗口。
         c_likes, c_authors = defaultdict(int), defaultdict(set)
@@ -1252,7 +1369,7 @@ class SqlProvider:
                 s = out.get(code)
                 if s is None:  # in_pool 与产品池名单不同步 —— 跳过，不要凭空造一只产品。
                     continue
-                bi = _bucket(gran, origin, posted) if nb else None
+                bi = _bucket(gran, origin, posted)
                 # 帖子获赞 ＋ 已采集评论获赞（HEAT_NOTE 逐字：「点赞含帖子获赞与评论获赞」）。
                 like_total = (likes or 0) + c_likes.get(feed_id, 0)
                 who = c_authors.get(feed_id, ())
@@ -1267,17 +1384,14 @@ class SqlProvider:
         #
         # 分母也不是评论总数：只有被标注过的评论进这三个计数。「有效态度提及」本来
         # 就是标注出来的子集（PRD §3.5），这个口径在 fixture 与真库下同名同义。
-        for (_comment_id, code), a in self._current_annotations(
-            "attitude", "comment", window=(lo, hi)
-        ).items():
+        for (_comment_id, code), a in self._window_attitude(frm, to).items():
             s = out.get(code)
             if s is None:  # 标注里的产品不在当前池 —— 同 in_pool 那条，跳过。
                 continue
-            _bump_att(s, _bucket(gran, origin, a["posted_at"]) if nb else None, a["value"])
+            _bump_att(s, _bucket(gran, origin, a["posted_at"]), a["value"])
 
         for s in out.values():
             _finish(s)
-        self._cache[key] = out
         return out
 
     def _by_day(self, code, frm, to):
