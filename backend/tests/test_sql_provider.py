@@ -328,8 +328,16 @@ class TestOfficialPosts:
     def test_annotation_block_is_none_not_a_default_verdict(self, provider):
         """`postType: "other", confidence: 0` 会让界面显示一个我们没做出的分类。"""
         p = provider.official_posts("d1")[0]
-        for k in ("postType", "typeLabel", "confidence", "direction", "summary", "fullText"):
+        for k in ("postType", "typeLabel", "confidence", "direction", "summary",
+                  "evidenceIdx", "typeEvidence", "reviewState"):
             assert p[k] is None, k
+
+    def test_full_text_is_a_fact_and_does_not_wait_for_annotation(self, provider):
+        """原文在库里就给原文。它曾经和 AI 标注块绑在一起，没标注的帖子「查看原文」
+        显示「暂不可用」—— 而原文明明就在 `feeds.content` 里。"""
+        p = provider.official_posts("d1")[0]
+        assert p["postType"] is None  # 确认这条确实没标注
+        assert p["fullText"] == ["这只 ETF 我今天加了一手。", "费率比同类低，打算长期拿着。"]
 
     def test_etf_mentions_use_the_account_domain_caliber(self, provider):
         """账号域「提及 ETF」按出现次数累加 —— 和市场域的评论去重口径语义相反。"""
@@ -768,8 +776,11 @@ class TestPostAnnotations:
         p = add_annotations(provider, self.TRIPLE)
         kol_post = p.kol_impact("d1")["posts"][0]
         assert kol_post["url"].endswith("/2"), "标的是 f1，这里查的是 f2"
-        for k in ("postType", "typeLabel", "summary", "direction", "fullText", "reviewState"):
+        for k in ("postType", "typeLabel", "summary", "direction", "reviewState",
+                  "evidenceIdx", "typeEvidence"):
             assert kol_post[k] is None, k
+        # 原文不属于标注块：没标注也照给。
+        assert kol_post["fullText"] == ["这只 ETF 我今天加了一手。", "费率比同类低，打算长期拿着。"]
 
     def test_the_kol_post_reads_the_same_way(self, provider):
         """同一条读路径喂两个页面（`_post_ai`）。f2 是 KOL 那篇。"""

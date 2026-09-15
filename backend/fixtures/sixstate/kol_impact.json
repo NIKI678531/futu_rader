@@ -278,7 +278,11 @@
       "directionPending": null,
       "engagement": 12,
       "evidenceIdx": null,
-      "fullText": null,
+      "fullText": [
+       "昨日低开后一度冲高，午后回落，收在支持位附近。",
+       "25400 这个位置守了几次，短线还是震荡看待。",
+       "$國指備兌認購期權主動型ETF（2802.HK）$ 持有人不用急着加，等方向出来。"
+      ],
       "hasDir": null,
       "hasSummary": null,
       "hour": 11,
@@ -632,7 +636,11 @@
     "directionPending": null,
     "engagement": 12,
     "evidenceIdx": null,
-    "fullText": null,
+    "fullText": [
+     "昨日低开后一度冲高，午后回落，收在支持位附近。",
+     "25400 这个位置守了几次，短线还是震荡看待。",
+     "$國指備兌認購期權主動型ETF（2802.HK）$ 持有人不用急着加，等方向出来。"
+    ],
     "hasDir": null,
     "hasSummary": null,
     "hour": 11,

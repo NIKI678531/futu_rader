@@ -1526,12 +1526,19 @@ class SqlProvider:
         return out
 
     def _post_common(self, rng, row, codes):
-        """帖子行里**能数出来**的部分。AI 标注块由调用方并入。"""
+        """帖子行里**能数出来**的部分。AI 标注块由调用方并入。
+
+        `fullText`（正文分句）也在这里：它是帖子自己的事实，不是 AI 产物。原来它挂在
+        `_post_ai` 下随标注一起给，没标注的帖子就整块 None —— 于是官号动态页上「查看原文」
+        对一篇好端端的帖子显示「暂不可用」，而原文就在库里。切句用的字符串必须与
+        `_sources("feed")` 的 `text` 逐字节相同（`_feed_text`）：`evidenceIdx` 按它数句。
+        """
         day = row.posted_at.date()
         primary = codes[0] if codes else None
         p = self._by_code.get(primary, {})
         likes, n_comments, shares = row.like_count, row.comment_count, row.share_count
         return {
+            "fullText": [t for _s, _e, t in _sentences(_feed_text(row.title, row.content))],
             # `t` ＝ 距区间起点的小时数，设计源用它排序（`dOff * 24 + hr`）。
             "t": (day - date.fromisoformat(rng["from"])).days * 24 + row.posted_at.hour,
             "day": day.isoformat(),
@@ -1628,8 +1635,9 @@ class SqlProvider:
 
         out = {}
         for feed_id, a in types.items():
+            # 与 `_post_common` 的 `fullText` 切的是同一串（`_sources("feed")` 的 text ＝
+            # `_feed_text(title, content)`），所以这里的句号能直接索引那边的列表。
             spans = _sentences((src.get(feed_id) or {}).get("text") or "")
-            full_text = [t for _s, _e, t in spans]
             quotes = ev.get(a["annotation_id"], [])
             idx = _sentence_index(spans, quotes[0][0]) if quotes else -1
             ptype = a["value"]
@@ -1642,10 +1650,9 @@ class SqlProvider:
                 "confidence": a["confidence"],
                 # ADR-0019 §2：徽章文案由它决定，不再由它决定能不能显示。
                 "reviewState": a["review_state"],
-                "fullText": full_text,
                 "evidenceIdx": idx,
                 # 设计源 `radar-data.js:1244` 逐字：定位不到就是空串，不是整段原文。
-                "typeEvidence": full_text[idx] if idx >= 0 else "",
+                "typeEvidence": spans[idx][2] if idx >= 0 else "",
                 **_summary_block(summaries.get(feed_id)),
                 **_direction_block(directions.get(feed_id)),
             }
@@ -1708,7 +1715,7 @@ class SqlProvider:
                     ).where(feeds.c.feed_id.in_(chunk))
                     for r in conn.execute(q):
                         out[r.feed_id] = {
-                            "text": "\n".join(x for x in (r.title, r.content) if x),
+                            "text": _feed_text(r.title, r.content),
                             "authorName": r.author_name,
                             "postedAt": r.posted_at,
                             "comments": r.comment_count,
@@ -1768,6 +1775,8 @@ class SqlProvider:
 
 # 帖子上的 AI 标注块。整块都是 None／空——**不是**「other 类型、置信度 0」，
 # 那会在界面上显示成一个我们并没有做出的判断（铁律 2）。
+# `fullText` 不在这里：原文是帖子自己的事实，由 `_post_common` 对每篇帖子都给
+# （它曾经在这个块里，让没标注的帖子连原文都显示成「暂不可用」）。
 _UNANNOTATED = {
     "postType": None,
     "typeLabel": None,
@@ -1779,7 +1788,6 @@ _UNANNOTATED = {
     "dir": None,
     "hasSummary": None,
     "summary": None,
-    "fullText": None,
     "evidenceIdx": None,
     "typeEvidence": None,
     # ADR-0019 §2：徽章由 `review_state` 驱动。没标注过的帖子这里是 None ⇒ 前端不出
@@ -2056,6 +2064,16 @@ def _direction_block(a):
 # 句末标点（中英文两套）。`\n` 也算一处断点：`annotate.py` 用换行把标题和正文接起来，
 # 标题本身常常不带标点，不断开的话整篇会变成一「句」。
 _SENTENCE_END = re.compile(r"[。！？!?；;\n]+|\.(?=\s|$)")
+
+
+def _feed_text(title, content):
+    """帖子送去切句的那一串：标题＋换行＋正文，缺哪个就省哪个。
+
+    `annotate.py` 送模型标注时就是这么拼的，所以 `annotation_evidence.start_offset` 是
+    相对这一串的字符位置。`_post_common` 的 `fullText` 与 `_sources("feed")` 的 `text`
+    都必须走这里，否则 `evidenceIdx` 数出来的句号会对不上原文列表。
+    """
+    return "\n".join(x for x in (title, content) if x)
 
 
 def _sentences(text):
