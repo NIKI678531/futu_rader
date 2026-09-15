@@ -6,14 +6,15 @@
    local to this screen: the 赞/评/转 合计 propagates null instead of swallowing it
    （见 out.stats 上方，与 lib/profile.js 同一处偏差）。 */
 import React from 'react'
-import R from '../data/radar'
+import R, { prefetchScreen } from '../data/radar'
 import { num, conf2, typeStyle, md, shell, rgba, CAMP, POST_TYPES, reviewBadge, needsReview } from '../lib/view'
 import { kolProfile } from '../lib/profile'
 import { s, hover } from '../lib/dc'
 import Shell from '../components/Shell'
+import withTransition from '../components/withTransition'
 import DcLink from '../components/DcLink'
 
-export default class KolDetail extends React.Component {
+class KolDetail extends React.Component {
   static defaultProps = {
     lowConfidence: 0.7,
     campRule: '挂载标的 ∪ 正文提及',
@@ -31,6 +32,9 @@ export default class KolDetail extends React.Component {
       sel: q.post || null,
       openOps: {}
     };
+    /* 首次 render 之前把本屏端点并行发出去（radar.js `urlsFor`）。URL 没指定 KOL 时观点表
+       要等 kolImpact 回来才知道取谁的，那一个不在清单里。 */
+    prefetchScreen('kolDetail', { rangeKey: this.state.rangeKey, kol: this.state.kol });
   }
   data() { return R.kolImpact(this.state.rangeKey); }
   primaryOnly() { return this.props.campRule === '仅挂载标的'; }
@@ -83,7 +87,8 @@ export default class KolDetail extends React.Component {
   renderVals() {
     var s = this.state, self = this;
     this.LC = this.props.lowConfidence != null ? this.props.lowConfidence : 0.7;
-    var out = shell('accounts', 'kol', s, function (x) { self.setState(x); });
+    /* 切区间会触发新的 kolImpact／kolOpinions 取数；进 transition 让旧内容留着（withTransition.jsx）。 */
+    var out = shell('accounts', 'kol', s, function (x) { self.props.startTransition(function () { self.setState(x); }); });
     var M = this.data();
     var kol = this.kolName();
     var ps = this.myPosts();
@@ -566,3 +571,5 @@ export default class KolDetail extends React.Component {
     )
   }
 }
+
+export default withTransition(KolDetail)

@@ -43,13 +43,18 @@ function heatWhy(o) {
     : '讨论热度暂不可用。';
 }
 
-export default class SectorOverview extends React.Component {
+class SectorOverview extends React.Component {
   state = {
     sel: null, sector: 'all', rangeKey: 'd7', notes: false,
     sort: 'comments', heatMode: 'net', scope: 'all', view: 'sector', q: '', listAll: false,
     onlyNew: false, onlyNeg: false, onlyRisk: false, scrollRisk: false,
-    secOpen: {}, secAll: {}, flatAll: false, tip: null, loading: false, bucket: null
+    secOpen: {}, secAll: {}, flatAll: false, tip: null, bucket: null
   };
+  constructor(props) {
+    super(props);
+    /* 首次 render 之前把本屏端点并行发出去，理由见 productMonitor 同处。 */
+    prefetchScreen('sector', { rangeKey: this.state.rangeKey });
+  }
   heatRef = React.createRef();
   drawerBodyRef = React.createRef();
   riskRef = React.createRef();
@@ -176,14 +181,21 @@ export default class SectorOverview extends React.Component {
       || (patch.sector && patch.sector !== s.sector)
       || (patch.scope && patch.scope !== s.scope)
       || (patch.view && patch.view !== s.view);
-    if (changed) {
-      patch = Object.assign({}, patch, { loading: true, tip: null });
-      clearTimeout(this._lt);
-      this._lt = setTimeout(() => this.setState({ loading: false }), 520);
+    /* 会触发新取数的两件事：切区间（整池换一份）、打开抽屉（摘要／主题／负面归类／竞品／
+       合规五块现取）。它们走 transition：旧内容留着变淡，数据到了再换，不退回骨架。
+       板块／范围／视图切换只是池上的子集运算，设计源也给它们演 loading，一并进 transition
+       （isPending 只会亮一帧）。搜索框的字紧急提交，理由见 withTransition.jsx。 */
+    var opening = patch.sel != null && patch.sel !== s.sel;
+    if (changed || opening) {
+      patch = Object.assign({}, patch, { tip: null });
+      var parts = split(patch, ['q']);
+      if (parts.hasUrgent) this.setState(parts.urgent);
+      this.props.startTransition(() => this.setState(parts.deferred));
+      return;
     }
     this.setState(patch);
   }
-  componentWillUnmount() { clearTimeout(this._lt); if (this._ro) this._ro.disconnect(); }
+  componentWillUnmount() { if (this._ro) this._ro.disconnect(); }
 
   seg(active, label, patch) {
     return {
@@ -498,7 +510,8 @@ export default class SectorOverview extends React.Component {
       navGroups: navGroups('portfolio', 'sector'), presets: presets, chips: chips,
       rangeText: range.text, rangeFrom: range.from, rangeTo: range.to,
       granLabel: range.granLabel, updated: stamp(R.UPDATED),
-      loading: s.loading, bodyOpacity: s.loading ? '0.45' : '1',
+      /* 真实的「还在等」：transition 提交前为 true（withTransition.jsx），不再是 520ms 定时器。 */
+      loading: !!self.props.isPending, bodyOpacity: self.props.isPending ? '0.45' : '1',
       visibleCount: String(visible.length),
       k1: k1, k2: k2, topOwn: topOwn, topPeer: topPeer, topOwnEmpty: topOwn.length === 0, topPeerEmpty: topPeer.length === 0,
       topNote: '评论量' + range.benchLabel + ' · 前 3',
@@ -834,3 +847,5 @@ export default class SectorOverview extends React.Component {
     )
   }
 }
+
+export default withTransition(SectorOverview)
