@@ -62,8 +62,15 @@ export default function ProductTable({ v }) {
               {r.alert && (
                 <span title="可归类为需关注问题的内容条数" style={s('padding:1px 7px;border-radius:9999px;background:var(--negative-100);font:600 12px/1.6 var(--font-mono);color:var(--negative-700)')}>{r.alertN}</span>
               )}
+              {r.alertNa && (
+                <span title="舆情条数暂不可用：该产品尚未做负面类别标注" style={s('font:400 11px/1.4 var(--font-cjk);color:var(--ink-400);white-space:nowrap')}>暂不可用</span>
+              )}
             </span>
-            <span title={r.hotTitle} style={s(`flex:1.3;min-width:220px;padding-left:10px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;font:400 13px/18px var(--font-cjk);color:${r.hotFg};text-wrap:pretty`)}>{r.hot}</span>
+            <span title={r.hotTitle} style={s(`flex:1.3;min-width:220px;padding-left:10px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;font:400 13px/18px var(--font-cjk);color:${r.hotFg};text-wrap:pretty`)}>
+              {/* `stale === true`（后端：标注已更新、这句还没重新生成）才有这枚小徽章；demo 下没有这个键。 */}
+              {r.hotStale && <span title={r.staleTitle} style={s('display:inline-block;margin-right:6px;padding:0 6px;border-radius:9999px;background:var(--warning-100);font:600 11px/1.6 var(--font-cjk);color:var(--warning-700);vertical-align:1px')}>待更新</span>}
+              {r.hot}
+            </span>
           </div>
         ))}
         {v.listMore && (

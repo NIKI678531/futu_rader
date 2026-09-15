@@ -8,13 +8,14 @@
      - `{{ }}` holes became JSX; `style="…"` strings are parsed by `s()` and
        `style-hover` / `style-focus` by `hover()` / `focus()`. */
 import React from 'react'
-import R from '../data/radar'
+import R, { prefetchScreen } from '../data/radar'
 import { num, conf2, sumN, descN, typeStyle, shell, rgba, CAMP, POST_TYPES, TYPE_BY_KEY, reviewBadge, needsReview } from '../lib/view'
 import { s, hover, focus } from '../lib/dc'
 import Shell from '../components/Shell'
+import withTransition from '../components/withTransition'
 import DcLink from '../components/DcLink'
 
-export default class OfficialActivity extends React.Component {
+class OfficialActivity extends React.Component {
   /* From the .dc.html `data-props` block: editor-tweakable knobs and their defaults. */
   static defaultProps = {
     lowConfidence: 0.7,
@@ -29,6 +30,11 @@ export default class OfficialActivity extends React.Component {
     /* 来自官号清单 ETF 芯片的联动来源（官号 × ETF），其他方式改动官号/产品筛选时清空 */ src: null,
     /* 每行 ETF 芯片条的溢出测量（key＝官号简称）：{ hidden, fade }，只读 DOM，经 state 回到模板，不直接写 DOM */ strip: {}
   };
+  constructor(props) {
+    super(props);
+    /* 首次 render 之前把本屏端点并行发出去（radar.js `urlsFor`），首绘不再是串行往返。 */
+    prefetchScreen('official', { rangeKey: this.state.rangeKey });
+  }
   componentDidMount() {
     this._onResize = () => this.syncStrips();
     window.addEventListener('resize', this._onResize);
@@ -90,7 +96,8 @@ export default class OfficialActivity extends React.Component {
     /* `lowConfidence` 这一屏不再读：徽章改由 `review_state` 驱动（ADR-0019 §2），
        而这一屏没有任何一处把阈值本身印出来。另外两屏的脚注还印着它，所以它们留着。 */
     var cols = this.props.feedLayout === '单列' ? 1 : 2;
-    var out = shell('accounts', 'official', s, function (x) { self.go(x); });
+    /* 切区间会触发新的 officialPosts 取数；进 transition 让旧内容留着，不退回骨架（withTransition.jsx）。 */
+    var out = shell('accounts', 'official', s, function (x) { self.props.startTransition(function () { self.go(x); }); });
     var feedAll = R.officialPosts(s.rangeKey);
     var range = R.buildRange(s.rangeKey);
     /* 三态。判据是 `reviewState`（模型自己有没有举手），不是置信度 —— ADR-0019 §2：
@@ -738,3 +745,5 @@ export default class OfficialActivity extends React.Component {
     )
   }
 }
+
+export default withTransition(OfficialActivity)

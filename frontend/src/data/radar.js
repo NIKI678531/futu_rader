@@ -14,7 +14,9 @@
  * 端点的代价是零，这是最危险的一种零。现在 `window.RADAR` 不存在了，漏一个就是 undefined
  * is not a function，在第一次渲染就炸。
  *
- * 契约函数 20 个在下面 `migrated` 里，口径常量 15 个在 `constants` 里（全部来自 /meta）。
+ * 契约函数 20 个在下面 `migrated` 里（外加一个只读顶层旗标的 `themesStale`），
+ * 口径常量在 `constants` 里（全部来自 /meta）。URL 拼法集中在 `U`，`urlsFor()` 把某一屏
+ * 会读的端点列成清单供预取 —— 与契约函数同源，预取的与 read() 命中的必然是同一个 URL。
  *
  * `heatSeriesFor` / `dailyFor` **有端点但不在这里**：屏幕不直接读它们。热度折线读的是
  * `stagesFor().series`（与 /heat-series 同一份数，内嵌下发省一次串行往返），趋势图读的
@@ -41,15 +43,71 @@
  *   下面出现的 `key || 'd7'` 是**参数默认值**，与设计源 `rangeKey || DEFAULT_KEY` 逐字
  *   一致，改的是「你没告诉我要哪段区间」，不是「后端没给我值」—— 两回事。
  */
-import { read, qs } from '../lib/api'
+import { read, prefetch, qs } from '../lib/api'
 
 /* 设计源的 DEFAULT_KEY。屏幕不传区间时用它。 */
 const DEFAULT_RANGE = 'd7'
 
-/* 单产品端点的路径。产品代码进 URL 路径段，一律编码 —— 现在的代码都是 '3033' 这种
-   纯数字，但编码一次的成本是零，漏了一次的成本是一个能被拼进路径的字符串。 */
-const product = (code, tail, rangeKey) =>
-  `/products/${encodeURIComponent(code)}/${tail}` + qs({ range: rangeKey || DEFAULT_RANGE })
+/* ── URL 拼法，全文件唯一一处 ────────────────────────────────────────
+ *
+ * 契约函数和下面的 urlsFor() 都从这里取。两处各拼一遍的话，预取发出去的 URL 与 read()
+ * 命中的 URL 差一个字符（编码、参数顺序、默认区间）就会静悄悄地各打一次网络 —— 预取
+ * 白做，页面照常渲染，没有任何东西变红。
+ *
+ * 单产品端点：产品代码进 URL 路径段，一律编码 —— 现在的代码都是 '3033' 这种纯数字，
+ * 但编码一次的成本是零，漏了一次的成本是一个能被拼进路径的字符串。 */
+const ranged = (path, rangeKey) => path + qs({ range: rangeKey || DEFAULT_RANGE })
+const U = {
+  meta: () => '/meta',
+  range: (key) => `/ranges/${encodeURIComponent(key || DEFAULT_RANGE)}`,
+  pool: (rangeKey) => ranged('/pool', rangeKey),
+  ranks: (rangeKey) => ranged('/ranks', rangeKey),
+  hotSummaries: (rangeKey) => ranged('/hot-summaries', rangeKey),
+  kolImpact: (rangeKey) => ranged('/kol/impact', rangeKey),
+  kolOpinions: (kol, rangeKey) => ranged(`/kol/${encodeURIComponent(kol)}/opinions`, rangeKey),
+  officialPosts: (rangeKey) => ranged('/officials/posts', rangeKey),
+  etfMentions: (account, rangeKey) => ranged(`/officials/${encodeURIComponent(account)}/etf-mentions`, rangeKey),
+  product: (code, tail, rangeKey) => ranged(`/products/${encodeURIComponent(code)}/${tail}`, rangeKey),
+}
+const product = U.product
+
+/* 产品监控页一次渲染要读的单产品端点。顺序无所谓（并行发出），列全才有所谓：
+   漏一个就是那一个退回串行。 */
+const PRODUCT_TAILS = ['benchmark', 'summary', 'themes', 'negative-categories', 'competitors',
+  'compliance', 'topics', 'kol-mentions', 'candles', 'stages']
+
+/* 某一屏在给定参数下**已知**会读的端点。read() 是同步的，render 在第一个未命中处就
+   抛出去了，后面的端点要等它回来再抛下一个 —— 一屏首绘等于十几次串行往返。屏幕在首次
+   render 之前把这份清单交给 api.prefetch 一次性发出，read() 到时命中同一个 pending 条目。
+
+   只列参数从屏幕 state 就能确定的端点。证据抽屉（evidenceFor 的四个参数来自点击）、
+   官号 ETF 提及（按官号逐个取）这类由交互决定的不在这里 —— 静态清单枚举不全，
+   枚举一半反而会让人以为全预取了。 */
+export function urlsFor(screen, params) {
+  const k = (params && params.rangeKey) || DEFAULT_RANGE
+  const common = [U.meta(), U.range(k)]
+  switch (screen) {
+    case 'sector':
+      return common.concat([U.pool(k), U.ranks(k), U.hotSummaries(k)])
+    case 'product':
+      return common.concat([U.pool(k), U.ranks(k)],
+        PRODUCT_TAILS.map((tail) => U.product(params.code, tail, k)))
+    case 'kol':
+      return common.concat([U.kolImpact(k)])
+    case 'kolDetail':
+      return common.concat([U.kolImpact(k)],
+        params && params.kol ? [U.kolOpinions(params.kol, k)] : [])
+    case 'official':
+      return common.concat([U.officialPosts(k)])
+    default:
+      return common
+  }
+}
+
+/** urlsFor + api.prefetch，屏幕构造函数里一句话调用。 */
+export function prefetchScreen(screen, params) {
+  return prefetch(urlsFor(screen, params))
+}
 
 /* ── 契约函数（PRD §5） ──────────────────────────────────────────────
    屏幕读到的全部 20 个函数，签名与设计源逐字一致。 */
@@ -57,23 +115,21 @@ const migrated = {
   /* buildRange(key) → GET /ranges/{key}
      区间、时间桶、基准区间、各处文案全部后端下发。PRD §5 逐字：前端不自行算桶。 */
   buildRange(key) {
-    return read(`/ranges/${encodeURIComponent(key || DEFAULT_RANGE)}`)
+    return read(U.range(key))
   },
 
   /* kolImpact(range) → GET /kol/impact?range=
      一次拿整个区间的帖子全集：四级级联筛选、类型多选、表内关键词都是同一份帖子上的
      子集运算，按筛选组合切端点会变成组合爆炸（ADR-0003）。 */
   kolImpact(rangeKey) {
-    return read('/kol/impact' + qs({ range: rangeKey || DEFAULT_RANGE }))
+    return read(U.kolImpact(rangeKey))
   },
 
   /* kolOpinions(kol, range) → GET /kol/{kol}/opinions?range=
      这位 KOL 对发帖记录之外的产品的观点。每行的 `net` 在样本不足时是 null，原样穿到
      渲染层 —— 换成 0 就成了「中性」，而中性是个我们并没有得出的结论（PRD §3.5）。 */
   kolOpinions(kol, rangeKey) {
-    return read(
-      `/kol/${encodeURIComponent(kol)}/opinions` + qs({ range: rangeKey || DEFAULT_RANGE }),
-    )
+    return read(U.kolOpinions(kol, rangeKey))
   },
 
   /* pool(range) → GET /pool?range=
@@ -81,7 +137,7 @@ const migrated = {
      池上的子集运算。`globalMax`（热力图色阶标尺）和 `own`（自家 KPI 汇总及其三个环比）
      都在里面，屏幕不再自己遍历 61 只求和 —— 那段求和里有三处 `|| 0`（铁律 2）。 */
   pool(rangeKey) {
-    return read('/pool' + qs({ range: rangeKey || DEFAULT_RANGE }))
+    return read(U.pool(rangeKey))
   },
 
   /* ranks(range) → GET /ranks?range=
@@ -89,7 +145,7 @@ const migrated = {
      搜索参数：接了就迟早有人传，而排名按可见集重算的那一刻，「第 12 名」就不再是一个
      能对外引用的事实了。 */
   ranks(rangeKey) {
-    return read('/ranks' + qs({ range: rangeKey || DEFAULT_RANGE }))
+    return read(U.ranks(rangeKey))
   },
 
   /* benchmark(code, range) → GET /products/{code}/benchmark?range=
@@ -120,7 +176,7 @@ const migrated = {
        还没生成。容器不知道 ⇒ 里面每一个也不知道，所以这里发 null 而不是 `{}` 或
        `{ok:false,text:'…'}`：后者是在这一层替页面编文案，六态判定不在取数层
        （api.js 硬约束 1）。 */
-    const all = read('/hot-summaries' + qs({ range: rangeKey || DEFAULT_RANGE }))
+    const all = read(U.hotSummaries(rangeKey))
     return all == null ? null : all[code]
   },
 
@@ -137,6 +193,15 @@ const migrated = {
        `null['positive']` 是硬 TypeError，产品监控整页白屏。 */
     const both = read(product(code, 'themes', rangeKey))
     return both == null ? null : both[polarity]
+  },
+
+  /* themesStale(code, range) —— 同一响应顶层的 `stale` 旗标（标注已更新、汇总待重新
+     生成）。themesFor 按极性取子键，从那条路读不到顶层键，所以另开一个读法而不是改
+     三参签名。整块 null 或没有这个键（demo）都返回 undefined —— 屏幕用 `=== true` 判，
+     「不知道新不新」不等于「旧了」。 */
+  themesStale(code, rangeKey) {
+    const both = read(product(code, 'themes', rangeKey))
+    return both == null ? undefined : both.stale
   },
 
   /* negCatsFor(code, range) → GET /products/{code}/negative-categories?range= */
@@ -208,16 +273,13 @@ const migrated = {
 
   /* officialPosts(range) → GET /officials/posts?range= */
   officialPosts(rangeKey) {
-    return read('/officials/posts' + qs({ range: rangeKey || DEFAULT_RANGE }))
+    return read(U.officialPosts(rangeKey))
   },
 
   /* etfMentionsFor(account, range) → GET /officials/{account}/etf-mentions?range=
      口径按出现次数累加（ETF_MENTION_RULE），**与市场域的评论去重语义相反**，别混用。 */
   etfMentionsFor(account, rangeKey) {
-    return read(
-      `/officials/${encodeURIComponent(account)}/etf-mentions` +
-        qs({ range: rangeKey || DEFAULT_RANGE }),
-    )
+    return read(U.etfMentions(account, rangeKey))
   },
 }
 
@@ -233,7 +295,7 @@ const migrated = {
  * 适配。之所以留下这一处，是因为 /meta 是我们自己定的契约，`key`/`text` 这种自解释的
  * 命名值得保留；转换收敛在下面这几行里，不散进屏幕。
  */
-const meta = () => read('/meta')
+const meta = () => read(U.meta())
 
 /* R.MASTER 在产品监控页一次渲染里被读十几次，R.SECTORS 在 KOL 页每行读两次，每次
    重建一遍是白费力气。按源数组的**身份**记忆：read() 命中缓存时返回的是同一个数组，
@@ -304,6 +366,11 @@ const constants = {
      而不是写在屏幕里：面板上那句、`/meta`、汇报时的说法必须是同一个来源。
      文案映射在 lib/view.js 的 `aiValidationNote`。 */
   get AI_VALIDATION() { return meta().aiValidation },
+
+  /* `spot_check` 那一档随附的抽检明细 `{level, n, date, relevance_accuracy,
+     attitude_accuracy, attitude_macro_f1, by_system}`。没抽检过就没有这个键
+     （demo 下 undefined）—— 屏幕文案退回 `none` 那句，不编一个数。 */
+  get AI_VALIDATION_DETAIL() { return meta().aiValidationDetail },
 
   /* 六态图例（PRD §3.6 逐字）。`key`/`text` → `k`/`v` 是 /meta 的形状转换之一。
      底色随图例一起下发，理由同 SECTORS 的 hue：「暂不可用是警示色、暂无内容不是」
