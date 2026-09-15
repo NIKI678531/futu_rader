@@ -153,9 +153,13 @@ def _shape(payload):
 #             （页面上总结突然消失），现在照常下发并标 stale，让前端挂「待更新」。
 #
 # 事实字段脱离 AI 门控：
-# - `evidenceCount`   summary_for 的证据条数。demo 在 topics / themes 上本来就有这个键，
-#                     进白名单意味着那两处的键集比对也跳过它 —— 已知的覆盖缺口。
-# - `aiValidationDetail`   /meta 上 `meta_kv.ai_validation` 的整份 JSON（demo 下 None）。
+# - `evidenceCount`   summary_for 的证据条数（＝ evidenceIds 的长度，与 `sum` 面板的证据
+#                     侧栏同源）。demo 在 topics / themes 上本来就有这个键，进白名单意味着
+#                     那两处的键集比对也跳过它 —— 已知的覆盖缺口。
+#
+# /meta 的验证声明：
+# - `aiValidationDetail`   `meta_kv.ai_validation` 的整份 JSON。两边都发这个键，但 demo 恒为
+#                          None，sql 有抽检记录时是 dict —— 类型比对要跳过它。
 EXTENSION_KEYS = frozenset({
     "reviewState", "evidenceIds", "labelStatus", "aiStatus", "reasonStatus",
     "key", "subkey", "aspect", "units", "points", "category",
