@@ -2,6 +2,7 @@
 
     cd worker && .venv/Scripts/python -m scripts.probe_gateway
     cd worker && .venv/Scripts/python -m scripts.probe_gateway --burst 20
+    cd worker && .venv/Scripts/python -m scripts.probe_gateway --concurrency 16
 
 只发**脱敏假样本**（一句自编评论），每项探测最多一两次请求。结论请抄进 runbook §6.4。
 
@@ -14,6 +15,9 @@
 3. `usage.input_tokens_details.cached_tokens` —— 系统提示 ≥1,024 token 时第二次请求
    是否命中缓存。连发两次同一系统提示，比对 `cached_tokens`。
 4. `--burst N` —— 连发 N 次看有没有 429 与 `Retry-After`（限流窗口）。默认不做，做了会花 N 次的钱。
+5. `--concurrency N` —— N 个线程**同时**各发一次，报 429 数、`Retry-After`、p50/p95 延迟。
+   `--burst` 是串行探「窗口内多少次」，这一项探「同时在飞多少条」—— `AI_CONCURRENCY` 该设多少
+   看它（ADR-0021：Luna 通道要在 25 分钟内消化 5–6 万条，16 并发是预算的前提）。花 N 次的钱。
 
 **不会**把 Key 打印出来；报告里只有 HTTP 码、字段有无与用量数字。
 """
@@ -21,8 +25,11 @@
 import argparse
 import json
 import os
+import statistics
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -88,9 +95,59 @@ def _err(r):
         return (r.text or "")[:200]
 
 
+def _percentile(values, q):
+    if not values:
+        return None
+    vs = sorted(values)
+    k = max(0, min(len(vs) - 1, round(q * (len(vs) - 1))))
+    return round(vs[k], 2)
+
+
+def probe_concurrency(cfg, prompt, n, *, post=_post, timeout=120):
+    """N 线程同时各发一次。返回 `{n, status_codes, n_429, retry_after_headers, p50_seconds, p95_seconds, ...}`。
+
+    `post` 可注入（测试用假发送函数）。所有线程在同一道闸后起跑（`Barrier`），否则线程池
+    的启动时差会让「同时」变成「差不多同时」，探不出真正的并发上限。
+    """
+    barrier = threading.Barrier(n)
+    lock = threading.Lock()
+    codes, retry_after, latencies, errors = [], [], [], []
+
+    def one(_i):
+        body = _body(cfg, prompt)
+        barrier.wait(timeout=30)
+        try:
+            r, dt = post(cfg, "/responses", body, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001  网络异常也是一种结果
+            with lock:
+                errors.append(str(exc)[:120])
+            return
+        with lock:
+            codes.append(r.status_code)
+            latencies.append(dt)
+            if r.status_code == 429:
+                retry_after.append(r.headers.get("Retry-After"))
+
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        list(pool.map(one, range(n)))
+    wall = time.time() - t0
+    return {
+        "n": n, "status_codes": codes, "n_ok": sum(1 for c in codes if 200 <= c < 300),
+        "n_429": codes.count(429), "retry_after_headers": retry_after, "errors": errors,
+        "p50_seconds": _percentile(latencies, 0.50), "p95_seconds": _percentile(latencies, 0.95),
+        "max_seconds": round(max(latencies), 2) if latencies else None,
+        "mean_seconds": round(statistics.fmean(latencies), 2) if latencies else None,
+        "wall_seconds": round(wall, 2),
+        "verdict": ("无限流" if codes and not codes.count(429) and not errors else
+                    f"{codes.count(429)} 次 429" if codes else "全部失败"),
+    }
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="探测网关：flex / batches / 缓存 / 限流")
+    ap = argparse.ArgumentParser(description="探测网关：flex / batches / 缓存 / 限流 / 并发")
     ap.add_argument("--burst", type=int, default=0, help="连发 N 次探限流（会花 N 次的钱）")
+    ap.add_argument("--concurrency", type=int, default=0, help="N 线程同时各发一次探并发上限（会花 N 次的钱）")
     args = ap.parse_args(argv)
 
     cfg = config.load()
@@ -145,9 +202,14 @@ def main(argv=None):
         report["burst"] = {"n": args.burst, "status_codes": codes,
                            "n_429": codes.count(429), "retry_after_headers": retry_after}
 
+    # 5. 并发
+    if args.concurrency:
+        report["concurrency"] = probe_concurrency(cfg, prompt, args.concurrency)
+
     print(json.dumps(report, ensure_ascii=False, indent=1))
     print("\n把上面 JSON 抄进 docs/ai-data-integration-runbook.md §6.4；"
-          "flex 透传就在 worker/.env 里设 AI_SERVICE_TIER=flex。")
+          "flex 透传就在 worker/.env 里设 AI_SERVICE_TIER=flex；"
+          "concurrency 无 429 就把 AI_CONCURRENCY 设到那个 N。")
     return 0
 
 
