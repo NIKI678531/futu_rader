@@ -18,6 +18,17 @@
   `etaSeconds`＝待办（pending＋claimed，两段合计）÷ 速率；速率为 `null` 就也是 `null`。
 - `events`：最近 200 条按 id 升序（`radar_db.events.recent`）；`latestEventId` 给增量拉取当游标。
 
+## 「近 5 分钟」的参考点不读系统时钟
+
+backend 没有 `worker/clock.py` 那扇门（守卫③），而且就算有也不该用：compose 里 worker 跑在
+`Asia/Hong_Kong`、backend 容器是 UTC，`updated_at` 是 worker 按它的钟写的，backend 拿自己的钟
+去框「近 5 分钟」会差 8 小时，窗里永远一条都没有。所以参考点取**数据自己的钟**：评论任务最近
+一次状态变更的 `updated_at`，窗＝它往前 300 秒。worker 在跑时它与墙上的钟只差几秒；worker 停了，
+它停在最后一次变动 —— 这时若队列已空（没有 pending/claimed），「当前吞吐」这个量不存在，两个
+字段都是 `null`；若队列没空（worker 死了、任务还挂着），这里给出的是**最后一个活动窗**的速率与
+按它算的剩余时间，backend 没有钟、判不出它已经过期 —— 侧栏判「还活着吗」看 `latestEventId`
+在两次轮询之间有没有前进，不看这两个数。
+
 ## 什么时候整个 data 是 None
 
 demo provider 没有库（`_engine` 为 None）—— 信封判 `unavailable`。库在但还没跑迁移 0008
@@ -105,26 +116,37 @@ def _synthesis(conn):
 
 
 def _throughput(conn, now=None):
-    from sqlalchemy import func, select
+    """`now` 只给测试冻结参考点用；不给就取评论任务最近一次变动的 `updated_at`（见模块文档）。"""
+    from sqlalchemy import DateTime, func, select
 
     from radar_db.schema import annotation_jobs
 
-    now = now or datetime.now()
-    since = now - timedelta(seconds=THROUGHPUT_WINDOW_SECONDS)
+    is_comment = annotation_jobs.c.task == "comment_product"
+    unavailable = {"itemsPerSec5m": None, "etaSeconds": None}
+    pending = conn.execute(
+        select(func.count()).select_from(annotation_jobs).where(
+            is_comment, annotation_jobs.c.status.in_(("pending", "claimed")),
+        )
+    ).scalar_one()
+    if not pending:
+        return unavailable
+    ref = now or conn.execute(
+        select(func.max(annotation_jobs.c.updated_at, type_=DateTime)).where(is_comment)
+    ).scalar()
+    if isinstance(ref, str):  # SQLite 的 max() 可能把 DateTime 当文本吐回来
+        ref = datetime.fromisoformat(ref)
+    if ref is None:
+        return unavailable
+    since = ref - timedelta(seconds=THROUGHPUT_WINDOW_SECONDS)
     done = conn.execute(
         select(func.count()).select_from(annotation_jobs).where(
-            annotation_jobs.c.task == "comment_product", annotation_jobs.c.status == "done",
-            annotation_jobs.c.updated_at >= since,
+            is_comment, annotation_jobs.c.status == "done",
+            annotation_jobs.c.updated_at > since, annotation_jobs.c.updated_at <= ref,
         )
     ).scalar_one()
     if not done:
-        return {"itemsPerSec5m": None, "etaSeconds": None}
+        return unavailable
     rate = done / THROUGHPUT_WINDOW_SECONDS
-    pending = conn.execute(
-        select(func.count()).select_from(annotation_jobs).where(
-            annotation_jobs.c.task == "comment_product", annotation_jobs.c.status.in_(("pending", "claimed")),
-        )
-    ).scalar_one()
     return {"itemsPerSec5m": round(rate, 4), "etaSeconds": int(pending / rate)}
 
 
