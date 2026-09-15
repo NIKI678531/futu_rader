@@ -10,7 +10,7 @@ export default function Overview({ v }) {
             <div style={s('font:500 13px/1.4 var(--font-cjk);color:var(--ink-500);margin-bottom:8px')}>{k.label}</div>
             <div style={s('display:flex;align-items:baseline;gap:9px')}>
               <span style={s('font:600 26px/1 var(--font-mono);letter-spacing:-0.01em;color:var(--ink-900)')}>{k.value}</span>
-              <span style={s(`font:600 13px/1.4 var(--font-mono);color:${k.dfg}`)}>{k.delta}</span>
+              <span title={k.deltaTitle} style={s(`font:600 13px/1.4 var(--font-mono);color:${k.dfg}`)}>{k.delta}</span>
             </div>
             <div style={s('margin-top:7px;font:400 12px/1.5 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>{k.note}</div>
           </div>
