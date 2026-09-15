@@ -52,6 +52,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+# `core.calendar` 是 backend 的叶子模块（区间预设的唯一实现处，铁律 1）。`jobs.synthesize` 也会把
+# backend 放进 sys.path，但不能指望它先被 import —— `python -m jobs.pipeline` 单独起的时候这里是
+# 第一个碰 `core` 的地方。
+if (REPO_ROOT / "backend" / "core").is_dir() and str(REPO_ROOT / "backend") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from ai import config  # noqa: E402
 from ai.providers import build as build_provider  # noqa: E402
