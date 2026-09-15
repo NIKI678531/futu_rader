@@ -2,7 +2,7 @@
    Logic below (state → renderVals) is the design source verbatim; see OfficialActivity
    for the two standing deviations (synchronous RADAR import, `{{ }}` → JSX). */
 import React from 'react'
-import R from '../data/radar'
+import R, { prefetchScreen } from '../data/radar'
 import {
   num, conf2, descN, typeStyle, rgba, shell, dirStyle, reviewBadge, needsReview,
   CAMP, POST_TYPES, TYPE_BY_KEY, DIRECTIONS, DIR_BY_KEY,
@@ -10,9 +10,10 @@ import {
 import { kolProfile } from '../lib/profile'
 import { s, hover, focus } from '../lib/dc'
 import Shell from '../components/Shell'
+import withTransition from '../components/withTransition'
 import DcLink from '../components/DcLink'
 
-export default class KolActivity extends React.Component {
+class KolActivity extends React.Component {
   static defaultProps = {
     typeScheme: '双标签',
     lowConfidence: 0.7,
@@ -30,6 +31,8 @@ export default class KolActivity extends React.Component {
       q: '', camp: 'ALL', onlyPending: false, tTypeMenu: false,
       lq: '', lCamp: 'ALL', lType: 'ALL', lTypeMenu: false
     };
+    /* 首次 render 之前把本屏端点并行发出去（radar.js `urlsFor`），首绘不再是串行往返。 */
+    prefetchScreen('kol', { rangeKey: this.state.rangeKey });
   }
   data() { return R.kolImpact(this.state.rangeKey); }
   primaryOnly() { return this.props.campRule === '仅挂载标的'; }
@@ -114,7 +117,8 @@ export default class KolActivity extends React.Component {
     var clamp = this.props.summaryLines != null ? this.props.summaryLines : 2;
     var dual = this.props.typeScheme !== '合并单标签';
     var range = R.buildRange(s.rangeKey);
-    var out = shell('accounts', 'kol', s, function (x) { self.setState(x); });
+    /* 切区间会触发新的 kolImpact 取数；进 transition 让旧内容留着，不退回骨架（withTransition.jsx）。 */
+    var out = shell('accounts', 'kol', s, function (x) { self.props.startTransition(function () { self.setState(x); }); });
     var M = this.data();
     var etfPosts = this.postsForEtf(M);
     var sp = this.scoped(M);
@@ -970,3 +974,5 @@ export default class KolActivity extends React.Component {
     )
   }
 }
+
+export default withTransition(KolActivity)

@@ -35,14 +35,14 @@ import Topics from './Topics'
 import Competitors from './Competitors'
 import EvidenceDrawer from './EvidenceDrawer'
 
-export default class ProductMonitor extends React.Component {
+class ProductMonitor extends React.Component {
   static defaultProps = {
     candleColor: 'greenUp',
   }
 
   state = {
     code: '3033', rangeKey: 'd7', selOpen: false, q: '', pq: '', secF: 'all', newF: 'all',
-    posMore: false, negMore: false, panel: null, post: null, hover: null, loading: false,
+    posMore: false, negMore: false, panel: null, post: null, hover: null,
     legend: { comments: 1, inter: 1, active: 1, pos: 1, neg: 1, px: 1 }, kolMore: false,
     /* 热度变化与阶段观点：折线悬停桶 / 展开的阶段 / 悬停的阶段 */ heatHover: null, stageOpen: null, stageHover: null,
     /* 两块图表的绘图宽度：按面板实际宽度测量，随窗口变化重算，不再固定 1344 */ trendW: 1344
@@ -54,7 +54,20 @@ export default class ProductMonitor extends React.Component {
     if (w && Math.abs(w - this.state.trendW) >= 2) this.setState({ trendW: w });
   }
 
-  constructor(props) { super(props); this.trendRef = React.createRef(); }
+  constructor(props) {
+    super(props); this.trendRef = React.createRef();
+    /* 预取要在首次 render **之前**发出：read() 在第一个未命中处就抛了，render 走不到
+       后面的端点。深链带了别的产品／区间时连那一套也一起发 —— componentDidMount 解析完
+       深链会切过去，那时它们已经在路上。这里不校验参数（/meta 还没回来），一个无效代码
+       至多多打一次 404，读的时候 renderVals 仍按设计源退回 3033。 */
+    var st = this.state, p = {};
+    try {
+      var u = new URLSearchParams(window.location.search);
+      p.code = u.get('code') || st.code; p.rangeKey = u.get('range') || st.rangeKey;
+    } catch (e) { p = { code: st.code, rangeKey: st.rangeKey }; }
+    prefetchScreen('product', { code: st.code, rangeKey: st.rangeKey });
+    if (p.code !== st.code || p.rangeKey !== st.rangeKey) prefetchScreen('product', p);
+  }
 
   componentDidMount() {
     this._onResize = () => this.measureTrend();
@@ -92,24 +105,30 @@ export default class ProductMonitor extends React.Component {
         if (cr0.status === 'ok') p.panel = this.riskPanel(cr0, it0, c3, r3);
       }
     } catch (e) { /* 深链参数不可用时使用默认产品 */ }
-    this.setState(p, () => this.drawTrend());
+    /* 深链切到别的产品会触发新取数；进 transition 让默认产品那一屏留着变淡，而不是退回骨架。 */
+    this.props.startTransition(() => this.setState(p, () => this.drawTrend()));
   }
   componentDidUpdate() { this.drawTrend(); }
-  componentWillUnmount() { clearTimeout(this._lt); window.removeEventListener('resize', this._onResize); }
+  componentWillUnmount() { window.removeEventListener('resize', this._onResize); }
 
   go(patch) {
     var st = this.state;
-    if ((patch.code && patch.code !== st.code) || (patch.rangeKey && patch.rangeKey !== st.rangeKey)) {
-      patch = Object.assign({}, patch, { loading: true, hover: null, heatHover: null, stageOpen: null, stageHover: null });
-      clearTimeout(this._lt);
-      this._lt = setTimeout(() => this.setState({ loading: false }), 520);
-    }
-    this.setState(patch, () => {
+    var sync = () => {
       try {
         var u = '/product?code=' + this.state.code + '&range=' + this.state.rangeKey;
         window.history.replaceState(null, '', u);
       } catch (e) { /* 沙箱内可能不允许改写地址 */ }
-    });
+    };
+    if ((patch.code && patch.code !== st.code) || (patch.rangeKey && patch.rangeKey !== st.rangeKey)) {
+      patch = Object.assign({}, patch, { hover: null, heatHover: null, stageOpen: null, stageHover: null });
+      /* 会触发新取数的键走 transition（旧内容保留、isPending 驱动加载态）；输入框的值
+         紧急提交，理由见 withTransition.jsx。 */
+      var parts = split(patch, ['q', 'pq', 'selOpen']);
+      if (parts.hasUrgent) this.setState(parts.urgent);
+      this.props.startTransition(() => this.setState(parts.deferred, sync));
+      return;
+    }
+    this.setState(patch, sync);
   }
   seg(active, label, patch) {
     return {
@@ -144,7 +163,8 @@ export default class ProductMonitor extends React.Component {
     }).sort(function (a, b) { return b.mentions - a.mentions; });
   }
 
-  openPanel(p) { this.setState({ panel: p, post: p.post || null }); }
+  /* 抽屉一开就要读原文证据（evidenceFor），未命中会挂起；进 transition 让正文留着变淡。 */
+  openPanel(p) { this.props.startTransition(() => this.setState({ panel: p, post: p.post || null })); }
 
   trendGeo() { return { W: this.state.trendW || 1344, H: 340, L: 64, Rr: 136, t1: 28, h1: 152, t2: 224, h2: 104 }; }
   riskPanel(cr, item, code, rangeKey) {
@@ -634,7 +654,8 @@ export default class ProductMonitor extends React.Component {
       rangeText: range.text, rangeFrom: range.from, rangeTo: range.to,
       granLabel: range.granLabel, benchText: range.benchText, benchLabel: range.benchLabel,
       updated: stamp(R.UPDATED), rangeKey: s.rangeKey,
-      loading: s.loading, bodyOpacity: s.loading ? '0.45' : '1',
+      /* 真实的「还在等」：transition 提交前为 true（withTransition.jsx），不再是 520ms 定时器。 */
+      loading: !!self.props.isPending, bodyOpacity: self.props.isPending ? '0.45' : '1',
       code: code, name: o.name, sectorName: o.sectorName, struct: o.struct, issuer: o.issuer,
       listing: m.listingDate,
       ownLabel: o.ownership === 'own' ? '自家产品' : '竞品',
@@ -1042,3 +1063,5 @@ export default class ProductMonitor extends React.Component {
     )
   }
 }
+
+export default withTransition(ProductMonitor)
