@@ -267,6 +267,71 @@ class TestSummary:
         assert s["low"] is True
         assert "有效态度提及为 5 条，低于 10 条的判定阈值，本区间不输出整体倾向结论" in s["text"]
 
+    def test_evidence_count_is_the_size_of_the_deduplicated_id_table(self, provider):
+        p = annotated(provider)
+        assert p.summary_for(OWN_CODE, "d1")["evidenceCount"] == 0
+        add_synth(p, [{"kind": "summary", "value": {"points": [
+            {"text": "多条评论认可费率", "evidence_ids": ["c100", "c101"]},
+            {"text": "点差是主要抱怨", "evidence_ids": ["c108", "c100"]}]}}])
+        s = p.summary_for(OWN_CODE, "d1")
+        assert s["evidenceIds"] == ["c100", "c101", "c108"] and s["evidenceCount"] == 3
+        # 样本不足与空区间两支也带这个键（0），前端不用判 undefined。
+        assert annotated(make_sql_provider(), n_pos=3, n_neg=2).summary_for(OWN_CODE, "d1")["evidenceCount"] == 0
+
+
+class TestSummaryEvidence:
+    """`evidence_for(code, "<range>|sum", …)`：有总结生成物时按它引的 id 取原文，极性不参与。"""
+
+    POINTS = [{"kind": "summary", "value": {"points": [
+        {"text": "多条评论认可费率", "evidence_ids": ["c100", "c101"]},
+        {"text": "点差是主要抱怨", "evidence_ids": ["c108"]}]}}]
+
+    def test_sum_panel_returns_exactly_the_cited_comments_regardless_of_polarity(self, provider):
+        p = annotated(provider)
+        add_synth(p, self.POINTS)
+        for polarity in ("positive", "negative", "neutral"):
+            items = p.evidence_for(OWN_CODE, "d1|sum", polarity, 12)
+            # c100／c101 是积极、c108 是消极 —— 三条都在，极性没有把任何一条筛掉。
+            assert sorted(x["id"] for x in items) == [f"ev-100-{OWN_CODE}", f"ev-101-{OWN_CODE}", f"ev-108-{OWN_CODE}"]
+        assert items[0]["excerpt"].startswith("补一条评论")
+        assert len(items) == p.summary_for(OWN_CODE, "d1")["evidenceCount"], "入口上数几条，点开就是几条"
+
+    def test_n_still_clamps_the_cited_list(self, provider):
+        p = annotated(provider)
+        add_synth(p, self.POINTS)
+        assert len(p.evidence_for(OWN_CODE, "d1|sum", "positive", 2)) == 2
+
+    def test_without_a_summary_the_polarity_path_is_used(self, provider):
+        p = annotated(provider)
+        neg = p.evidence_for(OWN_CODE, "d1|sum", "negative", 12)
+        assert len(neg) == 4 and all(x["id"] != f"ev-100-{OWN_CODE}" for x in neg)
+        assert len(p.evidence_for(OWN_CODE, "d1|sum", "positive", 12)) == 8
+
+    def test_a_summary_citing_nothing_yields_an_empty_list(self, provider):
+        """写了要点、一条都没引 ⇒ `[]`，与入口上的 `evidenceCount=0` 一致；不退回极性取法
+        （那会给出一批与要点句无关的原文）。"""
+        p = annotated(provider)
+        add_synth(p, [{"kind": "summary", "value": {"points": [{"text": "费率获认可", "evidence_ids": []}]}}])
+        assert p.summary_for(OWN_CODE, "d1")["evidenceCount"] == 0
+        assert p.evidence_for(OWN_CODE, "d1|sum", "positive", 6) == []
+
+    def test_malformed_or_deleted_ids_are_skipped_not_raised(self, provider):
+        p = annotated(provider)
+        add_synth(p, [{"kind": "summary", "value": {"points": [
+            {"text": "费率获认可", "evidence_ids": ["c100", "f1", "xyz", "c99999"]}]}}])
+        items = p.evidence_for(OWN_CODE, "d1|sum", "positive", 6)
+        assert [x["id"] for x in items] == [f"ev-100-{OWN_CODE}"]
+
+    def test_other_panels_are_untouched_by_the_summary(self, provider):
+        p = annotated(provider)
+        add_synth(p, self.POINTS)
+        assert len(p.evidence_for(OWN_CODE, f"d1|{OWN_CODE}-neg-0", "negative", 12)) == 4
+
+    def test_unannotated_product_is_still_none(self, provider):
+        p = annotated(provider)
+        add_synth(p, [dict(self.POINTS[0], code=PEER_CODE)])
+        assert p.evidence_for(PEER_CODE, "d1|sum", "positive", 6) is None
+
 
 class TestStale:
     """`synth_dirty_{code}_{range}=="1"` 时七个叙述面板照常给出现行生成物，并标 `stale=True`；
