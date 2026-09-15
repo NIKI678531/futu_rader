@@ -156,21 +156,26 @@ def test_pool_returns_the_whole_active_universe(real):
     )
 
 
-def test_heat_is_unknown_exactly_when_one_of_its_inputs_is(real):
-    """讨论热度缺失 ⟺ 它的某一项输入缺失（铁律 2 的传播律）。
+def test_heat_is_a_number_and_unknown_shares_are_disclosed_not_zeroed(real):
+    """讨论热度按已知项计算并披露未知帖数（ADR-0022），不因千分之一的坏行整列变灰。
 
-    热度 ＝ 评论量 ＋ 0.3 × 点赞 ＋ 1 × 转发。真库上确实有产品的 `shares` 取不到
-    （dump 里那几行没有转发字段），这时热度必须是 `None` —— 拿 `shares=0` 硬算出来的
-    数字长得和真的一模一样，只是偏小，没人看得出来。
-    反过来也钉死：三项都在的产品**必须**有热度，不许因为「反正 None 也合法」而整列不算。
+    热度 ＝ 评论量 ＋ 0.3 × 点赞 ＋ 1 × 转发。真库上确实有帖子的 `share_count` 取不到
+    （raw_json 被截断的 0.09% 行）。原来那一帖让整只产品的热度变成 None、再传染到公司级
+    KPI；现在 `shares` / `interactions` / `discussionHeat` 是按已知项算的下限，
+    `heatUnknownPosts` 说出差了几帖。这里钉两件事：三个数在真库上**必须**都是数
+    （评论量与点赞是 dump 的列，永远有值），而且 `heatUnknownPosts` 是非负整数 ——
+    它是「下限」这句话能被核对的唯一依据。
     """
+    seen_unknown = 0
     for p in body(real, f"/api/v1/pool?range={RANGE}")["list"]:
-        inputs_known = all(p[f] is not None for f in ("comments", "likes", "shares"))
-        assert (p["discussionHeat"] is not None) == inputs_known, (
-            f"{p['code']}：热度 {p['discussionHeat']!r}，"
-            f"输入 comments/likes/shares = "
-            f"{p['comments']!r}/{p['likes']!r}/{p['shares']!r}"
+        for f in ("comments", "likes", "shares", "interactions", "discussionHeat"):
+            assert isinstance(p[f], (int, float)), f"{p['code']}：{f} = {p[f]!r}，应为数"
+        assert isinstance(p["heatUnknownPosts"], int) and p["heatUnknownPosts"] >= 0, (
+            f"{p['code']}：heatUnknownPosts = {p['heatUnknownPosts']!r}"
         )
+        seen_unknown += p["heatUnknownPosts"]
+        assert p["interactions"] == p["likes"] + p["shares"], f"{p['code']}：互动数不是点赞 ＋ 已知转发"
+    # 不断言 seen_unknown > 0：坏行落不落在这个窗口是数据的事，不是代码的事。
 
 
 def test_ranks_cover_the_whole_market(real):

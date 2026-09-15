@@ -140,41 +140,57 @@ class TestPool:
         assert pool["own"]["neg"] is None and pool["own"]["pos"] is None
 
 
-class TestUnknownSharesPropagate:
-    """转发数未知会一路传染到公司级 KPI —— 这是当前设计的**已知后果**，不是 bug。
+class TestUnknownSharesAreDisclosedAsLowerBound:
+    """转发数未知的帖子让热度成为**下限**并披露帖数，不再让整只产品的热度变成未知（ADR-0022）。
 
-    源库 raw_json 被 TEXT 列截断的行拿不到 `share_count`。热度公式里有转发项，所以那只
-    产品的热度是未知；`own.heat` 是所有自家产品热度之和，于是整张板块总览的标题卡片显示
-    「数据暂不可用」—— 哪怕 61 只里只有 1 只缺数。
+    源库 raw_json 被 TEXT 列截断的行拿不到 `share_count`（0.09%）。原来的规则是任一帖
+    未知 ⇒ 该产品整个窗口的转发／互动／热度全 None，`own.heat` 再把它传染到公司级 KPI：
+    合成库上 d30 有 99/120 只产品热度为 None、评论量前十名全灰。
 
-    传染是对的（把未知当 0 会让热度静默偏低且无人知晓），但代价集中在一个很显眼的位置。
-    真库里 d7 窗口 31,054 篇有 9 篇如此，影响 4 只产品。要改口径就改这里的断言。
+    新口径：`shares` / `interactions` / `discussionHeat` 按已知项算，`heatUnknownPosts`
+    说出差了几帖。前者是下限，后者让它是一句能核对的话而不是一个没标注的近似值。
+    `heatUnknownPosts == 0` 时三个数就是完整的数 —— 分辨两种情形靠这个键，不靠猜。
     """
 
-    def test_the_product_with_the_broken_row_goes_unknown(self, provider):
+    def test_the_product_with_the_broken_row_gets_a_lower_bound_and_the_count(self, provider):
         item = next(x for x in provider.pool("d1")["list"] if x["code"] == OWN_CODE)
-        assert item["shares"] is None
-        assert item["discussionHeat"] is None
-        assert item["interactions"] is None
-        # 但同一只产品的评论量、点赞、活跃账号都还是好的 —— 只污染依赖转发的那几项
+        # f1 转发 2、f2 未知 ⇒ 已知和 2、未知 1 帖；互动 = 13 + 2；热度 = 5 + 0.3×13 + 2 = 10.9 → 11
+        assert item["shares"] == 2
+        assert item["heatUnknownPosts"] == 1
+        assert item["interactions"] == 15
+        assert item["discussionHeat"] == 11
         assert item["comments"] == 5
+        # 桶级同样：09 点桶含 f1 与 f2，其余桶没有未知
+        assert item["buckets"][9]["heatUnknownPosts"] == 1
+        assert item["buckets"][9]["shares"] == 2
+        assert all(b["heatUnknownPosts"] == 0 for i, b in enumerate(item["buckets"]) if i != 9)
 
-    def test_the_company_wide_headline_goes_unknown_with_it(self, provider):
+    def test_products_without_broken_rows_report_zero_unknown(self, provider):
+        peer = next(x for x in provider.pool("d1")["list"] if x["code"] == PEER_CODE)
+        assert peer["heatUnknownPosts"] == 0
+        assert peer["discussionHeat"] == 14
+
+    def test_the_company_wide_headline_is_a_lower_bound_with_its_own_count(self, provider):
         own = provider.pool("d1")["own"]
-        assert own["heat"] is None
-        assert own["dHeat"]["text"] == "数据暂不可用"
-        assert own["dHeat"]["abs"] is None and own["dHeat"]["pct"] is None
+        # 3033 的 11 ＋ 其余自家产品 0；未知帖数合计 1。基准期 f4：10 + 0.3×100 + 1 = 41。
+        assert own["heat"] == 11
+        assert own["heatUnknownPosts"] == 1
+        assert own["dHeat"]["text"] == "-30（-73.2%）"
         assert own["count"] == sum(1 for p in MASTER["products"] if p["ownership"] == "own")
 
-    def test_without_the_broken_row_everything_is_a_number(self):
-        """同一批数据，只把那一行的转发数补上 —— 对照组。"""
+    def test_without_the_broken_row_the_numbers_are_the_same_and_the_count_is_zero(self):
+        """同一批数据，只把那一行的转发数补成 0 —— 对照组。
+
+        热度一样是 11：下限口径算的就是已知项。差别只在 `heatUnknownPosts`（0 vs 1），
+        这正是这个键存在的理由：没有它，两种情形在页面上无法区分。
+        """
         p = make_sql_provider(broken_share=False)
         item = next(x for x in p.pool("d1")["list"] if x["code"] == OWN_CODE)
-        # 评论 5 + 0.3×13 + 转发 2 = 10.9 → 11
         assert item["discussionHeat"] == 11
         assert item["shares"] == 2
-        # 其余自家产品热度都是 0（真的没人发），所以公司级合计就是这 11
+        assert item["heatUnknownPosts"] == 0
         assert p.pool("d1")["own"]["heat"] == 11
+        assert p.pool("d1")["own"]["heatUnknownPosts"] == 0
 
 
 class TestRanks:
@@ -202,9 +218,17 @@ class TestBenchmark:
         assert b["comments"]["dir"] == -1
         assert b["base"]["comments"] == 10
 
-    def test_unknown_current_value_makes_the_delta_unavailable(self, provider):
-        """当前热度未知 ⇒ 环比不是 0%，是「数据暂不可用」。"""
-        assert provider.benchmark(OWN_CODE, "d1")["heat"]["text"] == "数据暂不可用"
+    def test_heat_delta_compares_lower_bounds_and_discloses_both_sides(self, provider):
+        """当期有一帖转发未知 ⇒ 热度环比是两个下限之间的比较，两侧的未知帖数分开说（ADR-0022）。
+
+        当期 11（差 1 帖）vs 基准 41（完整）⇒ -30（-73.2%）。不是「数据暂不可用」——
+        那会把整张 KPI 卡因为千分之一的坏行抹掉；也不是不加标注的 -73.2%。
+        """
+        b = provider.benchmark(OWN_CODE, "d1")
+        assert b["heat"]["text"] == "-30（-73.2%）"
+        assert b["heatUnknownPosts"] == {"current": 1, "base": 0}
+        assert b["shares"]["text"] == "+1（+100.0%）"  # 已知和 2 vs 1
+        assert b["base"]["heatUnknownPosts"] == 0
 
     def test_attitude_deltas_are_unavailable_not_flat(self, provider):
         b = provider.benchmark(OWN_CODE, "d1")
@@ -249,8 +273,10 @@ class TestSeries:
         assert nine["tip"] == "08-25 09:00–10:00"
         assert nine["mentions"] == 2
         assert nine["comments"] == 5
-        assert nine["heat"] is None  # f2 转发未知
+        assert nine["heat"] == 11  # f2 转发未知 ⇒ 下限，未知帖数随桶下发（ADR-0022）
+        assert nine["heatUnknownPosts"] == 1
         assert s[0]["heat"] == 0 and s[0]["mentions"] == 0
+        assert s[0]["heatUnknownPosts"] == 0
         assert all(x["positive"] is None for x in s)
 
     def test_daily_has_real_counts_and_no_prices(self, provider):
@@ -302,8 +328,16 @@ class TestOfficialPosts:
     def test_annotation_block_is_none_not_a_default_verdict(self, provider):
         """`postType: "other", confidence: 0` 会让界面显示一个我们没做出的分类。"""
         p = provider.official_posts("d1")[0]
-        for k in ("postType", "typeLabel", "confidence", "direction", "summary", "fullText"):
+        for k in ("postType", "typeLabel", "confidence", "direction", "summary",
+                  "evidenceIdx", "typeEvidence", "reviewState"):
             assert p[k] is None, k
+
+    def test_full_text_is_a_fact_and_does_not_wait_for_annotation(self, provider):
+        """原文在库里就给原文。它曾经和 AI 标注块绑在一起，没标注的帖子「查看原文」
+        显示「暂不可用」—— 而原文明明就在 `feeds.content` 里。"""
+        p = provider.official_posts("d1")[0]
+        assert p["postType"] is None  # 确认这条确实没标注
+        assert p["fullText"] == ["这只 ETF 我今天加了一手。", "费率比同类低，打算长期拿着。"]
 
     def test_etf_mentions_use_the_account_domain_caliber(self, provider):
         """账号域「提及 ETF」按出现次数累加 —— 和市场域的评论去重口径语义相反。"""
@@ -557,7 +591,8 @@ class TestAiAndPriceSurfacesAreNone:
         榜单每一行都要一个状态可渲染（PRD §4.1 S8）。"""
         hs = provider.hot_summaries("d1")
         assert set(hs) == {p["code"] for p in provider._products}
-        assert all(v == {"status": "unavailable", "text": "数据暂不可用", "sample": None, "ok": False}
+        assert all(v == {"status": "unavailable", "text": "数据暂不可用", "sample": None, "ok": False,
+                         "stale": False}
                    for v in hs.values())
 
     @pytest.mark.parametrize(
@@ -741,8 +776,11 @@ class TestPostAnnotations:
         p = add_annotations(provider, self.TRIPLE)
         kol_post = p.kol_impact("d1")["posts"][0]
         assert kol_post["url"].endswith("/2"), "标的是 f1，这里查的是 f2"
-        for k in ("postType", "typeLabel", "summary", "direction", "fullText", "reviewState"):
+        for k in ("postType", "typeLabel", "summary", "direction", "reviewState",
+                  "evidenceIdx", "typeEvidence"):
             assert kol_post[k] is None, k
+        # 原文不属于标注块：没标注也照给。
+        assert kol_post["fullText"] == ["这只 ETF 我今天加了一手。", "费率比同类低，打算长期拿着。"]
 
     def test_the_kol_post_reads_the_same_way(self, provider):
         """同一条读路径喂两个页面（`_post_ai`）。f2 是 KOL 那篇。"""
@@ -1047,3 +1085,172 @@ def test_demo_provider_also_answers_refresh():
     from providers.demo import DemoProvider
 
     assert DemoProvider().refresh() is False
+
+
+# ── 扫描只算一次：缓存键、锁、预热 ─────────────────────────────────────
+
+
+def _count_scans(provider, monkeypatch):
+    """把 `_scan_uncached` 包一层计数器，返回计数列表（元素是被算过的缓存键）。"""
+    real = provider._scan_uncached
+    calls = []
+
+    def counted(rng):
+        calls.append((rng["from"], rng["to"], rng["gran"]))
+        return real(rng)
+
+    monkeypatch.setattr(provider, "_scan_uncached", counted)
+    return calls
+
+
+class TestOneScanPerWindow:
+    """`pool()` / `ranks()` / `benchmark()` / `hot_summaries()` / `competitors_for()` 对同一个
+    窗口只扫一次。
+
+    原来缓存键带 `rng["key"]`，而 `ranks()` 与 `pool()` 的基准期传 `rng=None`：d7 的当前期
+    被扫两遍（带桶／不带桶）、基准期也两遍，合成库 d30 冷加载 pool+ranks+benchmark 近 10 秒，
+    其中四分之三是重扫。键改成 `(from, to, gran)` 且永远带桶之后，只剩当前期与基准期各一次。
+    """
+
+    def test_the_five_callers_share_two_scans(self, provider, monkeypatch):
+        calls = _count_scans(provider, monkeypatch)
+        provider.pool("d1")
+        provider.ranks("d1")
+        provider.benchmark(OWN_CODE, "d1")
+        provider.hot_summaries("d1")
+        provider.heat_series_for(OWN_CODE, "d1")
+        rng = provider.build_range("d1")
+        assert calls == [
+            (rng["from"], rng["to"], "hour"),
+            (rng["benchFrom"], rng["benchTo"], "hour"),
+        ], "当前期一次、基准期一次，再多一次就是键没对上"
+
+    def test_the_baseline_scan_has_as_many_buckets_as_the_current_one(self, provider):
+        """`benchmark().base.buckets` 与 `pool()` 的基准期是同一份扫描，桶数与当前期相同。"""
+        b = provider.benchmark(OWN_CODE, "d1")
+        assert len(b["base"]["buckets"]) == len(provider.build_range("d1")["buckets"]) == 24
+        base_scan = provider._scan(provider._baseline_range(provider.build_range("d1")))
+        assert base_scan[OWN_CODE]["comments"] == provider.pool("d1")["baseComments"][OWN_CODE] == 10
+
+    def test_month_to_date_baseline_has_matching_buckets_too(self, provider):
+        """`mtd` 的天数随锚点变，基准期用 `days_override` 切一样多的桶。"""
+        rng = provider.build_range("mtd")
+        base = provider._baseline_range(rng)
+        assert len(base["buckets"]) == len(rng["buckets"])
+        assert (base["from"], base["to"]) == (rng["benchFrom"], rng["benchTo"])
+        assert base["gran"] == rng["gran"]
+
+    def test_the_attitude_query_is_shared_between_scan_and_evidence(self, provider, monkeypatch):
+        """`_scan`、`evidence_for` 要的是同一份窗口态度结论；扫过之后开证据侧栏不再查库。"""
+        add_annotations(provider, [{"annotation_id": 1, "target_id": 11, "value": "negative"}])
+        real = provider._current_annotations
+        kinds = []
+
+        def counted(kind, target_type, ids=None, window=None):
+            kinds.append(kind)
+            return real(kind, target_type, ids=ids, window=window)
+
+        monkeypatch.setattr(provider, "_current_annotations", counted)
+        provider.pool("d1")
+        n = kinds.count("attitude")
+        provider.evidence_for(OWN_CODE, "d1|sum", "negative", 5)
+        provider.evidence_for(OWN_CODE, "d1|sum", "positive", 5)
+        assert kinds.count("attitude") == n, "证据侧栏复用扫描时取的那份，不再重查"
+
+
+class TestScanLock:
+    """同一窗口的并发调用者只算一次；算的途中缓存被清，结果只用不存。"""
+
+    def test_concurrent_callers_wait_for_the_first_instead_of_recomputing(self, provider, monkeypatch):
+        import threading
+        import time as _time
+
+        calls = []
+        started = threading.Event()
+
+        def slow(rng):
+            calls.append(1)
+            started.set()
+            _time.sleep(0.2)
+            return {"marker": True}
+
+        # 不碰库：内存 SQLite 的连接是线程私有的，另一个线程看到的是空库。这里测的是锁。
+        monkeypatch.setattr(provider, "_scan_uncached", slow)
+        rng = provider.build_range("d1")
+        results = []
+        t1 = threading.Thread(target=lambda: results.append(provider._scan(rng)))
+        t1.start()
+        started.wait(1)
+        t2 = threading.Thread(target=lambda: results.append(provider._scan(rng)))
+        t2.start()
+        t1.join(2)
+        t2.join(2)
+        assert len(calls) == 1, "第二个调用者该等第一个算完，而不是再算一遍"
+        assert results == [{"marker": True}, {"marker": True}]
+
+    def test_a_refresh_during_the_scan_keeps_the_result_out_of_the_cache(self, provider, monkeypatch):
+        rng = provider.build_range("d1")
+
+        def racy(_rng):
+            provider._invalidate()  # 模拟算到一半时 refresh() 发现库变了
+            return {"marker": True}
+
+        monkeypatch.setattr(provider, "_scan_uncached", racy)
+        assert provider._scan(rng) == {"marker": True}, "结果照常返回给这一次请求"
+        assert (rng["from"], rng["to"], rng["gran"]) not in provider._cache, (
+            "但不能存：它读的可能是半新半旧的库，存下去就是把一次过渡态钉成事实"
+        )
+
+
+class TestPrewarm:
+    """缓存被清空后后台把六个区间的 `pool()` 热回来；`RADAR_PREWARM=0` 关闭。"""
+
+    def test_off_by_default_in_tests_and_when_the_env_says_so(self, monkeypatch):
+        monkeypatch.setenv("RADAR_PREWARM", "0")
+        p = make_sql_provider()
+        assert p._prewarm_thread is None
+
+    def test_warms_every_preset_range_in_order(self, provider, monkeypatch):
+        from core.ranges import VALID_KEYS
+
+        monkeypatch.setenv("RADAR_PREWARM", "1")
+        warmed = []
+        monkeypatch.setattr(provider, "pool", lambda key: warmed.append(key))
+        provider._start_prewarm()
+        provider._prewarm_thread.join(5)
+        assert warmed == list(VALID_KEYS)
+
+    def test_refresh_that_drops_the_cache_starts_a_new_round(self, provider, monkeypatch):
+        monkeypatch.setenv("RADAR_PREWARM", "1")
+        warmed = []
+        monkeypatch.setattr(provider, "pool", lambda key: warmed.append(key))
+        with provider._engine.begin() as conn:
+            conn.execute(insert(meta_kv), [{"k": "etl_generation", "v": "feeds=9"}])
+        assert provider.refresh() is True
+        provider._prewarm_thread.join(5)
+        assert warmed, "缓存清了就该有人把它热回来"
+
+    def test_a_progress_only_refresh_does_not_prewarm(self, provider, monkeypatch):
+        """进度键单独变化不清缓存（test_meta 已钉），自然也不预热 —— 预热是清缓存的代价。"""
+        monkeypatch.setenv("RADAR_PREWARM", "1")
+        monkeypatch.setattr(provider, "pool", lambda key: pytest.fail("不该预热"))
+        with provider._engine.begin() as conn:
+            conn.execute(insert(meta_kv), [{"k": "own_analysis_progress", "v": '{"status":"running"}'}])
+        assert provider.refresh() is False
+        assert provider._prewarm_thread is None
+
+    def test_a_stale_round_stops_when_the_generation_moves_on(self, provider, monkeypatch):
+        warmed = []
+
+        def pool(key):
+            warmed.append(key)
+            provider._invalidate()  # 第一个区间刚热完库就又变了
+
+        monkeypatch.setattr(provider, "pool", pool)
+        provider._prewarm(provider._generation)
+        assert warmed == ["d1"], "这一代的预热到此为止，新一代由 refresh() 另起"
+
+    def test_no_anchor_means_nothing_to_warm(self, monkeypatch):
+        monkeypatch.setenv("RADAR_PREWARM", "1")
+        p = make_sql_provider(anchor=None)
+        assert p._prewarm_thread is None
