@@ -71,7 +71,8 @@ def test_empty_sql_db_has_full_shape_with_nulls_not_zeros(progress_client):
 
 def test_counts_events_and_throughput(progress_provider, progress_client):
     eng = progress_provider._engine
-    recent_done = datetime.now() - timedelta(seconds=60)
+    # 参考点＝评论任务最近一次变动（10:06），窗＝(10:01, 10:06]；其余行都停在 10:00，明确在窗外。
+    recent_done = datetime(2026, 9, 1, 10, 6)
     with eng.begin() as conn:
         conn.execute(insert(annotation_jobs), [
             _job(1, "pending", "student"), _job(2, "pending", "student"), _job(3, "done", "student"),
@@ -133,6 +134,36 @@ def test_counts_events_and_throughput(progress_provider, progress_client):
     lim = progress_client.get("/api/v1/progress/events?limit=1").get_json()["data"]
     assert len(lim["events"]) == 1 and lim["events"][0]["id"] == ids[-1]
     assert len(progress_client.get("/api/v1/progress/events?limit=abc").get_json()["data"]["events"]) == 4
+
+
+def test_throughput_reference_is_last_queue_change_not_wall_clock(progress_provider, progress_client):
+    """参考点是数据自己的钟：done 都在 10:00，之后 10:10 有一条 pending 被重排 ⇒ 窗 (10:05, 10:10] 空 ⇒ null。
+    再来一条 10:07 的 done 落进窗 ⇒ 1/300。两种情形都与今天几点无关。"""
+    eng = progress_provider._engine
+    t = lambda m: datetime(2026, 9, 1, 10, m)  # noqa: E731
+    with eng.begin() as conn:
+        conn.execute(insert(annotation_jobs), [
+            _job(1, "done", "llm", updated_at=t(0)), _job(2, "done", "llm", updated_at=t(0)),
+            _job(3, "pending", "llm", updated_at=t(10)),
+        ])
+    d = progress_client.get("/api/v1/progress").get_json()["data"]
+    assert d["throughput"] == {"itemsPerSec5m": None, "etaSeconds": None}
+    with eng.begin() as conn:
+        conn.execute(insert(annotation_jobs), [_job(4, "done", "llm", updated_at=t(7))])
+    d = progress_client.get("/api/v1/progress").get_json()["data"]
+    assert d["throughput"]["itemsPerSec5m"] == pytest.approx(1 / 300, abs=1e-4)
+    assert d["throughput"]["etaSeconds"] == 300
+
+
+def test_throughput_null_when_nothing_in_flight(progress_provider, progress_client):
+    """队列空了就没有「当前吞吐」这个量：不能把最后一个窗的速率当成现在的，也不能写 0。"""
+    with progress_provider._engine.begin() as conn:
+        conn.execute(insert(annotation_jobs), [
+            _job(1, "done", "llm", updated_at=datetime(2026, 9, 1, 10, 4)), _job(2, "done", "student"),
+        ])
+    d = progress_client.get("/api/v1/progress").get_json()["data"]
+    assert d["queue"]["llm"]["done"] == 1 and d["queue"]["student"]["done"] == 1
+    assert d["throughput"] == {"itemsPerSec5m": None, "etaSeconds": None}
 
 
 def test_summary_mirrors_meta_analysis_progress(progress_provider, progress_client):

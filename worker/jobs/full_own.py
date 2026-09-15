@@ -30,7 +30,7 @@ import os
 import sys
 import threading
 import time as _time
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -40,6 +40,7 @@ ROOT = Path(__file__).resolve().parents[2]
 for folder in (ROOT, ROOT / "worker", ROOT / "backend"):
     sys.path.insert(0, str(folder))
 
+import clock
 from ai import config
 from core.calendar import PRESETS, build
 from jobs import classify, extract, pipeline
@@ -255,7 +256,8 @@ def main():
             result = pipeline.run(engine, cfg, scopes[code], max_items=args.max_items, ranges=list(PRESETS))
             progress["products"][code].update(queue=queue_status(engine, scopes[code]),
                                               complete=result.get("complete", False))
-            progress["updatedAt"] = datetime.utcnow().isoformat() + "Z"
+            # 审计时间戳走 clock 那扇门（守卫③）；字段历来是 UTC 带 Z，转成 UTC 再去掉 tzinfo 保持原格式。
+            progress["updatedAt"] = clock.now().astimezone(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
             steps = {s["task"]: s for s in result["steps"]}
             luna = steps.get("comment_product", {})
             emit(engine, "orchestrator",
@@ -285,7 +287,7 @@ def main():
                     scheduler.add_job(lambda: sync(engine, FmpClient(), codes, start, anchor, force=True),
                                       "interval", hours=1, max_instances=1, coalesce=True)
                 scheduler.add_job(tick, "interval", seconds=5, max_instances=1, coalesce=True,
-                                  next_run_time=datetime.now())
+                                  next_run_time=clock.now())
                 try:
                     scheduler.start()
                 except (KeyboardInterrupt, SystemExit):
