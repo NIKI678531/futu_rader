@@ -1073,3 +1073,172 @@ def test_demo_provider_also_answers_refresh():
     from providers.demo import DemoProvider
 
     assert DemoProvider().refresh() is False
+
+
+# ── 扫描只算一次：缓存键、锁、预热 ─────────────────────────────────────
+
+
+def _count_scans(provider, monkeypatch):
+    """把 `_scan_uncached` 包一层计数器，返回计数列表（元素是被算过的缓存键）。"""
+    real = provider._scan_uncached
+    calls = []
+
+    def counted(rng):
+        calls.append((rng["from"], rng["to"], rng["gran"]))
+        return real(rng)
+
+    monkeypatch.setattr(provider, "_scan_uncached", counted)
+    return calls
+
+
+class TestOneScanPerWindow:
+    """`pool()` / `ranks()` / `benchmark()` / `hot_summaries()` / `competitors_for()` 对同一个
+    窗口只扫一次。
+
+    原来缓存键带 `rng["key"]`，而 `ranks()` 与 `pool()` 的基准期传 `rng=None`：d7 的当前期
+    被扫两遍（带桶／不带桶）、基准期也两遍，合成库 d30 冷加载 pool+ranks+benchmark 近 10 秒，
+    其中四分之三是重扫。键改成 `(from, to, gran)` 且永远带桶之后，只剩当前期与基准期各一次。
+    """
+
+    def test_the_five_callers_share_two_scans(self, provider, monkeypatch):
+        calls = _count_scans(provider, monkeypatch)
+        provider.pool("d1")
+        provider.ranks("d1")
+        provider.benchmark(OWN_CODE, "d1")
+        provider.hot_summaries("d1")
+        provider.heat_series_for(OWN_CODE, "d1")
+        rng = provider.build_range("d1")
+        assert calls == [
+            (rng["from"], rng["to"], "hour"),
+            (rng["benchFrom"], rng["benchTo"], "hour"),
+        ], "当前期一次、基准期一次，再多一次就是键没对上"
+
+    def test_the_baseline_scan_has_as_many_buckets_as_the_current_one(self, provider):
+        """`benchmark().base.buckets` 与 `pool()` 的基准期是同一份扫描，桶数与当前期相同。"""
+        b = provider.benchmark(OWN_CODE, "d1")
+        assert len(b["base"]["buckets"]) == len(provider.build_range("d1")["buckets"]) == 24
+        base_scan = provider._scan(provider._baseline_range(provider.build_range("d1")))
+        assert base_scan[OWN_CODE]["comments"] == provider.pool("d1")["baseComments"][OWN_CODE] == 10
+
+    def test_month_to_date_baseline_has_matching_buckets_too(self, provider):
+        """`mtd` 的天数随锚点变，基准期用 `days_override` 切一样多的桶。"""
+        rng = provider.build_range("mtd")
+        base = provider._baseline_range(rng)
+        assert len(base["buckets"]) == len(rng["buckets"])
+        assert (base["from"], base["to"]) == (rng["benchFrom"], rng["benchTo"])
+        assert base["gran"] == rng["gran"]
+
+    def test_the_attitude_query_is_shared_between_scan_and_evidence(self, provider, monkeypatch):
+        """`_scan`、`evidence_for` 要的是同一份窗口态度结论；扫过之后开证据侧栏不再查库。"""
+        add_annotations(provider, [{"annotation_id": 1, "target_id": 11, "value": "negative"}])
+        real = provider._current_annotations
+        kinds = []
+
+        def counted(kind, target_type, ids=None, window=None):
+            kinds.append(kind)
+            return real(kind, target_type, ids=ids, window=window)
+
+        monkeypatch.setattr(provider, "_current_annotations", counted)
+        provider.pool("d1")
+        n = kinds.count("attitude")
+        provider.evidence_for(OWN_CODE, "d1|sum", "negative", 5)
+        provider.evidence_for(OWN_CODE, "d1|sum", "positive", 5)
+        assert kinds.count("attitude") == n, "证据侧栏复用扫描时取的那份，不再重查"
+
+
+class TestScanLock:
+    """同一窗口的并发调用者只算一次；算的途中缓存被清，结果只用不存。"""
+
+    def test_concurrent_callers_wait_for_the_first_instead_of_recomputing(self, provider, monkeypatch):
+        import threading
+        import time as _time
+
+        calls = []
+        started = threading.Event()
+
+        def slow(rng):
+            calls.append(1)
+            started.set()
+            _time.sleep(0.2)
+            return {"marker": True}
+
+        # 不碰库：内存 SQLite 的连接是线程私有的，另一个线程看到的是空库。这里测的是锁。
+        monkeypatch.setattr(provider, "_scan_uncached", slow)
+        rng = provider.build_range("d1")
+        results = []
+        t1 = threading.Thread(target=lambda: results.append(provider._scan(rng)))
+        t1.start()
+        started.wait(1)
+        t2 = threading.Thread(target=lambda: results.append(provider._scan(rng)))
+        t2.start()
+        t1.join(2)
+        t2.join(2)
+        assert len(calls) == 1, "第二个调用者该等第一个算完，而不是再算一遍"
+        assert results == [{"marker": True}, {"marker": True}]
+
+    def test_a_refresh_during_the_scan_keeps_the_result_out_of_the_cache(self, provider, monkeypatch):
+        rng = provider.build_range("d1")
+
+        def racy(_rng):
+            provider._invalidate()  # 模拟算到一半时 refresh() 发现库变了
+            return {"marker": True}
+
+        monkeypatch.setattr(provider, "_scan_uncached", racy)
+        assert provider._scan(rng) == {"marker": True}, "结果照常返回给这一次请求"
+        assert (rng["from"], rng["to"], rng["gran"]) not in provider._cache, (
+            "但不能存：它读的可能是半新半旧的库，存下去就是把一次过渡态钉成事实"
+        )
+
+
+class TestPrewarm:
+    """缓存被清空后后台把六个区间的 `pool()` 热回来；`RADAR_PREWARM=0` 关闭。"""
+
+    def test_off_by_default_in_tests_and_when_the_env_says_so(self, monkeypatch):
+        monkeypatch.setenv("RADAR_PREWARM", "0")
+        p = make_sql_provider()
+        assert p._prewarm_thread is None
+
+    def test_warms_every_preset_range_in_order(self, provider, monkeypatch):
+        from core.ranges import VALID_KEYS
+
+        monkeypatch.setenv("RADAR_PREWARM", "1")
+        warmed = []
+        monkeypatch.setattr(provider, "pool", lambda key: warmed.append(key))
+        provider._start_prewarm()
+        provider._prewarm_thread.join(5)
+        assert warmed == list(VALID_KEYS)
+
+    def test_refresh_that_drops_the_cache_starts_a_new_round(self, provider, monkeypatch):
+        monkeypatch.setenv("RADAR_PREWARM", "1")
+        warmed = []
+        monkeypatch.setattr(provider, "pool", lambda key: warmed.append(key))
+        with provider._engine.begin() as conn:
+            conn.execute(insert(meta_kv), [{"k": "etl_generation", "v": "feeds=9"}])
+        assert provider.refresh() is True
+        provider._prewarm_thread.join(5)
+        assert warmed, "缓存清了就该有人把它热回来"
+
+    def test_a_progress_only_refresh_does_not_prewarm(self, provider, monkeypatch):
+        """进度键单独变化不清缓存（test_meta 已钉），自然也不预热 —— 预热是清缓存的代价。"""
+        monkeypatch.setenv("RADAR_PREWARM", "1")
+        monkeypatch.setattr(provider, "pool", lambda key: pytest.fail("不该预热"))
+        with provider._engine.begin() as conn:
+            conn.execute(insert(meta_kv), [{"k": "own_analysis_progress", "v": '{"status":"running"}'}])
+        assert provider.refresh() is False
+        assert provider._prewarm_thread is None
+
+    def test_a_stale_round_stops_when_the_generation_moves_on(self, provider, monkeypatch):
+        warmed = []
+
+        def pool(key):
+            warmed.append(key)
+            provider._invalidate()  # 第一个区间刚热完库就又变了
+
+        monkeypatch.setattr(provider, "pool", pool)
+        provider._prewarm(provider._generation)
+        assert warmed == ["d1"], "这一代的预热到此为止，新一代由 refresh() 另起"
+
+    def test_no_anchor_means_nothing_to_warm(self, monkeypatch):
+        monkeypatch.setenv("RADAR_PREWARM", "1")
+        p = make_sql_provider(anchor=None)
+        assert p._prewarm_thread is None
