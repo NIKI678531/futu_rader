@@ -1,7 +1,7 @@
 import argparse
 import json
 import sys
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import insert, select, update
@@ -10,18 +10,12 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "worker"))
 
-import clock
 from ai import config
 from market_data.fmp import FmpClient, MarketDataError
 from radar_db import make_engine
 from radar_db.revisions import bump_revision
 from radar_db.schema import meta_kv, price_bars, price_instruments, price_syncs
 
-
-
-def _utcnow():
-    """行情事实的时间戳历来存 UTC（naive）。读钟走 clock 那扇门（守卫③），再转成 UTC 保持列语义不变。"""
-    return clock.now().astimezone(timezone.utc).replace(tzinfo=None)
 
 def upsert(conn, table, row):
     match = [column == row[column.name] for column in table.primary_key.columns]
@@ -36,7 +30,7 @@ def sync(engine, client, codes, start, end, intraday_start=None, force=False):
             instrument = client.instrument(code)
             with engine.begin() as conn:
                 upsert(conn, price_instruments, {"code": code, "provider": "fmp", **instrument,
-                                               "verified_at": _utcnow()})
+                                               "verified_at": datetime.utcnow()})
         except MarketDataError as error:
             instrument = None
             identity_error = error.reason
@@ -62,16 +56,16 @@ def sync(engine, client, codes, start, end, intraday_start=None, force=False):
                         for bar in bars:
                             upsert(conn, price_bars, {
                                 "code": code, "provider": "fmp", "interval": interval,
-                                "adjustment": "split_adjusted", **bar, "fetched_at": _utcnow(),
+                                "adjustment": "split_adjusted", **bar, "fetched_at": datetime.utcnow(),
                             })
                         upsert(conn, price_syncs, {**key, "status": status, "reason": reason,
-                                                  "row_count": len(bars), "updated_at": _utcnow()})
+                                                  "row_count": len(bars), "updated_at": datetime.utcnow()})
                         bump_revision(conn, "price")
                 except MarketDataError as error:
                     bars, status, reason = [], "unavailable", error.reason
                     with engine.begin() as conn:
                         upsert(conn, price_syncs, {**key, "status": status, "reason": reason,
-                                                  "row_count": 0, "updated_at": _utcnow()})
+                                                  "row_count": 0, "updated_at": datetime.utcnow()})
                         bump_revision(conn, "price")
                 result.append({**key, "status": status, "reason": reason, "rows": len(bars)})
                 cursor = last + timedelta(days=1)
@@ -85,7 +79,6 @@ def main():
     parser.add_argument("--from", dest="start")
     parser.add_argument("--to", dest="end")
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--all", action="store_true", help="120 只全池（自家 61 ＋ 同业 59）；默认只同步自家")
     args = parser.parse_args()
     engine = make_engine()
     with engine.connect() as conn:
@@ -93,15 +86,10 @@ def main():
     end = date.fromisoformat(args.end) if args.end else anchor
     start = date.fromisoformat(args.start) if args.start else end - timedelta(days=59)
     master = json.loads((ROOT / "backend/fixtures/demo/master.json").read_text(encoding="utf-8"))
-    pool = [product["code"] for product in master["products"]]
     own = [product["code"] for product in master["products"] if product["ownership"] == "own"]
-    if args.codes:
-        codes = args.codes.split(",")
-    else:
-        codes = pool if args.all else own
-    # 同业产品的 K 线是产品监控页同一块面板，`--codes` 可以点名任何池内产品；池外代码仍然拒绝。
-    if not set(codes) <= set(pool):
-        parser.error("Only products in the configured pool (120) are supported")
+    codes = args.codes.split(",") if args.codes else own
+    if not set(codes) <= set(own):
+        parser.error("Only configured own products are supported")
     output = sync(engine, FmpClient(), codes, start, end, force=args.force)
     print(json.dumps({"products": len(codes), "ok": sum(row["status"] in ("ok", "reused") for row in output),
                       "unavailable": sum(row["status"] == "unavailable" for row in output)}))

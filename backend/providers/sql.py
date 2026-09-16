@@ -14,13 +14,12 @@
 
 | 类别 | 例子 | 现状 |
 |---|---|---|
-| 计数 | 提及数、评论量、点赞、转发、互动、热度、活跃账号、排名、环比 | **真实**。转发数未知的帖子让转发／互动／热度成为**下限**并披露 `heatUnknownPosts`（ADR-0022），不再整窗 None |
+| 计数 | 提及数、评论量、点赞、转发、互动、热度、活跃账号、排名、环比 | **真实** |
 | 主数据 | 产品池、官号名单、KOL 名单 | 真实（客户维护，见下） |
 | 日历 | 区间、时间桶、基准区间 | 真实（`core/calendar.py`，锚点来自 `meta_kv`） |
-| 内容 | 帖子标题正文与分句（`fullText`）、评论正文、作者、链接 | **真实**，对每一篇都给，不随标注块 |
-| Layer A 逐条标注 | 帖子类型／摘要／操作方向、评论相关性／态度／aspect／市场方向、合规命中、证据引文 | **随标注走**：库里有现行结论就是真值，没有就是 None |
-| Layer A 派生的数 | 态度三计数、主题与负面类别的条数、话题条数、KOL 提及、阶段时段、`negMentions`／`alerts`／`own.neg` | **随标注走**：数在 `core/`（themes／topics／stages）里从判定单元算出，没标过整块 None |
-| Layer B 生成物 | 热议总结、舆情总结要点、主题名、负面类别名、话题名、阶段观点、竞品原因 | **随生成物走**：有就给并带 `reviewState`／`evidenceIds`；底层标注变了还没重汇总时照给并标 `stale=True` |
+| 内容 | 帖子标题正文、评论正文、作者、链接 | **真实** |
+| AI 标注（有写入方） | 帖子类型／摘要／操作方向、评论态度、合规命中、证据引文 | **随标注走**：库里有现行结论就是真值，没有就是 None |
+| AI 标注（无写入方） | 主题聚类、负面类别、热议话题、KOL 提及、阶段观点 | **None**（对应的 kind 还没有任何任务在写） |
 | 行情 | K 线、日线价格 | **None**（dump 里没有本产品池的价格序列） |
 
 None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲染「暂不可用」。
@@ -37,13 +36,11 @@ None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲�
 （`needs_review` ⇒ 「AI 生成 · 待确认」，见 `frontend/src/lib/view.js`）。`rejected`
 是仅剩的下线通道（`worker/jobs/review.py --reject`）。
 
-页面因此必须如实声明这些结论验证到了什么程度：`/meta` 的 `aiValidation` 读
-`meta_kv.ai_validation`（抽检脚本写的一份 JSON，`core/meta.py`），没有记录就是 `none`；
-板块总览与产品监控各有一句相应的文案。
+页面因此必须如实声明这些结论没有经过人工验证：`/meta` 的 `aiValidation` 恒为 `none`
+（`core/meta.py`），板块总览与产品监控各有一句相应的文案。
 
 口径公式一个都不在这里实现：热度在 `core/heat.py`，环比在 `core/delta.py`，区间与桶在
-`core/calendar.py`，主题／负面类别／话题／阶段的分桶在 `core/themes.py` 等。这里只负责
-把行数出来、把判定单元喂进去（铁律 1）。
+`core/calendar.py`。这里只负责把行数出来（铁律 1）。
 
 ## 三条实测出来的、影响读数的事
 
@@ -54,40 +51,18 @@ None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲�
 2. **评论量用帖子级 `comment_count`，态度用解析出的评论表**（ADR-0011）。近 30 天实测
    两者差 11%（平台计数 109,870 / 解析到 97,730 ＝ 89.0% 覆盖），被上游截断的热帖占
    1.9%。这个差是**可陈述的**，不是隐藏的近似。
-3. **`share_count` 只在 raw_json 坏掉的行上是未知**（真库 0.03%，合成库按 0.09% 造），
-   `like_count` 与 `comment_count` 是 dump 的列，永远有值。原来的规则是任一帖未知 ⇒
-   该产品整个窗口的转发／互动／热度 None，再经 `_add_all` 传染到 `own.heat`：合成库上 d30 有
-   99/120 只产品热度 None、评论量前十名全灰 —— 头部产品帖子多，撞上坏行的概率最大，
-   于是最该有读数的地方最先灰掉。ADR-0022 改为**按已知项算、披露未知帖数**：
-   `shares`／`interactions`／`discussionHeat` 在 `heatUnknownPosts > 0` 时是下限，前端据此
-   标注；0 才是「没有未知」。`_blank` / `_bump` / `_finish` 三个累加器是这条口径的落点。
+3. **`share_count` 只在 raw_json 坏掉的 0.03% 行上是未知**，那些行让所在桶的转发数与
+   热度变成 None。`like_count` 与 `comment_count` 是 dump 的列，永远有值。
 
 ## 缓存
 
-锚点冻结、底库只读且静态（写入方一动就改 `meta_kv`，`refresh()` 据此整份失效），所以按
-窗口整份算一次就缓存住（和演示 provider 把 fixture 读进内存是同一个道理）。
-
-- `_scan` 的键是 `(from, to, gran)`，永远带桶：`pool()`／`ranks()`／`benchmark()`／
-  `hot_summaries()`／`competitors_for()` 对同一窗口只扫一次，当前期与基准期各一次。
-  每个键一把锁，请求线程与预热线程要同一窗口时第二个等第一个，不各算一遍。
-- 缓存被清空后（含首次构造）起一个守护线程按 `core.ranges.VALID_KEYS` 预热 `pool()`
-  （`RADAR_PREWARM=0` 关闭）。丢缓存的那一刻正是页面最可能在看的时候。
-- 窗口级的态度结论（`_window_attitude`）、按评论归组的索引（`_attitude_by_comment`）、
-  全池消极单元（`_neg_units_by_code`）与负面汇总（`_neg_rollup`）各缓存一份，`_scan`、
-  `evidence_for`、`pool()` 共用，不再各查一遍整窗。
-
-真实规模合成库（37.8 万帖／19 万评论／90 万提及／36 万标注）上：d7 冷 `pool` 约 1.9 s、
-d30 约 8 s（扫描 4.6 s ＋ 合规 1.1 s ＋ 负面汇总 2.3 s），缓存后毫秒级。扫描的耗时几乎全在
-SQLite 取行本身（30 万行的 join），Python 侧的累加只占零头 —— 再快要靠 SQL 侧聚合，
-但那要写两份方言，不在这一轮。
+锚点冻结、底库只读且静态，所以按区间整份算一次就缓存住（和演示 provider 把 fixture
+读进内存是同一个道理）。d30 一次全池扫描约 27 万行 × 0.4 秒，缓存后为 0。
 """
 
 import json
-import logging
-import os
 import re
 import sys
-import threading
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -126,8 +101,6 @@ from radar_db.schema import (  # noqa: E402
 # worker/jobs/import_dump.py 用的是同一个文件（导入按它过滤），换成正式名单时两处一起换。
 MASTER = BACKEND_ROOT / "fixtures" / "demo" / "master.json"
 
-log = logging.getLogger(__name__)
-
 
 class SqlProvider:
     name = "sql"
@@ -148,14 +121,6 @@ class SqlProvider:
         self._meta = self._read_meta()
         self._anchor = parse_anchor(self._meta.get("anchor"))
         self._cache = {}
-        # `_generation` 每清一次缓存加一：正在算的扫描与预热线程据此判断自己的结果还
-        # 算不算数（见 `_scan` / `_prewarm`）。`_scan_locks` 按缓存键各一把锁，让同一
-        # 窗口的第二个调用者等第一个算完，而不是再算一遍。
-        self._generation = 0
-        self._locks_guard = threading.Lock()
-        self._scan_locks = {}
-        self._prewarm_thread = None
-        self._start_prewarm()
 
     # ── 底层：库 ──────────────────────────────────────────────────────
 
@@ -184,10 +149,6 @@ class SqlProvider:
         判据是整份 `meta_kv` 相等，不是某一个键：导入会整表重写，ETL 改 generation，
         两条路径都落在这一个比较里。相等就一行不动 —— 缓存是这个 provider
         唯一的性能来源（一次全池扫描按秒计），不能因为一次探测就白白丢掉。
-
-        缓存被清空之后立刻起一个守护线程把六个区间的 `pool()` 预热回来（`_prewarm`）：
-        丢缓存的那一刻正是页面最可能在看的时候（worker 刚写完一批标注），不预热的话
-        下一个打开 d30 的人要等好几秒。
         """
         meta = self._read_meta()
         if meta == self._meta:
@@ -197,41 +158,8 @@ class SqlProvider:
         self._meta = meta
         self._anchor = parse_anchor(meta.get("anchor"))
         if data_changed:
-            self._invalidate()
-            self._start_prewarm()
-        return data_changed
-
-    def _invalidate(self):
-        """清缓存并换代。正在算的扫描看到代数变了就不把结果写回来（它读的可能是半新半旧的库）。"""
-        with self._locks_guard:
-            self._generation += 1
             self._cache.clear()
-            self._scan_locks.clear()
-
-    def _start_prewarm(self):
-        """后台预热六个区间的 `pool()`。`RADAR_PREWARM=0` 关闭（测试里默认关：内存库
-        的连接是线程私有的，另起一个线程看到的是一个空库）。没锚点就不起：`pool()` 会
-        直接返回 None，没有什么可热的。"""
-        if os.getenv("RADAR_PREWARM", "1").strip() == "0" or self._anchor is None:
-            return
-        t = threading.Thread(
-            target=self._prewarm, args=(self._generation,), name="radar-prewarm", daemon=True,
-        )
-        self._prewarm_thread = t
-        t.start()
-
-    def _prewarm(self, generation):
-        # `core.ranges` import `providers`，模块顶层 import 会绕成环；到这里时两边都已加载完。
-        from core.ranges import VALID_KEYS
-
-        for key in VALID_KEYS:
-            if self._generation != generation:
-                return  # 库又变了：新一代的预热线程已经起了，这一代到此为止。
-            try:
-                self.pool(key)
-            except Exception:  # noqa: BLE001 —— 预热失败只记日志，请求线程照常自己算。
-                log.exception("预热 pool(%s) 失败", key)
-                return
+        return data_changed
 
     @property
     def updated_at(self):
@@ -265,17 +193,6 @@ class SqlProvider:
             return None
         return build(key, self._anchor)
 
-    @staticmethod
-    def _baseline_range(rng):
-        """基准区间的完整描述：与当前区间等长、紧邻其前，切**一样多**的桶。
-
-        环比要逐桶对齐同位（PRD §3.1），所以基准期也按当前区间的天数与粒度切桶。
-        `pool()` / `benchmark()` / `competitors_for()` 都从这里取，三处才会落在
-        `_scan` 的同一个缓存键上 —— 原来 `pool()` 用不带桶的 `(benchFrom, benchTo, None)`、
-        `benchmark()` 用带桶的 `(…, range_key)`，同一个窗口被扫两遍。
-        """
-        return build(rng["key"], date.fromisoformat(rng["benchTo"]), days_override=rng["days"])
-
     # ── 市场域：计数 ─────────────────────────────────────────────────
 
     # 产品主数据里要随观测一起下发的那几个键。`ownCode`（对位自家产品）**只有竞品有**，
@@ -308,9 +225,6 @@ class SqlProvider:
                 "likes": s["likes"],
                 "shares": s["shares"],
                 "discussionHeat": s["heat"],
-                # 窗口内转发数未知的帖子数（ADR-0022）。大于零时上面三个数是下限，前端
-                # 要把它标出来；等于零是「没有未知」，不是缺失。demo 下没有这个键。
-                "heatUnknownPosts": s["heatUnknownPosts"],
                 "activeAccounts": s["active"],
                 "activeByBucket": s["activeByBucket"],
                 "attitude": _attitude_block(s["att"]),
@@ -335,8 +249,6 @@ class SqlProvider:
         3. **没有 `heat`。** 桶级热度另有专门端点（`heat-series`），契约里的观测桶
            只有五条计数序列 ＋ 三条态度。这里多发一个 `heat` 就是契约漂移：
            它会让人以为可以直接拿观测桶画热度曲线，而 demo provider 下没有这个键。
-           `heatUnknownPosts` 不在此列：它不是热度，是 `shares` / `interactions`
-           这两条序列的下限标记（ADR-0022），少了它这两个数就成了没有标注的近似值。
         """
         return [
             {
@@ -349,7 +261,6 @@ class SqlProvider:
                 "interactions": sb["interactions"],
                 "likes": sb["likes"],
                 "shares": sb["shares"],
-                "heatUnknownPosts": sb["heatUnknownPosts"],
                 "active": sb["active"],
                 # 这只产品在窗口内一条态度标注都没有时是 None（「还没标」），
                 # 标过但这一桶没命中时是 0（「数过了，这一桶没有」）。
@@ -364,8 +275,8 @@ class SqlProvider:
         rng = self.build_range(range_key)
         if rng is None:
             return None
-        cur = self._scan(rng)
-        base = self._scan(self._baseline_range(rng))
+        cur = self._scan(rng["from"], rng["to"], rng)
+        base = self._scan(rng["benchFrom"], rng["benchTo"])
 
         items, global_max = [], 1
         for p in self._products:
@@ -374,27 +285,19 @@ class SqlProvider:
             items.append(self._observation(p, s, rng))
 
         own = [o for o in items if o["ownership"] == "own"]
-        # 自家热度合计：每只的热度在转发未知时已是下限（ADR-0022），合计照常求和，
-        # 并把 61 只的未知帖数也加起来一起下发 —— 合计是下限的话，读的人要知道差几帖。
         heat = _add_all(o["discussionHeat"] for o in own)
-        heat_unknown = sum(o["heatUnknownPosts"] for o in own)
         base_heat_own = _add_all(base[o["code"]]["heat"] for o in own)
         # 自家产品的积极内容数合计（板块总览顶部第二张卡）。有一只没标过 ⇒ 合计未知
         # （`_add_all` 的 None 传染），不是把它当 0 加进去 —— 那个数看着完全正常。
         pos = _add_all(_pos_of(o) for o in own)
         base_pos = _add_all(_att(base[o["code"]], "positive") for o in own)
         risk = self._compliance_counts(rng)
-        # 负面舆情条数与「有舆情」标记从负面类别派生（`_neg_rollup`，口径在 core/themes）。
-        # 自家合计走 `_add_all`：这是「已标注子集」的计数，有一只没标过合计就是未知 ——
-        # 与热度不同，这里没有裁决过披露口径，None 照常传染（铁律 2）。
-        neg_rollup = self._neg_rollup(rng)
-        neg = _add_all(neg_rollup[o["code"]]["mentions"] for o in own)
-        base_neg = _add_all(neg_rollup[o["code"]]["base"] for o in own)
         return {
             "list": items,
             "globalMax": global_max,
-            "alerts": {c: neg_rollup[c]["alerts"] for c in self._by_code},
-            "negMentions": {c: neg_rollup[c]["mentions"] for c in self._by_code},
+            # alerts 与 negMentions 来自负面舆情类别（kind=`neg_category`），当前没有写入方。
+            "alerts": {p["code"]: None for p in self._products},
+            "negMentions": {p["code"]: None for p in self._products},
             "complianceCount": risk,
             "baseMentions": {c: base[c]["mentions"] for c in self._by_code},
             "baseComments": {c: base[c]["comments"] for c in self._by_code},
@@ -402,13 +305,12 @@ class SqlProvider:
             "own": {
                 "count": len(own),
                 "heat": heat,
-                "heatUnknownPosts": heat_unknown,
-                "neg": neg,
+                "neg": None,
                 "pos": pos,
                 # 「没扫过」（None）与「扫了零条」（0）都不能当 0 加进合计，前者让合计未知。
                 "risk": _add_all(risk[o["code"]] for o in own),
                 "dHeat": delta(heat, base_heat_own),
-                "dNeg": delta(neg, base_neg),
+                "dNeg": delta(None, None),
                 "dPos": delta(pos, base_pos),
             },
         }
@@ -422,7 +324,7 @@ class SqlProvider:
         rng = self.build_range(range_key)
         if rng is None:
             return None
-        cur = self._scan(rng)
+        cur = self._scan(rng["from"], rng["to"])
         order = sorted(self._by_code, key=lambda c: (-cur[c]["comments"], c))
         return {"map": {c: i + 1 for i, c in enumerate(order)}, "total": len(order)}
 
@@ -434,21 +336,18 @@ class SqlProvider:
         rng = self.build_range(range_key)
         if rng is None:
             return None
-        cur = self._scan(rng)[code]
+        cur = self._scan(rng["from"], rng["to"], rng)[code]
         # 基准区间也切同样多的桶：环比要逐桶对齐同位（PRD §3.1），产品监控页的趋势图
         # 悬停要显示「这一桶较基准同位 +12（+25.0%）」。
-        baseline_range = self._baseline_range(rng)
-        base = self._scan(baseline_range)[code]
+        baseline_range = build(range_key, date.fromisoformat(rng["benchTo"]), days_override=rng["days"])
+        base = self._scan(rng["benchFrom"], rng["benchTo"], baseline_range)[code]
         return {
             "mentions": delta(cur["mentions"], base["mentions"]),
             "comments": delta(cur["comments"], base["comments"]),
-            # 转发／互动／热度两侧同口径：各自按已知项算（ADR-0022），任一侧有未知帖时
-            # 这条环比也是下限之间的比较；差了几帖在 `heatUnknownPosts` 里分侧说清。
             "interactions": delta(cur["interactions"], base["interactions"]),
             "likes": delta(cur["likes"], base["likes"]),
             "shares": delta(cur["shares"], base["shares"]),
             "heat": delta(cur["heat"], base["heat"]),
-            "heatUnknownPosts": {"current": cur["heatUnknownPosts"], "base": base["heatUnknownPosts"]},
             "positive": delta(_att(cur, "positive"), _att(base, "positive")),
             "negative": delta(_att(cur, "negative"), _att(base, "negative")),
             "neutral": delta(_att(cur, "neutral"), _att(base, "neutral")),
@@ -478,7 +377,7 @@ class SqlProvider:
         rng = self.build_range(range_key)
         if rng is None:
             return None
-        s = self._scan(rng)[code]
+        s = self._scan(rng["from"], rng["to"], rng)[code]
         out = []
         for b, bk in zip(rng["buckets"], s["buckets"]):
             out.append(
@@ -488,8 +387,7 @@ class SqlProvider:
                     "hour": b.get("hour"),
                     "label": b["label"],
                     "tip": b["tip"],
-                    "heat": heat_of(bk["comments"], bk["likes"], bk["shares"], bk["heatUnknownPosts"]),
-                    "heatUnknownPosts": bk["heatUnknownPosts"],
+                    "heat": heat_of(bk["comments"], bk["likes"], bk["shares"]),
                     "mentions": bk["mentions"],
                     "comments": bk["comments"],
                     "positive": _att(bk, "positive"),
@@ -712,15 +610,10 @@ class SqlProvider:
     # 「标注过」的判据与 `_scan` 同源（`att is None` 即没标过），不另写一套。
 
     def _synth(self, code, range_key, kind):
-        """现行生成物：`{subkey: {value, evidenceIds, reviewState}}`。链末、非 rejected；同链末取最新。
-
-        `synth_dirty_{code}_{range}` 脏标记**不再**让这里返回空：底层标注变了、Layer B 还没
-        重新汇总时，旧结论照常返回，由 `_stale()` 告诉调用方它已经过期。原来的做法是脏了就
-        藏起来 —— 页面上的总结与主题名会在每一批标注落库后消失几分钟到几小时，直到下一次
-        汇总跑完；读的人看到的是「暂不可用」，而库里明明有一份昨天的结论。过期的结论加一枚
-        「待更新」比消失诚实：它说清了自己是什么。
-        """
+        """现行生成物：`{subkey: {value, evidenceIds, reviewState}}`。链末、非 rejected；同链末取最新。"""
         if self._anchor is None:
+            return {}
+        if self._meta.get(f"synth_dirty_{code}_{range_key}") == "1":
             return {}
         key = ("synth", code, range_key, kind, self._anchor)
         if key in self._cache:
@@ -756,17 +649,6 @@ class SqlProvider:
             out = {}
         self._cache[key] = out
         return out
-
-    def _stale(self, code, range_key, *kinds):
-        """这只产品这个区间的生成物是否已过期：脏标记为 `"1"` 且至少有一类生成物在。
-
-        没有生成物就没有什么可过期的 —— 那是 `unavailable`，不是 `stale`；两枚徽章说的
-        是两件事（「模型还没写」vs「模型写过、但底层又变了」）。脏标记由 worker 写进
-        `meta_kv`（`radar_db/revisions.mark_synthesis`），标注落库时置 1、汇总跑完置 0。
-        """
-        if self._meta.get(f"synth_dirty_{code}_{range_key}") != "1":
-            return False
-        return any(self._synth(code, range_key, kind) for kind in kinds)
 
     def _units(self, code, rng):
         """区间内这只产品的判定单元（相关＋有态度），以及市场方向单元。整块 None＝没标过。"""
@@ -837,33 +719,29 @@ class SqlProvider:
         rng = self.build_range(range_key)
         if rng is None:
             return None
-        scan = self._scan(rng)
+        scan = self._scan(rng["from"], rng["to"], rng)
         out = {}
         for code in self._by_code:
             att = scan[code]["att"]
             if att is None:
-                out[code] = {"status": "unavailable", "text": "数据暂不可用", "sample": None, "ok": False, "stale": False}
+                out[code] = {"status": "unavailable", "text": "数据暂不可用", "sample": None, "ok": False}
                 continue
             valid = att["positive"] + att["negative"]
             if valid == 0 and att["neutral"] == 0:
-                out[code] = {"status": "empty", "text": "暂无相关内容", "sample": 0, "ok": False, "stale": False}
+                out[code] = {"status": "empty", "text": "暂无相关内容", "sample": 0, "ok": False}
                 continue
             if not sample_sufficient(att["positive"], att["negative"]):
-                out[code] = {"status": "low_sample", "text": "样本不足，暂无主流观点", "sample": valid, "ok": False,
-                             "stale": False}
+                out[code] = {"status": "low_sample", "text": "样本不足，暂无主流观点", "sample": valid, "ok": False}
                 continue
             row = self._synth(code, range_key, "hot_summary").get(NO_SUBJECT)
             if row is None or not isinstance(row["value"], dict) or "text" not in row["value"]:
-                out[code] = {"status": "unavailable", "text": "数据暂不可用", "sample": valid, "ok": False, "stale": False}
+                out[code] = {"status": "unavailable", "text": "数据暂不可用", "sample": valid, "ok": False}
                 continue
             net = att["positive"] - att["negative"]
             out[code] = {
                 "status": "ok", "text": row["value"]["text"], "sample": valid,
                 "tone": "pos" if net > 0 else "neg" if net < 0 else "neu", "ok": True,
                 "reviewState": row["reviewState"], "evidenceIds": row["evidenceIds"],
-                # 计数（sample / tone）是刚扫出来的，文字是脏标记之前写的：两者可能对不上，
-                # 前端据此挂「待更新」而不是把这句话当成对当前计数的解释。
-                "stale": self._stale(code, range_key, "hot_summary"),
             }
         return out
 
@@ -874,7 +752,7 @@ class SqlProvider:
         rng = self.build_range(range_key)
         if rng is None:
             return None
-        s = self._scan(rng)[code]
+        s = self._scan(rng["from"], rng["to"], rng)[code]
         att = s["att"]
         if att is None:
             return None
@@ -885,41 +763,19 @@ class SqlProvider:
         ]
         if not s["mentions"] and valid == 0 and att["neutral"] == 0:
             return {"text": "暂无相关内容 — 在所选区间内已完成检查，该产品没有识别到提及内容。",
-                    "sample": 0, "low": True, "points": [], "evidenceIds": [], "evidenceCount": 0, "stale": False}
+                    "sample": 0, "low": True, "points": [], "evidenceIds": []}
         if not sample_sufficient(att["positive"], att["negative"]):
             sentences.append(
                 f"针对产品本身的有效态度提及为 {valid} 条，低于 {LOW_SAMPLE} 条的判定阈值，本区间不输出整体倾向结论。"
             )
             sentences.append(f"原始数量为积极 {att['positive']} 条、消极 {att['negative']} 条、中性 {att['neutral']} 条。")
-            return {"text": "".join(sentences), "sample": valid, "low": True, "points": [], "evidenceIds": [],
-                    "evidenceCount": 0, "stale": False}
+            return {"text": "".join(sentences), "sample": valid, "low": True, "points": [], "evidenceIds": []}
         diff = att["positive"] - att["negative"]
         sentences.append(
             f"产品态度分类中积极 {att['positive']} 条、消极 {att['negative']} 条、中性 {att['neutral']} 条，"
             + ("积极与消极条数持平" if diff == 0 else f"积极比消极多 {diff} 条" if diff > 0 else f"消极比积极多 {-diff} 条")
             + "。"
         )
-        row, points, ev_ids = self._summary_points(code, range_key)
-        sentences.extend(p["text"] for p in points)
-        return {
-            "text": "".join(sentences), "sample": valid, "low": False, "points": points,
-            "evidenceIds": ev_ids,
-            # 侧栏入口上的条数。与 `evidence_for(code, "<range>|sum", …)` 给的是同一份 id
-            # 表，所以这里数几条，点开就是几条（ETL 重跑删掉的评论除外）。
-            "evidenceCount": len(ev_ids),
-            "aiStatus": "ok" if points else "unavailable",
-            "reviewState": row["reviewState"] if row else None,
-            # 计数句是刚扫出来的事实，要点句是脏标记之前写的：脏时两半可能对不上，
-            # 要点照发并标 stale，让页面挂「待更新」而不是让这一段消失。
-            "stale": bool(points) and self._stale(code, range_key, "summary"),
-        }
-
-    def _summary_points(self, code, range_key):
-        """区间总结生成物：`(row, points, evidenceIds)`。没有生成物 ⇒ `(None, [], [])`。
-
-        `summary_for()` 拼要点句、`evidence_for()` 的 `sum` 面板取原文，两处必须从同一份
-        id 表出发 —— `evidenceCount` 数的与侧栏点开给的才是一回事。
-        """
         row = self._synth(code, range_key, "summary").get(NO_SUBJECT)
         points, ev_ids = [], []
         if row and isinstance(row["value"], dict) and row["value"].get("points"):
@@ -927,7 +783,13 @@ class SqlProvider:
                 t = p["text"].rstrip("。；;") + "。"
                 points.append({"text": t, "evidenceIds": p.get("evidence_ids", [])})
                 ev_ids.extend(p.get("evidence_ids", []))
-        return row, points, list(dict.fromkeys(ev_ids))
+            sentences.extend(p["text"] for p in points)
+        return {
+            "text": "".join(sentences), "sample": valid, "low": False, "points": points,
+            "evidenceIds": list(dict.fromkeys(ev_ids)),
+            "aiStatus": "ok" if points else "unavailable",
+            "reviewState": row["reviewState"] if row else None,
+        }
 
     def themes_for(self, code, range_key):
         if code not in self._by_code:
@@ -938,14 +800,10 @@ class SqlProvider:
         u = self._units(code, rng)
         if u is None:
             return None
-        out = core_themes.themes(
+        return core_themes.themes(
             code, core_themes.group_by_polarity(u["units"]), self._base_units_grouped(code, rng),
             rng["buckets"], self._bucket_index(rng), self._labels(code, range_key, "theme_label", split=True),
         )
-        # 数是刚从标注算的，名字与摘要是脏标记之前写的。stale 挂在顶层：`{positive, negative}`
-        # 两个列表共用同一批生成物，同脏同清。
-        out["stale"] = self._stale(code, range_key, "theme_label")
-        return out
 
     def _base_units_grouped(self, code, rng):
         base = self._base_units(code, rng)
@@ -963,51 +821,10 @@ class SqlProvider:
         neg = [x for x in u["units"] if x["attitude"] == "negative"]
         base = self._base_units(code, rng)
         base_neg = None if base is None else [x for x in base if x["attitude"] == "negative"]
-        rows = core_themes.neg_categories(
+        return core_themes.neg_categories(
             code, neg, base_neg, rng["buckets"], self._bucket_index(rng),
             self._labels(code, range_key, "neg_category"),
         )
-        # 返回的是列表，没有顶层可放 —— stale 逐行带。同一产品同一区间的类别共用一份
-        # 生成物，所以每行的值相同；前端读任意一行即可。
-        stale = self._stale(code, range_key, "neg_category")
-        for r in rows:
-            r["stale"] = stale
-        return rows
-
-    def _neg_rollup(self, rng):
-        """全池每一只的负面舆情类别汇总 `{code: {"mentions", "alerts", "base"}}`，`pool()` 用。
-
-        三个数都从 `core/themes.neg_categories` 的行里加出来（分桶与关注程度的唯一口径），
-        这里不另数一遍：`mentions` ＝ 各类别 `mentions` 之和，`alerts` ＝ 关注程度为「高」
-        的类别数（设计源 `radar-data.js:435` 逐字：`cats.filter(c => c.severity === 'high').length`；
-        前端「仅有舆情」开关按真值判），`base` ＝ 基准期按同一口径算出来的 `mentions`。
-        名字与摘要不取（`labels` 留空）—— 这三个数不看模型写了什么字。
-
-        没标过（`_neg_units_by_code` 给 None）的产品三个数都是 None，不是 0：那是
-        「暂不可用」。基准期没标过则只有 `base` 是 None，当期的数照给。
-        """
-        key = ("neg_rollup", rng["from"], rng["to"], rng["gran"])
-        hit = self._cache.get(key)
-        if hit is not None:
-            return hit
-        cur_units = self._neg_units_by_code(rng["from"], rng["to"])
-        base_units = self._neg_units_by_code(rng["benchFrom"], rng["benchTo"])
-        bi = self._bucket_index(rng)
-        hit = {}
-        for code in self._by_code:
-            cur, base = cur_units[code], base_units[code]
-            if cur is None:
-                hit[code] = {"mentions": None, "alerts": None, "base": None}
-                continue
-            rows = core_themes.neg_categories(code, cur, base, rng["buckets"], bi)
-            base_rows = None if base is None else core_themes.neg_categories(code, base, None, [], bi)
-            hit[code] = {
-                "mentions": sum(r["mentions"] for r in rows),
-                "alerts": sum(1 for r in rows if r["severity"] == "high"),
-                "base": None if base_rows is None else sum(r["mentions"] for r in base_rows),
-            }
-        self._cache[key] = hit
-        return hit
 
     def topics_for(self, code, range_key):
         if code not in self._by_code:
@@ -1024,13 +841,9 @@ class SqlProvider:
             window=_window({"from": rng["benchFrom"], "to": rng["benchTo"]}),
         )
         base_units = [{"market_direction": row["value"]} for row in baseline.values()] if baseline else None
-        rows = core_topics.market_topic(
+        return core_topics.market_topic(
             code, u["market"], rng["buckets"], self._bucket_index(rng), label, base_units,
         )
-        stale = self._stale(code, range_key, "topic_label")
-        for r in rows:
-            r["stale"] = stale
-        return rows
 
     def stages_for(self, code, range_key):
         if code not in self._by_code:
@@ -1038,7 +851,7 @@ class SqlProvider:
         rng = self.build_range(range_key)
         if rng is None:
             return None
-        if self._scan(rng)[code]["att"] is None:
+        if self._scan(rng["from"], rng["to"], rng)[code]["att"] is None:
             return None
         series = self.heat_series_for(code, range_key)
         units_rows = self._synth(code, range_key, "stage_unit")
@@ -1053,9 +866,7 @@ class SqlProvider:
         def summary_of(s):
             return (stage_rows.get(core_stages.stage_key(s)) or {}).get("value", {}).get("summary")
 
-        out = core_stages.build(code, series, rng["gran"], rng["days"], cat_of, digest_of, summary_of)
-        out["stale"] = self._stale(code, range_key, "stage_unit", "stage_summary")
-        return out
+        return core_stages.build(code, series, rng["gran"], rng["days"], cat_of, digest_of, summary_of)
 
     def competitors_for(self, code, range_key):
         """双向：固定对位（CMAP，不经模型）＋ 模型从评论区共现识别的候选（待确认）。"""
@@ -1072,8 +883,7 @@ class SqlProvider:
             if p["ownership"] == "own" else ([p["ownCode"]] if p.get("ownCode") else [])
         )
         rows = self._synth(code, range_key, "competitor_reason")
-        scan = self._scan(rng)
-        base = self._scan(self._baseline_range(rng))
+        scan = self._scan(rng["from"], rng["to"], rng)
         items = []
         for c in fixed + [k for k in rows if k not in fixed]:
             q = self._by_code.get(c)
@@ -1090,7 +900,7 @@ class SqlProvider:
                 "reason": (f"客户维护的固定对位映射 · {q['issuer']}" if confirmed
                            else "AI 依据本产品评论区的共现识别 · 待确认"),
                 "mentions": scan[c]["mentions"], "comments": scan[c]["comments"],
-                "delta": delta(scan[c]["comments"], base[c]["comments"]),
+                "delta": delta(scan[c]["comments"], self._scan(rng["benchFrom"], rng["benchTo"])[c]["comments"]),
                 "positiveThemes": [{"id": f"{c}-like-{i}", "title": t, "mentions": n_ev} for i, t in enumerate(like)],
                 "negativeThemes": [{"id": f"{c}-dislike-{i}", "title": t, "mentions": n_ev} for i, t in enumerate(dislike)],
                 "evidencePos": n_ev if like else 0, "evidenceNeg": n_ev if dislike else 0,
@@ -1098,11 +908,7 @@ class SqlProvider:
                 "reasonStatus": "ok" if r else "unavailable",
                 "reviewState": (r or {}).get("reviewState"),
             })
-        return {
-            "status": "ok" if items else "empty", "list": items,
-            # 固定对位不经模型，永远不脏；脏的只有模型识别的候选与它们的理由。
-            "stale": self._stale(code, range_key, "competitor_reason"),
-        }
+        return {"status": "ok" if items else "empty", "list": items}
 
     # ── 账号域：产品相关 KOL 与 KOL 其他产品观点 ─────────────────────
 
@@ -1203,16 +1009,7 @@ class SqlProvider:
         ctxKey ／ polarity ／ n 的合法性由 `core/evidence.py` 先验过了，这里只验产品。
         区间取 ctxKey 的头一段（它的形状就是 `<区间>|<面板 id>`）。
 
-        ## 面板 `sum`：按总结生成物自己引的原文取
-
-        「当前舆情总结」的要点是模型写的，每一点都带 `evidence_ids`（`c<comment_id>`，
-        Layer B 汇总时从事实 JSON 里挑的）。侧栏点开这一段，给的就该是**这几条**，而不是
-        按极性另取一批 —— 那一批与要点句之间没有任何对应关系。所以 `sum` 面板下极性参数
-        不参与选取；`summary_for()` 的 `evidenceCount` 数的正是这份 id 表，两边对得上。
-        总结还没生成时退回下面的极性取法：那时页面上没有要点句，侧栏给的是「这只产品
-        这个极性的原文」，标题也是这么写的。
-
-        ## 其余面板 id 不参与选取，这是一处诚实的降级
+        ## 面板 id 不参与选取，这是一处诚实的降级
 
         演示数据能给五个面板各配一批不同的摘录，因为它是编的。真库里「支撑这条结论的
         原文」目前只到**评论 × 产品 × 极性**这一层：主题、话题、阶段各自的证据要
@@ -1226,26 +1023,20 @@ class SqlProvider:
         """
         if code not in self._by_code:
             return MISSING
-        range_key, panel = str(ctx_key).split("|", 1)
-        rng = self.build_range(range_key)
+        rng = self.build_range(str(ctx_key).split("|")[0])
         if rng is None:
             return None
-        by_comment = self._attitude_by_comment(rng)
-        if not any(s == code for pairs in by_comment.values() for s, _a in pairs):
-            return None
-        if panel == "sum":
-            _row, points, ev_ids = self._summary_points(code, range_key)
-            if points:
-                return self._evidence_items(code, _comment_ids(ev_ids), by_comment, n)
+        att = self._current_annotations("attitude", "comment", window=_window(rng))
+        by_comment = defaultdict(list)
+        for (cid, subject), a in att.items():
+            by_comment[cid].append((subject, a))
         hits = [
             cid
             for cid, pairs in by_comment.items()
             if any(s == code and a["value"] == polarity for s, a in pairs)
         ]
-        return self._evidence_items(code, hits, by_comment, n)
-
-    def _evidence_items(self, code, hits, by_comment, n):
-        """把评论 id 列表装成证据卡，发布时间倒序取前 n 条。"""
+        if not any(s == code for pairs in by_comment.values() for s, _a in pairs):
+            return None
         src = self._sources("comment", hits)
         items = []
         for cid in hits:
@@ -1254,7 +1045,7 @@ class SqlProvider:
                 continue
             # 同一条评论可能同时被标了别的产品，证据卡要把它们都带上（契约里
             # `productCodes` 是数组，演示数据也会出现第二个代码）。
-            others = sorted(s for s, _a in by_comment.get(cid, ()) if s != code and s in self._by_code)
+            others = sorted(s for s, _a in by_comment[cid] if s != code and s in self._by_code)
             items.append(
                 {
                     "id": f"ev-{cid}-{code}",
@@ -1271,23 +1062,6 @@ class SqlProvider:
         # 与设计源同序：发布时间倒序。同刻的按 id 兜底，免得两次请求两个顺序。
         items.sort(key=lambda x: (x["publishedAt"] or "", x["id"]), reverse=True)
         return items[:n]
-
-    def _attitude_by_comment(self, rng):
-        """窗口内的态度结论按评论归组：`{comment_id: [(subject_code, annotation), …]}`。
-
-        证据侧栏每开一次都要这份索引（同一条评论可能被标了两只产品，卡片要把两个代码
-        都带上），原来每次都重查整窗再重组，d30 一次半秒。按窗口缓存；键里带锚点，
-        与 `_synth` 同一个理由 —— 锚点一变整份都不算数。
-        """
-        key = ("att_by_comment", rng["from"], rng["to"], self._anchor)
-        hit = self._cache.get(key)
-        if hit is None:
-            hit = defaultdict(list)
-            for (cid, subject), a in self._window_attitude(rng["from"], rng["to"]).items():
-                hit[cid].append((subject, a))
-            hit = dict(hit)
-            self._cache[key] = hit
-        return hit
 
     def compliance_for(self, code, range_key):
         """需合规关注（PRD §4.2 P10）。四态各有各的意思，一个都不能合并：
@@ -1411,98 +1185,22 @@ class SqlProvider:
 
     # ── 内部：扫描与聚合 ─────────────────────────────────────────────
 
-    def _window_attitude(self, frm, to):
-        """窗口内全池的现行态度结论 `{(comment_id, code): {...}}`，按窗口缓存。
-
-        `_scan`、`evidence_for`、`_neg_units_by_code` 三处要的是同一份；d30 这一查约
-        半秒，各查一遍就是三个半秒。
-        """
-        key = ("att", frm, to)
-        hit = self._cache.get(key)
-        if hit is None:
-            hit = self._current_annotations("attitude", "comment", window=_window({"from": frm, "to": to}))
-            self._cache[key] = hit
-        return hit
-
-    def _neg_units_by_code(self, frm, to):
-        """窗口内全池的**消极判定单元**按产品归组：`{code: [unit, …] | None}`。
-
-        与 `_units(code, rng)["units"]` 里 `attitude == "negative"` 的那一部分**逐条相同**
-        （相关 ＋ 有态度，aspects 与 posted_at 同源），只是整窗一次取回、120 只一起分：
-        `pool()` 要给全池每一只的 `negMentions`／`alerts`，逐只走 `_units` 是 120 × 4 条
-        带 `subject_code` 的查询，再加基准期一倍。
-
-        None 与 `[]` 分得开：None ＝ 这只产品在窗口内一条态度标注都没有（没标过 ⇒
-        「暂不可用」），`[]` ＝ 标过但一条消极都没有（那是 0）。判据与 `_units` 一致 ——
-        看的是有没有态度标注，不是有没有消极。
-        """
-        key = ("neg_units", frm, to)
-        hit = self._cache.get(key)
-        if hit is None:
-            window = _window({"from": frm, "to": to})
-            att = self._window_attitude(frm, to)
-            rel = self._current_annotations("relevance", "comment", window=window)
-            asp = self._current_annotations("aspect", "comment", window=window)
-            hit = {c: None for c in self._by_code}
-            for unit, a in att.items():
-                code = unit[1]
-                if code not in hit:
-                    continue
-                if hit[code] is None:
-                    hit[code] = []
-                if a["value"] != "negative" or (rel.get(unit) or {}).get("value") != "relevant":
-                    continue
-                hit[code].append({
-                    "comment_id": unit[0], "attitude": "negative",
-                    "aspects": (asp.get(unit) or {}).get("value") or [], "posted_at": a["posted_at"],
-                })
-            self._cache[key] = hit
-        return hit
-
-    def _scan(self, rng):
-        """区间 `rng` 内按产品聚合，**同时切桶**（`rng["buckets"]`）。
+    def _scan(self, frm, to, rng=None):
+        """`[frm, to]`（含两端，自然日）内按产品聚合。`rng` 给出时同时切桶。
 
         返回的 dict **含产品池全部 120 只**，一条帖子都没有的也在里面（全 0）。
         缺席和零在这里必须分得开：窗口内的底库是全的，所以「没人发」是查出来的结论，
         那个 0 是真的 0；而 `KeyError` 意味着代码不在池里，是另一回事。
-
-        ## 缓存键是 `(from, to, gran)`，永远带桶
-
-        原来的键带 `rng["key"]`，而 `ranks()` 与 `pool()` 的基准期传的是 `rng=None`：
-        同一个窗口在 `pool()` / `ranks()` / `benchmark()` 里被扫了四遍（合成库 d30 一遍
-        2 秒多，四遍近 10 秒）。窗口一样、粒度一样，切出来的桶就一样 —— 键里不该有
-        别的东西。不带桶的扫描也不再提供：多算一列桶的代价可以忽略，少一个键就少一次
-        重扫。
-
-        ## 同一窗口只算一次
-
-        请求线程与 `_prewarm` 线程会同时要同一个窗口。每个键一把锁：第二个调用者等
-        第一个算完直接取缓存，而不是各算一遍再互相覆盖。算完写回前再对一次 `_generation`
-        —— 中途 `refresh()` 清过缓存的话，这份结果读的可能是半新半旧的库，只用不存。
         """
-        key = (rng["from"], rng["to"], rng["gran"])
-        hit = self._cache.get(key)
-        if hit is not None:
-            return hit
-        with self._locks_guard:
-            generation = self._generation
-            lock = self._scan_locks.setdefault(key, threading.Lock())
-        with lock:
-            hit = self._cache.get(key)
-            if hit is not None:
-                return hit
-            out = self._scan_uncached(rng)
-            with self._locks_guard:
-                if self._generation == generation:
-                    self._cache[key] = out
-        return out
+        key = (frm, to, rng["key"] if rng else None)
+        if key in self._cache:
+            return self._cache[key]
 
-    def _scan_uncached(self, rng):
-        frm, to = rng["from"], rng["to"]
-        nb = len(rng["buckets"])
-        gran = rng["gran"]
+        nb = len(rng["buckets"]) if rng else 0
+        gran = rng["gran"] if rng else None
         origin = date.fromisoformat(frm)
-        lo, hi = _window(rng)
+        lo = datetime.combine(origin, time.min)
+        hi = datetime.combine(date.fromisoformat(to) + timedelta(days=1), time.min)
 
         # 帖子级：评论获赞与评论作者。评论挂在帖子上，所以按帖子的 posted_at 取窗口。
         c_likes, c_authors = defaultdict(int), defaultdict(set)
@@ -1540,7 +1238,7 @@ class SqlProvider:
                 s = out.get(code)
                 if s is None:  # in_pool 与产品池名单不同步 —— 跳过，不要凭空造一只产品。
                     continue
-                bi = _bucket(gran, origin, posted)
+                bi = _bucket(gran, origin, posted) if nb else None
                 # 帖子获赞 ＋ 已采集评论获赞（HEAT_NOTE 逐字：「点赞含帖子获赞与评论获赞」）。
                 like_total = (likes or 0) + c_likes.get(feed_id, 0)
                 who = c_authors.get(feed_id, ())
@@ -1555,14 +1253,17 @@ class SqlProvider:
         #
         # 分母也不是评论总数：只有被标注过的评论进这三个计数。「有效态度提及」本来
         # 就是标注出来的子集（PRD §3.5），这个口径在 fixture 与真库下同名同义。
-        for (_comment_id, code), a in self._window_attitude(frm, to).items():
+        for (_comment_id, code), a in self._current_annotations(
+            "attitude", "comment", window=(lo, hi)
+        ).items():
             s = out.get(code)
             if s is None:  # 标注里的产品不在当前池 —— 同 in_pool 那条，跳过。
                 continue
-            _bump_att(s, _bucket(gran, origin, a["posted_at"]), a["value"])
+            _bump_att(s, _bucket(gran, origin, a["posted_at"]) if nb else None, a["value"])
 
         for s in out.values():
             _finish(s)
+        self._cache[key] = out
         return out
 
     def _by_day(self, code, frm, to):
@@ -1653,19 +1354,12 @@ class SqlProvider:
         return out
 
     def _post_common(self, rng, row, codes):
-        """帖子行里**能数出来**的部分。AI 标注块由调用方并入。
-
-        `fullText`（正文分句）也在这里：它是帖子自己的事实，不是 AI 产物。原来它挂在
-        `_post_ai` 下随标注一起给，没标注的帖子就整块 None —— 于是官号动态页上「查看原文」
-        对一篇好端端的帖子显示「暂不可用」，而原文就在库里。切句用的字符串必须与
-        `_sources("feed")` 的 `text` 逐字节相同（`_feed_text`）：`evidenceIdx` 按它数句。
-        """
+        """帖子行里**能数出来**的部分。AI 标注块由调用方并入。"""
         day = row.posted_at.date()
         primary = codes[0] if codes else None
         p = self._by_code.get(primary, {})
         likes, n_comments, shares = row.like_count, row.comment_count, row.share_count
         return {
-            "fullText": [t for _s, _e, t in _sentences(_feed_text(row.title, row.content))],
             # `t` ＝ 距区间起点的小时数，设计源用它排序（`dOff * 24 + hr`）。
             "t": (day - date.fromisoformat(rng["from"])).days * 24 + row.posted_at.hour,
             "day": day.isoformat(),
@@ -1762,9 +1456,8 @@ class SqlProvider:
 
         out = {}
         for feed_id, a in types.items():
-            # 与 `_post_common` 的 `fullText` 切的是同一串（`_sources("feed")` 的 text ＝
-            # `_feed_text(title, content)`），所以这里的句号能直接索引那边的列表。
             spans = _sentences((src.get(feed_id) or {}).get("text") or "")
+            full_text = [t for _s, _e, t in spans]
             quotes = ev.get(a["annotation_id"], [])
             idx = _sentence_index(spans, quotes[0][0]) if quotes else -1
             ptype = a["value"]
@@ -1777,9 +1470,10 @@ class SqlProvider:
                 "confidence": a["confidence"],
                 # ADR-0019 §2：徽章文案由它决定，不再由它决定能不能显示。
                 "reviewState": a["review_state"],
+                "fullText": full_text,
                 "evidenceIdx": idx,
                 # 设计源 `radar-data.js:1244` 逐字：定位不到就是空串，不是整段原文。
-                "typeEvidence": spans[idx][2] if idx >= 0 else "",
+                "typeEvidence": full_text[idx] if idx >= 0 else "",
                 **_summary_block(summaries.get(feed_id)),
                 **_direction_block(directions.get(feed_id)),
             }
@@ -1842,7 +1536,7 @@ class SqlProvider:
                     ).where(feeds.c.feed_id.in_(chunk))
                     for r in conn.execute(q):
                         out[r.feed_id] = {
-                            "text": _feed_text(r.title, r.content),
+                            "text": "\n".join(x for x in (r.title, r.content) if x),
                             "authorName": r.author_name,
                             "postedAt": r.posted_at,
                             "comments": r.comment_count,
@@ -1902,8 +1596,6 @@ class SqlProvider:
 
 # 帖子上的 AI 标注块。整块都是 None／空——**不是**「other 类型、置信度 0」，
 # 那会在界面上显示成一个我们并没有做出的判断（铁律 2）。
-# `fullText` 不在这里：原文是帖子自己的事实，由 `_post_common` 对每篇帖子都给
-# （它曾经在这个块里，让没标注的帖子连原文都显示成「暂不可用」）。
 _UNANNOTATED = {
     "postType": None,
     "typeLabel": None,
@@ -1915,6 +1607,7 @@ _UNANNOTATED = {
     "dir": None,
     "hasSummary": None,
     "summary": None,
+    "fullText": None,
     "evidenceIdx": None,
     "typeEvidence": None,
     # ADR-0019 §2：徽章由 `review_state` 驱动。没标注过的帖子这里是 None ⇒ 前端不出
@@ -1928,20 +1621,6 @@ def _chunked(items, n):
     return [items[i : i + n] for i in range(0, len(items), n)]
 
 
-def _comment_ids(evidence_ids):
-    """生成物里的证据 id（`c<comment_id>`）→ 评论主键；不是这个形状的跳过，顺序与去重照原样。
-
-    Layer B 只引评论（`worker/jobs/synthesize.py` 组事实 JSON 时给的就是 `c` 前缀），
-    但模型偶尔会照抄成别的样子；抄坏的一条按「引不到」处理，不让整份证据表报错。
-    """
-    out = []
-    for x in evidence_ids:
-        s = str(x)
-        if s.startswith("c") and s[1:].isdigit():
-            out.append(int(s[1:]))
-    return list(dict.fromkeys(out))
-
-
 def _zero_att():
     return {"positive": 0, "negative": 0, "neutral": 0}
 
@@ -1951,16 +1630,15 @@ def _blank(nb):
         "mentions": 0,
         "comments": 0,
         "likes": 0,
-        # `shares` 只累计**已知**的转发数；转发未知的帖子另计条数（ADR-0022）。
         "shares": 0,
-        "sharesUnknownPosts": 0,
+        "sharesUnknown": False,
         "authors": set(),
         # 先按 0 数，`_finish` 再决定这三个 0 是「数出来的零」还是「还没标注」。
         "att": _zero_att(),
         "attSeen": False,
         "buckets": [
             {"i": i, "mentions": 0, "comments": 0, "likes": 0, "shares": 0,
-             "sharesUnknownPosts": 0, "authors": set(), "att": _zero_att()}
+             "sharesUnknown": False, "authors": set(), "att": _zero_att()}
             for i in range(nb)
         ],
     }
@@ -1973,9 +1651,8 @@ def _bump(s, bi, mentions, n_comments, likes, shares, author, comment_authors):
         t["comments"] += n_comments
         t["likes"] += likes
         if shares is None:
-            # raw_json 坏掉 ⇒ 这条帖子的转发数是**未知**。它不进已知和，只把未知帖数
-            # 加一：产品与桶的转发／互动／热度随之成为下限，并披露差了几帖（ADR-0022）。
-            t["sharesUnknownPosts"] += 1
+            # raw_json 坏掉 ⇒ 这条帖子的转发数是**未知**。整桶的转发与热度随之未知。
+            t["sharesUnknown"] = True
         else:
             t["shares"] += shares
         if author:
@@ -1994,15 +1671,12 @@ def _bump_att(s, bi, val):
 
 def _finish(s):
     def close(t):
-        # 转发未知的帖子数随观测一起下发（`heatUnknownPosts`）。它大于零时 `shares` /
-        # `interactions` / `heat` 三个数都是**下限**：算的是已知项，差的部分已经说出来了
-        # （ADR-0022）。等于零时它们就是完整的数 —— 两种情形前端按同一个键分辨。
-        unknown = t.pop("sharesUnknownPosts")
-        t["heatUnknownPosts"] = unknown
-        t["interactions"] = t["likes"] + t["shares"]
+        shares = None if t["sharesUnknown"] else t["shares"]
+        t["shares"] = shares
+        t["interactions"] = None if shares is None else t["likes"] + shares
         t["active"] = len(t["authors"])
-        t["heat"] = heat_of(t["comments"], t["likes"], t["shares"], unknown)
-        del t["authors"]
+        t["heat"] = heat_of(t["comments"], t["likes"], shares)
+        del t["authors"], t["sharesUnknown"]
 
     for b in s["buckets"]:
         close(b)
@@ -2205,16 +1879,6 @@ def _direction_block(a):
 # 句末标点（中英文两套）。`\n` 也算一处断点：`annotate.py` 用换行把标题和正文接起来，
 # 标题本身常常不带标点，不断开的话整篇会变成一「句」。
 _SENTENCE_END = re.compile(r"[。！？!?；;\n]+|\.(?=\s|$)")
-
-
-def _feed_text(title, content):
-    """帖子送去切句的那一串：标题＋换行＋正文，缺哪个就省哪个。
-
-    `annotate.py` 送模型标注时就是这么拼的，所以 `annotation_evidence.start_offset` 是
-    相对这一串的字符位置。`_post_common` 的 `fullText` 与 `_sources("feed")` 的 `text`
-    都必须走这里，否则 `evidenceIdx` 数出来的句号会对不上原文列表。
-    """
-    return "\n".join(x for x in (title, content) if x)
 
 
 def _sentences(text):

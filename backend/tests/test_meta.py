@@ -130,107 +130,15 @@ def test_ai_validation_says_none_because_nobody_verified_anything(client):
     data = client.get("/api/v1/meta").get_json()["data"]
     assert data["aiValidation"] == "none"
     assert data["aiValidation"] in AI_VALIDATION_LEVELS
-    assert data["aiValidationDetail"] is None, "demo 下没有抽检记录可引"
 
 
-def test_ai_validation_is_none_under_sql_until_a_spot_check_is_recorded(sql_client):
-    """库里没有 `meta_kv.ai_validation` ⇒ 与 demo 同值 `none`，detail 为 None。
+def test_ai_validation_is_the_same_under_the_real_data_provider(sql_client):
+    """demo 与 sql 同值。
 
-    演示数据里的 AI 字段更不是验证过的 —— 它们是生成器编出来的。抽检脚本写下记录之前，
-    两个 provider 在这个键上不该分叉：「这一屏的结论验证到什么程度」不能取决于
-    「你用哪个 provider 截的图」。
+    演示数据里的 AI 字段更不是验证过的 —— 它们是生成器编出来的。一旦两个 provider
+    在这个键上分叉，「这一屏的结论验证到什么程度」就变成了「你用哪个 provider 截的图」。
     """
-    data = sql_client.get("/api/v1/meta").get_json()["data"]
-    assert data["aiValidation"] == "none" and data["aiValidationDetail"] is None
-
-
-SPOT_CHECK = {
-    "level": "spot_check", "n": 400, "date": "2026-09-20",
-    "relevance_accuracy": 0.91, "attitude_accuracy": 0.87, "attitude_macro_f1": 0.85,
-    "by_system": {
-        "student": {"relevance_accuracy": 0.90, "attitude_accuracy": 0.85, "attitude_macro_f1": 0.83},
-        "llm": {"relevance_accuracy": 0.93, "attitude_accuracy": 0.89, "attitude_macro_f1": 0.87},
-        "combined": {"relevance_accuracy": 0.91, "attitude_accuracy": 0.87, "attitude_macro_f1": 0.85},
-    },
-}
-
-
-def _meta_with_ai_validation(provider, value):
-    """往内存库写 `meta_kv.ai_validation`，让 provider 重新认一遍库，再取一次 `/meta`。"""
-    from sqlalchemy import insert
-
-    from conftest import _client
-    from providers import reset_provider
-    from radar_db.schema import meta_kv
-
-    with provider._engine.begin() as conn:
-        conn.execute(insert(meta_kv).values(k="ai_validation", v=value))
-    assert provider.refresh(), "meta_kv 变了，provider 要重新认一遍"
-    reset_provider()
-    try:
-        with _client(provider) as c:
-            return c.get("/api/v1/meta").get_json()["data"]
-    finally:
-        reset_provider()
-
-
-def test_ai_validation_reads_the_spot_check_record_from_meta_kv(sql_provider):
-    """抽检脚本写下 `meta_kv.ai_validation` 之后，`level` 进 `aiValidation`，整份对象进
-    `aiValidationDetail` —— 面板上「抽检 N 条、准确率 x」引的就是这一份，不另抄。"""
-    import json
-
-    data = _meta_with_ai_validation(sql_provider, json.dumps(SPOT_CHECK))
-    assert data["aiValidation"] == "spot_check"
-    assert data["aiValidationDetail"] == SPOT_CHECK
-
-
-def test_broken_ai_validation_json_falls_back_to_none(sql_provider):
-    """解析不了就按「没验证过」声明；说不清验证程度时，写一个好看的等级才是撒谎。"""
-    data = _meta_with_ai_validation(sql_provider, '{"level": "spot_check", "n": ')
-    assert data["aiValidation"] == "none" and data["aiValidationDetail"] is None
-
-
-def test_unknown_ai_validation_level_falls_back_to_none(sql_provider):
-    import json
-
-    data = _meta_with_ai_validation(sql_provider, json.dumps({"level": "verified", "n": 10}))
-    assert data["aiValidation"] == "none" and data["aiValidationDetail"] is None
-
-
-def _version_with_progress(provider, progress):
-    import json
-
-    from sqlalchemy import insert
-
-    from conftest import _client
-    from providers import reset_provider
-    from radar_db.schema import meta_kv
-
-    with provider._engine.begin() as conn:
-        conn.execute(insert(meta_kv).values(k="own_analysis_progress", v=json.dumps(progress)))
-    provider.refresh()
-    reset_provider()
-    try:
-        with _client(provider) as c:
-            return c.get("/api/v1/version").get_json()["data"]["analysisProgress"]
-    finally:
-        reset_provider()
-
-
-def test_analysis_progress_subject_follows_scope(sql_provider):
-    """`full_own --all` 写 `scope=all` ⇒ 「全池分析」；老记录没有 scope ⇒ 仍是「自家分析」，不猜成全池。"""
-    products = {"3033": {"complete": True}, "2800": {"complete": False}}
-    summary = _version_with_progress(sql_provider, {"anchor": "2026-08-25", "status": "running",
-                                                    "scope": "all", "products": products})
-    assert summary["scope"] == "all" and summary["text"] == "全池分析 1/2 · 处理中"
-
-    with sql_provider._engine.begin() as conn:
-        from sqlalchemy import delete
-
-        from radar_db.schema import meta_kv
-        conn.execute(delete(meta_kv).where(meta_kv.c.k == "own_analysis_progress"))
-    summary = _version_with_progress(sql_provider, {"anchor": "2026-08-25", "status": "running", "products": products})
-    assert summary["scope"] == "own" and summary["text"] == "自家分析 1/2 · 处理中"
+    assert sql_client.get("/api/v1/meta").get_json()["data"]["aiValidation"] == "none"
 
 
 def test_heat_formula_is_verbatim(client):

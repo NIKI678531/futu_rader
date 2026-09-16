@@ -53,8 +53,7 @@ export default function Trend({ v }) {
           </div>
         )}
       </div>
-      <div style={s('padding:0 20px 14px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>两条轨道共享同一时间轴与 hover：讨论轨道为评论数、活跃账号数（左轴）与互动数（右轴），情绪轨道为积极与消极内容数（左轴）；所选 ETF 的 OHLC K 线叠加在两条轨道底层，{v.pxKLabel}，刻度使用最右侧独立的价格轴，不与舆情单位共用标尺；当前舆情粒度{v.granLabel}，{v.pxNote}{/* 尾句与前面的句子拼成**一个**字符串再放进 JSX：单独一个 `{cond ? a : b}` 会成为独立文本节点，
-        逐字比对（按文本节点切段）就会在 demo 下多出一段而变红，虽然拼起来的字一模一样。 */}{'。同步观察所选 ETF 的价格波动、评论量与活跃账号变化；时间上的同步或先后关系不代表价格变化必然导致舆情变化。' + (R.DATA_PROVIDER === 'sql' ? '舆情来自原始记录；行情来源 FMP，拆股调整、不含股息调整。缺失行情不补零。' : '行情与舆情数值均为演示数据。')}</div>
+      <div style={s('padding:0 20px 14px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>两条轨道共享同一时间轴与 hover：讨论轨道为评论数、活跃账号数（左轴）与互动数（右轴），情绪轨道为积极与消极内容数（左轴）；所选 ETF 的 OHLC K 线叠加在两条轨道底层，{v.pxKLabel}，刻度使用最右侧独立的价格轴，不与舆情单位共用标尺；当前舆情粒度{v.granLabel}，{v.pxNote}。同步观察所选 ETF 的价格波动、评论量与活跃账号变化；时间上的同步或先后关系不代表价格变化必然导致舆情变化。{R.DATA_PROVIDER === 'sql' ? '舆情来自原始记录；行情来源 FMP，拆股调整、不含股息调整。缺失行情不补零。' : '行情与舆情数值均为演示数据。'}</div>
 
       {v.hoverOpen && (
         <div style={s(`position:absolute;left:${v.hoverX}px;top:${v.hoverY}px;z-index:20;pointer-events:none;background:var(--csop-navy-900);color:#fff;border-radius:6px;padding:11px 13px;box-shadow:0 6px 20px rgba(14,42,82,0.28);width:336px;box-sizing:border-box`)}>

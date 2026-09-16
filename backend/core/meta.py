@@ -21,10 +21,10 @@ tests/test_meta.py 的逐字断言）；主数据是数据，演示期从设计�
 officials 两个键**根本不出现**在响应里，前端据此渲染「暂不可用」。绝不下发 `[]` ——
 那是在说「客户一只产品都没维护」（铁律 2）。
 
-## `aiValidation` 与 `aiValidationDetail`
+## `aiValidation`
 
-第三类东西，来自 [ADR-0019](../../docs/adr/0019-ai-auto-publish-no-human-gate.md) §4：
-页面上的 AI 结论**验证到什么程度**。枚举三档：
+第三类东西，只有一个键，来自 [ADR-0019](../../docs/adr/0019-ai-auto-publish-no-human-gate.md) §4：
+页面上的 AI 结论**验证到什么程度**。枚举三档，本期恒为 `none`：
 
 | 值 | 含义 |
 |---|---|
@@ -36,32 +36,17 @@ officials 两个键**根本不出现**在响应里，前端据此渲染「暂不
 `/meta` 是因为它必须和面板上那句「AI 结论由模型自动生成，未经人工验证」以及任何一次
 汇报里的说法**是同一个来源** —— 三处分头写死，改了一处另外两处就开始撒谎。
 
-值从哪来：`sql` 下读 `meta_kv.k='ai_validation'`，那是抽检脚本写的一份 JSON
-（`{"level", "n", "date", "relevance_accuracy", "attitude_accuracy", "attitude_macro_f1",
-"by_system": {...}}`）。`aiValidation` 取它的 `level`，整份对象原样放进
-`aiValidationDetail` —— 面板上那句「抽检 N 条、相关性准确率 x」引的就是它，不另抄一份。
-键不存在、不是合法 JSON、或 `level` 不在三档里 ⇒ 沿用 `fixtures/meta.json` 的 `none`，
-`aiValidationDetail` 为 None：说不清验证到什么程度时，按「没验证过」声明是唯一诚实的
-退路（铁律 2 的反面 —— 这里不能把未知写成一个好看的等级）。demo 下永远是 `none`／None：
-演示数据里的 AI 字段更不是验证过的。
+两个 provider 同值，且 demo 也是 `none`：演示数据里的 AI 字段更不是验证过的。
+真做了抽检要改这个值时，改的是这一份 `fixtures/meta.json`，不是前端文案。
 """
 
 import json
 import hashlib
-import logging
 from pathlib import Path
 
 from providers import get_provider
 
 CONSTANTS = Path(__file__).resolve().parents[1] / "fixtures" / "meta.json"
-
-# ADR-0019 §4 的三档枚举。不在这里面的值一律当作「没写」。
-AI_VALIDATION_LEVELS = ("none", "spot_check", "gold")
-
-# `analysisProgress.text` 的主语：worker/jobs/full_own.py 默认排 61 只自家，`--all` 排 120 只全池。
-ANALYSIS_SCOPE_LABEL = {"own": "自家分析", "all": "全池分析"}
-
-log = logging.getLogger(__name__)
 
 
 def meta_payload():
@@ -70,7 +55,6 @@ def meta_payload():
 
     provider = get_provider()
     payload.update(version_payload())
-    payload.update(ai_validation_payload(provider))
     master = provider.master()
     if master:
         # 只并入 provider 确实给出的键。缺的键不补空值——见模块头最后一段。
@@ -87,25 +71,6 @@ def meta_payload():
     return payload
 
 
-def ai_validation_payload(provider):
-    """`{aiValidation?, aiValidationDetail}`：读到合法记录才覆盖 `aiValidation`，否则只补 None 的 detail。"""
-    if provider.name != "sql":
-        return {"aiValidationDetail": None}
-    raw = provider._meta.get("ai_validation")
-    if raw is None:
-        return {"aiValidationDetail": None}
-    try:
-        detail = json.loads(raw)
-    except (TypeError, ValueError):
-        log.warning("meta_kv.ai_validation 不是合法 JSON，按 none 声明：%r", raw[:80])
-        return {"aiValidationDetail": None}
-    if not isinstance(detail, dict) or detail.get("level") not in AI_VALIDATION_LEVELS:
-        log.warning("meta_kv.ai_validation 的 level 不在三档枚举里，按 none 声明：%r",
-                    detail.get("level") if isinstance(detail, dict) else detail)
-        return {"aiValidationDetail": None}
-    return {"aiValidation": detail["level"], "aiValidationDetail": detail}
-
-
 def version_payload():
     provider = get_provider()
     if provider.name != "sql":
@@ -119,10 +84,7 @@ def version_payload():
         done = sum(bool(row.get("complete")) for row in products.values())
         state_text = {"configuration_error": "配置错误，已暂停", "lease_lost": "执行锁异常，已暂停",
                   "source_changed": "数据范围已变化，已暂停"}.get(progress["status"], "处理中")
-        # `scope` 是 full_own 写的：`own`＝61 只自家（老记录没有这个键，按 own 读），`all`＝120 只全池。
-        scope = progress.get("scope", "own")
-        label = ANALYSIS_SCOPE_LABEL.get(scope, ANALYSIS_SCOPE_LABEL["own"])
-        summary = {"completed": done, "total": len(products), "status": progress["status"], "scope": scope,
-               "text": f"{label} {done}/{len(products)} · " + ("已完成" if done == len(products) else state_text),
+        summary = {"completed": done, "total": len(products), "status": progress["status"],
+               "text": f"自家分析 {done}/{len(products)} · " + ("已完成" if done == len(products) else state_text),
                    "anchor": progress["anchor"], "products": products}
     return {"dataProvider": "sql", "dataRevision": revision, "analysisProgress": summary}

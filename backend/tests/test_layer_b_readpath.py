@@ -110,91 +110,6 @@ class TestThemesAndNegCats:
         assert th["positive"][0]["delta"]["short"] == "新增"   # 基准期 0 条积极
 
 
-class TestPoolNegativeRollup:
-    """`pool()` 的 `alerts`／`negMentions`／`own.neg`／`dNeg` 从负面类别派生（原来硬编码 None）。
-
-    数只有一份口径：`core/themes.neg_categories`。`pool()` 整窗批量走一遍
-    （`_neg_units_by_code` → `_neg_rollup`），产品监控页逐只走 `neg_cats_for` ——
-    两条路对同一只产品必须给同一个数。
-    """
-
-    def test_neg_mentions_and_alerts_equal_the_neg_category_rows(self, provider):
-        p = annotated(provider)  # 4 条消极全在 spread ⇒ 占比 100%、关注程度「高」
-        pool = p.pool("d1")
-        cats = p.neg_cats_for(OWN_CODE, "d1")
-        assert pool["negMentions"][OWN_CODE] == 4 == sum(c["mentions"] for c in cats)
-        assert pool["alerts"][OWN_CODE] == 1 == sum(1 for c in cats if c["severity"] == "high")
-
-    def test_unannotated_products_stay_none_not_zero(self, provider):
-        p = annotated(provider)
-        pool = p.pool("d1")
-        assert pool["negMentions"][PEER_CODE] is None and pool["alerts"][PEER_CODE] is None
-        assert sum(v is not None for v in pool["negMentions"].values()) == 1, "只有 3033 标过"
-
-    def test_annotated_without_any_negative_is_zero(self, provider):
-        """标过态度、一条消极都没有 ⇒ 0（查过了确实为零），与「没标过」的 None 分开。"""
-        p = annotated(provider)
-        add_annotations(p, [
-            {"annotation_id": 800, "target_id": 13, "subject_code": PEER_CODE, "kind": "attitude", "value": "neutral"},
-            {"annotation_id": 801, "target_id": 13, "subject_code": PEER_CODE, "kind": "relevance", "value": "relevant"},
-        ])
-        pool = p.pool("d1")
-        assert pool["negMentions"][PEER_CODE] == 0 and pool["alerts"][PEER_CODE] == 0
-        assert p.neg_cats_for(PEER_CODE, "d1") == []
-
-    def test_below_high_severity_is_not_an_alert(self, provider):
-        """`alerts` 数的是关注程度为「高」的类别（设计源），不是「有没有消极」。"""
-        p = annotated(provider, n_pos=8, n_neg=0)
-        # 十条消极分散在五个类别，各占 20% —— 都够不上「高」（≥25%）。
-        aspects = ["fee", "liquidity", "spread", "tracking", "dividend"]
-        add_comments(p, [{"comment_id": 200 + i} for i in range(10)])
-        rows = []
-        for i in range(10):
-            rows += [
-                {"annotation_id": 700 + 3 * i, "target_id": 200 + i, "kind": "relevance", "value": "relevant"},
-                {"annotation_id": 701 + 3 * i, "target_id": 200 + i, "kind": "attitude", "value": "negative"},
-                {"annotation_id": 702 + 3 * i, "target_id": 200 + i, "kind": "aspect", "value": [aspects[i % 5]]},
-            ]
-        add_annotations(p, rows)
-        pool = p.pool("d1")
-        assert pool["negMentions"][OWN_CODE] == 10 and pool["alerts"][OWN_CODE] == 0
-        assert all(c["severity"] == "medium" for c in p.neg_cats_for(OWN_CODE, "d1"))
-
-    def test_own_total_is_unknown_while_any_own_product_is_unannotated(self, provider):
-        """`own.neg` 是「已标注子集」的计数：61 只里有一只没标过，合计就是未知，不是把它当 0。"""
-        p = annotated(provider)
-        own = p.pool("d1")["own"]
-        assert own["neg"] is None and own["dNeg"]["text"] == "数据暂不可用"
-
-    def test_own_total_and_delta_once_every_own_product_is_annotated(self, provider):
-        p = annotated(provider)
-        own_codes = [x["code"] for x in p._products if x["ownership"] == "own"]
-        rows, aid = [], 2000
-        for code in own_codes:
-            # 当期（c12 在 08-25）与基准期（c14 在 08-24）各给一条中性态度：标过、但不是消极。
-            rows += [
-                {"annotation_id": aid, "target_id": 12, "subject_code": code, "kind": "attitude", "value": "neutral"},
-                {"annotation_id": aid + 1, "target_id": 14, "subject_code": code, "kind": "attitude", "value": "neutral"},
-            ]
-            aid += 2
-        # 3033 基准期另有 1 条消极点差 ⇒ 基准 1、当期 4。
-        rows += [
-            {"annotation_id": aid, "target_id": 14, "kind": "relevance", "value": "relevant"},
-            {"annotation_id": aid + 1, "target_id": 14, "kind": "attitude", "value": "negative"},
-            {"annotation_id": aid + 2, "target_id": 14, "kind": "aspect", "value": ["spread"]},
-        ]
-        add_annotations(p, rows)
-        own = p.pool("d1")["own"]
-        assert own["neg"] == 4
-        assert own["dNeg"]["abs"] == 3 and own["dNeg"]["text"] == "+3（+300.0%）"
-
-    def test_base_unannotated_leaves_delta_unavailable_but_current_counts_given(self, provider):
-        p = annotated(provider)
-        pool = p.pool("d1")
-        assert pool["negMentions"][OWN_CODE] == 4
-        assert p._neg_rollup(p.build_range("d1"))[OWN_CODE]["base"] is None
-
-
 class TestTopicsAndHot:
     def test_market_topic_counts_direction_not_attitude(self, provider):
         p = annotated(provider)
@@ -231,22 +146,13 @@ class TestTopicsAndHot:
 
 
 class TestSummary:
-    def test_dirty_source_keeps_the_old_points_and_marks_them_stale(self, provider):
-        """脏标记不再让生成物消失：旧要点照发，`stale=True` 让页面挂「待更新」。
-
-        原来脏了就整块 `unavailable`：每一批标注落库到下一次汇总跑完之间，页面上的总结
-        会消失几分钟到几小时，而库里明明有一份昨天的结论。
-        """
+    def test_dirty_source_does_not_mix_old_summary_with_new_counts(self, provider):
         p = annotated(provider)
         add_synth(p, [{"kind": "summary", "value": {"points": [
             {"text": "多条评论认可费率", "evidence_ids": ["c100"]}]} }])
-        s = p.summary_for(OWN_CODE, "d1")
-        assert s["aiStatus"] == "ok" and s["stale"] is False
+        assert p.summary_for(OWN_CODE, "d1")["aiStatus"] == "ok"
         p._meta[f"synth_dirty_{OWN_CODE}_d1"] = "1"
-        s = p.summary_for(OWN_CODE, "d1")
-        assert s["aiStatus"] == "ok" and s["stale"] is True
-        assert s["points"][0]["text"] == "多条评论认可费率。", "旧要点还在"
-        assert "积极 8 条、消极 4 条" in s["text"], "计数句是刚扫的事实，不随脏标记变"
+        assert p.summary_for(OWN_CODE, "d1")["aiStatus"] == "unavailable"
 
     def test_summary_text_is_facts_plus_model_points(self, provider):
         p = annotated(provider)
@@ -266,153 +172,6 @@ class TestSummary:
         s = p.summary_for(OWN_CODE, "d1")
         assert s["low"] is True
         assert "有效态度提及为 5 条，低于 10 条的判定阈值，本区间不输出整体倾向结论" in s["text"]
-
-    def test_evidence_count_is_the_size_of_the_deduplicated_id_table(self, provider):
-        p = annotated(provider)
-        assert p.summary_for(OWN_CODE, "d1")["evidenceCount"] == 0
-        add_synth(p, [{"kind": "summary", "value": {"points": [
-            {"text": "多条评论认可费率", "evidence_ids": ["c100", "c101"]},
-            {"text": "点差是主要抱怨", "evidence_ids": ["c108", "c100"]}]}}])
-        s = p.summary_for(OWN_CODE, "d1")
-        assert s["evidenceIds"] == ["c100", "c101", "c108"] and s["evidenceCount"] == 3
-        # 样本不足与空区间两支也带这个键（0），前端不用判 undefined。
-        assert annotated(make_sql_provider(), n_pos=3, n_neg=2).summary_for(OWN_CODE, "d1")["evidenceCount"] == 0
-
-
-class TestSummaryEvidence:
-    """`evidence_for(code, "<range>|sum", …)`：有总结生成物时按它引的 id 取原文，极性不参与。"""
-
-    POINTS = [{"kind": "summary", "value": {"points": [
-        {"text": "多条评论认可费率", "evidence_ids": ["c100", "c101"]},
-        {"text": "点差是主要抱怨", "evidence_ids": ["c108"]}]}}]
-
-    def test_sum_panel_returns_exactly_the_cited_comments_regardless_of_polarity(self, provider):
-        p = annotated(provider)
-        add_synth(p, self.POINTS)
-        for polarity in ("positive", "negative", "neutral"):
-            items = p.evidence_for(OWN_CODE, "d1|sum", polarity, 12)
-            # c100／c101 是积极、c108 是消极 —— 三条都在，极性没有把任何一条筛掉。
-            assert sorted(x["id"] for x in items) == [f"ev-100-{OWN_CODE}", f"ev-101-{OWN_CODE}", f"ev-108-{OWN_CODE}"]
-        assert items[0]["excerpt"].startswith("补一条评论")
-        assert len(items) == p.summary_for(OWN_CODE, "d1")["evidenceCount"], "入口上数几条，点开就是几条"
-
-    def test_n_still_clamps_the_cited_list(self, provider):
-        p = annotated(provider)
-        add_synth(p, self.POINTS)
-        assert len(p.evidence_for(OWN_CODE, "d1|sum", "positive", 2)) == 2
-
-    def test_without_a_summary_the_polarity_path_is_used(self, provider):
-        p = annotated(provider)
-        neg = p.evidence_for(OWN_CODE, "d1|sum", "negative", 12)
-        assert len(neg) == 4 and all(x["id"] != f"ev-100-{OWN_CODE}" for x in neg)
-        assert len(p.evidence_for(OWN_CODE, "d1|sum", "positive", 12)) == 8
-
-    def test_a_summary_citing_nothing_yields_an_empty_list(self, provider):
-        """写了要点、一条都没引 ⇒ `[]`，与入口上的 `evidenceCount=0` 一致；不退回极性取法
-        （那会给出一批与要点句无关的原文）。"""
-        p = annotated(provider)
-        add_synth(p, [{"kind": "summary", "value": {"points": [{"text": "费率获认可", "evidence_ids": []}]}}])
-        assert p.summary_for(OWN_CODE, "d1")["evidenceCount"] == 0
-        assert p.evidence_for(OWN_CODE, "d1|sum", "positive", 6) == []
-
-    def test_malformed_or_deleted_ids_are_skipped_not_raised(self, provider):
-        p = annotated(provider)
-        add_synth(p, [{"kind": "summary", "value": {"points": [
-            {"text": "费率获认可", "evidence_ids": ["c100", "f1", "xyz", "c99999"]}]}}])
-        items = p.evidence_for(OWN_CODE, "d1|sum", "positive", 6)
-        assert [x["id"] for x in items] == [f"ev-100-{OWN_CODE}"]
-
-    def test_other_panels_are_untouched_by_the_summary(self, provider):
-        p = annotated(provider)
-        add_synth(p, self.POINTS)
-        assert len(p.evidence_for(OWN_CODE, f"d1|{OWN_CODE}-neg-0", "negative", 12)) == 4
-
-    def test_unannotated_product_is_still_none(self, provider):
-        p = annotated(provider)
-        add_synth(p, [dict(self.POINTS[0], code=PEER_CODE)])
-        assert p.evidence_for(PEER_CODE, "d1|sum", "positive", 6) is None
-
-
-class TestStale:
-    """`synth_dirty_{code}_{range}=="1"` 时七个叙述面板照常给出现行生成物，并标 `stale=True`；
-    不脏、或没有生成物可过期时 `stale=False`。"""
-
-    @staticmethod
-    def _dirty(p, on=True):
-        p._meta[f"synth_dirty_{OWN_CODE}_d1"] = "1" if on else "0"
-
-    def test_hot_summary_keeps_its_text_and_flags_stale(self, provider):
-        p = annotated(provider)
-        add_synth(p, [{"kind": "hot_summary", "value": {"text": "费率获认可，倾向长期持有", "needs_review": False}}])
-        assert p.hot_summaries("d1")[OWN_CODE]["stale"] is False
-        self._dirty(p)
-        hs = p.hot_summaries("d1")[OWN_CODE]
-        assert hs["status"] == "ok" and hs["text"].startswith("费率") and hs["stale"] is True
-        # 没生成物的产品：unavailable，不是 stale —— 没有什么可过期的
-        assert p.hot_summaries("d1")[PEER_CODE] == {
-            "status": "unavailable", "text": "数据暂不可用", "sample": None, "ok": False, "stale": False,
-        }
-
-    def test_themes_carry_a_top_level_flag(self, provider):
-        p = annotated(provider)
-        add_synth(p, [{"kind": "theme_label", "subkey": "positive|fee",
-                       "value": {"key": "positive|fee", "title": "费率同类最低", "summary": "…"}}])
-        assert p.themes_for(OWN_CODE, "d1")["stale"] is False
-        self._dirty(p)
-        th = p.themes_for(OWN_CODE, "d1")
-        assert th["stale"] is True
-        assert th["positive"][0]["title"] == "费率同类最低" and th["positive"][0]["mentions"] == 8
-
-    def test_neg_categories_and_topics_carry_the_flag_per_row(self, provider):
-        p = annotated(provider)
-        add_synth(p, [
-            {"kind": "neg_category", "subkey": "spread", "value": {"title": "点差过宽", "summary": "…"}},
-            {"kind": "topic_label", "subkey": "market", "value": {"title": "恒指方向争论", "summary": "…"}},
-        ])
-        assert p.neg_cats_for(OWN_CODE, "d1")[0]["stale"] is False
-        assert p.topics_for(OWN_CODE, "d1")[0]["stale"] is False
-        self._dirty(p)
-        nc = p.neg_cats_for(OWN_CODE, "d1")[0]
-        assert nc["label"] == "点差过宽" and nc["mentions"] == 4 and nc["stale"] is True
-        tp = p.topics_for(OWN_CODE, "d1")[0]
-        assert tp["title"] == "恒指方向争论" and tp["stale"] is True
-
-    def test_stages_and_competitors_carry_a_top_level_flag(self, provider):
-        p = annotated(provider)
-        add_synth(p, [
-            {"kind": "stage_unit", "subkey": "2026-08-25|am",
-             "value": {"key": "2026-08-25|am", "category": "add_opportunity", "digest": "费率优势", "needs_review": False}},
-            {"kind": "competitor_reason", "subkey": "2800",
-             "value": {"code": "2800", "like_reasons": ["费率更低"], "dislike_reasons": [], "needs_review": False}},
-        ])
-        assert p.stages_for(OWN_CODE, "d1")["stale"] is False
-        assert p.competitors_for(OWN_CODE, "d1")["stale"] is False
-        self._dirty(p)
-        st = p.stages_for(OWN_CODE, "d1")
-        assert st["status"] == "ok" and st["stages"][0]["category"] == "add_opportunity" and st["stale"] is True
-        c = p.competitors_for(OWN_CODE, "d1")
-        assert c["stale"] is True
-        assert next(x for x in c["list"] if x["code"] == "2800")["positiveThemes"][0]["title"] == "费率更低"
-
-    def test_dirty_without_any_output_is_not_stale(self, provider):
-        """脏了但模型从没写过 ⇒ 仍是 unavailable / 固定名，`stale=False`。"""
-        p = annotated(provider)
-        self._dirty(p)
-        assert p.summary_for(OWN_CODE, "d1")["stale"] is False
-        assert p.themes_for(OWN_CODE, "d1")["stale"] is False
-        assert p.stages_for(OWN_CODE, "d1")["stale"] is False
-        assert p.competitors_for(OWN_CODE, "d1")["stale"] is False
-        assert p.hot_summaries("d1")[OWN_CODE]["stale"] is False
-        assert all(r["stale"] is False for r in p.neg_cats_for(OWN_CODE, "d1"))
-        assert all(r["stale"] is False for r in p.topics_for(OWN_CODE, "d1"))
-
-    def test_clearing_the_flag_clears_stale(self, provider):
-        p = annotated(provider)
-        add_synth(p, [{"kind": "hot_summary", "value": {"text": "费率获认可", "needs_review": False}}])
-        self._dirty(p)
-        assert p.hot_summaries("d1")[OWN_CODE]["stale"] is True
-        self._dirty(p, on=False)
-        assert p.hot_summaries("d1")[OWN_CODE]["stale"] is False
 
 
 class TestStages:

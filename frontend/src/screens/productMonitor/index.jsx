@@ -12,17 +12,12 @@
        `product-monitor.dc.html?…`. It still uses history.replaceState, which the router
        does not observe — the URL updates silently, exactly as in the design.
      - `{{ }}` holes became JSX; `style="…"` strings are parsed by `s()` and
-       `style-hover` by `hover()`.
-     - 加载态由真实取数驱动（withTransition.jsx）：设计源 go() 里那个 520ms 的假 loading
-       定时器删掉，`loading`／`bodyOpacity` 改读 transition 的 isPending；切产品／切区间／
-       开抽屉时旧内容保持可见并变淡，不再退回整屏 fallback。构造函数里把本屏已知端点
-       一次性预取（radar.js `urlsFor`），首绘不再是十几次串行往返。 */
+       `style-hover` by `hover()`. */
 import React from 'react'
-import R, { prefetchScreen } from '../../data/radar'
-import { rgba, num, numRaw, navGroups, stamp, naBox, aiValidationNote, heatLowerBoundNote, staleSuffix, rowsStale, STALE_TITLE } from '../../lib/view'
+import R from '../../data/radar'
+import { rgba, num, numRaw, navGroups, stamp, naBox, aiValidationNote } from '../../lib/view'
 import { s } from '../../lib/dc'
 import Shell from '../../components/Shell'
-import withTransition, { split } from '../../components/withTransition'
 import FilterBar from './FilterBar'
 import ProductHeader from './ProductHeader'
 import Overview from './Overview'
@@ -35,14 +30,14 @@ import Topics from './Topics'
 import Competitors from './Competitors'
 import EvidenceDrawer from './EvidenceDrawer'
 
-class ProductMonitor extends React.Component {
+export default class ProductMonitor extends React.Component {
   static defaultProps = {
     candleColor: 'greenUp',
   }
 
   state = {
     code: '3033', rangeKey: 'd7', selOpen: false, q: '', pq: '', secF: 'all', newF: 'all',
-    posMore: false, negMore: false, panel: null, post: null, hover: null,
+    posMore: false, negMore: false, panel: null, post: null, hover: null, loading: false,
     legend: { comments: 1, inter: 1, active: 1, pos: 1, neg: 1, px: 1 }, kolMore: false,
     /* 热度变化与阶段观点：折线悬停桶 / 展开的阶段 / 悬停的阶段 */ heatHover: null, stageOpen: null, stageHover: null,
     /* 两块图表的绘图宽度：按面板实际宽度测量，随窗口变化重算，不再固定 1344 */ trendW: 1344
@@ -54,20 +49,7 @@ class ProductMonitor extends React.Component {
     if (w && Math.abs(w - this.state.trendW) >= 2) this.setState({ trendW: w });
   }
 
-  constructor(props) {
-    super(props); this.trendRef = React.createRef();
-    /* 预取要在首次 render **之前**发出：read() 在第一个未命中处就抛了，render 走不到
-       后面的端点。深链带了别的产品／区间时连那一套也一起发 —— componentDidMount 解析完
-       深链会切过去，那时它们已经在路上。这里不校验参数（/meta 还没回来），一个无效代码
-       至多多打一次 404，读的时候 renderVals 仍按设计源退回 3033。 */
-    var st = this.state, p = {};
-    try {
-      var u = new URLSearchParams(window.location.search);
-      p.code = u.get('code') || st.code; p.rangeKey = u.get('range') || st.rangeKey;
-    } catch (e) { p = { code: st.code, rangeKey: st.rangeKey }; }
-    prefetchScreen('product', { code: st.code, rangeKey: st.rangeKey });
-    if (p.code !== st.code || p.rangeKey !== st.rangeKey) prefetchScreen('product', p);
-  }
+  constructor(props) { super(props); this.trendRef = React.createRef(); }
 
   componentDidMount() {
     this._onResize = () => this.measureTrend();
@@ -105,30 +87,24 @@ class ProductMonitor extends React.Component {
         if (cr0.status === 'ok') p.panel = this.riskPanel(cr0, it0, c3, r3);
       }
     } catch (e) { /* 深链参数不可用时使用默认产品 */ }
-    /* 深链切到别的产品会触发新取数；进 transition 让默认产品那一屏留着变淡，而不是退回骨架。 */
-    this.props.startTransition(() => this.setState(p, () => this.drawTrend()));
+    this.setState(p, () => this.drawTrend());
   }
   componentDidUpdate() { this.drawTrend(); }
-  componentWillUnmount() { window.removeEventListener('resize', this._onResize); }
+  componentWillUnmount() { clearTimeout(this._lt); window.removeEventListener('resize', this._onResize); }
 
   go(patch) {
     var st = this.state;
-    var sync = () => {
+    if ((patch.code && patch.code !== st.code) || (patch.rangeKey && patch.rangeKey !== st.rangeKey)) {
+      patch = Object.assign({}, patch, { loading: true, hover: null, heatHover: null, stageOpen: null, stageHover: null });
+      clearTimeout(this._lt);
+      this._lt = setTimeout(() => this.setState({ loading: false }), 520);
+    }
+    this.setState(patch, () => {
       try {
         var u = '/product?code=' + this.state.code + '&range=' + this.state.rangeKey;
         window.history.replaceState(null, '', u);
       } catch (e) { /* 沙箱内可能不允许改写地址 */ }
-    };
-    if ((patch.code && patch.code !== st.code) || (patch.rangeKey && patch.rangeKey !== st.rangeKey)) {
-      patch = Object.assign({}, patch, { hover: null, heatHover: null, stageOpen: null, stageHover: null });
-      /* 会触发新取数的键走 transition（旧内容保留、isPending 驱动加载态）；输入框的值
-         紧急提交，理由见 withTransition.jsx。 */
-      var parts = split(patch, ['q', 'pq', 'selOpen']);
-      if (parts.hasUrgent) this.setState(parts.urgent);
-      this.props.startTransition(() => this.setState(parts.deferred, sync));
-      return;
-    }
-    this.setState(patch, sync);
+    });
   }
   seg(active, label, patch) {
     return {
@@ -163,8 +139,7 @@ class ProductMonitor extends React.Component {
     }).sort(function (a, b) { return b.mentions - a.mentions; });
   }
 
-  /* 抽屉一开就要读原文证据（evidenceFor），未命中会挂起；进 transition 让正文留着变淡。 */
-  openPanel(p) { this.props.startTransition(() => this.setState({ panel: p, post: p.post || null })); }
+  openPanel(p) { this.setState({ panel: p, post: p.post || null }); }
 
   trendGeo() { return { W: this.state.trendW || 1344, H: 340, L: 64, Rr: 136, t1: 28, h1: 152, t2: 224, h2: 104 }; }
   riskPanel(cr, item, code, rangeKey) {
@@ -485,9 +460,6 @@ class ProductMonitor extends React.Component {
 
     /* 产品话题情绪 */
     var topicsAll = R.topicsFor(code, s.rangeKey);
-    /* 话题仍是数组，`stale`（标注已更新、汇总待重新生成）逐行挂在每个元素上（后端契约），
-       整块判定见 lib/view.js rowsStale。 */
-    var topicsStale = rowsStale(topicsAll);
     var topicsNa = topicsAll == null;
     var topics = (topicsNa ? [] : topicsAll).map(function (t) {
       var mx = Math.max(1, Math.max.apply(null, t.buckets.map(function (b) { return b.mentions; })));
@@ -650,8 +622,7 @@ class ProductMonitor extends React.Component {
       rangeText: range.text, rangeFrom: range.from, rangeTo: range.to,
       granLabel: range.granLabel, benchText: range.benchText, benchLabel: range.benchLabel,
       updated: stamp(R.UPDATED), rangeKey: s.rangeKey,
-      /* 真实的「还在等」：transition 提交前为 true（withTransition.jsx），不再是 520ms 定时器。 */
-      loading: !!self.props.isPending, bodyOpacity: self.props.isPending ? '0.45' : '1',
+      loading: s.loading, bodyOpacity: s.loading ? '0.45' : '1',
       code: code, name: o.name, sectorName: o.sectorName, struct: o.struct, issuer: o.issuer,
       listing: m.listingDate,
       ownLabel: o.ownership === 'own' ? '自家产品' : '竞品',
@@ -700,19 +671,10 @@ class ProductMonitor extends React.Component {
 
       kpis: [
         { label: '评论量', value: num(o.comments), d: bench.comments, note: '区间内被识别为讨论该 ETF 的评论条数，同一账号同一条只计一次' },
-        /* `heatUnknownPosts > 0` 时热度／转发是**下限**（这些帖子的转发数没采到），备注里
-           说出来；环比的悬浮提示带上当期与基准期各有几帖未知（`bench.heatUnknownPosts`）。
-           demo 下没有这两个键，`undefined > 0` 为假、title 为 undefined ⇒ 一个字不多。 */
-        {
-          label: '讨论热度', value: num(o.discussionHeat), d: bench.heat,
-          note: R.HEAT_FORMULA + '　·　点赞 ' + num(o.likes) + ' ／ 转发 ' + num(o.shares) + heatLowerBoundNote(o.heatUnknownPosts),
-          deltaTitle: bench.heatUnknownPosts && (bench.heatUnknownPosts.current > 0 || bench.heatUnknownPosts.base > 0)
-            ? '环比按下限计算：当期 ' + num(bench.heatUnknownPosts.current) + ' 帖、基准期 ' + num(bench.heatUnknownPosts.base) + ' 帖转发数未知'
-            : undefined
-        },
+        { label: '讨论热度', value: num(o.discussionHeat), d: bench.heat, note: R.HEAT_FORMULA + '　·　点赞 ' + num(o.likes) + ' ／ 转发 ' + num(o.shares) },
         { label: '活跃账号数', value: num(o.activeAccounts), d: bench.accounts, note: o.activeAccounts == null ? '该产品的账号口径尚未核验' : '区间内发布或评论过的独立账号' },
         { label: '全市场评论量排名', value: '第 ' + rk.map[code], d: { short: '／ ' + rk.total + ' 只', dir: 0 }, note: '基于完整活跃 ETF 池计算，板块筛选不重算' }
-      ].map(function (k) { return { label: k.label, value: k.value, note: k.note, delta: k.d.short, dfg: self.dfg(k.d), deltaTitle: k.deltaTitle }; }),
+      ].map(function (k) { return { label: k.label, value: k.value, note: k.note, delta: k.d.short, dfg: self.dfg(k.d) }; }),
 
       summary: sum.text, sampleN: sumNa ? '数据暂不可用' : String(sum.sample), sampleOk: !sumNa,
       summaryNa: sumNa,
@@ -720,21 +682,15 @@ class ProductMonitor extends React.Component {
       summaryCountText: sumNa ? '数据暂不可用' : sumPts.length + ' 条要点 · 基于 ' + sum.sample + ' 条有效样本',
       /* P7 元信息末尾的如实声明（ADR-0019 §4）：徽章说的是这一条怎么来的，这句说的是
          整页的 AI 结论被验证到了什么程度。文案跟 /meta 的 `aiValidation` 走。 */
-      aiValidationNote: aiValidationNote(R.AI_VALIDATION, R.AI_VALIDATION_DETAIL),
-      /* 徽章三件事按顺序说：整块缺失 → 样本不足 → `aiStatus === 'unavailable'`（后端只给了
-         计数句、AI 要点还没生成，这时不许写「AI 生成」）→ 正常；最后若 `stale` 为 true 追加
-         「 · 待更新」。后两个键 demo 下不存在，走不到。 */
-      aiLabel: sumNa ? '暂不可用' : (sum.low ? '样本不足 · 不输出倾向结论'
-        : (sum.aiStatus === 'unavailable' ? '计数句 · AI 要点待生成' : 'AI 生成 · 可追溯原文') + staleSuffix(sum.stale)),
+      aiValidationNote: aiValidationNote(R.AI_VALIDATION),
+      aiLabel: sumNa ? '暂不可用' : (sum.low ? '样本不足 · 不输出倾向结论' : 'AI 生成 · 可追溯原文'),
       aiBg: sumNa ? 'var(--ink-100)' : (sum.low ? 'var(--ink-100)' : 'var(--warning-100)'),
       aiFg: sumNa ? 'var(--ink-500)' : (sum.low ? 'var(--ink-700)' : 'var(--warning-700)'),
-      hasSummaryEvidence: !sumNa && (sum.evidenceCount != null ? sum.evidenceCount > 0 : o.mentions > 0),
-      /* 证据条数用后端的 `evidenceCount`。设计源那句 `Math.round(o.mentions * 0.4)` 是
-         演示稿的伪造系数，真库下是编数；没有这个键（demo）时沿用原写法以保持逐字比对。 */
-      summaryEvidence: String(sum.evidenceCount != null ? sum.evidenceCount : Math.round(o.mentions * 0.4)),
+      hasSummaryEvidence: !sumNa && o.mentions > 0,
+      summaryEvidence: String(Math.round(o.mentions * 0.4)),
       openSummaryEvidence: () => self.openPanel({
         kind: 'summary', id: 'sum', polarity: 'neutral', title: '当前舆情总结的支撑原文',
-        filter: '全部产品相关内容', count: sum.evidenceCount != null ? sum.evidenceCount : Math.round(o.mentions * 0.4)
+        filter: '全部产品相关内容', count: Math.round(o.mentions * 0.4)
       }),
 
       netText: attNa
@@ -807,9 +763,6 @@ class ProductMonitor extends React.Component {
 
       axisCells: axisCells, dayBands: dayBands, hasDayBands: dayBands.length > 1,
       hasTopics: topics.length > 0, noTopics: !topicsNa && topics.length === 0, topicsUnavailable: topicsNa, topics: topics,
-      /* 各块汇总的「待更新」旗标（只认 `=== true`；demo 下没有这个键，全为 false，不渲染）。 */
-      topicsStale: topicsStale, themesStale: R.themesStale(code, s.rangeKey) === true,
-      compsStale: compsRes.stale === true, staleTitle: STALE_TITLE,
       hasComps: comps.length > 0, noComps: comps.length === 0, comps: comps,
       compCount: String(comps.length),
       compScopeText: o.ownership === 'own' ? '自家产品 · 固定关联竞品与 AI 自动候选' : '竞品产品 · 反向展示对位自家产品与同类竞品',
@@ -895,7 +848,6 @@ class ProductMonitor extends React.Component {
     Object.assign(out, {
       trendW: String(HG.W), heatGridW: String(hpw), axRX: String(HG.W - 127), axPX: String(HG.W - 72), trendBoxRef: self.trendBoxRef,
       stageOk: SG.status === 'ok' || SG.status === 'low_sample', stageUnavailable: SG.status === 'unavailable', stageEmpty: SG.status === 'empty',
-      stageAiLabel: 'AI 生成 · 可追溯原文' + staleSuffix(SG.stale), stageStale: SG.stale === true,
       stageGranLabel: SG.granLabel, heatGranLabel: isHalf ? '60 分钟' : '自然日', stageRule: SG.rule || R.STAGE_RULE, heatFormulaText: R.HEAT_FORMULA,
       heatPath: heatPath,
       heatArea: hsr.length ? heatPath + ' L' + hx(hsr.length - 1).toFixed(1) + ' ' + (HG.top + HG.ph).toFixed(1) + ' L' + hx(0).toFixed(1) + ' ' + (HG.top + HG.ph).toFixed(1) + ' Z' : '',
@@ -1059,5 +1011,3 @@ class ProductMonitor extends React.Component {
     )
   }
 }
-
-export default withTransition(ProductMonitor)
