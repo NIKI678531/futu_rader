@@ -18,6 +18,9 @@
 都 ≥ 路由阈值用学生，否则用 Luna；Luna 没标过就还是学生）。`meta_kv.ai_validation` 顶层三个数
 取 `combined` —— 那是页面上实际展示的那套。
 
+显式 `--source llm` 抽出的表只评估 Luna：学生与组合路由指标为 null，顶层取 llm，
+报告的 sample_source=llm。没有学生预测不等于学生准确率为零，也不能据此评价路由。
+
 ## 形状（另一位工程师在 backend/core/meta.py 读，**不能改**）
 
     {"level": "spot_check", "n": 400, "date": "YYYY-MM-DD",
@@ -103,6 +106,7 @@ def read_model_labels(path):
         if not r or r[idx["编号"]] is None:
             continue
         out[str(r[idx["编号"]]).strip()] = {
+            "sample_source": r[idx["抽样来源"]] if "抽样来源" in idx else "student",
             "comment_id": r[idx["comment_id"]], "code": r[idx["产品代码"]], "stratum": r[idx["层"]],
             "student": {"relevance": r[idx["学生相关性"]], "attitude": r[idx["学生态度"]],
                         "relevance_p": r[idx["学生相关性概率"]], "attitude_p": r[idx["学生态度概率"]]},
@@ -159,10 +163,13 @@ def _macro_f1(pairs, labels):
 def evaluate(gold, model, *, threshold=None):
     """返回 `{n, by_system: {system: {relevance_accuracy, attitude_accuracy, attitude_macro_f1, n_relevance, n_attitude, confusion}}}`。"""
     joined = [(gold[k], model[k]) for k in sorted(gold) if k in model]
-    out = {"n": len(joined), "n_gold": len(gold), "n_unmatched": len(set(gold) - set(model)), "by_system": {}}
+    source = "llm" if joined and all(m.get("sample_source") == "llm" for _, m in joined) else "student"
+    out = {"n": len(joined), "n_gold": len(gold), "n_unmatched": len(set(gold) - set(model)),
+           "sample_source": source, "by_system": {}}
     for system in SYSTEMS:
         rel_pairs, att_pairs = [], []
-        for g, m in joined:
+        system_rows = [] if source == "llm" and system != "llm" else joined
+        for g, m in system_rows:
             pred = combined_label(m, threshold) if system == "combined" else m[system]
             rel_pairs.append((g["relevance"], pred.get("relevance")))
             if g["relevance"] == "relevant" and g["attitude"] is not None:
@@ -179,9 +186,10 @@ def evaluate(gold, model, *, threshold=None):
 
 
 def ai_validation_payload(result, date_str):
-    """`meta_kv.ai_validation` 的形状（见模块 docstring）。顶层三个数＝combined。"""
+    """保持声明形状；默认顶层取 combined，Luna 专用样本取 llm。"""
     keys = ("relevance_accuracy", "attitude_accuracy", "attitude_macro_f1")
-    comb = result["by_system"]["combined"]
+    system = "llm" if result.get("sample_source") == "llm" else "combined"
+    comb = result["by_system"][system]
     return {
         "level": "spot_check", "n": result["n"], "date": date_str,
         **{k: comb[k] for k in keys},

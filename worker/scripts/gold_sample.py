@@ -2,6 +2,7 @@
 
     cd worker && python -m scripts.gold_sample                    # → <数据目录>/gold-400.xlsx ＋ gold-400-model-labels.xlsx
     cd worker && python -m scripts.gold_sample --n 400 --seed 7 --out-dir D:/tmp
+    cd worker && python -m scripts.gold_sample --source llm       # 无学生时，仅核对 Luna 现行结论
 
 ## 为什么分层、按什么分
 
@@ -91,6 +92,9 @@ def polarity_of(rel, att):
 
 
 def stratum_key(unit):
+    if unit.get("sample_source") == "llm":
+        return "|".join((unit["ownership"], polarity_of(unit["llm_relevance"], unit["llm_attitude"]),
+                         LANG_ZH.get(unit["language"], unit["language"])))
     return "|".join((unit["ownership"], polarity_of(unit["student_relevance"], unit["student_attitude"]),
                      band_of(unit["student_confidence"]), LANG_ZH.get(unit["language"], unit["language"])))
 
@@ -137,11 +141,13 @@ def _latest_by_provider(engine, kind, providers):
 
 
 
-def collect_units(engine, *, ownership=None):
-    """有学生行的判定单元，带 Luna 现行标签与文本上下文。"""
+def collect_units(engine, *, ownership=None, source="student"):
+    """默认抽有学生行的单元；source=llm 只抽 Luna 现行结论，不需要学生权重。"""
+    if source not in ("student", "llm"):
+        raise ValueError(f"未知抽样来源：{source}")
     ownership = ownership or pool_codes()
-    s_rel = _latest_by_provider(engine, "relevance", ("local_model",))
-    s_att = _latest_by_provider(engine, "attitude", ("local_model",))
+    s_rel = _latest_by_provider(engine, "relevance", ("local_model",)) if source == "student" else {}
+    s_att = _latest_by_provider(engine, "attitude", ("local_model",)) if source == "student" else {}
     from radar_db.annotations_read import current_annotations
     with engine.connect() as conn:
         provider_of = dict(conn.execute(select(annotation_runs.c.run_id, annotation_runs.c.provider)).all())
@@ -150,24 +156,29 @@ def collect_units(engine, *, ownership=None):
 
     def luna(cur, unit):
         r = cur.get(unit)
-        if r is None or provider_of.get(r["run_id"], "llm") in ("rule", "local_model", "propagated"):
+        if r is None or provider_of.get(r["run_id"]) != "openai_compatible":
             return None
         return r["value"]
 
-    ids = sorted({u[0] for u in s_rel})
+    unit_keys = s_rel if source == "student" else {
+        unit for unit in cur_rel if unit[1] in ownership and luna(cur_rel, unit) in REL_ZH
+    }
+    ids = sorted({unit[0] for unit in unit_keys})
     sources = {}
     for i in range(0, len(ids), 900):
         chunk = [{"target_type": "comment", "target_id": cid} for cid in ids[i:i + 900]]
         sources.update(annotate._load_sources(engine, "comment_product", chunk))
 
     units = []
-    for (cid, code), (rel, rel_conf, _run) in sorted(s_rel.items()):
+    for cid, code in sorted(unit_keys):
         src = sources.get(("comment", cid))
         if not src or not (src.get("text") or "").strip():
             continue
+        rel, rel_conf, _run = s_rel.get((cid, code), (None, None, None))
         att, att_conf, _ = s_att.get((cid, code), (None, None, None))
         confs = [c for c in (rel_conf, att_conf if rel == "relevant" else None) if c is not None]
         units.append({
+            "sample_source": source,
             "comment_id": cid, "code": code, "ownership": ownership.get(code, "peer"),
             "text": src["text"], "title": src.get("title"), "parent": src.get("parent"),
             "student_relevance": rel, "student_attitude": att if rel == "relevant" else None,
@@ -197,7 +208,7 @@ def sample(units, n=N_DEFAULT, seed=42):
     return picked
 
 
-def write_workbooks(picked, out_dir, *, names=None):
+def write_workbooks(picked, out_dir, *, names=None, source="student"):
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
     from openpyxl.utils import get_column_letter
@@ -238,12 +249,16 @@ def write_workbooks(picked, out_dir, *, names=None):
 
     guide = wb.create_sheet(GUIDE_SHEET)
     guide.column_dimensions["A"].width = 110
+    if source == "llm":
+        guide.append(["本表只核对 Luna 现行结论；按自家/竞品、预测极性、简繁粤分层，无学生标签或置信带。"])
+        guide.append(["不能据此评估学生模型或学生路由效果；请独立判断，不要查看另一份模型标签表。"])
     for line in GUIDE_LINES:
         guide.append([line])
     for row in guide.iter_rows():
         for c in row:
             c.alignment = Alignment(wrap_text=True, vertical="top")
-    gold_path = out_dir / f"gold-{n}.xlsx"
+    stem = f"gold-llm-{n}" if source == "llm" else f"gold-{n}"
+    gold_path = out_dir / f"{stem}.xlsx"
     wb.save(gold_path)
 
     wb2 = Workbook()
@@ -252,14 +267,14 @@ def write_workbooks(picked, out_dir, *, names=None):
     ws2 = wb2.active
     ws2.title = "模型标签"
     ws2.append(["编号", "comment_id", "产品代码", "层", "学生相关性", "学生相关性概率", "学生态度", "学生态度概率",
-                "Luna相关性", "Luna态度", "学生模型"])
+                "Luna相关性", "Luna态度", "学生模型", "抽样来源"])
     for u in picked:
         ws2.append([u["id"], u["comment_id"], u["code"], u["stratum"], u["student_relevance"], u["student_relevance_p"],
                     u["student_attitude"], u["student_attitude_p"], u["llm_relevance"], u["llm_attitude"],
-                    registry.model_id_string()])
-    for i in range(1, 12):
+                    registry.model_id_string() if source == "student" else None, source])
+    for i in range(1, 13):
         ws2.column_dimensions[get_column_letter(i)].width = 16
-    labels_path = out_dir / f"gold-{n}-model-labels.xlsx"
+    labels_path = out_dir / f"{stem}-model-labels.xlsx"
     wb2.save(labels_path)
     return gold_path, labels_path
 
@@ -268,18 +283,23 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="分层抽人工核对集")
     ap.add_argument("--n", type=int, default=N_DEFAULT)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--source", choices=("student", "llm"), default="student",
+                    help="student：学生判过的单元（默认）；llm：仅 Luna 现行结论，不训练、不写库")
     ap.add_argument("--out-dir", help="默认数据目录（仓库外）")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s")
     engine = make_engine()
-    units = collect_units(engine)
+    units = collect_units(engine, source=args.source)
     if not units:
-        print("没有学生行：先跑 python -m jobs.classify", file=sys.stderr)
+        message = ("没有学生行：原方案需先准备学生模型并运行 python -m jobs.classify；"
+                   "仅核对已有 Luna 结论可运行 python -m scripts.gold_sample --source llm"
+                   if args.source == "student" else "没有可抽样的 Luna 现行结论（需有正文和池内产品）。")
+        print(message, file=sys.stderr)
         return 2
     picked = sample(units, args.n, args.seed)
-    gold, labels = write_workbooks(picked, args.out_dir or default_data_dir())
+    gold, labels = write_workbooks(picked, args.out_dir or default_data_dir(), source=args.source)
     strata = Counter(u["stratum"] for u in picked)
-    print(json.dumps({"pool": len(units), "picked": len(picked), "strata": len(strata),
+    print(json.dumps({"source": args.source, "pool": len(units), "picked": len(picked), "strata": len(strata),
                       "gold": str(gold), "model_labels": str(labels),
                       "by_stratum": dict(sorted(strata.items()))}, ensure_ascii=False, indent=1))
     return 0
