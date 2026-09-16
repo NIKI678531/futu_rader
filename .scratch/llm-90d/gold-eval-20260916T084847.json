@@ -1,0 +1,571 @@
+{
+ "stamp": "20260916T084847",
+ "gold_file": "gold-llm-400.xlsx",
+ "labels_source": "labels_file",
+ "labels_stats": {
+  "labels_file": "gold-llm-400-model-labels.xlsx",
+  "rows": 400
+ },
+ "recheck": null,
+ "by_stratum": {
+  "own|无关|简": 150,
+  "own|需上下文|粤": 11,
+  "own|需上下文|简": 116,
+  "own|消极|简": 13,
+  "own|中性|粤": 1,
+  "own|无关|繁": 33,
+  "own|无关|粤": 19,
+  "own|中性|简": 3,
+  "own|积极|粤": 3,
+  "peer|需上下文|粤": 1,
+  "own|积极|简": 12,
+  "peer|消极|粤": 1,
+  "own|需上下文|繁": 16,
+  "peer|积极|简": 1,
+  "own|积极|繁": 3,
+  "own|消极|繁": 4,
+  "peer|中性|繁": 1,
+  "peer|积极|粤": 1,
+  "own|消极|粤": 4,
+  "peer|需上下文|简": 1,
+  "peer|无关|粤": 1,
+  "peer|中性|简": 1,
+  "own|中性|繁": 1,
+  "peer|中性|粤": 1,
+  "peer|需上下文|繁": 1,
+  "peer|积极|繁": 1
+ },
+ "by_stratum_agreement": {
+  "llm": {
+   "own|中性|简": {
+    "n": 3,
+    "relevance_agree": 2,
+    "attitude_n": 2,
+    "attitude_agree": 0
+   },
+   "own|中性|粤": {
+    "n": 1,
+    "relevance_agree": 0,
+    "attitude_n": 0,
+    "attitude_agree": 0
+   },
+   "own|中性|繁": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 1,
+    "attitude_agree": 0
+   },
+   "own|无关|简": {
+    "n": 150,
+    "relevance_agree": 46,
+    "attitude_n": 76,
+    "attitude_agree": 0
+   },
+   "own|无关|粤": {
+    "n": 19,
+    "relevance_agree": 4,
+    "attitude_n": 12,
+    "attitude_agree": 0
+   },
+   "own|无关|繁": {
+    "n": 33,
+    "relevance_agree": 11,
+    "attitude_n": 17,
+    "attitude_agree": 0
+   },
+   "own|消极|简": {
+    "n": 13,
+    "relevance_agree": 10,
+    "attitude_n": 10,
+    "attitude_agree": 6
+   },
+   "own|消极|粤": {
+    "n": 4,
+    "relevance_agree": 4,
+    "attitude_n": 4,
+    "attitude_agree": 2
+   },
+   "own|消极|繁": {
+    "n": 4,
+    "relevance_agree": 4,
+    "attitude_n": 4,
+    "attitude_agree": 4
+   },
+   "own|积极|简": {
+    "n": 12,
+    "relevance_agree": 10,
+    "attitude_n": 10,
+    "attitude_agree": 10
+   },
+   "own|积极|粤": {
+    "n": 3,
+    "relevance_agree": 3,
+    "attitude_n": 3,
+    "attitude_agree": 3
+   },
+   "own|积极|繁": {
+    "n": 3,
+    "relevance_agree": 2,
+    "attitude_n": 2,
+    "attitude_agree": 1
+   },
+   "own|需上下文|简": {
+    "n": 116,
+    "relevance_agree": 29,
+    "attitude_n": 70,
+    "attitude_agree": 0
+   },
+   "own|需上下文|粤": {
+    "n": 11,
+    "relevance_agree": 5,
+    "attitude_n": 6,
+    "attitude_agree": 0
+   },
+   "own|需上下文|繁": {
+    "n": 16,
+    "relevance_agree": 3,
+    "attitude_n": 11,
+    "attitude_agree": 0
+   },
+   "peer|中性|简": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 1,
+    "attitude_agree": 1
+   },
+   "peer|中性|粤": {
+    "n": 1,
+    "relevance_agree": 0,
+    "attitude_n": 0,
+    "attitude_agree": 0
+   },
+   "peer|中性|繁": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 1,
+    "attitude_agree": 0
+   },
+   "peer|无关|粤": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 0,
+    "attitude_agree": 0
+   },
+   "peer|消极|粤": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 1,
+    "attitude_agree": 0
+   },
+   "peer|积极|简": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 1,
+    "attitude_agree": 1
+   },
+   "peer|积极|粤": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 1,
+    "attitude_agree": 0
+   },
+   "peer|积极|繁": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 1,
+    "attitude_agree": 1
+   },
+   "peer|需上下文|简": {
+    "n": 1,
+    "relevance_agree": 0,
+    "attitude_n": 1,
+    "attitude_agree": 0
+   },
+   "peer|需上下文|粤": {
+    "n": 1,
+    "relevance_agree": 0,
+    "attitude_n": 0,
+    "attitude_agree": 0
+   },
+   "peer|需上下文|繁": {
+    "n": 1,
+    "relevance_agree": 0,
+    "attitude_n": 0,
+    "attitude_agree": 0
+   }
+  },
+  "combined": {
+   "own|中性|简": {
+    "n": 3,
+    "relevance_agree": 2,
+    "attitude_n": 2,
+    "attitude_agree": 0
+   },
+   "own|中性|粤": {
+    "n": 1,
+    "relevance_agree": 0,
+    "attitude_n": 0,
+    "attitude_agree": 0
+   },
+   "own|中性|繁": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 1,
+    "attitude_agree": 0
+   },
+   "own|无关|简": {
+    "n": 150,
+    "relevance_agree": 46,
+    "attitude_n": 76,
+    "attitude_agree": 0
+   },
+   "own|无关|粤": {
+    "n": 19,
+    "relevance_agree": 4,
+    "attitude_n": 12,
+    "attitude_agree": 0
+   },
+   "own|无关|繁": {
+    "n": 33,
+    "relevance_agree": 11,
+    "attitude_n": 17,
+    "attitude_agree": 0
+   },
+   "own|消极|简": {
+    "n": 13,
+    "relevance_agree": 10,
+    "attitude_n": 10,
+    "attitude_agree": 6
+   },
+   "own|消极|粤": {
+    "n": 4,
+    "relevance_agree": 4,
+    "attitude_n": 4,
+    "attitude_agree": 2
+   },
+   "own|消极|繁": {
+    "n": 4,
+    "relevance_agree": 4,
+    "attitude_n": 4,
+    "attitude_agree": 4
+   },
+   "own|积极|简": {
+    "n": 12,
+    "relevance_agree": 10,
+    "attitude_n": 10,
+    "attitude_agree": 10
+   },
+   "own|积极|粤": {
+    "n": 3,
+    "relevance_agree": 3,
+    "attitude_n": 3,
+    "attitude_agree": 3
+   },
+   "own|积极|繁": {
+    "n": 3,
+    "relevance_agree": 2,
+    "attitude_n": 2,
+    "attitude_agree": 1
+   },
+   "own|需上下文|简": {
+    "n": 116,
+    "relevance_agree": 29,
+    "attitude_n": 70,
+    "attitude_agree": 0
+   },
+   "own|需上下文|粤": {
+    "n": 11,
+    "relevance_agree": 5,
+    "attitude_n": 6,
+    "attitude_agree": 0
+   },
+   "own|需上下文|繁": {
+    "n": 16,
+    "relevance_agree": 3,
+    "attitude_n": 11,
+    "attitude_agree": 0
+   },
+   "peer|中性|简": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 1,
+    "attitude_agree": 1
+   },
+   "peer|中性|粤": {
+    "n": 1,
+    "relevance_agree": 0,
+    "attitude_n": 0,
+    "attitude_agree": 0
+   },
+   "peer|中性|繁": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 1,
+    "attitude_agree": 0
+   },
+   "peer|无关|粤": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 0,
+    "attitude_agree": 0
+   },
+   "peer|消极|粤": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 1,
+    "attitude_agree": 0
+   },
+   "peer|积极|简": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 1,
+    "attitude_agree": 1
+   },
+   "peer|积极|粤": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 1,
+    "attitude_agree": 0
+   },
+   "peer|积极|繁": {
+    "n": 1,
+    "relevance_agree": 1,
+    "attitude_n": 1,
+    "attitude_agree": 1
+   },
+   "peer|需上下文|简": {
+    "n": 1,
+    "relevance_agree": 0,
+    "attitude_n": 1,
+    "attitude_agree": 0
+   },
+   "peer|需上下文|粤": {
+    "n": 1,
+    "relevance_agree": 0,
+    "attitude_n": 0,
+    "attitude_agree": 0
+   },
+   "peer|需上下文|繁": {
+    "n": 1,
+    "relevance_agree": 0,
+    "attitude_n": 0,
+    "attitude_agree": 0
+   }
+  }
+ },
+ "gold_distribution": {
+  "relevance": {
+   "relevant": 240,
+   "irrelevant": 89,
+   "needs_context": 71
+  },
+  "attitude": {
+   "negative": 96,
+   "neutral": 33,
+   "positive": 106
+  }
+ },
+ "model_distribution": {
+  "student": {
+   "relevance": {
+    "null": 400
+   },
+   "attitude": {}
+  },
+  "llm": {
+   "relevance": {
+    "irrelevant": 203,
+    "needs_context": 146,
+    "relevant": 51
+   },
+   "attitude": {
+    "negative": 22,
+    "neutral": 8,
+    "positive": 21
+   }
+  }
+ },
+ "n": 400,
+ "n_gold": 400,
+ "n_unmatched": 0,
+ "by_system": {
+  "student": {
+   "relevance_accuracy": null,
+   "attitude_accuracy": null,
+   "attitude_macro_f1": null,
+   "n_relevance": 0,
+   "n_attitude": 0,
+   "n_unlabeled": 400,
+   "coverage": 0.0,
+   "confusion": {
+    "relevance": {
+     "relevant": {
+      "relevant": 0,
+      "irrelevant": 0,
+      "needs_context": 0,
+      "none": 0
+     },
+     "irrelevant": {
+      "relevant": 0,
+      "irrelevant": 0,
+      "needs_context": 0,
+      "none": 0
+     },
+     "needs_context": {
+      "relevant": 0,
+      "irrelevant": 0,
+      "needs_context": 0,
+      "none": 0
+     }
+    },
+    "attitude": {
+     "positive": {
+      "positive": 0,
+      "neutral": 0,
+      "negative": 0,
+      "none": 0
+     },
+     "neutral": {
+      "positive": 0,
+      "neutral": 0,
+      "negative": 0,
+      "none": 0
+     },
+     "negative": {
+      "positive": 0,
+      "neutral": 0,
+      "negative": 0,
+      "none": 0
+     }
+    }
+   }
+  },
+  "llm": {
+   "relevance_accuracy": 0.3525,
+   "attitude_accuracy": 0.1234,
+   "attitude_macro_f1": 0.1731,
+   "n_relevance": 400,
+   "n_attitude": 235,
+   "n_unlabeled": 0,
+   "coverage": 1.0,
+   "confusion": {
+    "relevance": {
+     "relevant": {
+      "relevant": 42,
+      "irrelevant": 108,
+      "needs_context": 90,
+      "none": 0
+     },
+     "irrelevant": {
+      "relevant": 8,
+      "irrelevant": 62,
+      "needs_context": 19,
+      "none": 0
+     },
+     "needs_context": {
+      "relevant": 1,
+      "irrelevant": 33,
+      "needs_context": 37,
+      "none": 0
+     }
+    },
+    "attitude": {
+     "positive": {
+      "positive": 16,
+      "neutral": 4,
+      "negative": 6,
+      "none": 80
+     },
+     "neutral": {
+      "positive": 1,
+      "neutral": 1,
+      "negative": 1,
+      "none": 30
+     },
+     "negative": {
+      "positive": 1,
+      "neutral": 0,
+      "negative": 12,
+      "none": 83
+     }
+    }
+   }
+  },
+  "combined": {
+   "relevance_accuracy": 0.3525,
+   "attitude_accuracy": 0.1234,
+   "attitude_macro_f1": 0.1731,
+   "n_relevance": 400,
+   "n_attitude": 235,
+   "n_unlabeled": 0,
+   "coverage": 1.0,
+   "confusion": {
+    "relevance": {
+     "relevant": {
+      "relevant": 42,
+      "irrelevant": 108,
+      "needs_context": 90,
+      "none": 0
+     },
+     "irrelevant": {
+      "relevant": 8,
+      "irrelevant": 62,
+      "needs_context": 19,
+      "none": 0
+     },
+     "needs_context": {
+      "relevant": 1,
+      "irrelevant": 33,
+      "needs_context": 37,
+      "none": 0
+     }
+    },
+    "attitude": {
+     "positive": {
+      "positive": 16,
+      "neutral": 4,
+      "negative": 6,
+      "none": 80
+     },
+     "neutral": {
+      "positive": 1,
+      "neutral": 1,
+      "negative": 1,
+      "none": 30
+     },
+     "negative": {
+      "positive": 1,
+      "neutral": 0,
+      "negative": 12,
+      "none": 83
+     }
+    }
+   }
+  }
+ },
+ "ai_validation": {
+  "level": "spot_check",
+  "n": 400,
+  "date": "2026-09-16",
+  "relevance_accuracy": 0.3525,
+  "attitude_accuracy": 0.1234,
+  "attitude_macro_f1": 0.1731,
+  "by_system": {
+   "student": {
+    "relevance_accuracy": null,
+    "attitude_accuracy": null,
+    "attitude_macro_f1": null
+   },
+   "llm": {
+    "relevance_accuracy": 0.3525,
+    "attitude_accuracy": 0.1234,
+    "attitude_macro_f1": 0.1731
+   },
+   "combined": {
+    "relevance_accuracy": 0.3525,
+    "attitude_accuracy": 0.1234,
+    "attitude_macro_f1": 0.1731
+   }
+  }
+ }
+}
