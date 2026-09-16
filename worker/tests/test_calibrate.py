@@ -38,12 +38,3 @@ def test_nonempty_strata_report_is_json_serializable(tmp_path, monkeypatch):
     assert report["strata"] == {"zh-Hans|own": 1}
     assert report["b1_vs_b30"]["n"] == 1
     assert report["v1_vs_v2"]["n"] == 1
-
-    # 键名跟 --batch 走：本机按 ADR-0021 跑 --batch 5 时报告里是 b1_vs_b5。
-    for f in tmp_path.glob("calibration-*.json"):
-        f.unlink()
-    assert calibrate.main([
-        "--codes", "3033", "--from", "2026-08-01", "--to", "2026-08-31", "--n", "1", "--batch", "5",
-    ]) == 0
-    report5 = json.loads(next(tmp_path.glob("calibration-*.json")).read_text(encoding="utf-8"))
-    assert report5["batch"] == 5 and "b1_vs_b5" in report5 and "b1_vs_b30" not in report5

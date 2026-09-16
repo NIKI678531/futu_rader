@@ -61,55 +61,8 @@ export function isApiError(err) {
 const cache = new Map()
 let observedRevision
 
-/* ── 在途统计与订阅 ───────────────────────────────────────────────────
- *
- * 顶部那条 2px 进度条和骨架屏上「正在加载 x / y 个数据块」读的就是这两样。
- *
- * 「一轮」的定义：从上一次所有在途请求全部落地之后发出的第一个请求开始，到再次全部
- * 落地为止。这样切一次区间就是一轮（十几个端点并行），进度条从 0 走到满；不这么归零
- * 的话 total 会一直累加，第二轮开始就永远从 90% 起步，看不出在动。
- *
- * 通知一律推到微任务里：load() 是在屏幕 render 中途被 read() 叫起来的，此时同步去
- * setState 另一个组件（进度条）会触发 React 的「渲染中更新其他组件」告警。微任务在
- * 当前调用栈清空后才跑，那时 React 已不在 render 里。 */
-const listeners = new Set()
-let round = { total: 0, done: 0 }
-let notifyQueued = false
-
-function notify() {
-  if (notifyQueued) return
-  notifyQueued = true
-  queueMicrotask(() => {
-    notifyQueued = false
-    for (const fn of listeners) fn()
-  })
-}
-
-function beginRequest() {
-  if (round.total === round.done) round = { total: 0, done: 0 }
-  round.total++
-  notify()
-}
-
-function endRequest() {
-  round.done++
-  notify()
-}
-
-/** 订阅缓存条目的状态变化（新增 pending、pending → ok/error）。返回取消函数。 */
-export function subscribe(listener) {
-  listeners.add(listener)
-  return () => { listeners.delete(listener) }
-}
-
-/** 本轮在途统计 `{pending, total, done}`。全部落地后下一次请求会重新从零计。 */
-export function inflight() {
-  return { pending: round.total - round.done, total: round.total, done: round.done }
-}
-
 function load(url) {
   const entry = { state: 'pending', promise: null, body: undefined, error: undefined }
-  beginRequest()
   entry.promise = fetch(BASE + url, { headers: { Accept: 'application/json' } })
     .catch((err) => {
       /* fetch 只在传输层失败时 reject：断网、DNS、连接被拒、CORS 被拦。
@@ -149,7 +102,6 @@ function load(url) {
       entry.state = 'error'
       entry.error = err
     })
-    .finally(endRequest)
   cache.set(url, entry)
   return entry
 }
@@ -163,45 +115,6 @@ export function read(url) {
   if (entry.state === 'pending') throw entry.promise
   if (entry.state === 'error') throw entry.error
   return entry.body.data
-}
-
-/**
- * 并行预取。read() 是同步的：一屏十几个端点，render 在第一个未命中处就抛出去了，
- * 后面的要等这一个回来、重渲染、再抛下一个 —— 一屏首绘等于十几次串行往返。屏幕在
- * 首次 render 之前把已知端点一次性发出去，read() 到时候命中的就是同一个 pending 条目。
- *
- * 只对缓存里**没有**条目的 URL 发请求；出错的条目留在缓存里由 read() 抛给错误边界，
- * 这里不抛、不吞、不重试。返回 allSettled 只为让调用方能 await 全部落地（测试用），
- * 屏幕不需要等它。
- */
-export function prefetch(urls) {
-  return Promise.allSettled(urls.map((url) => (cache.get(url) || load(url)).promise))
-}
-
-/**
- * 活数据直取，不进缓存。处理进度那两个端点每 3 秒就变一次，放进按 URL 键的缓存
- * 等于永远读第一次的快照；它们也不参与 Suspense（侧栏是浮层，不该让整屏挂起）。
- * 信封校验与 read() 同一套：不是 `{status, data}` 就按传输层故障抛 ApiError。
- * 抛出的错误由侧栏自己接住渲染成一行红字，不进 ScreenBoundary。
- */
-export async function fetchLive(url, signal) {
-  let res
-  try {
-    res = await fetch(BASE + url, { headers: { Accept: 'application/json' }, cache: 'no-store', signal })
-  } catch (err) {
-    throw new ApiError('network', url, `连不上后端 ${url} —— ${err && err.message ? err.message : err}`)
-  }
-  if (!res.ok) throw new ApiError('http', url, `${res.status} ${url}`)
-  let body
-  try {
-    body = await res.json()
-  } catch {
-    throw new ApiError('envelope', url, `${url} 返回 200 但响应体不是 JSON`)
-  }
-  if (!body || typeof body !== 'object' || typeof body.status !== 'string' || !('data' in body)) {
-    throw new ApiError('envelope', url, `${url} 的响应体不是 {status, data} 信封`)
-  }
-  return body.data
 }
 
 /* 这里曾经有一个 `readStatus(url)`，返回信封上的 status 枚举。它**一个调用方都没有**，

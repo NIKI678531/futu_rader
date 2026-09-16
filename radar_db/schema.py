@@ -240,10 +240,6 @@ annotation_jobs = Table(
     # 只领本 scope 的任务 —— 没有它，跑 3033 近 7 天时会把队列里别的产品、别的日期一起领走。
     # 可空：Gate 0–2 的影子任务没有 scope。
     Column("scope_id", String(40), index=True),
-    # 漏斗分段（ADR-0021）：`student` ＝ 先给本地学生模型判；`llm` ＝ 交 Luna。
-    # 评论任务默认从 `student` 进，学生判不准的被改成 `llm` 并放回 pending；帖子与 KOL
-    # 评论任务没有学生模型，建任务时直接写 `llm`。它是**一列而不是一个新的 status**：
-    # 同一条任务在两段里各经历一遍 pending→claimed→done，状态机不变，只是换了领取方。
     Column("stage", String(10), nullable=False, server_default="student"),
     # 同一个 (目标, 产品, 任务, 输入指纹) 只该有一条待办。重复排队 = 重复付费。
     UniqueConstraint(
@@ -251,31 +247,20 @@ annotation_jobs = Table(
         name="uq_jobs_target_input",
     ),
     Index("ix_jobs_claimable", "status", "priority", "job_id"),
-    # 分段领取与 /progress 的按段计数都按 (task, stage, status) 过滤。
     Index("ix_jobs_task_stage_status", "task", "stage", "status"),
 )
 
-# worker 的事件流（ADR-0021）：分类、标注、汇总、编排各写一行「我刚做了什么」，
-# 后端 `/api/v1/progress` 只读它，前端侧栏按 id 增量拉。
-#
-# 为什么不复用日志文件：backend 与 worker 是两个进程（compose 里是两个容器），页面
-# 要看的是 worker 的进度，而它们共享的只有这一个库。为什么不塞进 `meta_kv`：那是键值
-# 表，进度是一条随时间追加的流，要按 id 增量读、要按数量修剪。
-#
-# 它**只是进度显示**，不是审计记录：`emit()` 会把超过上限的旧行删掉（`events.py`），
-# 任何要长期追溯的东西都在 `annotation_runs` / `analysis_scopes` 里，不在这里。
 worker_events = Table(
-    "worker_events",
-    metadata,
+    "worker_events", metadata,
     Column("event_id", AUTO_PK, primary_key=True, autoincrement=True),
     Column("ts", DateTime, nullable=False),
-    Column("level", String(10), nullable=False),  # info|warn|error
-    Column("stage", String(12), nullable=False),  # L0|L1|L2|L3|orchestrator
-    Column("code", String(10)),  # 产品代码；跨产品的事件为 NULL
+    Column("level", String(10), nullable=False),
+    Column("stage", String(12), nullable=False),
+    Column("code", String(10)),
     Column("scope_id", String(40)),
     Column("run_id", String(40)),
     Column("message", Text, nullable=False),
-    Column("data_json", Text),  # 结构化附带数据（计数等），给侧栏做过滤用
+    Column("data_json", Text),
     Index("ix_worker_events_ts", "ts"),
 )
 

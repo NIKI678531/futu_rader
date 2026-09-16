@@ -3,7 +3,7 @@ import hashlib
 import io
 import json
 import sys
-from datetime import timezone
+from datetime import datetime
 from pathlib import Path
 
 import ijson
@@ -11,9 +11,7 @@ from sqlalchemy import insert, select, update
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "worker"))
 
-import clock
 from radar_db import default_data_dir, make_engine
 from radar_db.revisions import bump_revision
 from radar_db.schema import feeds, meta_kv, src_feeds
@@ -69,7 +67,7 @@ def run(engine, apply=False):
                                                            feeds.c.share_count.is_(None)).values(share_count=recovered["value"]))
                 if changed.rowcount:
                     key = f"metric_repair_{feed_id}"
-                    value = json.dumps({**recovered, "at": clock.now().astimezone(timezone.utc).replace(tzinfo=None).isoformat() + "Z"})
+                    value = json.dumps({**recovered, "at": datetime.utcnow().isoformat() + "Z"})
                     if not conn.execute(update(meta_kv).where(meta_kv.c.k == key).values(v=value)).rowcount:
                         conn.execute(insert(meta_kv).values(k=key, v=value))
                     bump_revision(conn, "data")
