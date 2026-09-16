@@ -1948,10 +1948,15 @@ cd worker
 ..\worker\.venv\Scripts\python.exe -X utf8 -m scripts.probe_gateway --concurrency 16             # 再试 24
 ..\worker\.venv\Scripts\python.exe -X utf8 -m scripts.calibrate --batch 5 --skip-v1 --n 300
 ..\worker\.venv\Scripts\python.exe -X utf8 -m jobs.annotate --reprioritize
-..\worker\.venv\Scripts\python.exe -X utf8 jobs\full_own.py --watch --max-items 300
+..\worker\.venv\Scripts\python.exe -X utf8 jobs\full_own.py --watch --max-items 300              # 加 --all 排 120 只全池（§25）
 ..\worker\.venv\Scripts\python.exe -X utf8 -m scripts.gold_sample                                # → gold-400.xlsx（填表）
 ..\worker\.venv\Scripts\python.exe -X utf8 -m scripts.evaluate_gold --file gold-400.xlsx         # → meta_kv.ai_validation
 ```
+
+学生还没训出来、先想量 Luna：`gold_sample --llm-only` 抽的是有 Luna 现行结论的判定单元（自家／竞品 × Luna 极性 ×
+简繁粤，没有置信带），产出 `gold-llm-400.xlsx` ＋ `gold-llm-400-model-labels.xlsx`；`evaluate_gold --file gold-llm-400.xlsx`
+读它时 `by_system.student` 三项为 null、`combined` 等于 `llm`。标签表丢了或想按库里**现在**的结论算，加 `--from-db`：
+按 `(产品代码, 评论正文)` 回库找判定单元，帖子标题与父评论消歧，匹配不到的行如实记 `n_unmatched`，不猜。
 
 - 迁移 0008 加 `annotation_jobs.stage`（默认 `student`；已有的帖子与 KOL 评论任务置 `llm`）与 `worker_events`。合成库（37.8 万帖／19 万评论）上 0007→0008 耗时 0.6 秒；真库同量级，不需要停服务。
 - `models.train` 之后看 `<STUDENT_MODEL_DIR>\calibration.json`：`heads.relevance.agreement` 与 `heads.attitude.agreement` 是对照集上学生与 Luna 的一致率。**两者 ≥0.90 才进下一步**；不到就先把 `STUDENT_ROUTE_THRESHOLD` 抬到 0.90（多送 Luna），或换 `--model roberta-wwm` 重训。
@@ -1993,6 +1998,8 @@ cd worker
 
 流程与判定规则见 [docs/gold-labeling-guide.md](gold-labeling-guide.md)。要点：只打开 `gold-400.xlsx`，不看同目录的 `gold-400-model-labels.xlsx`；一条 20–30 秒，可两人各 200；`evaluate_gold.py` 写 `meta_kv.ai_validation` 并 bump annotation 版本号让后端缓存失效。两个 xlsx 都在数据目录（仓库外），含评论原文，不进 git；`gold-eval-*.json` 只有计数，进 `.scratch/llm-90d/`。
 
+评估的分母：**每套系统只在它判过的行上算**，报告里 `n_relevance`／`coverage` 写明分母；`combined`（页面上那套）两边都没结论的行照记为错。整套系统一行都没判过 ⇒ 三个指标 null，不是 0。只核对 Luna 的那份表（`--llm-only`）跑出来 `student` 三项为 null，前端那句尾巴随之从「学生模型蒸馏自 Luna 标注」改成「结论由 Luna 判定」（`frontend/src/lib/view.js` 按 `by_system.student` 判）。
+
 ### 24.5 路由阈值起点：真库上要数的四个数
 
 ADR-0021 §4 的阈值 0.85／0.15 是起点，本机 `alembic upgrade head` 后先数这四个数并回填到 ADR-0021 §4：
@@ -2030,3 +2037,66 @@ SELECT json_extract(a.value_json, '$') AS relevance, COUNT(*) FROM annotations a
 | `GET /api/v1/progress` | 3,324 条事件在表 | 9 ms | — | `/progress/events?after=` 2 ms |
 
 跑完后的库状态与契约一致：`annotation_jobs` 14,751 条全部 `stage=llm, status=done`；`annotation_runs.provider` 出现 `rule`／`local_model`／`propagated`／`openai_compatible` 四种；学生行 `calibrated_confidence` 全部非空、Luna 行与规则行全部 NULL；每个近重复成员的 relevance 链末只有一行（第二次传播 supersede 第一次）；`synthesis_outputs` 覆盖 61 只 × 6 档；`meta_kv` 里没有残留的 `synth_dirty_*=1`。
+
+## 25. 从「400 条填完」到「五页全部有数」的本机收尾顺序（2026-09-16）
+
+前提：`gold-llm-400.xlsx`（`gold_sample --llm-only` 抽的、只核对 Luna 的那份）已经填好，放回数据目录
+`%LOCALAPPDATA%\futu-radar\`；同目录最好还有抽样时一起写出的 `gold-llm-400-model-labels.xlsx`，没有也行（回库匹配）。
+下面每一步都要**本机**的瘦库、`worker\.env` 里的 Luna Key 与 `FMP_API_KEY`，云端环境没有这三样，所以只能在本机跑；每步幂等，
+中断了从那一步重跑。
+
+```powershell
+$env:PYTHONIOENCODING = "utf-8"
+git pull
+Copy-Item "$env:LOCALAPPDATA\futu-radar\radar.db" "$env:LOCALAPPDATA\futu-radar\backups\radar-before-25-<日期>.db"
+worker\.venv\Scripts\python.exe -X utf8 -m alembic -c radar_db\alembic.ini upgrade head     # 到 0008；已在 0008 则无事
+cd worker
+$py = "..\worker\.venv\Scripts\python.exe"
+
+# ① 抽检 → /meta.aiValidation = spot_check（不花钱，几秒）
+& $py -X utf8 -m scripts.evaluate_gold --file gold-llm-400.xlsx                             # 标签表不在就自动回库匹配
+                                                                                             # 想按库里现在的结论算：加 --from-db
+
+# ② 学生模型（一次性，CPU 1–2 小时；跳过则全部评论都送 Luna，能跑但慢且贵）
+uv pip install --python .venv\Scripts\python.exe -r requirements-ml.txt
+& $py -X utf8 -m models.dataset; & $py -X utf8 -m models.train; & $py -X utf8 -m models.export
+
+# ③ 网关与合批（各几分钟；结论写 .env：AI_CONCURRENCY、AI_MICRO_BATCH_SIZE）
+& $py -X utf8 -m scripts.probe_gateway --concurrency 16                                     # 无 429 再试 24
+& $py -X utf8 -m scripts.calibrate --batch 5 --skip-v1 --n 300                              # attitude ≥0.90 才把批改成 5
+
+# ④ 全池运行：自家 61 ＋ 同业 59，学生 ∥ Luna，Layer B 逐区间就绪，FMP 每小时同步 120 只
+& $py -X utf8 -m jobs.annotate --reprioritize
+& $py -X utf8 jobs\full_own.py --all --watch --max-items 300                                # 常驻；进度看 /api/v1/progress 或页面右上「处理进度」
+
+# ⑤ 行情一次性回填（--watch 下每小时也会做；想立刻有 K 线就先跑一遍）
+& $py -X utf8 jobs\sync_prices.py --all --from 2026-06-27 --to 2026-08-25
+
+# ⑥ 看页面
+cd ..\backend; .\.venv\Scripts\python.exe app.py                                             # 8008，DATA_PROVIDER 默认 sql
+cd ..\frontend; npm run dev; npm run real-data-check                                         # 五页零 pageerror
+```
+
+每一步看什么：
+
+| 步 | 看哪里 | 通过线 |
+|---|---|---|
+| ① | 命令输出的 JSON；`/api/v1/meta` 的 `aiValidation` | `level=spot_check`、`n≈399`（填了相关性的行数）、`by_system.llm` 有三个数、`by_system.student` 三项 null（只核对了 Luna）；板块总览 S6／产品监控 P7 出现「人工核对 N 条…结论由 Luna 判定」 |
+| ② | `calibration.json`／`export.json` | §24.3 同一行 |
+| ③ | probe／calibrate 报告 | §24.3 同一行 |
+| ④ | `/api/v1/progress`；`/api/v1/version` 的 `analysisProgress.text` | 文案是「全池分析 x/120」；`queue.llm.pending` 归零、`synthesis.dirtyProducts=0` 即一轮结束；14 万条积压按 §24.2 预算 30–40 分钟，之后每日增量 <5 分钟 |
+| ⑤ | `price_syncs` 表、产品监控 K 线块 | 有映射且 FMP 有数的产品出 OHLC；`unavailable` 的原因在 `price_syncs.reason`，不补零 |
+| ⑥ | 五页 | 缺失态只剩下面这张表里的几种 |
+
+跑完之后**仍然**会是缺失态、且不能靠再跑一遍消掉的地方（都是数据源的边界，不是管线没跑完）：
+
+| 页面位置 | 显示 | 为什么 |
+|---|---|---|
+| 任何区间里评论 <10 条的产品的态度结论 | 样本不足 | PRD §3.5 阈值；小产品在 d1／d2 里常见 |
+| 区间内没有帖子／评论的产品 | 暂无内容 | 真零，不是没标 |
+| 同业产品的重点舆情（合规） | — | PRD §4.2 P10：识别范围只有自家 |
+| FMP 没有映射或返回空的产品的 K 线／日线价 | 暂不可用 | `price_syncs.reason`；§23.2 实测首轮约 19 只日线可得 |
+| 转发数未知的帖子所在区间的热度 | 数值＋「n 帖转发数未知 · 下限」 | ADR-0022；坏 JSON 行占 0.03% |
+| 官号 5/20、KOL 14/32 | 空列表 | 真库里按名字没匹配到（§「三条实测」第 1 条），是「没发过帖」，不是缺数 |
+| 「数据截至」 | 2026-08-25 | dump 到此为止；在线增量采集（Gate 6）仍无合法接口 |
+| AI 结论的验证程度 | 「人工核对 N 条…」 | 是量尺不是门槛（ADR-0019／0021）；**不会**变成「已核验」 |
