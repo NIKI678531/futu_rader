@@ -5,6 +5,7 @@
     cd worker && python -m scripts.evaluate_gold --file D:/x/gold-400.xlsx --labels-file D:/x/gold-400-model-labels.xlsx
     cd worker && python -m scripts.evaluate_gold --file gold-400.xlsx --from-db          # 不用标签表，按正文回库取现行结论
     cd worker && python -m scripts.evaluate_gold --file gold-400.xlsx --no-write         # 只算不写库
+    cd worker && python -m scripts.evaluate_gold --apply ../.scratch/llm-90d/gold-eval-<stamp>.json   # 把算好的报告写进库
 
 ## 算什么
 
@@ -41,6 +42,13 @@
 
 算不出来的量写 `null`（例如没有人填态度、或整套系统一条都没判过），不写 0（铁律 2）。写完
 `bump_revision("annotation")` 让后端缓存失效。这是量尺不是门槛：数字低不会让任何结论下线（ADR-0019）。
+
+## 算与写可以分开
+
+评估只要两个 xlsx，不要库；写库只要库，不要 xlsx。`--no-write` 在没有库的机器上算出报告
+（`.scratch/llm-90d/gold-eval-<stamp>.json`，只有计数，可进 git），`--apply <报告>` 在有库的机器上把报告里的
+`ai_validation` 原样写进 `meta_kv`。报告里另带 `by_stratum_agreement`（每个抽样层里 Luna 与人的一致条数）——
+低分是集中在某一层还是均匀分布，决定该改 Prompt、改判定规则，还是重新对齐标注口径。
 """
 
 import argparse
@@ -367,6 +375,29 @@ def evaluate(gold, model, *, threshold=None):
     return out
 
 
+def stratum_agreement(gold, model, system="llm"):
+    """每个抽样层里该系统与人的一致条数：`{层: {n, relevance_agree, attitude_n, attitude_agree}}`。只有计数。
+
+    分层键是 `gold_sample` 写在标签表「层」列的字符串（自家／竞品 × 模型极性 × 语言），所以这张表读作
+    「模型判成 X 的那些行里，人同意了几条」—— 低分是均匀的还是集中在某一层，一眼能看出来。
+    """
+    out = defaultdict(lambda: {"n": 0, "relevance_agree": 0, "attitude_n": 0, "attitude_agree": 0})
+    for gid, g in gold.items():
+        m = model.get(gid)
+        if m is None:
+            continue
+        pred = combined_label(m) if system == "combined" else _label_or_none(m[system])
+        if pred.get("relevance") is None:
+            continue
+        row = out[str(m.get("stratum"))]
+        row["n"] += 1
+        row["relevance_agree"] += int(pred["relevance"] == g["relevance"])
+        if g["relevance"] == "relevant" and g["attitude"] is not None:
+            row["attitude_n"] += 1
+            row["attitude_agree"] += int(pred.get("relevance") == "relevant" and pred.get("attitude") == g["attitude"])
+    return dict(sorted(out.items()))
+
+
 def ai_validation_payload(result, date_str):
     """`meta_kv.ai_validation` 的形状（见模块 docstring）。顶层三个数＝combined。"""
     keys = ("relevance_accuracy", "attitude_accuracy", "attitude_macro_f1")
@@ -423,35 +454,177 @@ def load_model_labels(gold, gold_path, *, labels_file=None, from_db=False, engin
     return model, "db", stats
 
 
+RECHECK_COLUMNS = ("编号", "产品代码", "产品名", "帖子标题", "父评论", "评论正文", "相关性", "态度", "备注", "原判相关性", "原判态度")
+RECHECK_GUIDE = (
+    "本表是人工表里与模型分歧的行（相关性不同，或都判相关但态度不同）。请对照 gold-labeling-guide §2.1／§2.2 再判一次，",
+    "把结论填在「相关性」「态度」两列（已预填你上一轮的判法，同意就不动）。表里没有模型标签，不要去查另一份文件。",
+    "",
+    "最常撞上的三条：",
+    "① 只聊大盘／指数／标的走势（「黄金要往下探」「恒指要崩」「今晚破 1800」）而没落到这只 ETF 本身 ⇒ 无关。它属于市场方向，不是产品态度。",
+    "② 「很爽」「没救了」「企得好稳」这类短句，帖子标题与父评论也看不出说的是不是这只产品 ⇒ 需上下文，不要用中性兜底。",
+    "③ 问派息日、问溢价是什么意思、问规则 ⇒ 相关，态度中性。",
+    "",
+    "评估时：python -m scripts.evaluate_gold --file gold-llm-400.xlsx --recheck gold-llm-400-recheck.xlsx",
+    "本表里填了「相关性」的行会覆盖原表同编号的判法；留空的行沿用原表。",
+)
+
+
+def disputed_rows(gold, model, system="llm"):
+    """与模型分歧的编号：相关性不同，或都判相关但态度不同。"""
+    out = []
+    for gid in sorted(gold):
+        m = model.get(gid)
+        if m is None:
+            continue
+        pred = combined_label(m) if system == "combined" else _label_or_none(m[system])
+        if pred.get("relevance") is None:
+            continue
+        g = gold[gid]
+        if pred["relevance"] != g["relevance"]:
+            out.append(gid)
+        elif g["relevance"] == "relevant" and g["attitude"] is not None and pred.get("attitude") != g["attitude"]:
+            out.append(gid)
+    return out
+
+
+def write_recheck_workbook(gold, ids, path, *, names=None):
+    """分歧行的复核表：与人工表同形、预填上一轮判法、不带模型标签。写到 `path`（应在数据目录，含原文）。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    rel_zh = {v: k for k, v in REL_FROM_ZH.items()}
+    att_zh = {v: k for k, v in ATT_FROM_ZH.items()}
+    names = names or {}
+    wb = Workbook()
+    wb.properties.creator = "futu-radar"
+    wb.properties.lastModifiedBy = "futu-radar"
+    ws = wb.active
+    ws.title = "标注"
+    ws.append(list(RECHECK_COLUMNS))
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for gid in ids:
+        g = gold[gid]
+        rel, att = rel_zh.get(g["relevance"], ""), att_zh.get(g["attitude"], "") if g["attitude"] else ""
+        ws.append([gid, g.get("code"), names.get(g.get("code"), g.get("code")), g.get("title") or "", g.get("parent") or "",
+                   g.get("text") or "", rel, att, g.get("note") or "", rel, att])
+    n = len(ids)
+    dv_rel = DataValidation(type="list", formula1='"相关,无关,需上下文"', allow_blank=True)
+    dv_att = DataValidation(type="list", formula1='"积极,消极,中性"', allow_blank=True)
+    ws.add_data_validation(dv_rel)
+    ws.add_data_validation(dv_att)
+    if n:
+        dv_rel.add(f"G2:G{n + 1}")
+        dv_att.add(f"H2:H{n + 1}")
+    for col, w in {"A": 8, "B": 9, "C": 22, "D": 28, "E": 28, "F": 60, "G": 11, "H": 9, "I": 20, "J": 11, "K": 9}.items():
+        ws.column_dimensions[col].width = w
+    for row in ws.iter_rows(min_row=2, max_row=n + 1, min_col=4, max_col=6):
+        for c in row:
+            c.alignment = Alignment(wrap_text=True, vertical="top")
+    ws.freeze_panes = "A2"
+    guide = wb.create_sheet("说明")
+    guide.column_dimensions["A"].width = 110
+    for line in RECHECK_GUIDE:
+        guide.append([line])
+    wb.save(path)
+    return path
+
+
+def apply_recheck(gold, recheck):
+    """复核表里填了相关性的行覆盖原表同编号的判法；返回 `(merged, n_overridden, n_changed)`。"""
+    merged = {k: dict(v) for k, v in gold.items()}
+    overridden = changed = 0
+    for gid, r in recheck.items():
+        if gid not in merged:
+            continue
+        overridden += 1
+        if (r["relevance"], r["attitude"]) != (merged[gid]["relevance"], merged[gid]["attitude"]):
+            changed += 1
+        merged[gid].update(relevance=r["relevance"], attitude=r["attitude"],
+                           note=r.get("note") if r.get("note") is not None else merged[gid].get("note"))
+    return merged, overridden, changed
+
+
+def read_report_payload(path):
+    """从 `gold-eval-*.json` 取 `ai_validation`；形状不对就停，不把半份记录写进库。"""
+    report = json.loads(Path(path).read_text(encoding="utf-8"))
+    payload = report.get("ai_validation") if isinstance(report, dict) else None
+    required = {"level", "n", "date", "relevance_accuracy", "attitude_accuracy", "attitude_macro_f1", "by_system"}
+    if not isinstance(payload, dict) or not required <= set(payload) or payload.get("level") != "spot_check":
+        raise SystemExit(f"{path} 里没有合法的 ai_validation（需要 {sorted(required)}，level=spot_check）")
+    if set(payload["by_system"]) != set(SYSTEMS):
+        raise SystemExit(f"{path} 的 by_system 不是 {SYSTEMS}")
+    return payload
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="评估人工核对集，写 meta_kv.ai_validation")
-    ap.add_argument("--file", required=True, help="人工填好的 gold-400.xlsx／gold-llm-400.xlsx（相对路径先在数据目录找）")
+    ap.add_argument("--file", help="人工填好的 gold-400.xlsx／gold-llm-400.xlsx（相对路径先在数据目录找）")
     ap.add_argument("--labels-file", help="模型标签表，默认同目录下 <表名>-model-labels.xlsx；找不到就回库")
     ap.add_argument("--from-db", action="store_true", help="不读标签表，按 (产品代码, 评论正文) 回库取现行结论")
     ap.add_argument("--no-write", action="store_true", help="只算不写 meta_kv")
+    ap.add_argument("--apply", metavar="REPORT", help="不算，把已有 gold-eval-*.json 里的 ai_validation 写进 meta_kv")
+    ap.add_argument("--recheck", metavar="XLSX", help="复核表：里面填了相关性的行覆盖原表同编号的判法")
+    ap.add_argument("--recheck-out", action="store_true",
+                    help="把与模型分歧的行写成 <表名>-recheck.xlsx（与人工表同目录，预填上一轮判法，不带模型标签）")
     ap.add_argument("--threshold", type=float, help="combined 路由阈值，默认 STUDENT_ROUTE_THRESHOLD")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s")
+
+    if args.apply:
+        if args.file or args.no_write:
+            ap.error("--apply 单独用：它不读 xlsx，也不能配 --no-write")
+        payload = read_report_payload(args.apply)
+        write_validation(make_engine(), payload)
+        log.info("已把 %s 的 ai_validation 写入 meta_kv 并 bump annotation revision", Path(args.apply).name)
+        print(json.dumps(payload, ensure_ascii=False, indent=1))
+        return 0
+    if not args.file:
+        ap.error("--file 必填（或用 --apply 写入已有报告）")
 
     data_dir = default_data_dir()
     gold_path = _resolve(args.file, data_dir)
     gold = read_gold(gold_path)
     if not gold:
         raise SystemExit("人工表里没有填好的行（相关性列为空）")
+    recheck_stats = None
+    if args.recheck:
+        recheck_path = _resolve(args.recheck, gold_path.parent)
+        gold, n_over, n_changed = apply_recheck(gold, read_gold(recheck_path))
+        recheck_stats = {"file": recheck_path.name, "overridden": n_over, "changed": n_changed}
+        log.info("复核表 %s：覆盖 %d 行，其中 %d 行判法有变", recheck_path.name, n_over, n_changed)
     model, source, source_stats = load_model_labels(gold, gold_path, labels_file=args.labels_file, from_db=args.from_db)
     if not model:
         raise SystemExit(f"一行模型标签都没取到（来源 {source}：{source_stats}）；库里还没有这些评论的现行结论？")
     result = evaluate(gold, model, threshold=args.threshold)
     if result["n"] == 0:
         raise SystemExit(f"人工表与模型标签按编号合并后一行都对不上（来源 {source}：{source_stats}）")
+    if args.recheck_out:
+        ids = disputed_rows(gold, model, "combined")
+        out_xlsx = gold_path.with_name(gold_path.stem + "-recheck.xlsx")
+        try:
+            from jobs.synthesize import load_master
+            names = {p["code"]: p["name"] for p in load_master()["products"]}
+        except Exception:  # noqa: BLE001  主数据读不到只影响「产品名」一列
+            names = {}
+        write_recheck_workbook(gold, ids, out_xlsx, names=names)
+        print(f"分歧 {len(ids)} 行 → {out_xlsx}（含原文，留在数据目录）")
     stamp = clock.now()
     payload = ai_validation_payload(result, stamp.strftime("%Y-%m-%d"))
     report = {"stamp": stamp.strftime("%Y%m%dT%H%M%S"), "gold_file": gold_path.name,
-              "labels_source": source, "labels_stats": source_stats,
+              "labels_source": source, "labels_stats": source_stats, "recheck": recheck_stats,
               "by_stratum": dict(Counter(str(model[k].get("stratum")) for k in gold if k in model)),
+              "by_stratum_agreement": {s: stratum_agreement(gold, model, s) for s in ("llm", "combined")},
               "gold_distribution": {
                   "relevance": dict(Counter(g["relevance"] for g in gold.values())),
                   "attitude": dict(Counter(g["attitude"] for g in gold.values() if g["attitude"])),
+              },
+              "model_distribution": {
+                  s: {"relevance": dict(Counter(model[k][s]["relevance"] for k in gold if k in model)),
+                      "attitude": dict(Counter(model[k][s]["attitude"] for k in gold if k in model
+                                               and model[k][s]["attitude"]))}
+                  for s in ("student", "llm")
               },
               **result, "ai_validation": payload}
     OUT_DIR.mkdir(parents=True, exist_ok=True)
