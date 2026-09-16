@@ -88,6 +88,12 @@ cd frontend; npm run real-data-check              # 五页零 pageerror、正文
 ```
 
 S6／P7 面板应有「AI 结论由模型自动生成，未经人工验证；每条可回到原文」；`/api/v1/meta` 的 `aiValidation` 为 `none`。
+填完 400 条人工核对表并跑过 `scripts.evaluate_gold` 之后变为 `spot_check`，那句改为「人工核对 N 条（日期），态度准确率 x、相关性准确率 y」。
+
+## 8. 从只有自家到全池（2026-09-16）
+
+`jobs\full_own.py --all --watch` 把 59 只同业按同一套 scope 排进去（自家先），产品监控页选到同业产品时 AI 块才会有数；
+`jobs\sync_prices.py --all` 同步 120 只行情。完整顺序（含抽检、学生模型、网关探测）见 runbook §25。
 
 ## 常见问题
 

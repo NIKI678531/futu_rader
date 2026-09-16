@@ -197,6 +197,42 @@ def test_unknown_ai_validation_level_falls_back_to_none(sql_provider):
     assert data["aiValidation"] == "none" and data["aiValidationDetail"] is None
 
 
+def _version_with_progress(provider, progress):
+    import json
+
+    from sqlalchemy import insert
+
+    from conftest import _client
+    from providers import reset_provider
+    from radar_db.schema import meta_kv
+
+    with provider._engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k="own_analysis_progress", v=json.dumps(progress)))
+    provider.refresh()
+    reset_provider()
+    try:
+        with _client(provider) as c:
+            return c.get("/api/v1/version").get_json()["data"]["analysisProgress"]
+    finally:
+        reset_provider()
+
+
+def test_analysis_progress_subject_follows_scope(sql_provider):
+    """`full_own --all` 写 `scope=all` ⇒ 「全池分析」；老记录没有 scope ⇒ 仍是「自家分析」，不猜成全池。"""
+    products = {"3033": {"complete": True}, "2800": {"complete": False}}
+    summary = _version_with_progress(sql_provider, {"anchor": "2026-08-25", "status": "running",
+                                                    "scope": "all", "products": products})
+    assert summary["scope"] == "all" and summary["text"] == "全池分析 1/2 · 处理中"
+
+    with sql_provider._engine.begin() as conn:
+        from sqlalchemy import delete
+
+        from radar_db.schema import meta_kv
+        conn.execute(delete(meta_kv).where(meta_kv.c.k == "own_analysis_progress"))
+    summary = _version_with_progress(sql_provider, {"anchor": "2026-08-25", "status": "running", "products": products})
+    assert summary["scope"] == "own" and summary["text"] == "自家分析 1/2 · 处理中"
+
+
 def test_heat_formula_is_verbatim(client):
     heat = client.get("/api/v1/meta").get_json()["data"]["heat"]
     assert heat["formula"] == HEAT_FORMULA
