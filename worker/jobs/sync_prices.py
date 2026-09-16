@@ -85,6 +85,7 @@ def main():
     parser.add_argument("--from", dest="start")
     parser.add_argument("--to", dest="end")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--all", action="store_true", help="120 只全池（自家 61 ＋ 同业 59）；默认只同步自家")
     args = parser.parse_args()
     engine = make_engine()
     with engine.connect() as conn:
@@ -92,10 +93,15 @@ def main():
     end = date.fromisoformat(args.end) if args.end else anchor
     start = date.fromisoformat(args.start) if args.start else end - timedelta(days=59)
     master = json.loads((ROOT / "backend/fixtures/demo/master.json").read_text(encoding="utf-8"))
+    pool = [product["code"] for product in master["products"]]
     own = [product["code"] for product in master["products"] if product["ownership"] == "own"]
-    codes = args.codes.split(",") if args.codes else own
-    if not set(codes) <= set(own):
-        parser.error("Only configured own products are supported")
+    if args.codes:
+        codes = args.codes.split(",")
+    else:
+        codes = pool if args.all else own
+    # 同业产品的 K 线是产品监控页同一块面板，`--codes` 可以点名任何池内产品；池外代码仍然拒绝。
+    if not set(codes) <= set(pool):
+        parser.error("Only products in the configured pool (120) are supported")
     output = sync(engine, FmpClient(), codes, start, end, force=args.force)
     print(json.dumps({"products": len(codes), "ok": sum(row["status"] in ("ok", "reused") for row in output),
                       "unavailable": sum(row["status"] == "unavailable" for row in output)}))
