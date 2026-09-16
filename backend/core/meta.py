@@ -58,6 +58,9 @@ CONSTANTS = Path(__file__).resolve().parents[1] / "fixtures" / "meta.json"
 # ADR-0019 §4 的三档枚举。不在这里面的值一律当作「没写」。
 AI_VALIDATION_LEVELS = ("none", "spot_check", "gold")
 
+# `analysisProgress.text` 的主语：worker/jobs/full_own.py 默认排 61 只自家，`--all` 排 120 只全池。
+ANALYSIS_SCOPE_LABEL = {"own": "自家分析", "all": "全池分析"}
+
 log = logging.getLogger(__name__)
 
 
@@ -116,7 +119,10 @@ def version_payload():
         done = sum(bool(row.get("complete")) for row in products.values())
         state_text = {"configuration_error": "配置错误，已暂停", "lease_lost": "执行锁异常，已暂停",
                   "source_changed": "数据范围已变化，已暂停"}.get(progress["status"], "处理中")
-        summary = {"completed": done, "total": len(products), "status": progress["status"],
-               "text": f"自家分析 {done}/{len(products)} · " + ("已完成" if done == len(products) else state_text),
+        # `scope` 是 full_own 写的：`own`＝61 只自家（老记录没有这个键，按 own 读），`all`＝120 只全池。
+        scope = progress.get("scope", "own")
+        label = ANALYSIS_SCOPE_LABEL.get(scope, ANALYSIS_SCOPE_LABEL["own"])
+        summary = {"completed": done, "total": len(products), "status": progress["status"], "scope": scope,
+               "text": f"{label} {done}/{len(products)} · " + ("已完成" if done == len(products) else state_text),
                    "anchor": progress["anchor"], "products": products}
     return {"dataProvider": "sql", "dataRevision": revision, "analysisProgress": summary}

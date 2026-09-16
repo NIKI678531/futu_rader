@@ -3,6 +3,7 @@
     cd worker && python -m scripts.gold_sample                    # → <数据目录>/gold-400.xlsx ＋ gold-400-model-labels.xlsx
     cd worker && python -m scripts.gold_sample --n 400 --seed 7 --out-dir D:/tmp
     cd worker && python -m scripts.gold_sample --source llm       # 无学生时，仅核对 Luna 现行结论
+    cd worker && python -m scripts.gold_sample --llm-only         # → gold-llm-400.xlsx ＋ gold-llm-400-model-labels.xlsx
 
 ## 为什么分层、按什么分
 
@@ -16,6 +17,14 @@
 
 每个非空层至少 1 条，其余按层大小比例分配。抽样池是**有学生行**的判定单元（学生跑过的才有
 置信度可分层）；Luna 的现行标签一并带出，给 `evaluate_gold` 算三套系统。
+
+## `--llm-only`：学生还没训出来时先量 Luna
+
+学生模型是一次性 CPU 训练，训完之前库里只有 Luna 的现行结论 —— 页面上此刻展示的就是它们。
+`--llm-only` 把抽样池换成**有 Luna 现行结论**的判定单元，分层去掉置信带（Luna 行没有校准概率），
+极性按 Luna 的标签分：自家／竞品 × Luna 极性 × 简／繁／粤。文件名带 `llm`（`gold-llm-400.xlsx`），
+`说明` 页开头两行写明「只核对 Luna 现行结论，不能据此评估学生」。`evaluate_gold` 读它时学生那套
+的三个指标是 None，`combined` 等于 Luna —— 那正是没有学生时页面上实际发生的事。
 
 ## 两个文件为什么分开
 
@@ -58,6 +67,15 @@ LANG_ZH = {"zh-Hans": "简", "zh-Hant": "繁", "yue": "粤"}
 LABEL_SHEET = "标注"
 GUIDE_SHEET = "说明"
 COLUMNS = ("编号", "产品代码", "产品名", "帖子标题", "父评论", "评论正文", "相关性", "态度", "备注")
+LABEL_COLUMNS = ("编号", "comment_id", "产品代码", "层", "学生相关性", "学生相关性概率", "学生态度", "学生态度概率",
+                 "Luna相关性", "Luna态度", "学生模型", "抽样来源")
+# 不算 Luna 结论的写入方（ADR-0021 §8），与 evaluate_gold.NON_LLM_PROVIDERS 同一份含义。
+NON_LLM_PROVIDERS = ("rule", "local_model", "propagated")
+
+LLM_ONLY_GUIDE_LINES = (
+    "本表只核对 Luna 现行结论；按自家/竞品、预测极性、简繁粤分层，无学生标签或置信带。",
+    "不能据此评估学生模型或学生路由效果；请独立判断，不要查看另一份模型标签表。",
+)
 
 GUIDE_LINES = (
     "填「相关性」列：相关 / 无关 / 需上下文（下拉）。「态度」列只在相关时填：积极 / 消极 / 中性（下拉）。",
@@ -92,11 +110,11 @@ def polarity_of(rel, att):
 
 
 def stratum_key(unit):
-    if unit.get("sample_source") == "llm":
-        return "|".join((unit["ownership"], polarity_of(unit["llm_relevance"], unit["llm_attitude"]),
-                         LANG_ZH.get(unit["language"], unit["language"])))
+    lang = LANG_ZH.get(unit["language"], unit["language"])
+    if unit.get("llm_only") or unit.get("sample_source") == "llm":
+        return "|".join((unit["ownership"], polarity_of(unit["llm_relevance"], unit["llm_attitude"]), lang))
     return "|".join((unit["ownership"], polarity_of(unit["student_relevance"], unit["student_attitude"]),
-                     band_of(unit["student_confidence"]), LANG_ZH.get(unit["language"], unit["language"])))
+                     band_of(unit["student_confidence"]), lang))
 
 
 def allocate(strata, n, rnd):
@@ -141,13 +159,14 @@ def _latest_by_provider(engine, kind, providers):
 
 
 
-def collect_units(engine, *, ownership=None, source="student"):
+def collect_units(engine, *, ownership=None, source="student", llm_only=False):
     """默认抽有学生行的单元；source=llm 只抽 Luna 现行结论，不需要学生权重。"""
     if source not in ("student", "llm"):
         raise ValueError(f"未知抽样来源：{source}")
+    llm_only = llm_only or source == "llm"
     ownership = ownership or pool_codes()
-    s_rel = _latest_by_provider(engine, "relevance", ("local_model",)) if source == "student" else {}
-    s_att = _latest_by_provider(engine, "attitude", ("local_model",)) if source == "student" else {}
+    s_rel = {} if llm_only else _latest_by_provider(engine, "relevance", ("local_model",))
+    s_att = {} if llm_only else _latest_by_provider(engine, "attitude", ("local_model",))
     from radar_db.annotations_read import current_annotations
     with engine.connect() as conn:
         provider_of = dict(conn.execute(select(annotation_runs.c.run_id, annotation_runs.c.provider)).all())
@@ -156,27 +175,29 @@ def collect_units(engine, *, ownership=None, source="student"):
 
     def luna(cur, unit):
         r = cur.get(unit)
-        if r is None or provider_of.get(r["run_id"]) != "openai_compatible":
+        if r is None or provider_of.get(r["run_id"], "llm") in NON_LLM_PROVIDERS:
             return None
         return r["value"]
 
-    unit_keys = s_rel if source == "student" else {
-        unit for unit in cur_rel if unit[1] in ownership and luna(cur_rel, unit) in REL_ZH
-    }
-    ids = sorted({unit[0] for unit in unit_keys})
+    if llm_only:
+        keys = sorted(unit for unit in cur_rel if unit[1] in ownership and luna(cur_rel, unit) in REL_ZH)
+    else:
+        keys = sorted(s_rel)
+    ids = sorted({unit[0] for unit in keys})
     sources = {}
     for i in range(0, len(ids), 900):
         chunk = [{"target_type": "comment", "target_id": cid} for cid in ids[i:i + 900]]
         sources.update(annotate._load_sources(engine, "comment_product", chunk))
 
     units = []
-    for cid, code in sorted(unit_keys):
+    for cid, code in keys:
         src = sources.get(("comment", cid))
         if not src or not (src.get("text") or "").strip():
             continue
         rel, rel_conf, _run = s_rel.get((cid, code), (None, None, None))
         att, att_conf, _ = s_att.get((cid, code), (None, None, None))
         confs = [c for c in (rel_conf, att_conf if rel == "relevant" else None) if c is not None]
+        l_rel = luna(cur_rel, (cid, code))
         units.append({
             "sample_source": source,
             "comment_id": cid, "code": code, "ownership": ownership.get(code, "peer"),
@@ -184,8 +205,9 @@ def collect_units(engine, *, ownership=None, source="student"):
             "student_relevance": rel, "student_attitude": att if rel == "relevant" else None,
             "student_relevance_p": rel_conf, "student_attitude_p": att_conf if rel == "relevant" else None,
             "student_confidence": min(confs) if confs else None,
-            "llm_relevance": luna(cur_rel, (cid, code)), "llm_attitude": luna(cur_att, (cid, code)),
+            "llm_relevance": l_rel, "llm_attitude": luna(cur_att, (cid, code)) if l_rel == "relevant" else None,
             "language": detect_language([src["text"]]),
+            "llm_only": llm_only,
         })
     return units
 
@@ -208,7 +230,7 @@ def sample(units, n=N_DEFAULT, seed=42):
     return picked
 
 
-def write_workbooks(picked, out_dir, *, names=None, source="student"):
+def write_workbooks(picked, out_dir, *, names=None, source="student", llm_only=False):
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
     from openpyxl.utils import get_column_letter
@@ -217,6 +239,9 @@ def write_workbooks(picked, out_dir, *, names=None, source="student"):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     names = names or {p["code"]: p["name"] for p in load_master()["products"]}
+    llm_only = llm_only or source == "llm"
+    stem = f"gold-llm-{len(picked)}" if llm_only else f"gold-{len(picked)}"
+    guide_lines = (LLM_ONLY_GUIDE_LINES + GUIDE_LINES) if llm_only else GUIDE_LINES
 
     wb = Workbook()
     wb.properties.creator = "futu-radar"
@@ -249,15 +274,11 @@ def write_workbooks(picked, out_dir, *, names=None, source="student"):
 
     guide = wb.create_sheet(GUIDE_SHEET)
     guide.column_dimensions["A"].width = 110
-    if source == "llm":
-        guide.append(["本表只核对 Luna 现行结论；按自家/竞品、预测极性、简繁粤分层，无学生标签或置信带。"])
-        guide.append(["不能据此评估学生模型或学生路由效果；请独立判断，不要查看另一份模型标签表。"])
-    for line in GUIDE_LINES:
+    for line in guide_lines:
         guide.append([line])
     for row in guide.iter_rows():
         for c in row:
             c.alignment = Alignment(wrap_text=True, vertical="top")
-    stem = f"gold-llm-{n}" if source == "llm" else f"gold-{n}"
     gold_path = out_dir / f"{stem}.xlsx"
     wb.save(gold_path)
 
@@ -266,13 +287,14 @@ def write_workbooks(picked, out_dir, *, names=None, source="student"):
     wb2.properties.lastModifiedBy = "futu-radar"
     ws2 = wb2.active
     ws2.title = "模型标签"
-    ws2.append(["编号", "comment_id", "产品代码", "层", "学生相关性", "学生相关性概率", "学生态度", "学生态度概率",
-                "Luna相关性", "Luna态度", "学生模型", "抽样来源"])
+    ws2.append(list(LABEL_COLUMNS))
+    student_model = None if llm_only else registry.model_id_string()
     for u in picked:
         ws2.append([u["id"], u["comment_id"], u["code"], u["stratum"], u["student_relevance"], u["student_relevance_p"],
                     u["student_attitude"], u["student_attitude_p"], u["llm_relevance"], u["llm_attitude"],
-                    registry.model_id_string() if source == "student" else None, source])
-    for i in range(1, 13):
+                    student_model])
+        ws2.cell(row=ws2.max_row, column=len(LABEL_COLUMNS), value=source if source == "llm" or not llm_only else None)
+    for i in range(1, len(LABEL_COLUMNS) + 1):
         ws2.column_dimensions[get_column_letter(i)].width = 16
     labels_path = out_dir / f"{stem}-model-labels.xlsx"
     wb2.save(labels_path)
@@ -286,20 +308,23 @@ def main(argv=None):
     ap.add_argument("--source", choices=("student", "llm"), default="student",
                     help="student：学生判过的单元（默认）；llm：仅 Luna 现行结论，不训练、不写库")
     ap.add_argument("--out-dir", help="默认数据目录（仓库外）")
+    ap.add_argument("--llm-only", action="store_true",
+                    help="抽样池改为有 Luna 现行结论的判定单元（学生还没训出来时用），文件名带 llm")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s")
     engine = make_engine()
-    units = collect_units(engine, source=args.source)
+    units = collect_units(engine, source=args.source, llm_only=args.llm_only)
     if not units:
         message = ("没有学生行：原方案需先准备学生模型并运行 python -m jobs.classify；"
                    "仅核对已有 Luna 结论可运行 python -m scripts.gold_sample --source llm"
-                   if args.source == "student" else "没有可抽样的 Luna 现行结论（需有正文和池内产品）。")
+                   if args.source == "student" and not args.llm_only else "没有可抽样的 Luna 现行结论（需有正文和池内产品）。")
         print(message, file=sys.stderr)
         return 2
     picked = sample(units, args.n, args.seed)
-    gold, labels = write_workbooks(picked, args.out_dir or default_data_dir(), source=args.source)
+    gold, labels = write_workbooks(picked, args.out_dir or default_data_dir(), source=args.source, llm_only=args.llm_only)
     strata = Counter(u["stratum"] for u in picked)
     print(json.dumps({"source": args.source, "pool": len(units), "picked": len(picked), "strata": len(strata),
+                      "llm_only": args.llm_only or args.source == "llm",
                       "gold": str(gold), "model_labels": str(labels),
                       "by_stratum": dict(sorted(strata.items()))}, ensure_ascii=False, indent=1))
     return 0
