@@ -4,10 +4,27 @@ import pytest
 from sqlalchemy import insert
 
 from ai import config
-from jobs.full_own import prepare, queue_status
+from jobs.full_own import prepare, product_codes, queue_status
 from radar_db import create_all, make_engine
 from radar_db.leases import WorkerLease
 from radar_db.schema import meta_kv
+
+
+def test_product_codes_own_is_61_and_all_is_120():
+    import json
+    from pathlib import Path
+
+    master = json.loads((Path(__file__).resolve().parents[2] / "backend/fixtures/demo/master.json")
+                        .read_text(encoding="utf-8"))
+    own, scope = product_codes(master)
+    assert scope == "own" and len(own) == 61 and len(set(own)) == 61
+    everything, scope_all = product_codes(master, all_products=True)
+    assert scope_all == "all" and len(everything) == 120
+    assert set(own) < set(everything)
+    with pytest.raises(SystemExit):
+        product_codes({"products": master["products"][:100]}, all_products=True)
+    with pytest.raises(SystemExit):
+        product_codes({"products": [p for p in master["products"] if p["ownership"] == "own"][:60]})
 
 
 def test_prepare_reuses_scopes_and_leases_exclude_other_workers(tmp_path):
