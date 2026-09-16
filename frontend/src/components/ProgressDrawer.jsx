@@ -323,7 +323,9 @@ function DrawerBody() {
           {snapshot == null && error == null && row('状态', '正在读取 /progress …', T.dim)}
           {snapshot == null && error != null && row('状态', '暂不可用 —— ' + String(error.message || error), T.err)}
           {snapshot != null && [
-            row('自家分析完成', summary ? na(summary.completed) + ' / ' + na(summary.total) + (summary.anchor ? '　锚点 ' + summary.anchor : '') : '暂不可用'),
+            /* 主语跟 /meta.analysisProgress.scope 走：full_own 默认 61 只自家，`--all` 是 120 只全池；
+               旧记录没有 scope ⇒ 自家。 */
+            row(summary && summary.scope === 'all' ? '全池分析完成' : '自家分析完成', summary ? na(summary.completed) + ' / ' + na(summary.total) + (summary.anchor ? '　锚点 ' + summary.anchor : '') : '暂不可用'),
             summary && summary.text ? row('说明', summary.text) : null,
             row('L1 学生队列', queueText(snapshot.queue ? snapshot.queue.student : null)),
             row('L2 Luna 队列', queueText(snapshot.queue ? snapshot.queue.llm : null)),
