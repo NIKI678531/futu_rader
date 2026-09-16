@@ -324,6 +324,82 @@ def test_db_fallback_disambiguates_by_context_and_refuses_to_guess(engine, tmp_p
     assert "G0002" not in model and "G0003" not in model
 
 
+def test_stratum_agreement_counts_only(engine, tmp_path):
+    units = gold_sample.collect_units(engine, ownership={OWN: "own", PEER: "peer"}, llm_only=True)
+    picked = gold_sample.sample(units, 20, seed=11)
+    gold_path, labels_path = gold_sample.write_workbooks(picked, tmp_path, names={}, llm_only=True)
+    _fill_gold(gold_path, picked)
+    gold = evaluate_gold.read_gold(gold_path)
+    model = evaluate_gold.read_model_labels(labels_path)
+    agg = evaluate_gold.stratum_agreement(gold, model, "llm")
+    assert sum(r["n"] for r in agg.values()) == 20
+    total_agree = sum(r["relevance_agree"] for r in agg.values())
+    assert total_agree == round(evaluate_gold.evaluate(gold, model)["by_system"]["llm"]["relevance_accuracy"] * 20)
+    assert all(set(r) == {"n", "relevance_agree", "attitude_n", "attitude_agree"} for r in agg.values())
+    text = json.dumps(agg, ensure_ascii=False)
+    assert "費率" not in text and "點差" not in text  # 只有计数，没有原文
+
+
+def test_apply_writes_report_payload_without_xlsx(engine, tmp_path, monkeypatch):
+    payload = {"level": "spot_check", "n": 400, "date": "2026-09-16",
+               "relevance_accuracy": 0.35, "attitude_accuracy": 0.12, "attitude_macro_f1": 0.17,
+               "by_system": {"student": {"relevance_accuracy": None, "attitude_accuracy": None, "attitude_macro_f1": None},
+                             "llm": {"relevance_accuracy": 0.35, "attitude_accuracy": 0.12, "attitude_macro_f1": 0.17},
+                             "combined": {"relevance_accuracy": 0.35, "attitude_accuracy": 0.12, "attitude_macro_f1": 0.17}}}
+    report = tmp_path / "gold-eval-x.json"
+    report.write_text(json.dumps({"stamp": "x", "ai_validation": payload}, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(evaluate_gold, "make_engine", lambda: engine)
+    assert evaluate_gold.main(["--apply", str(report)]) == 0
+    with engine.connect() as conn:
+        stored = json.loads(conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "ai_validation")).scalar_one())
+    assert stored == payload
+    # 半份记录不写
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"ai_validation": {"level": "spot_check", "n": 1}}), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        evaluate_gold.main(["--apply", str(bad)])
+    with pytest.raises(SystemExit):
+        evaluate_gold.main(["--apply", str(report), "--no-write"])
+
+
+def test_recheck_roundtrip_overrides_only_filled_rows(engine, tmp_path):
+    units = gold_sample.collect_units(engine, ownership={OWN: "own", PEER: "peer"}, llm_only=True)
+    picked = gold_sample.sample(units, 20, seed=13)
+    gold_path, labels_path = gold_sample.write_workbooks(picked, tmp_path, names={}, llm_only=True)
+    _fill_gold(gold_path, picked)  # 偶数编号故意改错 ⇒ 分歧行 = 偶数编号
+    gold = evaluate_gold.read_gold(gold_path)
+    model = evaluate_gold.read_model_labels(labels_path)
+    ids = evaluate_gold.disputed_rows(gold, model, "llm")
+    assert ids and all(int(i[1:]) % 2 == 0 for i in ids)
+
+    out = tmp_path / "gold-llm-20-recheck.xlsx"
+    evaluate_gold.write_recheck_workbook(gold, ids, out, names={OWN: "恒科"})
+    wb = openpyxl.load_workbook(out)
+    ws = wb["标注"]
+    assert [c.value for c in ws[1]] == list(evaluate_gold.RECHECK_COLUMNS)
+    assert ws.max_row == len(ids) + 1
+    body = "\n".join(str(c.value) for row in ws.iter_rows() for c in row if c.value is not None)
+    assert "relevant" not in body and "Luna" not in body  # 不带模型标签
+    assert "无关" in "\n".join(str(r[0].value) for r in wb["说明"].iter_rows())
+
+    # 复核：把前两行改回模型的判法、其余留空 ⇒ 只覆盖两行
+    by_id = {u["id"]: u for u in picked}
+    for i, row in enumerate(ws.iter_rows(min_row=2)):
+        if i >= 2:
+            row[6].value, row[7].value = None, None
+            continue
+        u = by_id[row[0].value]
+        row[6].value = {"relevant": "相关", "irrelevant": "无关", "needs_context": "需上下文"}[u["llm_relevance"]]
+        row[7].value = {"positive": "积极", "negative": "消极", "neutral": "中性"}.get(u["llm_attitude"]) \
+            if u["llm_relevance"] == "relevant" else None
+    wb.save(out)
+    merged, n_over, n_changed = evaluate_gold.apply_recheck(gold, evaluate_gold.read_gold(out))
+    assert (n_over, n_changed) == (2, 2)
+    before = evaluate_gold.evaluate(gold, model)["by_system"]["llm"]["relevance_accuracy"]
+    after = evaluate_gold.evaluate(merged, model)["by_system"]["llm"]["relevance_accuracy"]
+    assert after == pytest.approx(before + 2 / 20, abs=1e-4)
+
+
 def test_read_model_labels_rejects_sheet_without_label_columns(tmp_path):
     wb = openpyxl.Workbook()
     ws = wb.active
