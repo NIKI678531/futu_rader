@@ -1,8 +1,17 @@
-"""61 只自家产品的全量分析编排（runbook §23、§24）—— 学生通道与 Luna 通道并行。
+"""全量分析编排（runbook §23、§24）—— 学生通道与 Luna 通道并行。默认 61 只自家，`--all` 120 只全池。
 
     python -m jobs.full_own --watch                 # 常驻：每 5 秒轮一只产品，锚点／源数据变了自动重排
     python -m jobs.full_own                         # 跑一遍 61 只就退出（每只一个 tick）
     python -m jobs.full_own --max-items 300         # Luna 通道每 tick 最多领多少条
+    python -m jobs.full_own --all --watch           # 自家 61 ＋ 同业 59：产品监控页的 AI 块对全池都出
+
+## `--all` 覆盖什么、不覆盖什么
+
+默认只排自家 61 只（runbook §23.1 的原口径）。板块总览的榜单里同业产品的评论量／热度是事实字段，
+不依赖 AI；但产品监控页选到一只同业时，态度三计数、热议总结、主题、话题、阶段观点、竞品原因
+全部要它自己的判定单元 —— 不排它就永远是「暂不可用」。`--all` 把 59 只同业按同一套 scope 排进去，
+自家仍然先跑（排序键第一位是 ownership），Luna 请求量随之增加约一倍，费用同比。合规识别按 PRD
+只对自家产品做（`compliance_for` 对同业返回 `na`），同业排进来也不会多出合规结论。
 
 ## 一个 tick 做什么（ADR-0021）
 
@@ -51,6 +60,25 @@ from radar_db.schema import analysis_scopes, annotation_jobs, meta_kv
 from radar_db.scope_jobs import scope_condition
 
 log = logging.getLogger("worker.full_own")
+
+OWN_COUNT, POOL_COUNT = 61, 120
+SCOPE_LABEL = {"own": "自家", "all": "全池"}
+
+
+def product_codes(master, *, all_products=False):
+    """按主数据取要排的产品：默认恰好 61 只自家；`all_products` 时恰好 120 只全池。返回 `(codes, scope)`。
+
+    数目对不上就停：主数据是客户维护的名单，少一只多一只都不是这段代码该悄悄接受的。
+    """
+    if all_products:
+        codes = [row["code"] for row in master["products"]]
+        if len(codes) != POOL_COUNT:
+            raise SystemExit(f"Product master must contain {POOL_COUNT} products, got {len(codes)}")
+        return codes, "all"
+    codes = [row["code"] for row in master["products"] if row["ownership"] == "own"]
+    if len(codes) != OWN_COUNT:
+        raise SystemExit(f"Own product master must contain {OWN_COUNT} products, got {len(codes)}")
+    return codes, "own"
 
 
 def save_progress(engine, progress):
@@ -148,6 +176,7 @@ def main():
     parser.add_argument("--max-items", type=int, default=300)
     parser.add_argument("--student-model-dir", help="学生权重目录（默认 STUDENT_MODEL_DIR）")
     parser.add_argument("--no-student", action="store_true", help="不开学生通道（评论任务全部放行 Luna）")
+    parser.add_argument("--all", action="store_true", help="120 只全池（自家 61 ＋ 同业 59）；默认只排自家")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     cfg = config.load()
@@ -158,13 +187,12 @@ def main():
     if anchor != measured:
         raise SystemExit("Anchor must match the complete source day; no synthetic month end")
     master = json.loads((ROOT / "backend/fixtures/demo/master.json").read_text(encoding="utf-8"))
-    codes = [row["code"] for row in master["products"] if row["ownership"] == "own"]
-    if len(codes) != 61:
-        raise SystemExit("Own product master must contain 61 products")
+    codes, scope_name = product_codes(master, all_products=args.all)
+    ownership = {row["code"]: row["ownership"] for row in master["products"]}
     with WorkerLease(engine, "own-analysis") as lease:
-        emit(engine, "orchestrator", f"full_own 启动：{len(codes)} 只产品，锚点 {anchor.isoformat()}，"
-                                     f"{'常驻' if args.watch else '单轮'}，Luna 每 tick {args.max_items} 条",
-             data={"codes": len(codes), "anchor": anchor.isoformat(), "watch": args.watch})
+        emit(engine, "orchestrator", f"full_own 启动：{len(codes)} 只产品（{SCOPE_LABEL[scope_name]}），锚点 "
+                                     f"{anchor.isoformat()}，{'常驻' if args.watch else '单轮'}，Luna 每 tick {args.max_items} 条",
+             data={"codes": len(codes), "scope": scope_name, "anchor": anchor.isoformat(), "watch": args.watch})
         scopes, start = prepare(engine, cfg, anchor, codes)
         state = {"scopes": scopes}
         with engine.connect() as conn:
@@ -177,7 +205,7 @@ def main():
                     and prior.get("sourceVersion", {}) == source_version)
         progress = {"anchor": anchor.isoformat(), "baselineFrom": start.isoformat(), "products": {},
                     "status": "running", "model": cfg.model, "batchSize": cfg.micro_batch_size,
-                    "sourceVersion": source_version, "student": not args.no_student}
+                    "sourceVersion": source_version, "student": not args.no_student, "scope": scope_name}
         for code, scope_id in scopes.items():
             previous = prior.get("products", {}).get(code, {})
             status = queue_status(engine, scope_id)
@@ -185,7 +213,11 @@ def main():
                         and all(state_ == "done" for state_ in status))
             progress["products"][code] = {"scope": scope_id, "queue": status, "complete": complete}
         save_progress(engine, progress)
-        order = sorted(codes, key=lambda code: sum(count for state_, count in progress["products"][code]["queue"].items() if state_ != "done"))
+        # 自家先、待办少的先：`--all` 下同业排在 61 只自家之后，页面最常看的那一半先亮。
+        order = sorted(codes, key=lambda code: (
+            0 if ownership.get(code) == "own" else 1,
+            sum(count for state_, count in progress["products"][code]["queue"].items() if state_ != "done"),
+        ))
 
         student = None
         if args.watch and not args.no_student:
@@ -233,7 +265,7 @@ def main():
             pending = [code for code in order if not progress["products"][code]["complete"]]
             if not pending:
                 if progress["status"] != "complete":
-                    emit(engine, "orchestrator", f"{len(codes)} 只产品全部完成")
+                    emit(engine, "orchestrator", f"{len(codes)} 只产品（{SCOPE_LABEL[scope_name]}）全部完成")
                 progress["status"] = "complete"
                 save_progress(engine, progress)
                 return

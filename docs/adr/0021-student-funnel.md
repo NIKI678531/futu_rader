@@ -91,6 +91,8 @@ ADR-0020 的试点在本机跑出了三个数字，一起决定了「逐条发 L
 
 `spot_check` 的意义：`/meta` 的 `aiValidation` 从 `none` 变成「抽了 400 条人工核对，数字是这些」。它是**量尺不是门槛**：ADR-0019 不变，模型写下即发布，人工核对不批准任何一行，也不拦任何一行。400 条的 95% 置信区间约 ±5 个百分点，页面声明必须带条数与准确率，仍然**不许**出现「已核验」。判定规则在 [gold-labeling-guide](../gold-labeling-guide.md)。
 
+**补充（2026-09-16）**：学生训出来之前库里只有 Luna 的现行结论，`gold_sample --llm-only` 按自家／竞品 × Luna 极性 × 简繁粤抽（没有置信带），产出 `gold-llm-400.xlsx`；评出来 `by_system.student` 三项为 null，`combined` 等于 `llm` —— 那正是没有学生时页面上实际发生的事。三套系统**各自只在判过的行上算**，分母与覆盖率写进报告；整套没判过写 null 不写 0。标签表丢了可按 `(产品代码, 评论正文)` 回库匹配（`evaluate_gold --from-db`），匹配不到的行不猜。
+
 ### 7. 事件流与只读进度端点
 
 新表 `worker_events(event_id, ts, level, stage, code, scope_id, run_id, message, data_json)`；`radar_db/events.py` 的 `emit()` 独立短事务、任何异常只记日志绝不向上抛、超过 6,000 行删到最近 5,000 行。L0／L1／L2／L3／orchestrator 各在批或对完成时记一条。`GET /api/v1/progress` 与 `/progress/events?after=` 只读地暴露队列（按 stage × status）、Layer B 脏标与产出、近 5 分钟吞吐（无样本为 null 不写 0）与事件流；`backend/core/progress.py` 是它唯一的实现处，demo provider 与未迁到 0008 的库返回 `unavailable`。工作台没有任何启动／停止作业的控制。
