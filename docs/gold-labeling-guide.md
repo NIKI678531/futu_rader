@@ -9,7 +9,8 @@
 1. 生成表格（在有瘦库的机器上）：
 
    ```powershell
-   worker\.venv\Scripts\python.exe -X utf8 -m scripts.gold_sample
+   cd worker
+   .\.venv\Scripts\python.exe -X utf8 -m scripts.gold_sample
    ```
 
    输出两个文件到数据目录（`%LOCALAPPDATA%\futu-radar\`，仓库外）：
@@ -18,6 +19,20 @@
 
    抽样是分层的（自家/竞品 × 学生预测极性 × 置信带 <0.7／0.7–0.85／≥0.85 × 简/繁/粤），所以表里高置信、低置信、正、负、粤语短回复都有，不要因为某类看起来「都一样」而跳着填。
 
+   **提示「没有学生行」时**：脚本已正常启动，但本机库没有 `provider=local_model` 的学生结果。
+   `git pull` 不会带来数据库、权重或分类结果；重新安装 Excel 依赖也不会补出学生行。
+   若现在只需核对已有 Luna 结论，可显式选择只读模式（仍在 `worker` 目录）：
+
+   ```powershell
+   .\.venv\Scripts\python.exe -X utf8 -m scripts.gold_sample --source llm
+   ```
+
+   它不迁库、不训练、不调用 Luna、不写标注，从池内产品的 Luna **现行**结论中抽最多 400 条。
+   分层为自家/竞品 × Luna 预测极性 × 简/繁/粤，**没有学生置信带**。
+   输出 `gold-llm-400.xlsx` 与 `gold-llm-400-model-labels.xlsx`，不覆盖默认学生表；不足 400 条时文件名按实际条数。
+   人工列保持空白，学生标签、概率与型号也留空。只能评估 Luna，不能代表学生模型或组合路由效果。
+   只有自家或部分产品有标注时，样本也只覆盖这些产品；分层抽检结果不等于全市场总体准确率。
+
 2. 填表：每行按「产品代码／产品名 → 帖子标题 → 父评论 → 评论正文」的顺序读，填两个下拉格：`相关性`，以及（仅相关时）`态度`。`备注` 列随意，判不准的写一句为什么。**不要改其他列**，`编号` 是与模型标签合并的键。
 
 3. 节奏：一条约 20–30 秒，400 条约 2–3 小时。可以两人各 200 行，不需要互相校对（两人的分歧本身就是这 400 条置信区间的一部分）。做完 200 行可以先跑一次评估看数字，剩下 200 行不受影响。
@@ -25,12 +40,22 @@
 4. 评估：
 
    ```powershell
-   worker\.venv\Scripts\python.exe -X utf8 -m scripts.evaluate_gold --file gold-400.xlsx
+   .\.venv\Scripts\python.exe -X utf8 -m scripts.evaluate_gold --file gold-400.xlsx
    ```
 
    输出学生、Luna、组合路由（学生高置信用学生，否则用 Luna）三套的 relevance/attitude 准确率、attitude macro-F1、混淆矩阵，写 `.scratch/llm-90d/gold-eval-<时间>.json`（只有计数，没有原文），并更新 `meta_kv.ai_validation` 与 annotation 版本号 —— 后端缓存随即失效，`/meta` 的 `aiValidation` 变为 `spot_check`。
 
    评估只用填了的行：`相关性` 为空的行跳过；`相关性=相关` 而 `态度` 为空的行只计相关性，不计态度。没填够的行数如实反映在 `n` 里，不会补 0。
+
+   Luna 专用表先只算报告、不更新页面声明：
+
+   ```powershell
+   .\.venv\Scripts\python.exe -X utf8 -m scripts.evaluate_gold --file gold-llm-400.xlsx --no-write
+   ```
+
+   使用 `--out-dir` 导出到子目录时，`--file` 要传该文件的完整路径；同目录模型表会自动匹配。
+   报告注明 `sample_source=llm`，学生与组合路由的指标为 `null`，不把未运行当成 0%；顶层数字取 Luna。
+   去掉 `--no-write` 才会更新 `meta_kv.ai_validation`，这仍不批准或改写任何一条标注。
 
 ## 2. 判定规则
 

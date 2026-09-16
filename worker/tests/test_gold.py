@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import delete, insert, select
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -97,6 +97,60 @@ def test_sample_is_stratified_and_workbooks_have_shape(engine, tmp_path):
     header = [c.value for c in ws2[1]]
     assert header[:4] == ["编号", "comment_id", "产品代码", "层"] and "Luna相关性" in header
     assert ws2.max_row == 21
+
+
+def test_llm_sample_without_students_uses_current_labels(engine, tmp_path):
+    with engine.begin() as conn:
+        conn.execute(delete(annotations).where(annotations.c.run_id == "stu-1"))
+        previous = conn.execute(select(annotations.c.annotation_id).where(
+            annotations.c.run_id == "luna-1", annotations.c.kind == "relevance",
+            annotations.c.target_id == 100)).scalar_one()
+        conn.execute(insert(annotations), [
+            {"target_type": "comment", "target_id": 100, "subject_code": PEER, "kind": "relevance",
+             "value_json": '"relevant"', "run_id": "luna-1", "input_hash": "rejected",
+             "review_state": "rejected", "supersedes_id": previous, "created_at": datetime(2026, 8, 27)},
+            {"target_type": "comment", "target_id": 101, "subject_code": OWN, "kind": "relevance",
+             "value_json": '"irrelevant"', "run_id": "rule-1", "input_hash": "rule",
+             "review_state": "pending", "supersedes_id": None, "created_at": datetime(2026, 8, 27)},
+        ])
+        before = conn.execute(select(annotations)).all()
+
+    assert gold_sample.collect_units(engine, ownership={OWN: "own", PEER: "peer"}) == []
+    units = gold_sample.collect_units(engine, ownership={OWN: "own", PEER: "peer"}, source="llm")
+    assert len(units) == 29
+    assert not {100, 101} & {unit["comment_id"] for unit in units}
+    assert all(unit["student_relevance"] is None and unit["student_confidence"] is None for unit in units)
+    assert all(unit["llm_relevance"] == "relevant" for unit in units)
+    picked = gold_sample.sample(units, 20, seed=42)
+    assert picked == gold_sample.sample(units, 20, seed=42)
+    assert all(len(unit["stratum"].split("|")) == 3 for unit in picked)
+    gold_path, labels_path = gold_sample.write_workbooks(picked, tmp_path, source="llm")
+    assert gold_path.name == "gold-llm-20.xlsx"
+    assert labels_path.name == "gold-llm-20-model-labels.xlsx"
+    workbook = openpyxl.load_workbook(gold_path)
+    assert workbook["标注"].max_row == 21
+    assert all(row[6].value is None and row[7].value is None
+               for row in workbook["标注"].iter_rows(min_row=2))
+    assert "只核对 Luna" in workbook["说明"]["A1"].value
+    labels = openpyxl.load_workbook(labels_path)
+    assert all(row[10].value is None and row[11].value == "llm"
+               for row in labels.active.iter_rows(min_row=2))
+    model = evaluate_gold.read_model_labels(labels_path)
+    assert len(model) == 20
+    human = {unit["id"]: {"relevance": "relevant", "attitude": "positive"} for unit in picked}
+    result = evaluate_gold.evaluate(human, model)
+    assert result["sample_source"] == "llm" and result["n"] == 20
+    assert result["by_system"]["llm"]["relevance_accuracy"] == 1.0
+    for system in ("student", "combined"):
+        assert result["by_system"][system]["relevance_accuracy"] is None
+        assert result["by_system"][system]["attitude_accuracy"] is None
+        assert result["by_system"][system]["attitude_macro_f1"] is None
+        assert result["by_system"][system]["n_relevance"] == 0
+    payload = evaluate_gold.ai_validation_payload(result, "2026-09-16")
+    assert payload["relevance_accuracy"] == 1.0
+    assert payload["by_system"]["student"]["relevance_accuracy"] is None
+    with engine.connect() as conn:
+        assert conn.execute(select(annotations)).all() == before
 
 
 def test_evaluate_three_systems_and_validation_shape(engine, tmp_path):
