@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ai import config  # noqa: E402
 from ai.providers import build  # noqa: E402
-from ai.providers.base import PermanentError, TransientError  # noqa: E402
+from ai.providers.base import PermanentError, TransientError, RunControl, RunStopped  # noqa: E402
 from ai.redact import RedactionError  # noqa: E402
 
 SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}},
@@ -93,6 +93,63 @@ def cfg():
 def provider(cfg, session):
     # sleep 注入成 no-op：退避是真的（有单独一条测它），但测试不该真等 30 秒。
     return build(cfg, session=session, sleep=lambda _s: None)
+
+
+def test_http_budget_counts_retries_and_multiple_calls(cfg):
+    session = FakeSession(FakeResponse(429, {}, {"Retry-After": "0"}), ok_response({"ok": True}))
+    control = RunControl(2)
+    client = build(cfg, session=session, control=control)
+    client.complete_json("sys", "usr", SCHEMA, "t")
+    with pytest.raises(RunStopped, match="budget_exhausted"):
+        client.complete_json("sys", "usr", SCHEMA, "t")
+    assert len(session.calls) == 2
+    assert control.snapshot()["httpRetries"] == 1
+    assert control.snapshot()["rateLimits"] == 1
+
+
+def test_cancelled_run_never_sends(cfg):
+    session = FakeSession()
+    control = RunControl(10)
+    control.stop()
+    with pytest.raises(RunStopped, match="cancelled"):
+        build(cfg, session=session, control=control).complete_json("sys", "usr", SCHEMA, "t")
+    assert session.calls == []
+
+
+def test_interrupt_during_control_snapshot_can_acquire_stop_lock():
+    control = RunControl(5)
+    with control._lock:
+        control.stop()
+    with pytest.raises(RunStopped):
+        control.reserve()
+
+
+def test_source_change_during_http_rejects_response_before_publication(cfg):
+    session = FakeSession()
+    control = RunControl(5)
+    def guard():
+        if session.calls:
+            control.stop("source_changed")
+    control.before_request = guard
+    with pytest.raises(RunStopped, match="source_changed"):
+        build(cfg, session=session, control=control).complete_json("sys", "usr", SCHEMA, "t")
+    assert len(session.calls) == 1
+    assert control.snapshot()["responses"] == 1
+
+
+def test_concurrent_budget_cannot_overshoot():
+    from concurrent.futures import ThreadPoolExecutor
+
+    control = RunControl(5)
+    def reserve():
+        try:
+            control.reserve()
+            return True
+        except RunStopped:
+            return False
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert sum(pool.map(lambda _: reserve(), range(40))) == 5
+    assert control.attempts == 5
 
 
 # ── 请求体：Gate 0 的三条实测 ──────────────────────────────────────────

@@ -3,8 +3,9 @@ import json
 import logging
 import os
 import sys
+from contextlib import nullcontext
 from collections import defaultdict
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -31,7 +32,7 @@ def save_progress(engine, progress):
             conn.execute(insert(meta_kv).values(k="own_analysis_progress", v=value))
 
 
-def prepare(engine, cfg, anchor, codes, *, ranges=None):
+def prepare(engine, cfg, anchor, codes, *, ranges=None, optimized=False, page_size=1000):
     with engine.connect() as conn:
         source_version = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
             meta_kv.c.k.in_(("data_revision", "etl_generation")),
@@ -41,6 +42,7 @@ def prepare(engine, cfg, anchor, codes, *, ranges=None):
     end = datetime.combine(anchor, time.min)
     first = datetime.combine(start, time.min)
     scopes = {}
+    missing = []
     for code in codes:
         with engine.connect() as conn:
             existing = conn.execute(select(analysis_scopes).where(
@@ -55,13 +57,19 @@ def prepare(engine, cfg, anchor, codes, *, ranges=None):
             and old_stats.get("model", cfg.model) == cfg.model):
             scopes[code] = existing["scope_id"]
             continue
-        result = extract.run(engine, cfg, codes=[code], date_from=first, date_to=end,
-                             task="both", drop_offpool=False)
-        result.update(sourceVersion=source_version, model=cfg.model)
-        with engine.begin() as conn:
-            conn.execute(update(analysis_scopes).where(analysis_scopes.c.scope_id == result["scope_id"])
-                         .values(stats_json=json.dumps(result, ensure_ascii=False)))
-        scopes[code] = result["scope_id"]
+        missing.append(code)
+    snapshot = (extract.candidate_snapshot(engine, missing, first, end + timedelta(days=1), page_size)
+                if optimized and missing else nullcontext(None))
+    with snapshot as reader:
+        for code in missing:
+            result = extract.run(engine, cfg, codes=[code], date_from=first, date_to=end,
+                                 task="both", drop_offpool=False, candidate_reader=reader,
+                                 report_dir=None if optimized else extract.REPORT_DIR)
+            result.update(sourceVersion=source_version, model=cfg.model)
+            with engine.begin() as conn:
+                conn.execute(update(analysis_scopes).where(analysis_scopes.c.scope_id == result["scope_id"])
+                             .values(stats_json=json.dumps(result, ensure_ascii=False)))
+            scopes[code] = result["scope_id"]
     return scopes, start
 
 
@@ -72,7 +80,7 @@ def queue_status(engine, scope_id):
         ).group_by(annotation_jobs.c.status)).all())
 
 
-def prioritize_scope(engine, scope_id, anchor, *, own):
+def prioritize_scope(engine, scope_id, anchor, *, own, daily=False):
     changes = defaultdict(list)
     for target_type, source in (
         ("comment", annotation_jobs.join(comments, comments.c.comment_id == annotation_jobs.c.target_id)
@@ -86,6 +94,8 @@ def prioritize_scope(engine, scope_id, anchor, *, own):
                                     annotation_jobs.c.status.in_(("pending", "claimed"))))
             for job_id, priority, posted_at in rows:
                 updated = annotate.job_priority(posted_at, anchor, own=own, current=True)
+                if daily and posted_at is not None:
+                    updated = 100000 - (anchor - posted_at.date()).days * 100 + (2 if own else 0)
                 if priority != updated:
                     changes[updated].append(job_id)
     with engine.begin() as conn:
@@ -96,6 +106,88 @@ def prioritize_scope(engine, scope_id, anchor, *, own):
     return sum(len(ids) for ids in changes.values())
 
 
+def source_state(engine):
+    with engine.connect() as conn:
+        return dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
+            meta_kv.c.k.in_(("anchor", "data_revision", "etl_generation")),
+        )).all())
+
+
+def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
+    from ai.providers.base import RunStopped
+
+    control = provider.control
+    state = source_state(engine)
+    if state != plan["sourceState"]:
+        raise ValueError("Source changed after planning; create a new plan")
+    anchor = date.fromisoformat(plan["anchor"])
+    codes = plan["codes"]
+    with WorkerLease(engine, "own-analysis") as lease:
+        def check_source():
+            if lease.lost:
+                control.stop("lease_lost")
+            elif source_state(engine) != state:
+                control.stop("source_changed")
+        control.before_request = check_source
+        progress = {"anchor": plan["anchor"], "baselineFrom": plan["from"],
+                    "scope": "all" if len(codes) == 120 else "selection", "ranges": plan["ranges"],
+                    "sourceVersion": {key: value for key, value in state.items() if key != "anchor"},
+                    "model": cfg.model, "batchSize": cfg.micro_batch_size, "status": "running", "products": {}}
+        try:
+            if scopes is None:
+                scopes, _start = prepare(engine, cfg, anchor, codes, ranges=plan["ranges"],
+                                          optimized=True, page_size=page_size)
+            for code, scope in scopes.items():
+                prioritize_scope(engine, scope, anchor, own=plan["ownership"][code] == "own", daily=True)
+                progress["products"][code] = {"scope": scope, "queue": queue_status(engine, scope), "complete": False}
+            order, blocked = list(codes), set()
+            def priority_for(code):
+                with engine.connect() as conn:
+                    return conn.execute(select(func.max(annotation_jobs.c.priority)).where(
+                        scope_condition(scopes[code]), annotation_jobs.c.status == "pending",
+                    )).scalar() or 0
+            priorities = {code: priority_for(code) for code in codes}
+            while True:
+                check_source()
+                control.check()
+                available = [code for code in order if not progress["products"][code]["complete"] and code not in blocked]
+                if not available:
+                    progress["status"] = "blocked" if blocked else "complete"
+                    break
+                code = max(available, key=lambda candidate: priorities[candidate])
+                order.remove(code)
+                order.append(code)
+                before = queue_status(engine, scopes[code])
+                result = pipeline.run(engine, cfg, scopes[code], provider=provider,
+                                      max_items=cfg.micro_batch_size * cfg.concurrency,
+                                      ranges=plan["ranges"], anchor_override=anchor, audit_report=False)
+                after = queue_status(engine, scopes[code])
+                priorities[code] = priority_for(code)
+                row = progress["products"][code]
+                row.update(queue=after, complete=result.get("complete", False))
+                if result.get("aborted"):
+                    control.stop(control.reason or "configuration_error")
+                elif not row["complete"] and before == after:
+                    row["blocked"] = "failed_or_leased_jobs_or_synthesis"
+                    blocked.add(code)
+                progress["batchRun"] = control.snapshot()
+                progress["updatedAt"] = datetime.utcnow().isoformat() + "Z"
+                save_progress(engine, progress)
+                print(json.dumps({"code": code, **row, "httpAttempts": control.attempts}), flush=True)
+        except RunStopped:
+            progress["status"] = control.reason or "cancelled"
+        except BaseException:
+            progress["status"] = "error"
+            raise
+        finally:
+            for row in progress["products"].values():
+                row["queue"] = queue_status(engine, row["scope"])
+            progress["batchRun"] = control.snapshot()
+            save_progress(engine, progress)
+            control.before_request = None
+    return progress
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--anchor")
@@ -103,12 +195,20 @@ def main():
     parser.add_argument("--max-items", type=int, default=300)
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--ranges", default=",".join(PRESETS))
+    parser.add_argument("--max-http-requests", type=int, required=True)
+    parser.add_argument("--sync-prices", action="store_true")
     args = parser.parse_args()
+    if args.max_http_requests < 1:
+        parser.error("--max-http-requests must be positive")
     ranges = list(dict.fromkeys(key.strip() for key in args.ranges.split(",") if key.strip()))
     if not ranges or any(key not in PRESETS for key in ranges):
         parser.error("--ranges must contain supported date presets: " + ",".join(PRESETS))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     cfg = config.load()
+    from ai.providers import build as build_provider
+    from ai.providers.base import RunControl, RunStopped
+    control = RunControl(args.max_http_requests)
+    provider = build_provider(cfg, control=control)
     engine = make_engine()
     with engine.connect() as conn:
         measured = date.fromisoformat(conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar_one())
@@ -120,7 +220,7 @@ def main():
     ownership = {row["code"]: row["ownership"] for row in master["products"]}
     if len(codes) != (120 if args.all else 61):
         raise SystemExit("Product master must contain 61 own and 59 peer products")
-    with WorkerLease(engine, "own-analysis") as lease:
+    with WorkerLease(engine, "own-analysis") as lease, control.interruptible():
         emit(engine, "orchestrator", f"Starting LLM analysis for {len(codes)} products: {','.join(ranges)}")
         scopes, start = prepare(engine, cfg, anchor, codes, ranges=ranges)
         for code, scope_id in scopes.items():
@@ -147,6 +247,13 @@ def main():
 
         def tick():
             nonlocal scopes, start, anchor, source_version, order
+            if control.stop_event.is_set():
+                progress["status"] = control.reason
+                progress["batchRun"] = control.snapshot()
+                save_progress(engine, progress)
+                if args.watch:
+                    scheduler.shutdown(wait=False)
+                return
             if lease.lost:
                 progress["status"] = "lease_lost"
                 save_progress(engine, progress)
@@ -185,17 +292,21 @@ def main():
             if status.get("dead") or status.get("failed"):
                 progress["products"][code]["blocked"] = "failed_jobs"
             emit(engine, "L2", f"Processing {code}", code=code, scope_id=scopes[code], data=status)
-            result = pipeline.run(engine, cfg, scopes[code], max_items=args.max_items, ranges=ranges)
+            try:
+                result = pipeline.run(engine, cfg, scopes[code], max_items=args.max_items, ranges=ranges, provider=provider)
+            except RunStopped:
+                result = {"complete": False, "aborted": control.reason}
             progress["products"][code].update(queue=queue_status(engine, scopes[code]),
                                               complete=result.get("complete", False))
             emit(engine, "L3", f"{code}: {result.get('synth_pairs', 0)} ready ranges",
                  code=code, scope_id=scopes[code], data=progress["products"][code])
             progress["updatedAt"] = datetime.utcnow().isoformat() + "Z"
             if result.get("aborted"):
-                progress["status"] = "configuration_error"
+                progress["status"] = control.reason or "configuration_error"
+                progress["batchRun"] = control.snapshot()
                 save_progress(engine, progress)
                 if args.watch:
-                    scheduler.pause()
+                    scheduler.shutdown(wait=False)
                 return
             save_progress(engine, progress)
             print(json.dumps({"code": code, **progress["products"][code]}, ensure_ascii=True), flush=True)
@@ -203,7 +314,7 @@ def main():
         if args.watch:
             scheduler = BlockingScheduler(timezone="Asia/Hong_Kong")
             logging.getLogger("apscheduler").setLevel(logging.ERROR)
-            if os.getenv("FMP_API_KEY"):
+            if args.sync_prices and os.getenv("FMP_API_KEY"):
                 from jobs.sync_prices import sync
                 from market_data.fmp import FmpClient
                 scheduler.add_job(lambda: sync(engine, FmpClient(), codes, start, anchor, force=True),
@@ -217,6 +328,8 @@ def main():
         else:
             for _ in codes:
                 tick()
+                if control.stop_event.is_set():
+                    break
             return 0 if all(row["complete"] for row in progress["products"].values()) else 2
 
 

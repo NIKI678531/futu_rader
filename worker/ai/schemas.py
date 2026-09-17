@@ -317,6 +317,25 @@ def parse_batch(task, raw, expected_ids, version="v1"):
     return by_id
 
 
+def parse_batch_partial(task, raw, expected_ids, version="v1"):
+    if not isinstance(raw, dict) or set(raw) != {"results"} or not isinstance(raw["results"], list):
+        raise SchemaError("Expected a results array")
+    expected = set(expected_ids)
+    seen, valid, invalid = set(), {}, {}
+    for row in raw["results"]:
+        item_id = row.get("item_id") if isinstance(row, dict) else None
+        if not isinstance(item_id, str) or item_id not in expected or item_id in seen:
+            raise IdSetMismatch("Unknown or duplicate item_id")
+        seen.add(item_id)
+        try:
+            valid[item_id] = parse(task, row, version)
+        except SchemaError as exc:
+            invalid[item_id] = str(exc)
+    for item_id in expected - seen:
+        invalid[item_id] = "Missing item_id"
+    return valid, invalid
+
+
 def batch_json_schema(task, version="v1"):
     """整批发给供应商的 JSON Schema。"""
     return _strictify(copy.deepcopy(batch_model_for(task, version).model_json_schema()))

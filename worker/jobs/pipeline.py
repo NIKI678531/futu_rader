@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import sys
+from contextlib import nullcontext
 from collections import defaultdict
 from datetime import date
 from pathlib import Path
@@ -84,7 +85,7 @@ def ready_pairs(engine, scope_id, codes, ranges, anchor, *, days=None):
 
 
 def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=None, max_items=None,
-        skip_synth=False, ranges=None):
+    skip_synth=False, ranges=None, anchor_override=None, audit_report=True):
     with engine.connect() as conn:
         scope = conn.execute(select(analysis_scopes).where(analysis_scopes.c.scope_id == scope_id)).mappings().first()
     if scope is None:
@@ -121,19 +122,20 @@ def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=
         summary["complete"] = unfinished is None
     if not skip_synth:
         ranges = list(ranges or synthesize.DEFAULT_RANGES)
-        anchor = synthesize.read_anchor(engine)
+        anchor = anchor_override or synthesize.read_anchor(engine)
         pairs = ready_pairs(engine, scope_id, codes, ranges, anchor) if anchor else []
         summary["synth_pairs"] = len(pairs)
         summary["synth_pairs_total"] = len(codes) * len(ranges)
         for code, range_key in pairs:
+            kwargs = {"anchor_override": anchor_override} if anchor_override is not None else {}
             st = synthesize.run(engine, cfg, codes=[code], ranges=[range_key],
-                                provider=provider, dry_run=dry_run)
+                                provider=provider, dry_run=dry_run, **kwargs)
             summary["steps"].append({"task": "synthesize", "code": code, "range": range_key,
                                      **{key: st[key] for key in ("run_id", "calls", "written", "skipped_same",
                                                                 "low_sample", "errors", "tok_in", "tok_out")}})
             if not dry_run and st["errors"]:
                 summary["complete"] = False
-    if not dry_run:
+    if not dry_run and audit_report:
         rep = audit.report(engine, scope_id)
         summary["audit"] = {"queue": rep["queue"], "needs_review_rate": rep["annotations"]["needs_review_rate"],
                             "evidence_located_rate": rep["evidence_located_rate"],
@@ -147,16 +149,29 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--resume", action="store_true", help="语义同不带：幂等续跑")
     ap.add_argument("--budget-requests", type=int)
+    ap.add_argument("--max-http-requests", type=int)
     ap.add_argument("--max-items", type=int)
     ap.add_argument("--skip-synth", action="store_true")
     ap.add_argument("--ranges", help="Layer B 只做这些区间，如 d7,d30")
     args = ap.parse_args(argv)
+    if not args.dry_run and (args.max_http_requests is None or args.max_http_requests < 1):
+        ap.error("AI execution requires --max-http-requests")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s")
     engine = make_engine()
     cfg = config.load(_allow_missing_key=args.dry_run)
-    out = run(engine, cfg, args.scope, dry_run=args.dry_run, budget_requests=args.budget_requests,
-              max_items=args.max_items, skip_synth=args.skip_synth,
-              ranges=[r.strip() for r in args.ranges.split(",")] if args.ranges else None)
+    from ai.providers.base import RunControl, RunStopped
+    from radar_db.leases import WorkerLease
+    control = None if args.dry_run else RunControl(args.max_http_requests)
+    with (WorkerLease(engine, "own-analysis") if control else nullcontext()), (
+        control.interruptible() if control else nullcontext()
+    ):
+        try:
+            out = run(engine, cfg, args.scope, dry_run=args.dry_run, budget_requests=args.budget_requests,
+                      max_items=args.max_items, skip_synth=args.skip_synth,
+                      provider=build_provider(cfg, control=control) if control else None,
+                      ranges=[r.strip() for r in args.ranges.split(",")] if args.ranges else None)
+        except RunStopped:
+            out = {"complete": False, "status": control.reason}
     print(json.dumps(out, ensure_ascii=False, indent=1, default=str))
     return 0 if args.dry_run or out.get("complete", False) else 2
 

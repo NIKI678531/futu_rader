@@ -77,6 +77,9 @@ class AiConfig:
     # OpenAI 的 `service_tier`（`flex` ＝ Batch 价、同步接口、可能 429）。网关是否透传
     # 未知，由 `scripts/probe_gateway.py` 探明后再在 .env 里开；默认空＝不带这个字段。
     service_tier: str = ""
+    grouped_batches: bool = False
+    max_payload_bytes: int = 12288
+    max_output_tokens: int = 8192
 
     def redacted(self):
         """可以安全写进日志与 run 记录的形态。Key 只留尾四位，用于分辨「换过 Key 没有」。"""

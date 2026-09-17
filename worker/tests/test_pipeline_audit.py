@@ -131,6 +131,48 @@ def test_extract_then_pipeline_end_to_end(engine, cfg, tmp_path):
     assert all("skipped" in s for s in out2["steps"] if s["task"] != "synthesize")
 
 
+def test_manual_batch_workflow_is_bounded_and_second_run_sends_nothing(engine, cfg):
+    from dataclasses import replace
+    from ai.providers.base import RunControl
+    from jobs import analyze, full_own
+
+    class BoundedFake(UniversalFake):
+        def __init__(self, budget):
+            super().__init__()
+            self.control = RunControl(budget)
+
+        def complete_json(self, *args):
+            self.control.reserve()
+            return super().complete_json(*args)
+
+    cfg = replace(cfg, micro_batch_size=5, grouped_batches=True)
+    plan = analyze.make_plan(engine, analyze.parser().parse_args(["plan", "--codes", CODE]))
+    limited = BoundedFake(1)
+    stopped = full_own.run_manual(engine, cfg, plan, limited)
+    assert stopped["status"] == "budget_exhausted"
+    assert not stopped["products"][CODE]["complete"]
+    assert len(limited.calls) == 1
+    worker = BoundedFake(100)
+    finished = full_own.run_manual(engine, cfg, plan, worker)
+    assert finished["status"] == "complete"
+    assert finished["products"][CODE]["complete"]
+    repeated = BoundedFake(100)
+    assert full_own.run_manual(engine, cfg, plan, repeated)["status"] == "complete"
+    assert repeated.calls == []
+
+
+def test_manual_workflow_refuses_stale_plan_before_preparing(engine, cfg):
+    from jobs import analyze, full_own
+    from ai.providers.base import RunControl
+    from types import SimpleNamespace
+
+    plan = analyze.make_plan(engine, analyze.parser().parse_args(["plan", "--codes", CODE]))
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k="data_revision", v="changed"))
+    with pytest.raises(ValueError, match="Source changed"):
+        full_own.run_manual(engine, cfg, plan, SimpleNamespace(control=RunControl(1)))
+
+
 def test_pipeline_dry_run_estimates_only(engine, cfg, tmp_path):
     ext = extract.run(engine, cfg, codes=[CODE], date_from=datetime(2026, 8, 19), date_to=datetime(2026, 8, 25),
                       ownership={CODE: "own"}, report_dir=tmp_path)

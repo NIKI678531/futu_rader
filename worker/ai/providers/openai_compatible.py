@@ -46,7 +46,7 @@ import time
 import requests
 
 from .. import redact
-from .base import Completion, PermanentError, Provider, TransientError, Usage
+from .base import Completion, PermanentError, Provider, TransientError, TruncatedOutput, RunStopped, Usage
 
 log = logging.getLogger("worker.ai.provider")
 
@@ -57,8 +57,9 @@ _RETRYABLE = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 529})
 class OpenAiCompatibleProvider(Provider):
     name = "openai_compatible"
 
-    def __init__(self, config, session=None, sleep=time.sleep):
+    def __init__(self, config, session=None, sleep=time.sleep, control=None):
         self._cfg = config
+        self.control = control
         # session 可注入，测试用 fake 顶掉，不必起 HTTP 服务。
         self._session = session or requests.Session()
         self._sleep = sleep
@@ -71,6 +72,12 @@ class OpenAiCompatibleProvider(Provider):
         redact.assert_clean(body)
 
         payload = self._post_with_retry("/responses", body)
+        if self.control is not None:
+            self.control.record(_extract_usage(payload))
+            if self.control.before_request is not None:
+                self.control.before_request()
+            if self.control.reason in ("source_changed", "lease_lost"):
+                raise RunStopped(self.control.reason)
         text = _extract_output_text(payload)
         try:
             data = json.loads(text)
@@ -114,6 +121,8 @@ class OpenAiCompatibleProvider(Provider):
             body["reasoning"] = {"effort": self._cfg.reasoning_effort}
         if getattr(self._cfg, "service_tier", ""):
             body["service_tier"] = self._cfg.service_tier
+        if self._cfg.grouped_batches:
+            body["max_output_tokens"] = self._cfg.max_output_tokens
         return body
 
     # ── 传输层重试（runbook §11.3） ─────────────────────────────────────
@@ -127,6 +136,9 @@ class OpenAiCompatibleProvider(Provider):
         last = None
         # max_retries 是**重试**次数，所以总共尝试 max_retries + 1 次。
         for attempt in range(self._cfg.max_retries + 1):
+            if self.control is not None:
+                self.control.reserve(retry=attempt > 0)
+            started = time.monotonic()
             try:
                 resp = self._session.post(
                     url, headers=headers, json=body, timeout=self._cfg.timeout_seconds
@@ -138,10 +150,14 @@ class OpenAiCompatibleProvider(Provider):
                 last = TransientError(f"连接失败：{exc}")
                 last.__cause__ = exc
             else:
+                if self.control is not None:
+                    self.control.latency(time.monotonic() - started)
                 if resp.status_code == 200:
                     return resp.json()
                 last = self._classify(resp)
                 if isinstance(last, PermanentError):
+                    if self.control is not None:
+                        self.control.stop("configuration_error")
                     raise last
 
             if attempt < self._cfg.max_retries:
@@ -150,7 +166,10 @@ class OpenAiCompatibleProvider(Provider):
                     "第 %d/%d 次失败（%s），%.1fs 后重试",
                     attempt + 1, self._cfg.max_retries + 1, last, delay,
                 )
-                self._sleep(delay)
+                if self.control is None:
+                    self._sleep(delay)
+                else:
+                    self.control.cooldown(delay, rate_limited=getattr(last, "rate_limited", False))
 
         raise last
 
@@ -160,6 +179,7 @@ class OpenAiCompatibleProvider(Provider):
             err = TransientError(f"HTTP {resp.status_code}: {detail}")
             # 供应商给了 Retry-After 就听它的，别用我们自己算的退避把限流窗口撞穿。
             err.retry_after = _retry_after(resp)
+            err.rate_limited = resp.status_code == 429
             return err
         return PermanentError(f"HTTP {resp.status_code}: {detail}")
 
@@ -188,7 +208,7 @@ def _extract_output_text(payload):
     if payload.get("status") == "incomplete":
         reason = (payload.get("incomplete_details") or {}).get("reason")
         # 输出被截断 ⇒ JSON 一定不完整。当瞬时错误重试（下一次可能更短）。
-        raise TransientError(f"响应不完整（reason={reason}）——多半是批太大或输出上限太低")
+        raise TruncatedOutput(f"响应不完整（reason={reason}）——多半是批太大或输出上限太低")
 
     for item in payload.get("output") or []:
         if item.get("type") != "message":

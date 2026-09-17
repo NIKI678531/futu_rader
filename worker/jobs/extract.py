@@ -33,8 +33,12 @@ import logging
 import os
 import sys
 import uuid
+import tempfile
+from contextlib import contextmanager
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import insert, select
 
@@ -103,8 +107,40 @@ def resolve_window(args, engine):
     return frm, to
 
 
+@contextmanager
+def candidate_snapshot(engine, codes, since, until, page_size=1000):
+    with tempfile.TemporaryDirectory(prefix="radar-extract-") as directory:
+        handles, paths = OrderedDict(), {}
+        try:
+            for row in annotate._comment_candidates(engine, codes=codes, since=since, until=until, page_size=page_size):
+                key = (row.code, row.posted_at.date().isoformat())
+                if key not in handles:
+                    if len(handles) >= 32:
+                        handles.popitem(last=False)[1].close()
+                    paths[key] = Path(directory) / ("-".join(key) + ".jsonl")
+                    handles[key] = paths[key].open("a", encoding="utf-8")
+                handles.move_to_end(key)
+                handles[key].write(json.dumps(dict(row._mapping), ensure_ascii=False, default=str) + "\n")
+        finally:
+            for handle in handles.values():
+                handle.close()
+
+        def reader(_engine, *, codes, since, until, **_kwargs):
+            for code, day in sorted(paths):
+                if code not in codes or not since.date().isoformat() <= day < until.date().isoformat():
+                    continue
+                path = Path(directory) / f"{code}-{day}.jsonl"
+                with path.open(encoding="utf-8") as source:
+                    for line in source:
+                        value = json.loads(line)
+                        value["posted_at"] = datetime.fromisoformat(value["posted_at"])
+                        yield SimpleNamespace(**value)
+        yield reader
+
+
 def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_baseline=False,
-        drop_offpool=True, dry_run=False, authors=None, ownership=None, report_dir=REPORT_DIR):
+        drop_offpool=True, dry_run=False, authors=None, ownership=None, report_dir=REPORT_DIR,
+        candidate_reader=None):
     """执行一次抽取。返回 stats dict（也写进 `analysis_scopes.stats_json`）。"""
     ownership = ownership or pool_codes()
     now = clock.now()
@@ -149,6 +185,7 @@ def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_
         stats["comments"] = _extract_comments(
             engine, cfg, prompt, schema_version, scope_id, codes, windows, ownership,
             drop_offpool=drop_offpool, dry_run=dry_run, now=now, priority_of=priority_of,
+            candidate_reader=candidate_reader,
         )
         # 合作 KOL 的评论顺手排进 `kol_comment_opinion`（KOL 详情 M7 要它；量很小）。
         kols, _officials = master_accounts()
@@ -173,7 +210,8 @@ def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_
                 .where(analysis_scopes.c.scope_id == scope_id)
                 .values(stats_json=json.dumps(stats, ensure_ascii=False))
             )
-    _write_report(stats, report_dir)
+    if report_dir is not None:
+        _write_report(stats, report_dir)
     return stats
 
 
@@ -186,7 +224,7 @@ def _read_anchor(engine):
 
 
 def _extract_comments(engine, cfg, prompt, schema_version, scope_id, codes, windows, ownership,
-                      *, drop_offpool, dry_run, now, priority_of=None, fold_neardup=True):
+                      *, drop_offpool, dry_run, now, priority_of=None, fold_neardup=True, candidate_reader=None):
     plex = product_aliases.ProductLexicon()
     extra = offpool_stocks.load_from_db(engine, set(ownership))
     slex = offpool_stocks.StockLexicon(extra)
@@ -202,10 +240,14 @@ def _extract_comments(engine, cfg, prompt, schema_version, scope_id, codes, wind
         prefilter.open_rule_run(engine, rule_run_id, "comment_product", now,
                                 taxonomy_version=cfg.taxonomy_version, schema_version=schema_version)
 
+    if candidate_reader is not None:
+        windows = [(f"{name}:{(since + timedelta(days=offset)).date()}",
+                    since + timedelta(days=offset), min(until, since + timedelta(days=offset + 1)))
+                   for name, since, until in windows for offset in range((until - since).days)]
     for name, since, until in windows:
         kept_rows, decisions = [], []
         n_cand = 0
-        for r in annotate._comment_candidates(engine, codes=codes, since=since, until=until):
+        for r in (candidate_reader or annotate._comment_candidates)(engine, codes=codes, since=since, until=until):
             n_cand += 1
             d = pf.classify(r.content, r.code, comment_id=r.comment_id,
                             author_uid=r.author_uid, feed_id=r.feed_id)
@@ -227,7 +269,7 @@ def _extract_comments(engine, cfg, prompt, schema_version, scope_id, codes, wind
         rows = []
         for r in reps:
             if priority_of is not None:
-                priority = priority_of(name)(r.posted_at, r.code)
+                priority = priority_of(name.split(":")[0])(r.posted_at, r.code)
             else:
                 # 自家优先、当前期优先：页面先亮再全。
                 priority = (2 if ownership.get(r.code) == "own" else 0) + (1 if name == "current" else 0)

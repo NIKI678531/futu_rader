@@ -1971,5 +1971,72 @@ Set-Location worker
       自动版本刷新保留产品及日期，趋势画布非空；前端构建通过。
 - 后端全量回归为 604 通过、1 失败：既有 `test_six_states.py` 的
       `fullText` fixture 与 `_UNANNOTATED` 断言不一致，本次未修改。
-      后续查询复用的 SQL/Layer B 定向回归 104 项通过。
+            后续查询复用的 SQL/Layer B 定向回归 104 项通过。
+
+### 23.8 手动启动与按产品日期分包（2026-09-17）
+
+本节取代上文未带预算的旧启动命令。API 只供数；第二个终端在 `worker/` 执行
+`python -m jobs.analyze plan|run|status|resume`。本轮代码测试使用假模型，
+没有运行收费校准、重新标注真实库或证明实际提速。
+
+1. 窗口 A 在 `backend/` 运行 `.venv/Scripts/python.exe -X utf8 app.py`。
+2. 窗口 B 在 `worker/` 运行
+      `.venv/Scripts/python.exe -X utf8 -m jobs.analyze plan --ranges d1,d2 --ownership all`。
+      这是只读计划，不写入任务或标注，不构造模型客户端。报告中的分包/token估算只覆盖评论，
+      KOL/帖子任务、Layer B 与重试需要额外预算；价格未知仍为 null。
+3. 要导入新数据，单独使用 `jobs.ingest --source <来源> --file <规范化JSONL>`；
+      不执行全量 ETL。只有来源明确声明完整日才传 `--complete-through`。
+      导入不会启动 AI；当前没有可用的富途社区在线采集器。
+4. 在明确授权模型用量时运行 `scripts.calibrate --codes <产品> --from <日期> --to <日期>
+      --n 300 --batch 5 --skip-v1 --max-http-requests 500`。可先用 `--n 60` 冒烟，但不放量。
+      校准与正式执行共享产品/帖子自然日分组、输入 token/字节限制与输出 token 预算。
+      >=300 条完整返回且证据可定位、相关性和态度与单条对照均 >=90% 才生成
+      `batchGatePassed=true`；跳过单条对照、预算不足或失败样本不能通过。
+      一致率不是准确率，不修改 `aiValidation=none`。
+5. 使用通过的报告运行
+      `jobs.analyze run --ranges d1,d2 --ownership all --batch-size 5 --concurrency 2
+      --calibration-report ../.scratch/llm-90d/calibration-<时间>.json --max-http-requests 500`。
+      报告须匹配模型、Prompt、schema、taxonomy、批大小及输入/输出限制；不匹配则拒绝发请求。
+      本轮不自动修改 worker/.env 的批大小。显式 `--batch-size 1` 可走单条模式，
+      但批量失败时不会自动偷偷切回全量逐条收费。
+6. `jobs.analyze status` 查看逐产品 scope 和 `batchRun`；预算耗尽后可以用相同 run 参数
+      重跑，或 `resume --scope <id>` 加原日期参数、校准报告及新的请求预算继续。
+      `failed/dead` 不自动复活，原文改变/版本不符需要新 plan/run，不能冒用旧 scope。
+
+默认日期是最新完整源日。`d1` 与页面“昨日”同义，不是滑动24小时；`d1,d2` 会合并当前期
+与基准期，例如锚点 2026-08-25 时实际抽取 08-22..25。支持 `--anchor YYYY-MM-DD` 完整历史
+回放；`--anchor-mode calendar-yesterday` 严格取 HKT 系统昨日，源未覆盖则报缺失而不回退。
+`--sector/--struct/--ownership/--codes` 取交集，按类别筛选后仍按单产品、单日发送。
+
+候选 SQL 使用参数绑定和 comment_id keyset 分页（默认1000条），不使用 OFFSET。
+原始评论快照按产品/日期存系统临时目录，最多同时打开32个文件；结束后删除。
+跨分页预过滤状态保留，近重复在完整产品日内折叠，任务批量预查唯一键，已完成输入不重发。
+不新增数据库索引或迁移；MySQL 执行计划和真实吞吐仍需目标环境实测。
+
+正常包候选为5条、并发2（可设1..4），默认输入估算上限8000 token、user payload 12KiB、
+输出上限8192 token（含推理，网关实际支持需校准验证）。token估算含系统提示与JSON schema，
+不是精确分词。单条超限不截断原文，而是标记失败；尾包和失败隔离允许单条，并在批次分布显示。
+输入/输出 ID 对齐不依赖数组顺序；缺失或非法子项重试，成功项不重发，重复/未知 ID 整批拒绝。
+输出截断会拆小包；每条结论及对应任务done在同一事务保存。
+
+所有模型HTTP尝试在发送前原子占用共享预算，包括429重试、schema拆包和Layer B。
+`batchRun` 报告实际HTTP尝试、重试、限流、返回包大小、最近响应ID/批指纹、已返回token和延迟。
+它不代表供应商货币账单；网络响应丢失可能已收费，不能保证恰好一次计费。
+Ctrl+C停止新领取/新发送，在途请求收尾；未知源变更或失去运行租约停止后续发布。
+只在显式 `run --watch` 时等待新导入，整个watch共用预算，不按tick重置。
+
+普通 Compose 启动不再启动 worker（manual profile、restart=no）。老的常驻 worker 需要先在
+它的终端停止；API重启不会停止或启动它。旧 `full_own/pipeline/annotate --run/synthesize`
+也要求 `--max-http-requests` 且共用 `own-analysis` 租约；旧 full_own 的 FMP 周期同步
+需要显式 `--sync-prices`，新 analyze 入口不隐含行情请求。
+
+实施验收：CLI/抽取/分包/预算/续跑/导入/校准的134项定向测试通过，后端进度与SQL读路径
+112项通过。真实库只读plan实测3033的08-22..25有188条候选，6条规则过滤、182条已完成，
+因此计划新增评论模型请求为0。旧watch在确认全池complete后已停止，运行租约已正常释放。
+新编排只增量更新处理过产品的优先级，不在每小包后跑完整审计；需要完整审计时另用jobs.audit。
+
+全量worker测试仍有既有阻塞：test_funnel_core引用不存在的ranges_touching；排除该收集错误后，
+另有8项学生模型/并行汇总旧接口测试失败（STAGE_STUDENT、workers/pairs、full_own.classify）。
+这些不属于本次纯LLM批量实现，未修改或以跳过标记掩盖。真实模型一致性、供应商输出上限支持、
+实际吞吐提升及MySQL执行计划仍未验证，不宣称已经提速或已通过批量放量校验。
 

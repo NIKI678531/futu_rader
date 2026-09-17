@@ -56,7 +56,8 @@ def test_empty_sql_db_has_full_shape_with_nulls_not_zeros(progress_client):
     body = r.get_json()
     assert body["status"] == "ok"
     d = body["data"]
-    assert set(d) == {"summary", "queue", "tasks", "synthesis", "throughput", "events", "latestEventId"}
+    assert set(d) == {"summary", "queue", "tasks", "synthesis", "throughput", "events", "latestEventId", "batchRun"}
+    assert d["batchRun"] is None
     assert set(d["queue"]) == {"student", "llm"}
     for stage in ("student", "llm"):
         assert set(d["queue"][stage]) == JOB_STATUSES

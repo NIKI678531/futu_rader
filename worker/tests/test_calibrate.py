@@ -1,4 +1,5 @@
 import json
+from contextlib import nullcontext
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,7 +25,8 @@ def test_nonempty_strata_report_is_json_serializable(tmp_path, monkeypatch):
     monkeypatch.setattr(calibrate.config, "load", lambda: cfg)
     monkeypatch.setattr(calibrate, "make_engine", lambda: object())
     monkeypatch.setattr(calibrate, "candidates", lambda *args: [sample])
-    monkeypatch.setattr(calibrate, "build_provider", lambda *args: object())
+    monkeypatch.setattr(calibrate, "build_provider", lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr(calibrate, "WorkerLease", lambda *args: nullcontext())
     monkeypatch.setattr(calibrate, "label_batch", lambda *args: ({"comment:1|product:3033": label}, 0))
     monkeypatch.setattr(calibrate.offpool_stocks, "load_from_db", lambda *args: [])
     monkeypatch.setattr(calibrate, "OUT_DIR", tmp_path)
@@ -32,9 +34,12 @@ def test_nonempty_strata_report_is_json_serializable(tmp_path, monkeypatch):
 
     assert calibrate.main([
         "--codes", "3033", "--from", "2026-08-01", "--to", "2026-08-31", "--n", "1",
+        "--max-http-requests", "10",
     ]) == 0
 
     report = json.loads(next(tmp_path.glob("calibration-*.json")).read_text(encoding="utf-8"))
     assert report["strata"] == {"zh-Hans|own": 1}
     assert report["b1_vs_b30"]["n"] == 1
     assert report["v1_vs_v2"]["n"] == 1
+    assert report["batchGatePassed"] is False
+    assert report["policy"]["batchSize"] == 5
