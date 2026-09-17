@@ -51,6 +51,22 @@ const DEFAULT_RANGE = 'd7'
 const product = (code, tail, rangeKey) =>
   `/products/${encodeURIComponent(code)}/${tail}` + qs({ range: rangeKey || DEFAULT_RANGE })
 
+export function prefetchScreen(screen, { rangeKey = DEFAULT_RANGE, kol } = {}) {
+  const requests = [() => read('/meta'), () => migrated.buildRange(rangeKey)]
+  if (screen === 'official') requests.push(() => migrated.officialPosts(rangeKey))
+  if (screen === 'kol' || screen === 'kolDetail') requests.push(() => migrated.kolImpact(rangeKey))
+  if (screen === 'kolDetail' && kol) requests.push(() => migrated.kolOpinions(kol, rangeKey))
+  if (screen === 'sector') {
+    requests.push(() => migrated.pool(rangeKey), () => migrated.ranks(rangeKey),
+      () => read('/hot-summaries' + qs({ range: rangeKey })))
+  }
+  for (const request of requests) {
+    try { request() } catch (error) {
+      if (typeof error?.then !== 'function') throw error
+    }
+  }
+}
+
 /* ── 契约函数（PRD §5） ──────────────────────────────────────────────
    屏幕读到的全部 20 个函数，签名与设计源逐字一致。 */
 const migrated = {
@@ -137,6 +153,11 @@ const migrated = {
        `null['positive']` 是硬 TypeError，产品监控整页白屏。 */
     const both = read(product(code, 'themes', rangeKey))
     return both == null ? null : both[polarity]
+  },
+
+  themesStale(code, rangeKey) {
+    const both = read(product(code, 'themes', rangeKey))
+    return both == null ? null : both.stale
   },
 
   /* negCatsFor(code, range) → GET /products/{code}/negative-categories?range= */

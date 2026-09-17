@@ -2,6 +2,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { cloneElement, startTransition, useEffect, useState } from 'react'
 import { startLiveUpdates } from './lib/api'
 import ScreenBoundary from './components/ScreenBoundary'
+import ProgressDrawer from './components/ProgressDrawer'
 import OfficialActivity from './screens/OfficialActivity'
 import KolActivity from './screens/KolActivity'
 import KolDetail from './screens/KolDetail'
@@ -26,6 +27,7 @@ export default function App() {
   const screen = (element) => <ScreenBoundary key={key}>{cloneElement(element, { dataVersion })}</ScreenBoundary>
 
   return (
+    <>
     <Routes>
       <Route path="/" element={<Navigate to="/official" replace />} />
       <Route path="/official" element={screen(<OfficialActivity />)} />
@@ -35,5 +37,7 @@ export default function App() {
       <Route path="/sector" element={screen(<SectorOverview />)} />
       <Route path="*" element={<Navigate to="/official" replace />} />
     </Routes>
+    <ProgressDrawer />
+    </>
   )
 }

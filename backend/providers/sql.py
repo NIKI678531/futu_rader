@@ -153,8 +153,15 @@ class SqlProvider:
         meta = self._read_meta()
         if meta == self._meta:
             return False
+        def completion_key(source):
+            progress = json.loads(source.get("own_analysis_progress", "null")) or {}
+            return (progress.get("baselineFrom"), progress.get("anchor"),
+                    sorted((code, row.get("scope")) for code, row in progress.get("products", {}).items()
+                           if row.get("complete") and all(status == "done" for status in row.get("queue", {}))))
+
         data_changed = ({key: value for key, value in meta.items() if key != "own_analysis_progress"}
                         != {key: value for key, value in self._meta.items() if key != "own_analysis_progress"})
+        data_changed = data_changed or completion_key(meta) != completion_key(self._meta)
         self._meta = meta
         self._anchor = parse_anchor(meta.get("anchor"))
         if data_changed:
@@ -225,6 +232,7 @@ class SqlProvider:
                 "likes": s["likes"],
                 "shares": s["shares"],
                 "discussionHeat": s["heat"],
+                "heatUnknownPosts": s["heatUnknownPosts"],
                 "activeAccounts": s["active"],
                 "activeByBucket": s["activeByBucket"],
                 "attitude": _attitude_block(s["att"]),
@@ -261,6 +269,7 @@ class SqlProvider:
                 "interactions": sb["interactions"],
                 "likes": sb["likes"],
                 "shares": sb["shares"],
+                "heatUnknownPosts": sb["heatUnknownPosts"],
                 "active": sb["active"],
                 # 这只产品在窗口内一条态度标注都没有时是 None（「还没标」），
                 # 标过但这一桶没命中时是 0（「数过了，这一桶没有」）。
@@ -291,13 +300,16 @@ class SqlProvider:
         # （`_add_all` 的 None 传染），不是把它当 0 加进去 —— 那个数看着完全正常。
         pos = _add_all(_pos_of(o) for o in own)
         base_pos = _add_all(_att(base[o["code"]], "positive") for o in own)
+        negative = {code: core_themes.negative_rollup(self.neg_cats_for(code, range_key))
+                    for code in self._by_code}
+        neg = _add_all(negative[o["code"]]["mentions"] for o in own)
+        base_neg = _add_all(negative[o["code"]]["baseMentions"] for o in own)
         risk = self._compliance_counts(rng)
         return {
             "list": items,
             "globalMax": global_max,
-            # alerts 与 negMentions 来自负面舆情类别（kind=`neg_category`），当前没有写入方。
-            "alerts": {p["code"]: None for p in self._products},
-            "negMentions": {p["code"]: None for p in self._products},
+            "alerts": {code: row["alerts"] for code, row in negative.items()},
+            "negMentions": {code: row["mentions"] for code, row in negative.items()},
             "complianceCount": risk,
             "baseMentions": {c: base[c]["mentions"] for c in self._by_code},
             "baseComments": {c: base[c]["comments"] for c in self._by_code},
@@ -305,12 +317,14 @@ class SqlProvider:
             "own": {
                 "count": len(own),
                 "heat": heat,
-                "neg": None,
+                "heatUnknownPosts": sum(o["heatUnknownPosts"] for o in own),
+                "baseHeatUnknownPosts": sum(base[o["code"]]["heatUnknownPosts"] for o in own),
+                "neg": neg,
                 "pos": pos,
                 # 「没扫过」（None）与「扫了零条」（0）都不能当 0 加进合计，前者让合计未知。
                 "risk": _add_all(risk[o["code"]] for o in own),
                 "dHeat": delta(heat, base_heat_own),
-                "dNeg": delta(None, None),
+                "dNeg": delta(neg, base_neg),
                 "dPos": delta(pos, base_pos),
             },
         }
@@ -348,6 +362,7 @@ class SqlProvider:
             "likes": delta(cur["likes"], base["likes"]),
             "shares": delta(cur["shares"], base["shares"]),
             "heat": delta(cur["heat"], base["heat"]),
+            "heatUnknownPosts": {"current": cur["heatUnknownPosts"], "base": base["heatUnknownPosts"]},
             "positive": delta(_att(cur, "positive"), _att(base, "positive")),
             "negative": delta(_att(cur, "negative"), _att(base, "negative")),
             "neutral": delta(_att(cur, "neutral"), _att(base, "neutral")),
@@ -387,7 +402,8 @@ class SqlProvider:
                     "hour": b.get("hour"),
                     "label": b["label"],
                     "tip": b["tip"],
-                    "heat": heat_of(bk["comments"], bk["likes"], bk["shares"]),
+                    "heat": heat_of(bk["comments"], bk["likes"], bk["shares"], bk["heatUnknownPosts"]),
+                    "heatUnknownPosts": bk["heatUnknownPosts"],
                     "mentions": bk["mentions"],
                     "comments": bk["comments"],
                     "positive": _att(bk, "positive"),
@@ -650,19 +666,42 @@ class SqlProvider:
         self._cache[key] = out
         return out
 
+    def _completed_codes(self, first, last):
+        progress = json.loads(self._meta.get("own_analysis_progress", "null"))
+        if not progress or not progress.get("baselineFrom") or not progress.get("anchor"):
+            return set()
+        if progress["baselineFrom"] > first or progress["anchor"] < last:
+            return set()
+        source_version = {key: self._meta[key] for key in ("data_revision", "etl_generation") if key in self._meta}
+        if progress.get("sourceVersion", {}) != source_version:
+            return set()
+        return {code for code, row in progress.get("products", {}).items()
+                if row.get("complete") and all(status == "done" for status in row.get("queue", {}))}
+
+    def _window_annotations(self, kind, lo, hi):
+        key = ("window_annotations", kind, lo, hi)
+        if key not in self._cache:
+            grouped = defaultdict(dict)
+            for unit, annotation in current_annotations(
+                self._engine, kind, "comment", window=(lo, hi),
+            ).items():
+                grouped[unit[1]][unit] = annotation
+            self._cache[key] = dict(grouped)
+        return self._cache[key]
+
     def _units(self, code, rng):
         """区间内这只产品的判定单元（相关＋有态度），以及市场方向单元。整块 None＝没标过。"""
         key = ("units", code, rng["key"])
         if key in self._cache:
             return self._cache[key]
         lo, hi = _window(rng)
-        att = current_annotations(self._engine, "attitude", "comment", window=(lo, hi), subject_code=code)
-        if not att:
+        att = self._window_annotations("attitude", lo, hi).get(code, {})
+        if not att and code not in self._completed_codes(rng["from"], rng["to"]):
             self._cache[key] = None
             return None
-        rel = current_annotations(self._engine, "relevance", "comment", window=(lo, hi), subject_code=code)
-        asp = current_annotations(self._engine, "aspect", "comment", window=(lo, hi), subject_code=code)
-        mkt = current_annotations(self._engine, "market_direction", "comment", window=(lo, hi), subject_code=code)
+        rel = self._window_annotations("relevance", lo, hi).get(code, {})
+        asp = self._window_annotations("aspect", lo, hi).get(code, {})
+        mkt = self._window_annotations("market_direction", lo, hi).get(code, {})
         units = []
         for unit, a in att.items():
             if (rel.get(unit) or {}).get("value") != "relevant":
@@ -684,11 +723,11 @@ class SqlProvider:
         """基准期的判定单元；基准期一条态度标注都没有 ⇒ None（环比与生命周期暂不可用）。"""
         blo = datetime.combine(date.fromisoformat(rng["benchFrom"]), time.min)
         bhi = datetime.combine(date.fromisoformat(rng["benchTo"]) + timedelta(days=1), time.min)
-        att = current_annotations(self._engine, "attitude", "comment", window=(blo, bhi), subject_code=code)
-        if not att:
+        att = self._window_annotations("attitude", blo, bhi).get(code, {})
+        if not att and code not in self._completed_codes(rng["benchFrom"], rng["benchTo"]):
             return None
-        rel = current_annotations(self._engine, "relevance", "comment", window=(blo, bhi), subject_code=code)
-        asp = current_annotations(self._engine, "aspect", "comment", window=(blo, bhi), subject_code=code)
+        rel = self._window_annotations("relevance", blo, bhi).get(code, {})
+        asp = self._window_annotations("aspect", blo, bhi).get(code, {})
         return [
             {"attitude": a["value"], "aspects": (asp.get(unit) or {}).get("value") or [], "posted_at": a["posted_at"]}
             for unit, a in att.items() if (rel.get(unit) or {}).get("value") == "relevant"
@@ -1117,7 +1156,7 @@ class SqlProvider:
             tt: self._current_annotations("compliance", tt, window=window)
             for tt in ("comment", "feed")
         }
-        scanned_codes = set()
+        scanned_codes = self._completed_codes(rng["from"], rng["to"])
         ev = self._evidence_rows(
             [a["annotation_id"] for table in rows.values() for a in table.values()]
         )
@@ -1261,6 +1300,9 @@ class SqlProvider:
                 continue
             _bump_att(s, _bucket(gran, origin, a["posted_at"]) if nb else None, a["value"])
 
+        for code in self._completed_codes(frm, to):
+            if code in out:
+                out[code]["attSeen"] = True
         for s in out.values():
             _finish(s)
         self._cache[key] = out
@@ -1631,14 +1673,14 @@ def _blank(nb):
         "comments": 0,
         "likes": 0,
         "shares": 0,
-        "sharesUnknown": False,
+        "heatUnknownPosts": 0,
         "authors": set(),
         # 先按 0 数，`_finish` 再决定这三个 0 是「数出来的零」还是「还没标注」。
         "att": _zero_att(),
         "attSeen": False,
         "buckets": [
             {"i": i, "mentions": 0, "comments": 0, "likes": 0, "shares": 0,
-             "sharesUnknown": False, "authors": set(), "att": _zero_att()}
+             "heatUnknownPosts": 0, "authors": set(), "att": _zero_att()}
             for i in range(nb)
         ],
     }
@@ -1651,8 +1693,7 @@ def _bump(s, bi, mentions, n_comments, likes, shares, author, comment_authors):
         t["comments"] += n_comments
         t["likes"] += likes
         if shares is None:
-            # raw_json 坏掉 ⇒ 这条帖子的转发数是**未知**。整桶的转发与热度随之未知。
-            t["sharesUnknown"] = True
+            t["heatUnknownPosts"] += 1
         else:
             t["shares"] += shares
         if author:
@@ -1671,12 +1712,11 @@ def _bump_att(s, bi, val):
 
 def _finish(s):
     def close(t):
-        shares = None if t["sharesUnknown"] else t["shares"]
-        t["shares"] = shares
-        t["interactions"] = None if shares is None else t["likes"] + shares
+        shares = t["shares"]
+        t["interactions"] = t["likes"] + shares
         t["active"] = len(t["authors"])
-        t["heat"] = heat_of(t["comments"], t["likes"], shares)
-        del t["authors"], t["sharesUnknown"]
+        t["heat"] = heat_of(t["comments"], t["likes"], shares, t["heatUnknownPosts"])
+        del t["authors"]
 
     for b in s["buckets"]:
         close(b)

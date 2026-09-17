@@ -16,6 +16,7 @@ export default function Stages({ v }) {
           <span style={s('padding:3px 10px;border-radius:9999px;background:var(--csop-blue-50);font:500 12px/1.6 var(--font-cjk);color:var(--csop-blue-700);white-space:nowrap')}>折线粒度 {v.heatGranLabel}</span>
         </div>
       </div>
+      {v.heatDisclosure && <div style={s('padding:10px 20px;font:400 12px/1.6 var(--font-cjk);color:var(--warning-700)')}>{v.heatDisclosure}</div>}
       {v.stageUnavailable && (
         <div style={s('margin:16px 20px;padding:14px 16px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>数据暂不可用 — 阶段观点尚未生成，热度序列与分时段观点会在下一批次采集后输出。</div>
       )}

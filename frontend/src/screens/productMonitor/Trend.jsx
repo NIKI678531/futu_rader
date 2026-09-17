@@ -24,6 +24,7 @@ export default function Trend({ v }) {
           ))}
         </div>
       </div>
+      {v.heatDisclosure && <div style={s('padding:10px 20px;font:400 12px/1.6 var(--font-cjk);color:var(--warning-700)')}>{v.heatDisclosure}</div>}
       <div ref={v.trendBoxRef} style={s('padding:14px 20px 10px')}>
         <div style={s(`position:relative;width:${v.trendW}px;height:340px`)}>
           <canvas ref={v.trendRef} onMouseMove={v.trendMove} onMouseLeave={v.trendLeave} style={s(`display:block;width:${v.trendW}px;height:340px`)}></canvas>

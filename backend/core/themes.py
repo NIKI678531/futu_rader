@@ -180,3 +180,15 @@ def group_by_polarity(units):
         if u.get("attitude") in ("positive", "negative"):
             out[u["attitude"]].append(u)
     return dict(out)
+
+
+def negative_rollup(categories):
+    if categories is None:
+        return {"alerts": None, "mentions": None, "baseMentions": None}
+    changes = [category["delta"]["abs"] for category in categories]
+    mentions = sum(category["mentions"] for category in categories)
+    return {
+        "alerts": sum(category["severity"] == "high" for category in categories),
+        "mentions": mentions,
+        "baseMentions": None if any(change is None for change in changes) else mentions - sum(changes),
+    }

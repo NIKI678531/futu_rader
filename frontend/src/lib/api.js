@@ -59,12 +59,30 @@ export function isApiError(err) {
 
 /** url → { state: 'pending' | 'ok' | 'error', promise, body, error } */
 const cache = new Map()
+const listeners = new Set()
 let observedRevision
 
-function load(url) {
+function notify() {
+  queueMicrotask(() => { for (const listener of listeners) listener() })
+}
+
+export function subscribe(listener) {
+  listeners.add(listener)
+  return () => listeners.delete(listener)
+}
+
+export function inflight() {
+  const total = cache.size
+  const pending = Array.from(cache.values()).filter(entry => entry.state === 'pending').length
+  return { total, pending, done: total - pending }
+}
+
+function load(url, { signal, cached = true } = {}) {
   const entry = { state: 'pending', promise: null, body: undefined, error: undefined }
-  entry.promise = fetch(BASE + url, { headers: { Accept: 'application/json' } })
+  entry.promise = fetch(BASE + url, { headers: { Accept: 'application/json' }, signal,
+    cache: cached ? 'default' : 'no-store' })
     .catch((err) => {
+      if (err?.name === 'AbortError') throw err
       /* fetch 只在传输层失败时 reject：断网、DNS、连接被拒、CORS 被拦。
          它**不会**因为 4xx/5xx reject —— 那是下面 res.ok 的事。 */
       throw new ApiError('network', url, `连不上后端 ${url} —— ${err && err.message ? err.message : err}`)
@@ -96,14 +114,25 @@ function load(url) {
       }
       entry.state = 'ok'
       entry.body = body
-      if (url === '/meta' && observedRevision === undefined) observedRevision = body.data?.dataRevision
+      if (cached && url === '/meta' && observedRevision === undefined) observedRevision = body.data?.dataRevision
     })
     .catch((err) => {
       entry.state = 'error'
       entry.error = err
     })
-  cache.set(url, entry)
+    .finally(() => { if (cached) notify() })
+  if (cached) {
+    cache.set(url, entry)
+    notify()
+  }
   return entry
+}
+
+export async function fetchLive(url, signal) {
+  const entry = load(url, { signal, cached: false })
+  await entry.promise
+  if (entry.state === 'error') throw entry.error
+  return entry.body.data
 }
 
 /**
@@ -133,6 +162,7 @@ export function read(url) {
 /** 清空缓存，用于「重试」：下一次 read() 会重新打网络。 */
 export function clearCache() {
   cache.clear()
+  notify()
 }
 
 export function startLiveUpdates(onChange) {

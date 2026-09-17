@@ -15,7 +15,7 @@
        `style-hover` by `hover()`. */
 import React from 'react'
 import R from '../../data/radar'
-import { rgba, num, numRaw, navGroups, stamp, naBox, aiValidationNote } from '../../lib/view'
+import { rgba, num, numRaw, navGroups, stamp, naBox, aiValidationNote, heatLowerBoundNote } from '../../lib/view'
 import { s } from '../../lib/dc'
 import Shell from '../../components/Shell'
 import FilterBar from './FilterBar'
@@ -671,10 +671,17 @@ export default class ProductMonitor extends React.Component {
 
       kpis: [
         { label: '评论量', value: num(o.comments), d: bench.comments, note: '区间内被识别为讨论该 ETF 的评论条数，同一账号同一条只计一次' },
-        { label: '讨论热度', value: num(o.discussionHeat), d: bench.heat, note: R.HEAT_FORMULA + '　·　点赞 ' + num(o.likes) + ' ／ 转发 ' + num(o.shares) },
+        { label: '讨论热度', value: (o.heatUnknownPosts > 0 ? '≥ ' : '') + num(o.discussionHeat), d: bench.heat,
+          deltaTitle: bench.heatUnknownPosts && (bench.heatUnknownPosts.current > 0 || bench.heatUnknownPosts.base > 0)
+            ? '环比按已知项计算：当期 ' + bench.heatUnknownPosts.current + ' 帖、基准期 ' + bench.heatUnknownPosts.base + ' 帖转发数未知' : undefined,
+          note: R.HEAT_FORMULA + '　·　点赞 ' + num(o.likes) + ' ／ 转发 ' + num(o.shares) + heatLowerBoundNote(o.heatUnknownPosts) },
         { label: '活跃账号数', value: num(o.activeAccounts), d: bench.accounts, note: o.activeAccounts == null ? '该产品的账号口径尚未核验' : '区间内发布或评论过的独立账号' },
         { label: '全市场评论量排名', value: '第 ' + rk.map[code], d: { short: '／ ' + rk.total + ' 只', dir: 0 }, note: '基于完整活跃 ETF 池计算，板块筛选不重算' }
-      ].map(function (k) { return { label: k.label, value: k.value, note: k.note, delta: k.d.short, dfg: self.dfg(k.d) }; }),
+      ].map(function (k) { return { label: k.label, value: k.value, note: k.note, delta: k.d.short, deltaTitle: k.deltaTitle, dfg: self.dfg(k.d) }; }),
+
+      heatDisclosure: o.heatUnknownPosts > 0 || bench.base.heatUnknownPosts > 0
+        ? '热度、互动与转发按已知项计算；当期' + (heatLowerBoundNote(o.heatUnknownPosts) || '转发数完整')
+          + '；基准期' + (heatLowerBoundNote(bench.base.heatUnknownPosts) || '转发数完整') : '',
 
       summary: sum.text, sampleN: sumNa ? '数据暂不可用' : String(sum.sample), sampleOk: !sumNa,
       summaryNa: sumNa,
@@ -857,7 +864,7 @@ export default class ProductMonitor extends React.Component {
       heatCols: hsr.map(function (p, i) { return { x: (HG.L + hstep * i).toFixed(1), w: hstep.toFixed(1), in: () => self.setState({ heatHover: i }), out: () => { if (self.state.heatHover === i) self.setState({ heatHover: null }); } }; }),
       heatHoverOn: !!hh, heatHoverX: hh ? hx(hh.i).toFixed(1) : '0', heatHoverY: hh ? hy(hh.heat).toFixed(1) : '0',
       heatTipX: hh ? (hx(hh.i) + 12 + 250 > HG.W - HG.Rr + 60 ? hx(hh.i) - 262 : hx(hh.i) + 12).toFixed(1) : '0',
-      heatTipTitle: hh ? hh.tip : '',
+      heatTipTitle: hh ? hh.tip + heatLowerBoundNote(hh.heatUnknownPosts) : '',
       heatTipRows: hh ? [
         { k: '讨论热度', v: hh.heat.toLocaleString('en-US') },
         { k: '评论量', v: hh.comments.toLocaleString('en-US') },

@@ -51,7 +51,7 @@ if os.path.isdir(os.path.join(REPO_ROOT, "radar_db")) and REPO_ROOT not in sys.p
     sys.path.insert(0, REPO_ROOT)
 
 import clock  # noqa: E402
-from ai import config, evidence as ev, redact, schemas  # noqa: E402
+from ai import config, evidence as ev, neardup, redact, schemas  # noqa: E402
 from ai.lexicon import product_aliases  # noqa: E402
 from ai.prompts import SCHEMA_OF, get as get_prompt  # noqa: E402
 from ai.providers import PermanentError, TransientError, build as build_provider  # noqa: E402
@@ -843,6 +843,7 @@ def _write(engine, task, job, src, item, run_id, schema_version="v1"):
             needs_review = True
 
     with engine.begin() as conn:
+        written_rows = []
         for kind, value, _spans, _expect in kinds:
             if value is None:
                 continue
@@ -881,6 +882,8 @@ def _write(engine, task, job, src, item, run_id, schema_version="v1"):
                 )
             )
             ann_id = res.inserted_primary_key[0]
+            written_rows.append((kind, json.dumps(value, ensure_ascii=False), None,
+                                 "needs_review" if needs_review else "pending", ann_id))
             for _quote, loc in located.get(kind, []):
                 conn.execute(
                     insert(annotation_evidence).values(
@@ -895,6 +898,12 @@ def _write(engine, task, job, src, item, run_id, schema_version="v1"):
                         quote_hash=ev.quote_hash(loc.quote),
                     )
                 )
+        if task == "comment_product":
+            run = conn.execute(select(annotation_runs.c.taxonomy_version)
+                               .where(annotation_runs.c.run_id == run_id)).first()
+            neardup.propagate(conn, job["target_id"], job["subject_code"], written_rows, run_id, now,
+                             taxonomy_version=run.taxonomy_version if run else "",
+                             schema_version=schema_version)
 
 
 # ── 任务状态流转 ───────────────────────────────────────────────────────

@@ -11,9 +11,9 @@ import json
 from datetime import datetime
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import insert, update
 
-from radar_db.schema import synthesis_outputs
+from radar_db.schema import meta_kv, synthesis_outputs
 from sql_fixture import (
     KOL_NAME, OWN_CODE, PEER_CODE, add_annotations, add_comments, add_evidence, make_sql_provider,
 )
@@ -67,6 +67,58 @@ def add_synth(p, rows):
 
 
 class TestThemesAndNegCats:
+    def test_units_reuse_window_queries_across_products(self, provider, monkeypatch):
+        import providers.sql as sql_module
+        from unittest.mock import Mock
+
+        annotated(provider)
+        query = Mock(wraps=sql_module.current_annotations)
+        monkeypatch.setattr(sql_module, "current_annotations", query)
+        window = provider.build_range("d1")
+        provider._units(OWN_CODE, window)
+        provider._base_units(OWN_CODE, window)
+        calls = query.call_count
+        assert calls == 5
+        for code in provider._by_code:
+            provider._units(code, window)
+            provider._base_units(code, window)
+        assert query.call_count == calls
+
+    def test_pool_uses_negative_categories_not_all_negative_attitudes(self, provider):
+        annotated(provider)
+        add_annotations(provider, [
+            {"annotation_id": 900, "target_id": 14, "kind": "relevance", "value": "relevant"},
+            {"annotation_id": 901, "target_id": 14, "kind": "attitude", "value": "negative"},
+            {"annotation_id": 902, "target_id": 14, "kind": "aspect", "value": ["spread"]},
+            {"annotation_id": 903, "target_id": 11, "kind": "relevance", "value": "relevant"},
+            {"annotation_id": 904, "target_id": 11, "kind": "attitude", "value": "negative"},
+            {"annotation_id": 905, "target_id": 11, "kind": "aspect", "value": ["performance"]},
+        ])
+        pool = provider.pool("d1")
+        assert pool["negMentions"][OWN_CODE] == 4
+        assert pool["alerts"][OWN_CODE] == 1
+        assert pool["negMentions"][PEER_CODE] is None
+        assert pool["own"]["neg"] is None
+        provider._meta["own_analysis_progress"] = json.dumps({
+            "anchor": "2026-08-25", "baselineFrom": "2026-08-12", "sourceVersion": {},
+            "products": {code: {"complete": True, "queue": {}} for code in provider._by_code},
+        })
+        provider._cache.clear()
+        pool = provider.pool("d1")
+        assert pool["own"]["neg"] == 4
+        assert pool["own"]["dNeg"]["abs"] == 3
+        assert pool["own"]["risk"] == 0
+        assert pool["complianceCount"][PEER_CODE] is None
+
+    def test_completed_empty_scope_enables_zero_risk_but_incomplete_scope_does_not(self, provider):
+        provider._meta["own_analysis_progress"] = json.dumps({
+            "anchor": "2026-08-25", "baselineFrom": "2026-08-12", "sourceVersion": {},
+            "products": {OWN_CODE: {"complete": True, "queue": {}}},
+        })
+        assert provider.compliance_for(OWN_CODE, "d1") == {"status": "empty", "list": []}
+        assert provider.pool("d1")["complianceCount"][OWN_CODE] == 0
+        assert provider.pool("d1")["own"]["risk"] is None
+
     def test_counts_come_from_annotations_labels_from_synth(self, provider):
         p = annotated(provider)
         th = p.themes_for(OWN_CODE, "d1")
@@ -111,6 +163,35 @@ class TestThemesAndNegCats:
 
 
 class TestTopicsAndHot:
+    def test_scope_completion_refreshes_cached_unknown_state(self, provider):
+        progress = {"anchor": "2026-08-25", "baselineFrom": "2026-08-12", "sourceVersion": {},
+                    "products": {OWN_CODE: {"complete": False, "queue": {}}}}
+        with provider._engine.begin() as conn:
+            conn.execute(insert(meta_kv).values(k="own_analysis_progress", v=json.dumps(progress)))
+        provider.refresh()
+        assert provider.hot_summaries("d1")[OWN_CODE]["status"] == "unavailable"
+        progress["products"][OWN_CODE]["complete"] = True
+        with provider._engine.begin() as conn:
+            conn.execute(update(meta_kv).where(meta_kv.c.k == "own_analysis_progress")
+                         .values(v=json.dumps(progress)))
+        assert provider.refresh() is True
+        assert provider.hot_summaries("d1")[OWN_CODE]["status"] == "empty"
+
+    def test_completed_empty_scope_is_empty_but_unknown_products_stay_unavailable(self, provider):
+        provider._meta["own_analysis_progress"] = json.dumps({
+            "anchor": "2026-08-25", "baselineFrom": "2026-08-12", "sourceVersion": {},
+            "products": {OWN_CODE: {"complete": True, "queue": {"done": 3}},
+                         PEER_CODE: {"complete": False, "queue": {"pending": 1}}},
+        })
+        summaries = provider.hot_summaries("d1")
+        assert summaries[OWN_CODE]["status"] == "empty"
+        assert summaries[OWN_CODE]["sample"] == 0
+        assert summaries[PEER_CODE]["status"] == "unavailable"
+        assert provider.themes_for(OWN_CODE, "d1") == {"positive": [], "negative": []}
+        assert provider._completed_codes("2026-07-01", "2026-08-25") == set()
+        provider._meta["data_revision"] = "new-source"
+        assert provider._completed_codes("2026-08-25", "2026-08-25") == set()
+
     def test_market_topic_counts_direction_not_attitude(self, provider):
         p = annotated(provider)
         tp = p.topics_for(OWN_CODE, "d1")

@@ -13,7 +13,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "backend"))
 
-from ai import config  # noqa: E402
+from ai import config, neardup  # noqa: E402
 from ai.providers.base import Completion, Usage  # noqa: E402
 from jobs import audit, extract, pipeline  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
@@ -188,3 +188,20 @@ def test_ready_range_synthesizes_while_older_comments_remain(engine, cfg, tmp_pa
         rows = conn.execute(select(synthesis_outputs)).mappings().all()
     assert rows
     assert {row["range_key"] for row in rows} == {"d7"}
+
+
+def test_llm_annotations_reach_folded_comments(engine, cfg, tmp_path):
+    ext = extract.run(engine, cfg, codes=[CODE], date_from=datetime(2026, 8, 19),
+                      date_to=datetime(2026, 8, 25), ownership={CODE: "own"}, report_dir=tmp_path)
+    with engine.begin() as conn:
+        conn.execute(insert(comments).values(comment_id=999, feed_id=1, content="ETF fee",
+                                            author_uid="duplicate-reader"))
+    neardup.write_cluster_rows(engine, "rule-" + ext["scope_id"], [(999, CODE, 100, 0)], datetime(2026, 9, 1))
+    pipeline.run(engine, cfg, ext["scope_id"], provider=UniversalFake(), skip_synth=True)
+    with engine.connect() as conn:
+        rows = conn.execute(select(annotations.c.kind, annotations.c.value_json)
+                            .where(annotations.c.target_id == 999)).all()
+    labels = {kind: json.loads(value) for kind, value in rows}
+    assert labels["relevance"] == "relevant"
+    assert labels["attitude"] == "positive"
+    assert labels["aspect"] == ["fee"]

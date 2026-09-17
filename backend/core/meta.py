@@ -84,7 +84,10 @@ def version_payload():
         done = sum(bool(row.get("complete")) for row in products.values())
         state_text = {"configuration_error": "配置错误，已暂停", "lease_lost": "执行锁异常，已暂停",
                   "source_changed": "数据范围已变化，已暂停"}.get(progress["status"], "处理中")
+        scope = progress.get("scope", "own")
+        label = "全池分析" if scope == "all" else "自家分析"
         summary = {"completed": done, "total": len(products), "status": progress["status"],
-               "text": f"自家分析 {done}/{len(products)} · " + ("已完成" if done == len(products) else state_text),
-                   "anchor": progress["anchor"], "products": products}
+               "text": f"{label} {done}/{len(products)} · " + ("已完成" if done == len(products) else state_text),
+                   "anchor": progress["anchor"], "products": products, "scope": scope,
+                   "ranges": progress.get("ranges")}
     return {"dataProvider": "sql", "dataRevision": revision, "analysisProgress": summary}

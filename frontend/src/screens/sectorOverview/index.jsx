@@ -351,7 +351,7 @@ class SectorOverview extends React.Component {
         comments: num(o.comments),
         growth: g == null ? '—' : (g > 0 ? '+' : '') + g.toFixed(0) + '%',
         gfg: g == null ? 'var(--ink-300)' : (g > 2 ? 'var(--positive-700)' : (g < -2 ? 'var(--negative-600)' : 'var(--ink-500)')),
-        heat: num(o.discussionHeat),
+        heat: (o.heatUnknownPosts > 0 ? '≥ ' : '') + num(o.discussionHeat),
         /* undefined ⇒ React 干脆不写这个属性，demo 下与设计源一模一样。
            有值但 `heatUnknownPosts > 0` 时是下限，title 里说出来（demo 下没有这个键）。 */
         heatWhy: o.discussionHeat == null ? heatWhy(o)
@@ -478,7 +478,7 @@ class SectorOverview extends React.Component {
     var own = P.own;
     var dOH = own.dHeat, dON = own.dNeg, dOP = own.dPos;
     /* 自家合计里有几帖转发数未知（`own.heatUnknownPosts > 0`）⇒ 合计是下限，备注里追加一句；demo 下没有这个键。 */
-    var k1 = { value: num(own.heat), delta: dOH.short, dfg: self.dfg(dOH), sub: '仅统计 CSOP 自家 ' + own.count + ' 只 · ' + range.benchLabel + ' · ' + R.HEAT_FORMULA.replace('讨论热度 ＝ ', '热度＝').split(' ').join('') + heatLowerBoundNote(own.heatUnknownPosts) };
+    var k1 = { value: (own.heatUnknownPosts > 0 ? '≥ ' : '') + num(own.heat), delta: dOH.short, dfg: self.dfg(dOH), sub: '仅统计 CSOP 自家 ' + own.count + ' 只 · ' + range.benchLabel + ' · ' + R.HEAT_FORMULA.replace('讨论热度 ＝ ', '热度＝').split(' ').join('') + heatLowerBoundNote(own.heatUnknownPosts) + (own.baseHeatUnknownPosts > 0 ? ' · 基准期' + heatLowerBoundNote(own.baseHeatUnknownPosts) : '') };
     var pnTot = own.neg == null || own.pos == null ? null : own.neg + own.pos;
     var k2 = {
       neg: num(own.neg), negDelta: dON.short, negDfg: dON.dir > 0 ? 'var(--negative-600)' : (dON.dir < 0 ? 'var(--positive-700)' : 'var(--ink-400)'),
@@ -707,7 +707,7 @@ class SectorOverview extends React.Component {
         readRows: read ? [
           { k: '评论', v: numRaw(read.comments), fg: 'var(--ink-900)' },
           { k: '点赞', v: numRaw(read.likes), fg: 'var(--ink-800)' },
-          { k: '转发', v: numRaw(read.shares), fg: 'var(--ink-800)' },
+          { k: '转发', v: numRaw(read.shares) + heatLowerBoundNote(read.heatUnknownPosts), fg: 'var(--ink-800)' },
           { k: '积极', v: numRaw(read.positive), fg: 'var(--positive-700)' },
           { k: '消极', v: numRaw(read.negative), fg: 'var(--negative-700)' },
           {
@@ -744,7 +744,7 @@ class SectorOverview extends React.Component {
             ? (att.positive === att.negative ? '积极与消极持平' : (att.positive > att.negative ? '积极比消极多 ' + (att.positive - att.negative) + ' 条' : '消极比积极多 ' + (att.negative - att.positive) + ' 条'))
             : '样本不足 · 不输出倾向结论'),
         netFg: !attNa && att.sampleSufficient ? (att.positive >= att.negative ? 'var(--positive-700)' : 'var(--negative-700)') : 'var(--ink-500)',
-        heat: num(o.discussionHeat),
+        heat: (o.heatUnknownPosts > 0 ? '≥ ' : '') + num(o.discussionHeat),
         heatWhy: o.discussionHeat == null ? heatWhy(o)
           : (o.heatUnknownPosts > 0 ? '讨论热度 ' + num(o.discussionHeat) + heatLowerBoundNote(o.heatUnknownPosts) : undefined),
         heatDelta: b.heat.short, heatDfg: self.dfg(b.heat),
@@ -753,8 +753,8 @@ class SectorOverview extends React.Component {
           : undefined,
         comments: num(o.comments),
         likes: num(o.likes),
-        shares: num(o.shares),
-        interactions: num(o.interactions),
+        shares: num(o.shares) + heatLowerBoundNote(o.heatUnknownPosts),
+        interactions: num(o.interactions) + heatLowerBoundNote(o.heatUnknownPosts),
         rank: String(rk.map[code]), rankTotal: String(rk.total),
         hasNegCats: cats.length > 0, noNegCats: !catsNa && cats.length === 0, negCatsUnavailable: catsNa,
         negCatsStale: catsStale, themesStale: R.themesStale(code, s.rangeKey) === true, compsStale: comps.stale === true,

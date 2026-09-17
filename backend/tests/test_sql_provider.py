@@ -140,31 +140,36 @@ class TestPool:
         assert pool["own"]["neg"] is None and pool["own"]["pos"] is None
 
 
-class TestUnknownSharesPropagate:
-    """转发数未知会一路传染到公司级 KPI —— 这是当前设计的**已知后果**，不是 bug。
+class TestUnknownSharesAreDisclosedAsLowerBound:
+    """ADR-0022：按已知项计算，产品、桶及公司合计均披露未知帖数。"""
 
-    源库 raw_json 被 TEXT 列截断的行拿不到 `share_count`。热度公式里有转发项，所以那只
-    产品的热度是未知；`own.heat` 是所有自家产品热度之和，于是整张板块总览的标题卡片显示
-    「数据暂不可用」—— 哪怕 61 只里只有 1 只缺数。
-
-    传染是对的（把未知当 0 会让热度静默偏低且无人知晓），但代价集中在一个很显眼的位置。
-    真库里 d7 窗口 31,054 篇有 9 篇如此，影响 4 只产品。要改口径就改这里的断言。
-    """
-
-    def test_the_product_with_the_broken_row_goes_unknown(self, provider):
+    def test_the_product_with_the_broken_row_discloses_known_sum(self, provider):
         item = next(x for x in provider.pool("d1")["list"] if x["code"] == OWN_CODE)
-        assert item["shares"] is None
-        assert item["discussionHeat"] is None
-        assert item["interactions"] is None
-        # 但同一只产品的评论量、点赞、活跃账号都还是好的 —— 只污染依赖转发的那几项
+        assert item["shares"] == 2
+        assert item["discussionHeat"] == 11
+        assert item["interactions"] == 15
+        assert item["heatUnknownPosts"] == 1
         assert item["comments"] == 5
 
-    def test_the_company_wide_headline_goes_unknown_with_it(self, provider):
+    def test_the_company_wide_headline_discloses_the_gap(self, provider):
         own = provider.pool("d1")["own"]
-        assert own["heat"] is None
-        assert own["dHeat"]["text"] == "数据暂不可用"
-        assert own["dHeat"]["abs"] is None and own["dHeat"]["pct"] is None
+        assert own["heat"] == 11
+        assert own["heatUnknownPosts"] == 1
+        assert own["baseHeatUnknownPosts"] == 0
+        assert own["dHeat"]["abs"] is not None
         assert own["count"] == sum(1 for p in MASTER["products"] if p["ownership"] == "own")
+
+    def test_bucket_series_and_benchmark_disclose_the_same_gap(self, provider):
+        item = next(x for x in provider.pool("d1")["list"] if x["code"] == OWN_CODE)
+        series = provider.heat_series_for(OWN_CODE, "d1")
+        assert sum(bucket["heatUnknownPosts"] for bucket in item["buckets"]) == 1
+        assert [bucket["heatUnknownPosts"] for bucket in series] == [
+            bucket["heatUnknownPosts"] for bucket in item["buckets"]
+        ]
+        assert all(bucket["heat"] is not None for bucket in series)
+        benchmark = provider.benchmark(OWN_CODE, "d1")
+        assert benchmark["heatUnknownPosts"] == {"current": 1, "base": 0}
+        assert benchmark["base"]["heatUnknownPosts"] == 0
 
     def test_without_the_broken_row_everything_is_a_number(self):
         """同一批数据，只把那一行的转发数补上 —— 对照组。"""
@@ -173,6 +178,7 @@ class TestUnknownSharesPropagate:
         # 评论 5 + 0.3×13 + 转发 2 = 10.9 → 11
         assert item["discussionHeat"] == 11
         assert item["shares"] == 2
+        assert item["heatUnknownPosts"] == 0
         # 其余自家产品热度都是 0（真的没人发），所以公司级合计就是这 11
         assert p.pool("d1")["own"]["heat"] == 11
 
@@ -202,9 +208,10 @@ class TestBenchmark:
         assert b["comments"]["dir"] == -1
         assert b["base"]["comments"] == 10
 
-    def test_unknown_current_value_makes_the_delta_unavailable(self, provider):
-        """当前热度未知 ⇒ 环比不是 0%，是「数据暂不可用」。"""
-        assert provider.benchmark(OWN_CODE, "d1")["heat"]["text"] == "数据暂不可用"
+    def test_unknown_shares_make_the_delta_a_disclosed_lower_bound_comparison(self, provider):
+        benchmark = provider.benchmark(OWN_CODE, "d1")
+        assert benchmark["heat"]["abs"] == -30
+        assert benchmark["heatUnknownPosts"] == {"current": 1, "base": 0}
 
     def test_attitude_deltas_are_unavailable_not_flat(self, provider):
         b = provider.benchmark(OWN_CODE, "d1")
@@ -249,7 +256,8 @@ class TestSeries:
         assert nine["tip"] == "08-25 09:00–10:00"
         assert nine["mentions"] == 2
         assert nine["comments"] == 5
-        assert nine["heat"] is None  # f2 转发未知
+        assert nine["heat"] == 11
+        assert nine["heatUnknownPosts"] == 1
         assert s[0]["heat"] == 0 and s[0]["mentions"] == 0
         assert all(x["positive"] is None for x in s)
 
