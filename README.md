@@ -27,12 +27,57 @@ The backend defaults to `sql`; no demo service or separate `8019` backend is nee
 `npm run build` and `npm run preview` use the same real-data API default.
 Missing database data stays unavailable; it never falls back to fixtures.
 
-The full own-product AI worker and FMP price synchronization are described in
-[the runbook, section 23](docs/ai-data-integration-runbook.md#23-全自家产品与-fmp-行情自动链路2026-09-14).
-Run `worker/.venv/Scripts/python -X utf8 worker/jobs/full_own.py --watch` from the
-repository root after installing worker/backend requirements and migrating to head.
-This process makes paid model calls, resumes existing scopes, and synchronizes FMP
-hourly when its worker-only credentials are configured. The UI remains read-only.
+Start the API in one terminal; it never starts AI or collection. Open a second
+terminal in `worker/` for explicit analysis commands:
+
+```powershell
+./.venv/Scripts/python.exe -X utf8 -m jobs.analyze plan --ranges d1,d2 --ownership all
+./.venv/Scripts/python.exe -X utf8 -m jobs.analyze status
+```
+
+`plan` reads candidates, applies the existing filters, and estimates grouped comment
+batches without writing jobs or calling AI. Temporary candidate snapshots stay in
+the OS temp directory and are removed on normal completion. Dates use the latest
+complete **source** day, not today's date. Current and baseline days are deduplicated.
+Optional filters: `--sector hk`, `--struct ETF`, `--ownership own`, `--codes 3033,2802`.
+Filters intersect; invalid or empty selections fail explicitly.
+
+Batch execution requires a matching calibration report. These commands **make paid
+model requests**; run them only when you intend to spend the stated request budget:
+
+```powershell
+./.venv/Scripts/python.exe -X utf8 -m scripts.calibrate --codes 3033,2802 --from 2026-08-12 --to 2026-08-25 --n 300 --batch 5 --skip-v1 --max-http-requests 500
+./.venv/Scripts/python.exe -X utf8 -m jobs.analyze run --ranges d1,d2 --ownership all --batch-size 5 --concurrency 2 --calibration-report "../.scratch/llm-90d/calibration-<timestamp>.json" --max-http-requests 500
+./.venv/Scripts/python.exe -X utf8 -m jobs.analyze resume --scope "<scope from status>" --ranges d1,d2 --batch-size 5 --calibration-report "../.scratch/llm-90d/calibration-<timestamp>.json" --max-http-requests 500
+```
+
+Use dates with enough actual samples for calibration. At least 300 fully returned
+and evidence-checked samples, and >=90% relevance **and** attitude agreement against
+single-item reference runs, are required. This is a batching stability gate, not an
+accuracy claim or a human approval gate for individual annotations. The old 30-item
+experiment failed; batch size 5 is a candidate, not a validated production default.
+Smaller `--n 60` experiments can be run first but do not qualify a batch policy.
+
+`run` is one-shot until completion, budget exhaustion, cancellation, or a blocker.
+Only explicit `run --watch` watches for new imported data. All retries, split batches
+and summaries share `--max-http-requests`; a resumed command authorizes a new budget.
+The limit counts HTTP attempts, not currency. Ctrl+C stops new requests and lets
+in-flight calls finish within their request timeout. Already completed jobs are
+reused. A timeout or crash after a remote response may still incur repeat charges.
+Exit codes: 0 completed, 2 budget/error/blocked, 130 cancelled. Failed jobs are not
+silently reset; investigate their recorded error before running again.
+
+The API and worker are independent: restarting the API does not start a worker or
+stop an already running `--watch`. Before switching from an old watcher, stop that
+terminal; the shared database lease rejects simultaneous analysis processes.
+Legacy `annotate --run`, `pipeline`, `synthesize`, and `full_own` commands now also
+require `--max-http-requests`. `full_own --watch` syncs FMP only with explicit
+`--sync-prices`; the new `analyze` entry never implicitly syncs prices.
+
+Compose's worker is in the `manual` profile with restart disabled; ordinary
+`docker compose up` starts no worker. Existing running containers need to be stopped
+explicitly when switching configuration. Details are in
+[the runbook, section 23.8](docs/ai-data-integration-runbook.md#238-手动启动与按产品日期分包2026-09-17).
 New normalized Futu exports enter via `worker/jobs/ingest.py`; unknown formats still
 require an adapter. No live Futu collection endpoint is assumed or fabricated.
 

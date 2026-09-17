@@ -206,6 +206,7 @@ def progress_payload(*, now=None, events_limit=EVENTS_DEFAULT):
                 "tasks": _tasks(conn),
                 "synthesis": _synthesis(conn),
                 "throughput": _throughput(conn, now),
+                "batchRun": _active_progress(conn).get("batchRun"),
             }
     except Exception as exc:  # noqa: BLE001  没跑迁移 0008 的库：整块「暂不可用」，不猜
         log.warning("进度查询失败（库没有 stage 列或 worker_events 表？）：%s", str(exc)[:200])

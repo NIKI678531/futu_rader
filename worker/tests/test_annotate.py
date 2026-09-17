@@ -141,6 +141,59 @@ def test_enqueue_creates_one_job_per_comment_product_pair(engine, cfg):
     assert all(j["status"] == "pending" and j["attempts"] == 0 for j in jobs)
 
 
+def test_grouped_run_preserves_valid_results_and_retries_only_invalid_item(engine, cfg):
+    from dataclasses import replace
+
+    cfg = replace(cfg, grouped_batches=True, micro_batch_size=5, concurrency=1)
+    annotate.enqueue_comments(engine, cfg)
+    good = f"comment:12|product:{CODE}"
+    prov = FakeProvider([
+        {"results": [ok_item(good, "费率是同类里最低的")]},
+        all_ok(lambda _: "点差太大"),
+    ])
+    stats = annotate.run(engine, cfg, max_items=2, provider=prov)
+    assert stats["success"] == 2
+    assert len(prov.calls) == 2
+    assert good not in prov.calls[1]
+    assert all(row["status"] == "done" for row in rows(engine, annotation_jobs))
+
+
+def test_grouped_claim_never_mixes_dates(threaded, cfg):
+    annotate.enqueue_comments(threaded, cfg)
+    batches = [annotate.claim(threaded, "comment_product", 30, grouped=True) for _ in range(2)]
+    assert [{row["target_id"] for row in batch} for batch in batches] == [{11, 12}, {20, 21}]
+
+
+def test_paged_candidates_keep_stable_results_and_limit(engine):
+    assert [row.comment_id for row in annotate._comment_candidates(engine, page_size=1)] == [11, 12]
+    assert [row.comment_id for row in annotate._comment_candidates(engine, page_size=1, limit=1)] == [11]
+
+
+def test_oversized_grouped_item_is_not_sent(engine, cfg):
+    from dataclasses import replace
+
+    cfg = replace(cfg, grouped_batches=True, max_payload_bytes=1)
+    annotate.enqueue_comments(engine, cfg)
+    provider = FakeProvider([])
+    stats = annotate.run(engine, cfg, max_items=2, provider=provider)
+    assert provider.calls == []
+    assert stats["error"] == 2
+    assert all(row["status"] == "failed" for row in rows(engine, annotation_jobs))
+
+
+def test_truncated_group_is_split_instead_of_repeating_large_request(engine, cfg):
+    from dataclasses import replace
+    from ai.providers.base import TruncatedOutput
+
+    cfg = replace(cfg, grouped_batches=True, micro_batch_size=5, concurrency=1)
+    annotate.enqueue_comments(engine, cfg)
+    provider = FakeProvider([TruncatedOutput("too large"), all_ok(lambda _: "点差太大"),
+                             all_ok(lambda _: "费率是同类里最低的")])
+    stats = annotate.run(engine, cfg, max_items=2, provider=provider)
+    assert [len(batch) for batch in provider.calls] == [2, 1, 1]
+    assert stats["success"] == 2
+
+
 def test_enqueue_twice_does_not_double_charge(engine, cfg):
     annotate.enqueue_comments(engine, cfg)
     assert annotate.enqueue_comments(engine, cfg) == 0, "重复排队 = 重复付费"

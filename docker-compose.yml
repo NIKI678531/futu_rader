@@ -59,6 +59,7 @@ services:
     restart: unless-stopped
 
   worker:
+    profiles: ["manual"]
     build:
       context: .
       dockerfile: worker/Dockerfile
@@ -70,7 +71,7 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-    restart: unless-stopped
+    restart: "no"
 
 volumes:
   mysql-data:

@@ -39,9 +39,9 @@ import sys
 import threading
 import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 
-from sqlalchemy import and_, func, insert, or_, select, update
+from sqlalchemy import and_, func, insert, or_, select, update, tuple_
 from sqlalchemy.exc import IntegrityError
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -52,6 +52,8 @@ if os.path.isdir(os.path.join(REPO_ROOT, "radar_db")) and REPO_ROOT not in sys.p
 
 import clock  # noqa: E402
 from ai import config, evidence as ev, neardup, redact, schemas  # noqa: E402
+from ai.batching import BatchPolicy, pack_items
+from ai.providers.base import TruncatedOutput
 from ai.lexicon import product_aliases  # noqa: E402
 from ai.prompts import SCHEMA_OF, get as get_prompt  # noqa: E402
 from ai.providers import PermanentError, TransientError, build as build_provider  # noqa: E402
@@ -159,7 +161,7 @@ def job_priority(posted_at, anchor, *, own, current):
     return recency_tier(posted_at, anchor) + (2 if own else 0) + (1 if current else 0)
 
 
-def _comment_candidates(engine, *, codes=None, limit=None, since=None, until=None, authors=None):
+def _comment_candidates(engine, *, codes=None, limit=None, since=None, until=None, authors=None, page_size=1000):
     """评论×挂载产品的候选行。`until` 为半开上界（`posted_at < until`）；`authors` 限定评论作者名。"""
     parent = comments.alias("parent")
     q = (
@@ -192,10 +194,22 @@ def _comment_candidates(engine, *, codes=None, limit=None, since=None, until=Non
         q = q.where(feeds.c.posted_at < until)
     # 稳定顺序：同样的参数每次取到同一批，重跑可复现。
     q = q.order_by(comments.c.comment_id)
-    if limit:
-        q = q.limit(limit)
-    with engine.connect() as conn:
-        yield from conn.execute(q)
+    if page_size < 1:
+        raise ValueError("page_size must be positive")
+    cursor, remaining = None, limit
+    while remaining is None or remaining > 0:
+        page = q if cursor is None else q.where(comments.c.comment_id > cursor)
+        count = page_size if remaining is None else min(page_size, remaining)
+        with engine.connect() as conn:
+            records = conn.execute(page.limit(count)).all()
+        if not records:
+            break
+        yield from records
+        cursor = records[-1].comment_id
+        if remaining is not None:
+            remaining -= len(records)
+        if len(records) < count:
+            break
 
 
 def job_row_for_comment(cfg, prompt, schema_version, row, *, priority=0, scope_id=None, now=None,
@@ -346,43 +360,64 @@ def enqueue_kol_comments(engine, cfg, kol_names, *, codes=None, limit=None, sinc
 
 
 def _insert_jobs(engine, rows):
-    """逐条插入并吞掉唯一键冲突 —— 冲突**就是**幂等生效，不是错误。
-
-    没有用方言相关的 `INSERT OR IGNORE` / `ON DUPLICATE KEY`：这份代码要在 SQLite 和
-    MySQL 8 上跑同一份（ADR-0016），而两边的写法不通用。排队是一次性动作，不在热路径上。
-    """
-    if len(rows) > 300:
-        return sum(_insert_jobs(engine, rows[offset:offset + 300]) for offset in range(0, len(rows), 300))
-    inserted = 0
     from radar_db.schema import analysis_scope_jobs
-    with engine.begin() as conn:
-        for row in rows:
-            try:
-                with conn.begin_nested():
-                    result = conn.execute(insert(annotation_jobs).values(**row))
-                    job_id = result.inserted_primary_key[0]
-                inserted += 1
-            except IntegrityError:
-                job_id = conn.execute(select(annotation_jobs.c.job_id).where(*[
-                    annotation_jobs.c[key] == row[key]
-                    for key in ("target_type", "target_id", "subject_code", "task", "input_hash")
-                ])).scalar_one()
-            if row.get("scope_id"):
-                link = {"scope_id": row["scope_id"], "job_id": job_id}
-                exists = conn.execute(select(analysis_scope_jobs.c.job_id).where(
-                    analysis_scope_jobs.c.scope_id == link["scope_id"],
-                    analysis_scope_jobs.c.job_id == job_id,
-                )).first()
-                if not exists:
-                    conn.execute(insert(analysis_scope_jobs).values(**link))
-    log.info("排队：新增 %d 条，跳过 %d 条（已存在）", inserted, len(rows) - inserted)
-    return inserted
+
+    keys = ("target_type", "target_id", "subject_code", "task", "input_hash")
+    added = 0
+    for offset in range(0, len(rows), 100):
+        chunk = rows[offset:offset + 100]
+        unique = {tuple(row[key] for key in keys): row for row in chunk}
+        with engine.begin() as conn:
+            query = select(annotation_jobs).where(tuple_(*[annotation_jobs.c[key] for key in keys]).in_(list(unique)))
+            existing = {tuple(row[key] for key in keys): row["job_id"]
+                        for row in conn.execute(query).mappings()}
+            new = [row for key, row in unique.items() if key not in existing]
+            if new:
+                try:
+                    with conn.begin_nested():
+                        conn.execute(insert(annotation_jobs), new)
+                    added += len(new)
+                except IntegrityError:
+                    for row in new:
+                        try:
+                            with conn.begin_nested():
+                                conn.execute(insert(annotation_jobs).values(**row))
+                            added += 1
+                        except IntegrityError:
+                            found = conn.execute(select(annotation_jobs.c.job_id).where(*[
+                                annotation_jobs.c[key] == row[key] for key in keys])).first()
+                            if found is None:
+                                raise
+                existing = {tuple(row[key] for key in keys): row["job_id"]
+                            for row in conn.execute(query).mappings()}
+            links = {(row["scope_id"], existing[tuple(row[key] for key in keys)])
+                     for row in chunk if row.get("scope_id")}
+            if links:
+                present = set(conn.execute(select(analysis_scope_jobs.c.scope_id, analysis_scope_jobs.c.job_id)
+                    .where(tuple_(analysis_scope_jobs.c.scope_id, analysis_scope_jobs.c.job_id).in_(list(links)))).all())
+                missing = [{"scope_id": scope, "job_id": job_id} for scope, job_id in links - present]
+                if missing:
+                    try:
+                        with conn.begin_nested():
+                            conn.execute(insert(analysis_scope_jobs), missing)
+                    except IntegrityError:
+                        for link in missing:
+                            try:
+                                with conn.begin_nested():
+                                    conn.execute(insert(analysis_scope_jobs).values(**link))
+                            except IntegrityError:
+                                found = conn.execute(select(analysis_scope_jobs.c.job_id).where(
+                                    analysis_scope_jobs.c.scope_id == link["scope_id"],
+                                    analysis_scope_jobs.c.job_id == link["job_id"])).first()
+                                if found is None:
+                                    raise
+    return added
 
 
 # ── 领取 ───────────────────────────────────────────────────────────────
 
 
-def claim(engine, task, n, *, now=None, scope_id=None):
+def claim(engine, task, n, *, now=None, scope_id=None, grouped=False):
     """领取至多 n 条待办，打上租约。
 
     可领取 = `pending`，或 `claimed` 但租约已过期。后者是 worker 崩溃后的回收路径 ——
@@ -409,6 +444,26 @@ def claim(engine, task, n, *, now=None, scope_id=None):
         if scope_id is not None:
             from radar_db.scope_jobs import scope_condition
             q = q.where(scope_condition(scope_id))
+        if grouped:
+            source = annotation_jobs.outerjoin(comments, and_(
+                annotation_jobs.c.target_type == "comment", comments.c.comment_id == annotation_jobs.c.target_id,
+            )).outerjoin(feeds, or_(
+                and_(annotation_jobs.c.target_type == "comment", feeds.c.feed_id == comments.c.feed_id),
+                and_(annotation_jobs.c.target_type == "feed", feeds.c.feed_id == annotation_jobs.c.target_id),
+            ))
+            q = q.select_from(source)
+            first = conn.execute(q.add_columns(feeds.c.posted_at, feeds.c.code.label("feed_code"))
+                                 .order_by(annotation_jobs.c.priority.desc(), annotation_jobs.c.job_id)
+                                 .limit(1)).mappings().first()
+            if first is None:
+                return []
+            q = q.where(annotation_jobs.c.subject_code == first["subject_code"],
+                        feeds.c.code == first["feed_code"])
+            if first["posted_at"] is not None:
+                day = datetime.combine(first["posted_at"].date(), time.min)
+                q = q.where(feeds.c.posted_at >= day, feeds.c.posted_at < day + timedelta(days=1))
+            else:
+                q = q.where(annotation_jobs.c.job_id == first["job_id"])
         q = (
             # 同一批尽量属于同一产品（§11.3）：按 subject_code 排，固定上下文能被
             # 供应商的 prompt cache 命中，也让模型少切换产品语境。
@@ -490,6 +545,7 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
 
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="annotate")
     stop_event = threading.Event()
+    control = getattr(provider, "control", None)
     inflight = {}
     batches_started = 0
     try:
@@ -498,9 +554,11 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
             while (
                 len(inflight) < workers and budget > 0 and stats["aborted"] is None
                 and not stop_event.is_set()
+                and not (control is not None and control.stop_event.is_set())
                 and (budget_requests is None or batches_started < budget_requests)
             ):
-                jobs = claim(engine, task, min(batch_size, budget), scope_id=scope_id)
+                jobs = claim(engine, task, min(batch_size, budget), scope_id=scope_id,
+                             grouped=cfg.grouped_batches)
                 if not jobs:
                     break
                 if stop_event.is_set():
@@ -533,6 +591,8 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
                 break
     finally:
         pool.shutdown(wait=True)
+        if control is not None and control.stop_event.is_set():
+            stats["aborted"] = control.reason
         _close_run(engine, run_id, stats)
 
     return stats
@@ -602,7 +662,31 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
     if not payloads:
         return local
 
+    if cfg.grouped_batches:
+        policy = BatchPolicy(cfg.micro_batch_size, cfg.max_input_tokens, cfg.max_payload_bytes)
+        packed, oversized = pack_items(
+            list(zip(usable, payloads)), key_of=lambda entry: (
+                entry[0][0]["subject_code"], entry[0][1].get("code"),
+                entry[0][1].get("posted_at").date() if entry[0][1].get("posted_at") else None),
+            payload_of=lambda entry: entry[1], system=prompt.SYSTEM, render=prompt.user_message,
+            schema=schemas.batch_json_schema(task, schema_version), policy=policy,
+        )
+        for (job, _src), _payload in oversized:
+            _fail(engine, job, "Input exceeds batch token/byte limit; text was not truncated")
+            local["error"] += 1
+        if len(packed) != 1 or oversized:
+            try:
+                for batch in packed:
+                    _process(engine, cfg, provider, prompt, schema_version, task, run_id,
+                             [entry[0][0] for entry in batch], local, depth, stop_event)
+            except _Abort:
+                _release_claimed(engine, jobs, "Run stopped before remaining packages")
+                raise
+            return local
+
     try:
+        if stop_event is not None and stop_event.is_set():
+            raise PermanentError(getattr(stop_event, "reason", "cancelled"))
         local["requests"] += 1
         comp = provider.complete_json(
             prompt.SYSTEM,
@@ -623,31 +707,63 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
         abort.local = local
         raise abort from exc
     except TransientError as exc:
+        local["usage_known"] = False
+        if isinstance(exc, TruncatedOutput) and cfg.grouped_batches and len(usable) > 1 and depth < 6:
+            mid = len(usable) // 2
+            try:
+                for portion in (usable[:mid], usable[mid:]):
+                    _process(engine, cfg, provider, prompt, schema_version, task, run_id,
+                             [job for job, _src in portion], local, depth + 1, stop_event)
+            except _Abort:
+                _release_claimed(engine, jobs, "Run stopped during truncated output split")
+                raise
+            return local
         # 供应商层已经退避重试过 max_retries 次了，到这里说明确实不通。
         _retry_or_dead(engine, cfg, usable, local, f"传输失败：{exc}")
         return local
 
     _record_usage(comp, local)
     local["model"] = comp.model
+    control = getattr(provider, "control", None)
+    if control is not None:
+        control.record_batch([payload["item_id"] for payload in payloads], comp.response_id)
+        if control.before_request is not None:
+            control.before_request()
+        if control.reason in ("source_changed", "lease_lost"):
+            _release_claimed(engine, jobs, control.reason)
+            abort = _Abort(control.reason)
+            abort.local = local
+            raise abort
 
     try:
-        by_id = schemas.parse_batch(task, comp.data, [p["item_id"] for p in payloads],
-                                    schema_version)
+        invalid = {}
+        if cfg.grouped_batches:
+            by_id, invalid = schemas.parse_batch_partial(
+                task, comp.data, [payload["item_id"] for payload in payloads], schema_version)
+        else:
+            by_id = schemas.parse_batch(task, comp.data, [p["item_id"] for p in payloads],
+                                        schema_version)
     except schemas.SchemaError as exc:
         # §11.3：JSON/Schema 失败先重试；连续失败后将批次二分。
         if len(usable) > 1 and depth < 6:
             mid = len(usable) // 2
             log.warning("批输出不合格（%s），二分为 %d + %d", exc, mid, len(usable) - mid)
-            _process(engine, cfg, provider, prompt, schema_version, task, run_id,
-                     [j for j, _ in usable[:mid]], local, depth + 1, stop_event)
-            _process(engine, cfg, provider, prompt, schema_version, task, run_id,
-                     [j for j, _ in usable[mid:]], local, depth + 1, stop_event)
+            try:
+                _process(engine, cfg, provider, prompt, schema_version, task, run_id,
+                         [j for j, _ in usable[:mid]], local, depth + 1, stop_event)
+                _process(engine, cfg, provider, prompt, schema_version, task, run_id,
+                         [j for j, _ in usable[mid:]], local, depth + 1, stop_event)
+            except _Abort:
+                _release_claimed(engine, jobs, "Run stopped during schema split")
+                raise
         else:
             _retry_or_dead(engine, cfg, usable, local, f"schema 失败：{exc}")
         return local
 
     latest_sources = _load_sources(engine, task, [job for job, _ in usable])
     for job, src in usable:
+        if _item_id(task, job) in invalid:
+            continue
         item = by_id[_item_id(task, job)]
         latest = latest_sources.get((job["target_type"], job["target_id"]))
         if latest != src:
@@ -658,12 +774,27 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
             continue
         try:
             _write(engine, task, job, src, item, run_id, schema_version)
-            _done(engine, job)
             local["success"] += 1
         except Exception as exc:  # noqa: BLE001
             log.exception("写库失败 job=%s", job["job_id"])
             _fail(engine, job, f"写库失败：{exc}")
             local["error"] += 1
+    if invalid:
+        rejected = [(job, src) for job, src in usable if _item_id(task, job) in invalid]
+        if by_id and depth < 6:
+            _process(engine, cfg, provider, prompt, schema_version, task, run_id,
+                     [job for job, _src in rejected], local, depth + 1, stop_event)
+        elif len(rejected) > 1 and depth < 6:
+            mid = len(rejected) // 2
+            try:
+                for portion in (rejected[:mid], rejected[mid:]):
+                    _process(engine, cfg, provider, prompt, schema_version, task, run_id,
+                             [job for job, _src in portion], local, depth + 1, stop_event)
+            except _Abort:
+                _release_claimed(engine, jobs, "Run stopped during split")
+                raise
+        else:
+            _retry_or_dead(engine, cfg, rejected, local, "Invalid or missing batch items")
     return local
 
 
@@ -704,6 +835,8 @@ def _load_sources(engine, task, jobs):
                     feeds.c.title,
                     feeds.c.content.label("post_content"),
                     parent.c.content.label("parent_content"),
+                    feeds.c.posted_at,
+                    feeds.c.code,
                 )
                 .select_from(
                     comments
@@ -713,19 +846,20 @@ def _load_sources(engine, task, jobs):
                 )
                 .where(comments.c.comment_id.in_(ids))
             )
-            for cid, content, title, post_content, parent_content in conn.execute(q):
+            for cid, content, title, post_content, parent_content, posted_at, code in conn.execute(q):
                 out[("comment", cid)] = {
                     "text": content,
                     "title": title,
                     "parent": parent_content,
                     "post_content": post_content,
+                    "posted_at": posted_at, "code": code,
                 }
         else:
-            q = select(feeds.c.feed_id, feeds.c.title, feeds.c.content, feeds.c.code).where(
+            q = select(feeds.c.feed_id, feeds.c.title, feeds.c.content, feeds.c.code, feeds.c.posted_at).where(
                 feeds.c.feed_id.in_(ids)
             )
-            for fid, title, content, code in conn.execute(q):
-                out[("feed", fid)] = {"text": content, "title": title, "code": code}
+            for fid, title, content, code, posted_at in conn.execute(q):
+                out[("feed", fid)] = {"text": content, "title": title, "code": code, "posted_at": posted_at}
     return out
 
 
@@ -905,6 +1039,12 @@ def _write(engine, task, job, src, item, run_id, schema_version="v1"):
                              taxonomy_version=run.taxonomy_version if run else "",
                              schema_version=schema_version)
 
+        conn.execute(
+            update(annotation_jobs)
+            .where(annotation_jobs.c.job_id == job["job_id"])
+            .values(status="done", updated_at=now, last_error=None, lease_until=None)
+        )
+
 
 # ── 任务状态流转 ───────────────────────────────────────────────────────
 
@@ -932,6 +1072,14 @@ def _fail(engine, job, err, dead=False):
                 lease_until=None,
             )
         )
+
+
+def _release_claimed(engine, jobs, reason):
+    with engine.begin() as conn:
+        conn.execute(update(annotation_jobs).where(
+            annotation_jobs.c.job_id.in_([job["job_id"] for job in jobs]),
+            annotation_jobs.c.status == "claimed",
+        ).values(status="pending", lease_until=None, last_error=reason))
 
 
 def _release(engine, job, err):
@@ -1031,15 +1179,18 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, help="排队条数上限")
     ap.add_argument("--max-items", type=int, help="本轮最多处理多少条")
     ap.add_argument("--budget-requests", type=int, help="本轮最多领取多少批（≈请求数）")
+    ap.add_argument("--max-http-requests", type=int, help="Required for --run; includes retries")
     ap.add_argument("--scope", help="只处理这个抽取范围（analysis_scopes.scope_id）")
     ap.add_argument("--priority", type=int, default=0)
     args = ap.parse_args(argv)
+    if args.run and not args.dry_run and (args.max_http_requests is None or args.max_http_requests < 1):
+        ap.error("--run requires --max-http-requests")
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s"
     )
     engine = make_engine()
-    cfg = config.load()
+    cfg = config.load(_allow_missing_key=not args.run or args.dry_run)
     # 配置里唯一敏感的是 Key，`redacted()` 只留尾四位 —— 够分辨「换过 Key 没有」，
     # 又不会把它写进任何一份可能被贴出去的日志（runbook §0）。
     log.info("配置：%s", json.dumps(cfg.redacted(), ensure_ascii=False))
@@ -1071,9 +1222,14 @@ def main(argv=None):
         return 0
 
     if args.run:
-        stats = run(engine, cfg, task=args.task, max_items=args.max_items, scope_id=args.scope,
-                    budget_requests=args.budget_requests)
+        from ai.providers.base import RunControl
+        from radar_db.leases import WorkerLease
+        control = RunControl(args.max_http_requests)
+        with WorkerLease(engine, "own-analysis"), control.interruptible():
+            stats = run(engine, cfg, task=args.task, max_items=args.max_items, scope_id=args.scope,
+                        budget_requests=args.budget_requests, provider=build_provider(cfg, control=control))
         log.info("本轮：%s", json.dumps(stats, ensure_ascii=False))
+        return 2 if stats["aborted"] or stats["error"] else 0
 
     if args.status or not (args.enqueue or args.run):
         _print_status(engine, args.task)

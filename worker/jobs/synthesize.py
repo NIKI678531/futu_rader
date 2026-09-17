@@ -728,9 +728,9 @@ class Synthesizer:
 
 
 def run(engine, cfg, *, codes, ranges=DEFAULT_RANGES, kinds=KINDS, provider=None, dry_run=False, force=False,
-        master=None):
+    master=None, anchor_override=None):
     master = master or load_master()
-    anchor = read_anchor(engine)
+    anchor = anchor_override or read_anchor(engine)
     if anchor is None:
         raise SystemExit("meta_kv 里没有 anchor：先跑 import_dump / etl")
     provider = provider or (None if dry_run else build_provider(cfg))
@@ -771,7 +771,10 @@ def main(argv=None):
     ap.add_argument("--kinds", default=",".join(KINDS))
     ap.add_argument("--dry-run", action="store_true", help="只组原料不调模型")
     ap.add_argument("--force", action="store_true", help="指纹相同也重生成")
+    ap.add_argument("--max-http-requests", type=int)
     args = ap.parse_args(argv)
+    if not args.dry_run and (args.max_http_requests is None or args.max_http_requests < 1):
+        ap.error("AI execution requires --max-http-requests")
     if not args.scope and not args.codes:
         ap.error("给 --scope 或 --codes")
 
@@ -779,8 +782,19 @@ def main(argv=None):
     engine = make_engine()
     cfg = config.load(_allow_missing_key=args.dry_run)
     codes = scope_codes(engine, args.scope) if args.scope else [c.strip() for c in args.codes.split(",")]
-    stats = run(engine, cfg, codes=codes, ranges=[r.strip() for r in args.ranges.split(",")],
-                kinds=[k.strip() for k in args.kinds.split(",")], dry_run=args.dry_run, force=args.force)
+    from ai.providers.base import RunControl, RunStopped
+    from radar_db.leases import WorkerLease
+    control = None if args.dry_run else RunControl(args.max_http_requests)
+    with (WorkerLease(engine, "own-analysis") if control else nullcontext()), (
+        control.interruptible() if control else nullcontext()
+    ):
+        try:
+            stats = run(engine, cfg, codes=codes, ranges=[r.strip() for r in args.ranges.split(",")],
+                        kinds=[k.strip() for k in args.kinds.split(",")], dry_run=args.dry_run, force=args.force,
+                        provider=build_provider(cfg, control=control) if control else None)
+        except RunStopped:
+            print(json.dumps(control.snapshot()))
+            return 2
     print(json.dumps(stats, ensure_ascii=False, indent=1))
     return 0
 

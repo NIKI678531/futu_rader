@@ -33,6 +33,8 @@ import logging
 import os
 import random
 import sys
+from contextlib import ExitStack
+from dataclasses import replace
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -45,7 +47,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import clock  # noqa: E402
-from ai import config, prefilter, schemas  # noqa: E402
+from ai import config, prefilter, schemas, evidence  # noqa: E402
+from ai.batching import BatchPolicy, pack_items
+from ai.providers.base import RunControl, RunStopped
 from ai.lexicon import offpool_stocks, product_aliases  # noqa: E402
 from ai.prompts import get as get_prompt  # noqa: E402
 from ai.providers import build as build_provider  # noqa: E402
@@ -53,6 +57,7 @@ from jobs import annotate  # noqa: E402
 from jobs.import_dump import pool_codes  # noqa: E402
 from radar_db import default_data_dir, make_engine  # noqa: E402
 from radar_db.scope_jobs import scope_condition
+from radar_db.leases import WorkerLease
 from radar_db.schema import analysis_scopes, annotation_jobs  # noqa: E402
 
 log = logging.getLogger("worker.calibrate")
@@ -112,15 +117,36 @@ def candidates(engine, args, ownership):
 def label_batch(provider, prompt, schema_version, items, batch_size):
     """`items`：`[(row, payload)]`。返回 `{item_id: 标注对象}`；失败的批整批跳过并计数。"""
     out, failed = {}, 0
-    for i in range(0, len(items), batch_size):
-        chunk = items[i:i + batch_size]
+    policy = BatchPolicy(batch_size, getattr(provider, "max_input_tokens", 8000),
+                         getattr(provider, "max_payload_bytes", 12288))
+    batches, oversized = pack_items(items,
+        key_of=lambda item: (item[0].code, item[0].posted_at.date() if getattr(item[0], "posted_at", None) else None),
+        payload_of=lambda item: item[1], system=prompt.SYSTEM, render=prompt.user_message,
+        schema=schemas.batch_json_schema("comment_product", schema_version), policy=policy)
+    failed += len(oversized)
+    for index, chunk in enumerate(batches):
         payloads = [p for _r, p in chunk]
         try:
             comp = provider.complete_json(prompt.SYSTEM, prompt.user_message(payloads),
                                           schemas.batch_json_schema("comment_product", schema_version),
                                           "comment_product_batch")
-            out.update(schemas.parse_batch("comment_product", comp.data,
-                                           [p["item_id"] for p in payloads], schema_version))
+            parsed = schemas.parse_batch("comment_product", comp.data,
+                                         [p["item_id"] for p in payloads], schema_version)
+            for row, payload in chunk:
+                item = parsed[payload["item_id"]]
+                quotes = [item.evidence] if item.evidence else []
+                if schema_version == "v2" and item.compliance_evidence:
+                    quotes.append(item.compliance_evidence)
+                required_missing = (item.relevance == "relevant" and not item.evidence)
+                if schema_version == "v2" and item.compliance_tags and not item.compliance_evidence:
+                    required_missing = True
+                if required_missing or any(not evidence.locate(quote, row.content).found for quote in quotes):
+                    failed += 1
+                else:
+                    out[payload["item_id"]] = item
+        except RunStopped:
+            failed += sum(len(batch) for batch in batches[index:])
+            break
         except Exception as exc:  # noqa: BLE001  实验脚本：记下来继续
             failed += len(chunk)
             log.warning("一批失败（%d 条）：%s", len(chunk), str(exc)[:200])
@@ -136,23 +162,42 @@ def agreement(a, b, field):
 
 
 def main(argv=None):
+    with ExitStack() as resources:
+        return _main(argv, resources)
+
+
+def _main(argv, resources):
     ap = argparse.ArgumentParser(description="放量前一致性实验（不写 annotations）")
     ap.add_argument("--scope")
     ap.add_argument("--codes")
     ap.add_argument("--from", dest="from_")
     ap.add_argument("--to")
     ap.add_argument("--n", type=int, default=300)
-    ap.add_argument("--batch", type=int, default=30)
+    ap.add_argument("--batch", type=int, default=5)
+    ap.add_argument("--max-http-requests", type=int, required=True)
+    ap.add_argument("--max-input-tokens", type=int, default=8000)
+    ap.add_argument("--max-payload-bytes", type=int, default=12288)
+    ap.add_argument("--max-output-tokens", type=int, default=8192)
     ap.add_argument("--skip-v1", action="store_true")
     ap.add_argument("--skip-single", action="store_true", help="跳过 b=1（最贵的一项）")
     args = ap.parse_args(argv)
+    if min(args.n, args.max_http_requests, args.batch, args.max_input_tokens, args.max_payload_bytes, args.max_output_tokens) < 1:
+        ap.error("Limits must be positive")
     if not args.scope and not (args.codes and args.from_ and args.to):
         ap.error("给 --scope，或 --codes/--from/--to")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s")
     engine = make_engine()
-    cfg = config.load()
-    provider = build_provider(cfg)
+    cfg = replace(config.load(), max_input_tokens=args.max_input_tokens, max_payload_bytes=args.max_payload_bytes,
+                  max_output_tokens=args.max_output_tokens, grouped_batches=True)
+    if cfg.prompt_version != "comment-product-v2" or cfg.schema_version != "v2":
+        ap.error("Grouped calibration requires comment-product-v2 and schema v2")
+    control = RunControl(args.max_http_requests)
+    resources.enter_context(WorkerLease(engine, "own-analysis"))
+    resources.enter_context(control.interruptible())
+    provider = build_provider(cfg, control=control)
+    provider.max_input_tokens = args.max_input_tokens
+    provider.max_payload_bytes = args.max_payload_bytes
     ownership = pool_codes()
     stamp = clock.now().strftime("%Y%m%dT%H%M%S")
 
@@ -217,7 +262,21 @@ def main(argv=None):
     for key in ("b1_vs_b30", "v1_vs_v2"):
         if key in report and report[key]["attitude_agreement"] is not None and report[key]["attitude_agreement"] < 0.9:
             verdict.append(f"{key} 态度一致率 {report[key]['attitude_agreement']:.1%} < 90%：先改 Prompt 再放量")
-    report["verdict"] = verdict or ["一致率达标；仅个股误杀率待人工翻 CSV 后填写"]
+    comparison = report.get("b1_vs_b30", {})
+    passed = (len(items) >= 300 and not f30 and not comparison.get("failed_b1", 1)
+              and comparison.get("n") == len(items)
+              and (comparison.get("relevance_agreement") or 0) >= 0.9
+              and (comparison.get("attitude_agreement") or 0) >= 0.9
+              and not control.stop_event.is_set())
+    report["batchGatePassed"] = passed
+    report["policy"] = {"model": cfg.model, "promptVersion": cfg.prompt_version,
+                        "schemaVersion": cfg.schema_version, "taxonomyVersion": cfg.taxonomy_version,
+                        "batchSize": args.batch, "maxInputTokens": args.max_input_tokens,
+                        "maxPayloadBytes": args.max_payload_bytes}
+    report["policy"]["maxOutputTokens"] = args.max_output_tokens
+    report["http"] = control.snapshot()
+    report["verdict"] = verdict + (["批量一致性门槛通过，不代表准确率"] if passed else
+                                   ["未通过放量门槛：需至少300条完整对照，相关性与态度一致率均达到90%"])
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUT_DIR / f"calibration-{stamp}.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")

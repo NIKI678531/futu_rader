@@ -71,3 +71,22 @@ def test_selected_ranges_only_queue_their_current_and_baseline_windows(tmp_path)
     with engine.connect() as conn:
         targets = set(conn.execute(select(annotation_jobs.c.target_id)).scalars())
     assert targets == {2, 3}
+
+
+def test_optimized_prepare_matches_candidates_and_reuses_scopes(tmp_path):
+    engine = make_engine("sqlite:///" + (tmp_path / "paged.db").as_posix())
+    create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k="anchor", v="2026-08-25"))
+        for feed_id, code in ((1, "3033"), (2, "2802")):
+            conn.execute(insert(feeds).values(feed_id=feed_id, code=code, posted_at=datetime(2026, 8, 25),
+                         feed_type=1, like_count=0, comment_count=1, image_count=0, raw_json_broken=False))
+            conn.execute(insert(comments).values(comment_id=feed_id, feed_id=feed_id,
+                         content="ETF fee too high", author_uid=f"reader-{feed_id}"))
+    cfg = config.load(model="test", prompt_version="comment-product-v2", schema_version="v2", taxonomy_version="v2")
+    scopes, start = prepare(engine, cfg, date(2026, 8, 25), ["3033", "2802"],
+                            ranges=["d1", "d2"], optimized=True, page_size=1)
+    assert start == date(2026, 8, 22)
+    assert all(queue_status(engine, scope) == {"pending": 1} for scope in scopes.values())
+    assert prepare(engine, cfg, date(2026, 8, 25), ["3033", "2802"],
+                   ranges=["d1", "d2"], optimized=True)[0] == scopes
