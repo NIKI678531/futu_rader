@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sys
+from collections import defaultdict
 from datetime import date, datetime, time
 from pathlib import Path
 
@@ -15,10 +16,11 @@ for folder in (ROOT, ROOT / "worker", ROOT / "backend"):
 
 from ai import config
 from core.calendar import PRESETS, build
-from jobs import extract, pipeline
+from jobs import annotate, extract, pipeline
 from radar_db import make_engine
+from radar_db.events import emit
 from radar_db.leases import WorkerLease
-from radar_db.schema import analysis_scopes, annotation_jobs, meta_kv
+from radar_db.schema import analysis_scopes, annotation_jobs, comments, feeds, meta_kv
 from radar_db.scope_jobs import scope_condition
 
 
@@ -29,12 +31,12 @@ def save_progress(engine, progress):
             conn.execute(insert(meta_kv).values(k="own_analysis_progress", v=value))
 
 
-def prepare(engine, cfg, anchor, codes):
+def prepare(engine, cfg, anchor, codes, *, ranges=None):
     with engine.connect() as conn:
         source_version = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
             meta_kv.c.k.in_(("data_revision", "etl_generation")),
         )).all())
-    windows = [build(key, anchor) for key in PRESETS]
+    windows = [build(key, anchor) for key in (ranges or PRESETS)]
     start = min(date.fromisoformat(window["benchFrom"]) for window in windows)
     end = datetime.combine(anchor, time.min)
     first = datetime.combine(start, time.min)
@@ -70,12 +72,41 @@ def queue_status(engine, scope_id):
         ).group_by(annotation_jobs.c.status)).all())
 
 
+def prioritize_scope(engine, scope_id, anchor, *, own):
+    changes = defaultdict(list)
+    for target_type, source in (
+        ("comment", annotation_jobs.join(comments, comments.c.comment_id == annotation_jobs.c.target_id)
+         .join(feeds, feeds.c.feed_id == comments.c.feed_id)),
+        ("feed", annotation_jobs.join(feeds, feeds.c.feed_id == annotation_jobs.c.target_id)),
+    ):
+        with engine.connect() as conn:
+            rows = conn.execute(select(annotation_jobs.c.job_id, annotation_jobs.c.priority, feeds.c.posted_at)
+                                .select_from(source).where(scope_condition(scope_id),
+                                    annotation_jobs.c.target_type == target_type,
+                                    annotation_jobs.c.status.in_(("pending", "claimed"))))
+            for job_id, priority, posted_at in rows:
+                updated = annotate.job_priority(posted_at, anchor, own=own, current=True)
+                if priority != updated:
+                    changes[updated].append(job_id)
+    with engine.begin() as conn:
+        for priority, ids in changes.items():
+            for offset in range(0, len(ids), 500):
+                conn.execute(update(annotation_jobs).where(annotation_jobs.c.job_id.in_(ids[offset:offset + 500]))
+                             .values(priority=priority))
+    return sum(len(ids) for ids in changes.values())
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--anchor")
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--max-items", type=int, default=300)
+    parser.add_argument("--all", action="store_true")
+    parser.add_argument("--ranges", default=",".join(PRESETS))
     args = parser.parse_args()
+    ranges = list(dict.fromkeys(key.strip() for key in args.ranges.split(",") if key.strip()))
+    if not ranges or any(key not in PRESETS for key in ranges):
+        parser.error("--ranges must contain supported date presets: " + ",".join(PRESETS))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     cfg = config.load()
     engine = make_engine()
@@ -85,11 +116,15 @@ def main():
     if anchor != measured:
         raise SystemExit("Anchor must match the complete source day; no synthetic month end")
     master = json.loads((ROOT / "backend/fixtures/demo/master.json").read_text(encoding="utf-8"))
-    codes = [row["code"] for row in master["products"] if row["ownership"] == "own"]
-    if len(codes) != 61:
-        raise SystemExit("Own product master must contain 61 products")
+    codes = [row["code"] for row in master["products"] if args.all or row["ownership"] == "own"]
+    ownership = {row["code"]: row["ownership"] for row in master["products"]}
+    if len(codes) != (120 if args.all else 61):
+        raise SystemExit("Product master must contain 61 own and 59 peer products")
     with WorkerLease(engine, "own-analysis") as lease:
-        scopes, start = prepare(engine, cfg, anchor, codes)
+        emit(engine, "orchestrator", f"Starting LLM analysis for {len(codes)} products: {','.join(ranges)}")
+        scopes, start = prepare(engine, cfg, anchor, codes, ranges=ranges)
+        for code, scope_id in scopes.items():
+            prioritize_scope(engine, scope_id, anchor, own=ownership[code] == "own")
         with engine.connect() as conn:
             source_version = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
                 meta_kv.c.k.in_(("data_revision", "etl_generation")),
@@ -100,7 +135,7 @@ def main():
                     and prior.get("sourceVersion", {}) == source_version)
         progress = {"anchor": anchor.isoformat(), "baselineFrom": start.isoformat(), "products": {},
                     "status": "running", "model": cfg.model, "batchSize": cfg.micro_batch_size,
-                    "sourceVersion": source_version}
+                    "sourceVersion": source_version, "scope": "all" if args.all else "own", "ranges": ranges}
         for code, scope_id in scopes.items():
             previous = prior.get("products", {}).get(code, {})
             status = queue_status(engine, scope_id)
@@ -126,11 +161,12 @@ def main():
             if current_source != source_version or (not args.anchor and current_anchor != anchor.isoformat()):
                 if not args.anchor:
                     anchor = date.fromisoformat(current_anchor)
-                scopes, start = prepare(engine, cfg, anchor, codes)
+                scopes, start = prepare(engine, cfg, anchor, codes, ranges=ranges)
                 source_version = current_source
                 progress.update(status="running", anchor=anchor.isoformat(), baselineFrom=start.isoformat())
                 progress["sourceVersion"] = source_version
                 for product_code, scope_id in scopes.items():
+                    prioritize_scope(engine, scope_id, anchor, own=ownership[product_code] == "own")
                     progress["products"][product_code] = {"scope": scope_id, "queue": queue_status(engine, scope_id), "complete": False}
                 save_progress(engine, progress)
             if current_anchor != anchor.isoformat():
@@ -148,11 +184,12 @@ def main():
             status = queue_status(engine, scopes[code])
             if status.get("dead") or status.get("failed"):
                 progress["products"][code]["blocked"] = "failed_jobs"
-                save_progress(engine, progress)
-                return
-            result = pipeline.run(engine, cfg, scopes[code], max_items=args.max_items, ranges=list(PRESETS))
+            emit(engine, "L2", f"Processing {code}", code=code, scope_id=scopes[code], data=status)
+            result = pipeline.run(engine, cfg, scopes[code], max_items=args.max_items, ranges=ranges)
             progress["products"][code].update(queue=queue_status(engine, scopes[code]),
                                               complete=result.get("complete", False))
+            emit(engine, "L3", f"{code}: {result.get('synth_pairs', 0)} ready ranges",
+                 code=code, scope_id=scopes[code], data=progress["products"][code])
             progress["updatedAt"] = datetime.utcnow().isoformat() + "Z"
             if result.get("aborted"):
                 progress["status"] = "configuration_error"

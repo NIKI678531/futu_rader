@@ -67,6 +67,28 @@ def _summary():
         return None
 
 
+def _active_progress(conn):
+    from sqlalchemy import select
+    from radar_db.schema import meta_kv
+
+    value = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "own_analysis_progress")).scalar()
+    return json.loads(value) if value else {}
+
+
+def _scope_filter(conn):
+    from sqlalchemy import or_, select, true
+    from radar_db.schema import analysis_scope_jobs, annotation_jobs
+
+    progress = _active_progress(conn)
+    scopes = [row["scope"] for row in progress.get("products", {}).values() if row.get("scope")]
+    if not scopes:
+        return true()
+    return or_(annotation_jobs.c.scope_id.in_(scopes),
+               select(analysis_scope_jobs.c.job_id).where(
+                   analysis_scope_jobs.c.scope_id.in_(scopes),
+                   analysis_scope_jobs.c.job_id == annotation_jobs.c.job_id).exists())
+
+
 def _queue(conn):
     from sqlalchemy import func, select
 
@@ -75,7 +97,7 @@ def _queue(conn):
     out = {stage: {st: 0 for st in JOB_STATUSES} for stage in STAGES}
     rows = conn.execute(
         select(annotation_jobs.c.stage, annotation_jobs.c.status, func.count())
-        .where(annotation_jobs.c.task == "comment_product")
+        .where(annotation_jobs.c.task == "comment_product", _scope_filter(conn))
         .group_by(annotation_jobs.c.stage, annotation_jobs.c.status)
     )
     for stage, status, n in rows:
@@ -92,7 +114,7 @@ def _tasks(conn):
     out = {task: {st: 0 for st in JOB_STATUSES} for task in OTHER_TASKS}
     rows = conn.execute(
         select(annotation_jobs.c.task, annotation_jobs.c.status, func.count())
-        .where(annotation_jobs.c.task.in_(OTHER_TASKS))
+        .where(annotation_jobs.c.task.in_(OTHER_TASKS), _scope_filter(conn))
         .group_by(annotation_jobs.c.task, annotation_jobs.c.status)
     )
     for task, status, n in rows:
@@ -106,12 +128,24 @@ def _synthesis(conn):
 
     from radar_db.schema import meta_kv, synthesis_outputs
 
+    progress = _active_progress(conn)
+    codes = set(progress.get("products", {}))
+    ranges = set(progress.get("ranges", []))
     dirty = set()
     for k, v in conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(meta_kv.c.k.like("synth_dirty_%"))):
         if v == "1":
             # synth_dirty_<code>_<range>：区间名不含下划线，从右边切一刀就是 code。
-            dirty.add(k[len("synth_dirty_"):].rsplit("_", 1)[0])
-    with_outputs = conn.execute(select(func.count(func.distinct(synthesis_outputs.c.code)))).scalar_one()
+            code, range_key = k[len("synth_dirty_"):].rsplit("_", 1)
+            if (not codes or code in codes) and (not ranges or range_key in ranges):
+                dirty.add(code)
+    query = select(func.count(func.distinct(synthesis_outputs.c.code)))
+    if codes:
+        query = query.where(synthesis_outputs.c.code.in_(codes))
+    if ranges:
+        query = query.where(synthesis_outputs.c.range_key.in_(ranges))
+    if progress.get("anchor"):
+        query = query.where(synthesis_outputs.c.anchor == progress["anchor"])
+    with_outputs = conn.execute(query).scalar_one()
     return {"dirtyProducts": len(dirty), "productsWithOutputs": int(with_outputs)}
 
 
@@ -121,7 +155,7 @@ def _throughput(conn, now=None):
 
     from radar_db.schema import annotation_jobs
 
-    is_comment = annotation_jobs.c.task == "comment_product"
+    is_comment = (annotation_jobs.c.task == "comment_product") & _scope_filter(conn)
     unavailable = {"itemsPerSec5m": None, "etaSeconds": None}
     pending = conn.execute(
         select(func.count()).select_from(annotation_jobs).where(

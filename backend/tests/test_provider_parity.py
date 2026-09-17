@@ -163,7 +163,7 @@ def _shape(payload):
 EXTENSION_KEYS = frozenset({
     "reviewState", "evidenceIds", "labelStatus", "aiStatus", "reasonStatus",
     "key", "subkey", "aspect", "units", "points", "category",
-    "heatUnknownPosts",
+    "heatUnknownPosts", "baseHeatUnknownPosts",
     "stale",
     "evidenceCount", "aiValidationDetail",
 })

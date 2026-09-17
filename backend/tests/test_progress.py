@@ -13,7 +13,7 @@ from sqlalchemy import insert
 import providers
 from conftest import _client
 from radar_db.events import emit
-from radar_db.schema import annotation_jobs, meta_kv, synthesis_outputs
+from radar_db.schema import analysis_scope_jobs, annotation_jobs, meta_kv, synthesis_outputs
 from sql_fixture import make_sql_provider
 
 JOB_STATUSES = {"pending", "claimed", "done", "failed", "dead", "superseded"}
@@ -185,3 +185,27 @@ def test_db_without_migration_0008_is_unavailable(progress_client, progress_prov
         conn.execute(text("DROP INDEX ix_jobs_task_stage_status"))
         conn.execute(text("ALTER TABLE annotation_jobs DROP COLUMN stage"))
     assert progress_client.get("/api/v1/progress").get_json() == {"status": "unavailable", "data": None}
+
+
+def test_selected_scope_progress_excludes_historical_queue(progress_provider, progress_client):
+    with progress_provider._engine.begin() as conn:
+        conn.execute(insert(annotation_jobs), [
+            dict(_job(1, "pending", "llm"), job_id=1, scope_id="recent"),
+            dict(_job(2, "done", "llm", updated_at=datetime(2026, 9, 1, 10, 6)), job_id=2, scope_id="old"),
+            dict(_job(3, "pending", "llm"), job_id=3, scope_id="old"),
+            dict(_job(4, "pending", "llm", task="post_annotation"), job_id=4, scope_id="old"),
+        ])
+        conn.execute(insert(analysis_scope_jobs).values(scope_id="recent", job_id=2))
+        conn.execute(insert(meta_kv).values(k="own_analysis_progress", v=json.dumps({
+            "anchor": "2026-08-25", "status": "running", "scope": "all", "ranges": ["d1", "d2", "d7"],
+            "products": {"3033": {"scope": "recent", "complete": False}},
+        })))
+        conn.execute(insert(meta_kv).values(k="synth_dirty_3033_d30", v="1"))
+    data = progress_client.get("/api/v1/progress").get_json()["data"]
+    assert data["queue"]["llm"]["pending"] == 1
+    assert data["queue"]["llm"]["done"] == 1
+    assert data["tasks"]["post_annotation"]["pending"] == 0
+    assert data["throughput"]["etaSeconds"] == 300
+    assert data["synthesis"]["dirtyProducts"] == 0
+    assert data["summary"]["text"].startswith("全池分析")
+    assert data["summary"]["ranges"] == ["d1", "d2", "d7"]
