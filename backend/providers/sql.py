@@ -19,7 +19,7 @@
 | 日历 | 区间、时间桶、基准区间 | 真实（`core/calendar.py`，锚点来自 `meta_kv`） |
 | 内容 | 帖子标题正文、评论正文、作者、链接 | **真实** |
 | AI 标注（有写入方） | 帖子类型／摘要／操作方向、评论态度、合规命中、证据引文 | **随标注走**：库里有现行结论就是真值，没有就是 None |
-| AI 标注（无写入方） | 主题聚类、负面类别、热议话题、KOL 提及、阶段观点 | **None**（对应的 kind 还没有任何任务在写） |
+| AI 标注（无写入方） | 主题聚类、负面类别、热议话题、阶段观点 | **None**（对应的 kind 还没有任何任务在写） |
 | 行情 | K 线、日线价格 | **None**（dump 里没有本产品池的价格序列） |
 
 None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲染「暂不可用」。
@@ -29,8 +29,9 @@ None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲�
 
 [ADR-0019](../../docs/adr/0019-ai-auto-publish-no-human-gate.md) 取消了人工批准门槛：
 **模型写下即发布**，不再等 `review_state` 变成 `approved` / `corrected`。现行结论的定义
-只剩两条 —— 链末（没有被任何一行 supersede）且不是 `rejected`；同一链末有多行时取
-`created_at` 最新的那条。整个 provider 只在 `_current_annotations()` 里实现一次。
+只剩两条 —— 链末（没有被任何一行 supersede）且不是 `rejected`；同一链末有多行时先保留
+人工 `approved` / `corrected`，同一优先级再取 `created_at` 最新的一条。整个 provider
+只通过共享的 `current_annotations()` 实现一次。
 
 `review_state` 没有消失，它换了岗位：不再决定**能不能**显示，而决定显示哪一枚徽章
 （`needs_review` ⇒ 「AI 生成 · 待确认」，见 `frontend/src/lib/view.js`）。`rejected`
@@ -689,6 +690,29 @@ class SqlProvider:
             self._cache[key] = dict(grouped)
         return self._cache[key]
 
+    def _kol_candidate_units(self, lo, hi, *, code=None, kol=None):
+        """与 worker 的 KOL 任务使用同一候选口径，返回评论 × 所在产品的判定单元。"""
+        q = (
+            select(comments.c.comment_id, feeds.c.code)
+            .select_from(comments.join(feeds, feeds.c.feed_id == comments.c.feed_id))
+            .where(
+                comments.c.content.isnot(None),
+                comments.c.content != "",
+                comments.c.author_name.in_(self._kol_names),
+                feeds.c.posted_at >= lo,
+                feeds.c.posted_at < hi,
+            )
+        )
+        if code is not None:
+            q = q.where(feeds.c.code == code)
+        if kol is not None:
+            q = q.where(comments.c.author_name == kol)
+        try:
+            with self._engine.connect() as conn:
+                return {(r.comment_id, r.code) for r in conn.execute(q)}
+        except SQLAlchemyError:
+            return None
+
     def _units(self, code, rng):
         """区间内这只产品的判定单元（相关＋有态度），以及市场方向单元。整块 None＝没标过。"""
         key = ("units", code, rng["key"])
@@ -952,50 +976,140 @@ class SqlProvider:
     # ── 账号域：产品相关 KOL 与 KOL 其他产品观点 ─────────────────────
 
     def kol_mentions_for(self, code, range_key):
-        """在该产品评论区实际提及它的合作 KOL，按有效提及评论数降序（PRD §4.2 P8）。"""
+        """该产品相关的合作 KOL，与 ``kol_impact`` 使用同一批 KOL 原帖。
+
+        产品页原先只看「KOL 在别人帖子下写的评论」；这会漏掉账号页已经展示的 KOL
+        原帖，甚至出现 ``/kol`` 明明有这只产品、产品页却说「暂无相关内容」的矛盾。
+        这里以同一时间窗内 ``kol_impact().posts[].mentioned`` 为主数据源，再把已经由
+        ``kol_comment_opinion`` 确认的评论观点并进证据。评论任务没跑齐不会遮掉原帖，
+        历史评论观点也不会因切换主口径而丢失。
+
+        ``mentionCommentCount`` 是既有前端契约字段，现表示本行的相关内容条数（原帖＋
+        已确认评论观点）；证据里的 ``sourceKind`` 明确区分两种来源。
+        """
         if code not in self._by_code:
             return MISSING
         rng = self.build_range(range_key)
         if rng is None:
             return None
-        u = self._units(code, rng)
-        if u is None:
+        lo, hi = _window(rng)
+        impact = self.kol_impact(range_key)
+        if impact is None:
             return None
-        src = self._sources("comment", [x["comment_id"] for x in u["units"]])
+
+        active_kols = {k["name"]: k for k in self._kols if k.get("active")}
+        posts = [
+            post for post in impact["posts"]
+            if any(mentioned["code"] == code for mentioned in post["mentioned"])
+        ]
+        post_ids = [int(post["id"].removeprefix("kol-")) for post in posts]
+        post_sources = self._sources("feed", post_ids)
+
+        # 一条内部 event 同时保存排序时间和对外 evidence。用一份 evidence 列表生成计数、
+        # 最近时间与代表摘录，避免三个字段彼此漂移。
         by_kol = defaultdict(list)
-        for x in u["units"]:
-            r = src.get(x["comment_id"])
-            if r and r["authorName"] in self._kol_names:
-                by_kol[r["authorName"]].append((x, r))
-        quotes = self._evidence_rows([x["annotation_id"] for xs in by_kol.values() for x, _ in xs if x["annotation_id"]])
-        kols = {k["name"]: k for k in self._kols}
+        for post, feed_id in zip(posts, post_ids):
+            source = post_sources.get(feed_id)
+            if source is None:
+                continue
+            excerpt = source["text"] or post.get("summary") or ""
+            by_kol[post["kol"]].append({
+                "postedAt": source["postedAt"],
+                "isPost": True,
+                "attitude": None,
+                "evidence": {
+                    "id": f"{code}-kp-{post['kol']}-{feed_id}",
+                    "productCodes": [m["code"] for m in post["mentioned"]],
+                    "publishedAt": _stamp(source["postedAt"]),
+                    "authorName": post["kol"],
+                    "authorType": "合作 KOL",
+                    "isKnownKol": True,
+                    "kolType": "partner",
+                    "excerpt": excerpt,
+                    # 原帖的操作方向不是产品态度，不能把「加仓」偷换成正面评价。
+                    "attitude": None,
+                    "attitudeLabel": None,
+                    "comments": post["comments"],
+                    "interactions": post["engagement"],
+                    "sourceKind": "帖子",
+                    "sourceUrl": post["url"],
+                },
+            })
+
+        # 旧的 KOL 评论观点仍是有效证据，但只并入模型明确给出非空摘要的判定单元。
+        # 不再要求同窗全部候选都标完：评论是补充源，不能让它阻塞已经确定的 KOL 原帖。
+        candidates = self._kol_candidate_units(lo, hi, code=code)
+        summaries = {}
+        if candidates:
+            current = current_annotations(
+                self._engine, "kol_summary", "comment", window=(lo, hi), subject_code=code,
+            )
+            summaries = {
+                unit: current[unit]
+                for unit in candidates
+                if unit in current
+                if isinstance(current[unit].get("value"), str)
+                and current[unit]["value"].strip()
+            }
+
+        comment_sources = self._sources("comment", [unit[0] for unit in summaries])
+        attitudes = self._window_annotations("attitude", lo, hi).get(code, {}) if summaries else {}
+        attitude_labels = {"positive": "积极", "negative": "消极", "neutral": "中性"}
+        quotes = self._evidence_rows([summary["annotation_id"] for summary in summaries.values()])
+        for unit, summary in summaries.items():
+            source = comment_sources.get(unit[0])
+            if source is None or source["authorName"] not in active_kols:
+                continue
+            attitude = (attitudes.get(unit) or {}).get("value")
+            if attitude not in attitude_labels:
+                attitude = None
+            quote = (quotes.get(summary["annotation_id"]) or [(None, None, None)])[0][2]
+            by_kol[source["authorName"]].append({
+                "postedAt": source["postedAt"],
+                "isPost": False,
+                "attitude": attitude,
+                "evidence": {
+                    "id": f"{code}-km-{source['authorName']}-{unit[0]}",
+                    "productCodes": [code],
+                    "publishedAt": _stamp(source["postedAt"]),
+                    "authorName": source["authorName"],
+                    "authorType": "合作 KOL",
+                    "isKnownKol": True,
+                    "kolType": "partner",
+                    "excerpt": quote or source["text"],
+                    "attitude": attitude,
+                    "attitudeLabel": attitude_labels.get(attitude),
+                    "comments": source["comments"],
+                    "interactions": source["interactions"],
+                    "sourceKind": "评论",
+                    "sourceUrl": source["url"],
+                },
+            })
+        if not by_kol:
+            return {"status": "empty", "scope": "合作 KOL 名单", "list": []}
+
         items = []
         for name, xs in by_kol.items():
-            xs.sort(key=lambda t: (t[1]["postedAt"] or datetime.min), reverse=True)
+            xs.sort(key=lambda event: event["postedAt"] or datetime.min, reverse=True)
             counts = defaultdict(int)
-            for x, _ in xs:
-                counts[x["attitude"]] += 1
+            for event in xs:
+                attitude = event["attitude"]
+                if attitude is not None:
+                    counts[attitude] += 1
             n = len(xs)
-            dominant = max(counts, key=counts.get) if n >= 3 else None
-            latest_x, latest_r = xs[0]
-            quote = (quotes.get(latest_x["annotation_id"]) or [(None, None, None)])[0][2]
+            attitude_n = sum(counts.values())
+            dominant = max(counts, key=counts.get) if attitude_n >= 3 else None
+            # 代表摘录优先来自与 /kol 同源的 KOL 原帖；没有相关原帖时才回退到评论观点。
+            representative = next((event for event in xs if event["isPost"]), xs[0])
             items.append({
                 "productCode": code, "kolAccountId": f"kol-{name}", "kolName": name,
-                "kolTags": kols[name].get("tags"), "kolType": "partner", "kolTypeLabel": "合作 KOL",
-                "mentionCommentCount": n, "lastMentionedAt": _stamp(latest_r["postedAt"]),
+                "kolTags": active_kols[name].get("tags"), "kolType": "partner", "kolTypeLabel": "合作 KOL",
+                "mentionCommentCount": n, "lastMentionedAt": _stamp(xs[0]["postedAt"]),
                 "dominantAttitude": dominant,
-                "dominantLabel": {"positive": "积极", "negative": "消极", "neutral": "中性"}.get(dominant) if dominant else None,
-                "representativeExcerpt": quote or latest_r["text"],
+                "dominantLabel": attitude_labels.get(dominant),
+                "representativeExcerpt": representative["evidence"]["excerpt"],
                 "evidenceCount": n,
-                "evidence": [
-                    {
-                        "id": f"{code}-km-{name}-{x['comment_id']}", "productCodes": [code],
-                        "publishedAt": _stamp(r["postedAt"]), "authorName": name, "authorType": "合作 KOL",
-                        "isKnownKol": True, "kolType": "partner", "excerpt": r["text"], "attitude": x["attitude"],
-                        "comments": r["comments"], "interactions": r["interactions"], "sourceUrl": r["url"],
-                    }
-                    for x, r in xs[:10]
-                ],
+                "evidence": [event["evidence"] for event in xs],
             })
         items.sort(key=lambda i: (-i["mentionCommentCount"], i["kolName"]))
         return {"status": "ok" if items else "empty", "scope": "合作 KOL 名单", "list": items}
@@ -1008,10 +1122,30 @@ class SqlProvider:
         if rng is None:
             return None
         lo, hi = _window(rng)
-        summ = current_annotations(self._engine, "kol_summary", "comment", window=(lo, hi))
-        if not summ:
+        candidates = self._kol_candidate_units(lo, hi, kol=kol)
+        if candidates is None:
             return None
-        act = current_annotations(self._engine, "kol_action", "comment", window=(lo, hi))
+        if not candidates:
+            return []
+        all_summaries = current_annotations(self._engine, "kol_summary", "comment", window=(lo, hi))
+        actions = current_annotations(self._engine, "kol_action", "comment", window=(lo, hi))
+        types = current_annotations(self._engine, "post_type", "comment", window=(lo, hi))
+        # 三项都是 v2 的必填输出。只要这个 KOL 有一个候选单元没写齐，整块就是尚未覆盖，
+        # 不能借用同区间其他 KOL 的结果误报成「暂无相关内容」。
+        if not (candidates.issubset(all_summaries)
+                and candidates.issubset(actions)
+                and candidates.issubset(types)):
+            return None
+        # `false` 是模型明确判断「该评论没有对这个产品表达观点」。它证明任务跑过了，
+        # 但不是可展示的摘要，更不能在表格里渲染成一个空/False 观点。
+        summ = {
+            unit: all_summaries[unit]
+            for unit in candidates
+            if isinstance(all_summaries[unit].get("value"), str)
+            and all_summaries[unit]["value"].strip()
+        }
+        if not summ:
+            return []
         src = self._sources("comment", [cid for cid, _ in summ])
         quotes = self._evidence_rows([a["annotation_id"] for a in summ.values()])
         tone = {"加仓": "pos", "建仓": "pos", "减仓": "neg", "清仓": "neg", "转投其他产品": "neg",
@@ -1022,16 +1156,23 @@ class SqlProvider:
             p = self._by_code.get(code)
             if r is None or p is None or r["authorName"] != kol:
                 continue
-            action = (act.get((cid, code)) or {}).get("value")
+            action = (actions.get((cid, code)) or {}).get("value")
+            type_row = types.get((cid, code))
+            post_type = type_row.get("value") if type_row else None
             quote = (quotes.get(a["annotation_id"]) or [(None, None, None)])[0][2]
             ts = r["postedAt"]
             out.append({
+                "id": f"kol-op-{cid}-{code}",
                 "code": code, "name": p["name"], "issuer": p["issuer"], "own": p["ownership"] == "own",
                 "sector": p["sector"], "sectorName": p.get("sectorName"),
                 "summary": a["value"] if isinstance(a["value"], str) else None,
                 "excerpt": quote or r["text"],
                 "action": action, "actionTone": tone.get(action), "direction": action,
-                "postType": None, "typeLabel": None, "confidence": None,
+                # v1 历史行没有 comment/post_type，保留 None 代表「尚未回填」；v2 值若
+                # 超出枚举则故意抛 KeyError，不能悄悄伪装成「其他」。
+                "postType": post_type,
+                "typeLabel": _TYPE_LABEL[post_type] if post_type is not None else None,
+                "confidence": type_row.get("confidence") if type_row else None,
                 "dateText": f"{ts.year}/{ts.month}/{ts.day}" if ts else None,
                 "timeText": ts.strftime("%H:%M:%S") if ts else None,
                 "engagement": r["interactions"], "url": r["url"], "net": None,

@@ -219,9 +219,8 @@ export function needsReview(state) {
  * 这句里没有、也不许有「已核验」（ADR-0019 §4）：抽检说的是「人工核对过 n 条、准确率
  * 多少」，是一个可复核的样本统计，不是对页面上每一条结论的确认。
  *
- * 尾句「学生模型蒸馏自 Luna 标注」只在 `by_system.student` 真有数时说：学生还没训出来、只核对
- * 了 Luna 的那份表（`gold_sample --llm-only`）写进来的学生三项全是 null，这时页面上的结论全是
- * Luna 判的，提学生等于替一个不存在的系统背书。
+ * 尾句只在 `by_system.student` 真有数时提学生模型；供应商名称来自部署配置，不在页面文案里
+ * 硬编码，避免切换主模型后把历史名称继续展示给用户。
  */
 export var AI_VALIDATION_NOTE = {
   none: 'AI 结论由模型自动生成，未经人工验证；每条可回到原文。'
@@ -241,7 +240,7 @@ export function aiValidationNote(level, detail) {
     var studentScored = !!(student && (student.relevance_accuracy != null || student.attitude_accuracy != null));
     return 'AI 结论由模型自动生成；人工核对 ' + detail.n + ' 条（' + stamp(detail.date) + '），'
       + '态度准确率 ' + accPct(detail.attitude_accuracy) + '、相关性准确率 ' + accPct(detail.relevance_accuracy)
-      + (studentScored ? '；学生模型蒸馏自 Luna 标注。' : '；结论由 Luna 判定。');
+      + (studentScored ? '；学生模型蒸馏自主模型标注。' : '；结论由主模型判定。');
   }
   return AI_VALIDATION_NOTE[level] || AI_VALIDATION_NOTE.none;
 }

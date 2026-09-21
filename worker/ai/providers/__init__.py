@@ -14,8 +14,12 @@ from .base import (  # noqa: F401
     Usage,
 )
 from .openai_compatible import OpenAiCompatibleProvider
+from .typesafe_system_one import TypeSafeSystemOneProvider
 
-_PROVIDERS = {"openai_compatible": OpenAiCompatibleProvider}
+_PROVIDERS = {
+    "openai_compatible": OpenAiCompatibleProvider,
+    "typesafe_system_one": TypeSafeSystemOneProvider,
+}
 
 
 def build(config, **kwargs):

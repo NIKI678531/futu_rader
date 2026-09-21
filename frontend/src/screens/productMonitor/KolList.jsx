@@ -1,22 +1,24 @@
 import { s, hover } from '../../lib/dc'
+import DcLink from '../../components/DcLink'
 
-/* 产品相关 KOL — 评论区实际提及该产品的已识别 KOL */
+/* 产品相关 KOL — 与 KOL 页面同源的相关原帖，并补充已确认的评论观点。 */
 export default function KolList({ v }) {
   return (
     <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:14px')}>
       <div style={s('display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--border-1)')}>
         <span style={s('font:600 18px/1.3 var(--font-cjk)')}>产品相关 KOL</span>
-        <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>在 {v.code} 相关帖子的评论区中实际提及该产品的已识别 KOL · 按有效提及评论数降序</span>
-        <span style={s('margin-left:auto;padding:3px 10px;border-radius:9999px;background:var(--csop-blue-50);font:500 12px/1.6 var(--font-cjk);color:var(--csop-blue-700);white-space:nowrap')}>已识别 KOL 范围：{v.kolScope}</span>
+        <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>与 KOL 页面同源的 {v.code} 相关帖子，并补充评论观点 · 按相关内容数降序</span>
+        <DcLink href={v.kolActivityHref} style={s('margin-left:auto;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('text-decoration:underline')}>查看 KOL 页面相关帖子 →</DcLink>
+        <span style={s('padding:3px 10px;border-radius:9999px;background:var(--csop-blue-50);font:500 12px/1.6 var(--font-cjk);color:var(--csop-blue-700);white-space:nowrap')}>已识别 KOL 范围：{v.kolScope}</span>
       </div>
       {v.kolHas && (
         <>
           <div style={s('display:flex;align-items:center;gap:8px;height:38px;padding:0 20px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1);font:600 13px/1.4 var(--font-cjk);color:var(--ink-700)')}>
             <span style={s('flex:none;width:210px')}>KOL</span>
-            <span style={s('flex:none;width:92px;text-align:right')}>有效提及评论</span>
+            <span style={s('flex:none;width:92px;text-align:right')}>相关内容</span>
             <span style={s('flex:none;width:126px;padding-left:14px;box-sizing:border-box')}>最近提及</span>
             <span style={s('flex:none;width:92px')}>主要态度</span>
-            <span style={s('flex:1;min-width:0')}>代表性评论摘录</span>
+            <span style={s('flex:1;min-width:0')}>代表内容摘录</span>
             <span style={s('flex:none;width:96px;text-align:right')}>原文证据</span>
           </div>
           {v.kolRows.map((k) => (
@@ -25,6 +27,7 @@ export default function KolList({ v }) {
                 <div style={s('display:flex;align-items:center;gap:7px')}>
                   <span style={s('min-width:0;font:600 14px/1.4 var(--font-cjk);color:var(--ink-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{k.name}</span>
                   <span style={s('flex:none;padding:0 7px;border-radius:3px;background:var(--csop-blue-50);font:600 11px/1.7 var(--font-cjk);color:var(--csop-blue-700)')}>{k.type}</span>
+                  <DcLink href={k.detailHref} onClick={k.stop} style={s('flex:none;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('text-decoration:underline')}>详情 →</DcLink>
                 </div>
                 <div style={s('margin-top:2px;font:400 12px/1.4 var(--font-cjk);color:var(--ink-400);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{k.tags}</div>
               </div>
@@ -39,12 +42,12 @@ export default function KolList({ v }) {
             {v.kolMoreVisible && (
               <span onClick={v.kolToggle} style={s('flex:none;font:500 13px/1.6 var(--font-cjk);color:var(--csop-blue-600);cursor:pointer;white-space:nowrap')}>{v.kolMoreLabel}</span>
             )}
-            <span style={s('font:400 12px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>KOL 身份来自已核验名单与账号映射，不按活跃度或粉丝数推断；提及需含产品代码、标准名称、已核验简称或明确语义指代，并保留命中依据；仅发过相关原帖但未在评论区提及该产品的 KOL 不计入；同一条评论只计一次。提及少于 3 条不输出主要态度。</span>
+            <span style={s('font:400 12px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>KOL 身份来自已核验名单与账号映射，不按活跃度或粉丝数推断；相关原帖与 KOL 页面使用同一来源，模型确认的评论观点作为补充证据；同一条内容只计一次。有效态度少于 3 条不输出主要态度。</span>
           </div>
         </>
       )}
       {v.kolEmpty && (
-        <div style={s('padding:20px')}><div style={s('padding:16px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 当前区间未发现已识别 KOL 在相关评论区提及该产品。</div></div>
+        <div style={s('padding:20px')}><div style={s('padding:16px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 当前区间未发现已识别 KOL 的相关帖子或评论观点。 <DcLink href={v.kolActivityHref} style={s('font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('text-decoration:underline')}>查看该产品的 KOL 相关帖子 →</DcLink></div></div>
       )}
       {v.kolUnavailable && (
         <div style={s('padding:20px')}><div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — KOL 身份名单或账号映射尚未核验。</div></div>

@@ -459,7 +459,7 @@ class OfficialActivity extends React.Component {
             ))}
           </div>
 
-          <div style={s('display:grid;grid-template-columns:minmax(0,1fr) 264px;gap:18px;margin-bottom:20px')}>
+          <div data-testid="official-overview-grid" style={s('display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:18px;margin-bottom:20px')}>
             <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);display:flex;flex-direction:column;min-width:0')}>
               <div style={s('display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 20px;border-bottom:1px solid var(--border-1)')}>
                 <div style={s('display:flex;align-items:baseline;gap:10px;min-width:0')}>

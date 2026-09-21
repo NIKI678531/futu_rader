@@ -153,7 +153,11 @@ class KolDetail extends React.Component {
         key: p.id,
         time: p.time, code: p.code,
         pbg: rgba(sec.hue, 0.12), pfg: sec.hue,
-        type: st.label, tbg: st.bg, tfg: st.fg, pending: self.pending(p), conf: conf2(p.confidence), review: self.review(p),
+        type: st.label, tbg: st.bg, tfg: st.fg, pending: self.pending(p), conf: conf2(p.confidence),
+        confidenceText: p.confidence == null
+          ? (p.postType == null ? '类型尚未生成' : '类型已生成')
+          : '类型置信度 ' + conf2(p.confidence),
+        review: self.review(p),
         hasDir: !!p.hasDir, dir: p.dir ? p.dir.label : '', dbg: p.dir ? p.dir.bg : 'transparent', dfg: p.dir ? p.dir.fg : 'transparent',
         /* `!p.hasSummary` 把 null 和 false 合成了一句「图片帖」—— 前者是「还没生成」，
            后者是「查过了，这篇确实只有图」。合成的那一刻，未标注的帖子全被说成了图片帖。 */
@@ -169,10 +173,7 @@ class KolDetail extends React.Component {
            —— 已记在交付说明里，等裁决，不在这里顺手统一（CLAUDE.md：设计变更从设计源
            重新拷贝，不照着新行为手推）。
 
-           分隔符「 · 」在串里而不是留在 JSX 里：设计源那一行是
-           `类型置信度 {{ p.conf }} · 高亮句为判定依据`，「· 高亮句为判定依据」是**一个**
-           文本节点。写成 `{p.conf} · {p.evidenceNote}` 会拆成两个，逐字比对当场报差异
-           （screen-diff 比的是文本分段，不是拼出来的整句）。 */
+           判定依据提示保留为同一个文本节点，避免视觉回归工具把标点误判成结构变化。 */
         evidenceNote: p.evidenceIdx == null ? ' · 判定依据尚未生成' : ' · 高亮句为判定依据',
         open: on, hasText: p.fullText != null, sentences: on ? sentencesOf(p) : [],
         camps: campsOf(p),
@@ -256,12 +257,16 @@ class KolDetail extends React.Component {
        产品没有观点」，那是个结论。这里必须分开：null → 缺失态，[] → 空态。 */
     var opRows = R.kolOpinions(kol, s.rangeKey);
     out.opsNa = opRows == null;
+    out.opsEmpty = opRows != null && opRows.length === 0;
     out.opCount = opRows == null ? '暂不可用' : String(opRows.length);
     out.ops = (opRows || []).map(function (r, i) {
-      var open = !!s.openOps[r.code];
+      /* 同一 KOL 可以在多条评论里谈同一产品，code 不是行标识。
+         优先使用后端按内容单元生成的唯一 id；兼容旧数据时才用组合键。 */
+      var rowKey = r.id || [r.code, r.dateText, r.timeText, i].join(':');
+      var open = !!s.openOps[rowKey];
       var tn = TONE[r.actionTone] || TONE.neu, st = typeStyle(r.postType);
       return {
-        key: r.code,
+        key: rowKey,
         code: r.code + '.HK', name: r.name, issuer: issuerShort(r.issuer),
         ownLabel: r.own ? '自家' : '竞品',
         ownBg: r.own ? 'var(--csop-blue-600)' : 'var(--csop-silver-200)', ownFg: r.own ? '#fff' : 'var(--ink-700)',
@@ -279,7 +284,7 @@ class KolDetail extends React.Component {
         bg: i % 2 ? 'var(--canvas)' : '#fff',
         toggle: function () {
           var nx = Object.assign({}, self.state.openOps);
-          if (nx[r.code]) delete nx[r.code]; else nx[r.code] = 1;
+          if (nx[rowKey]) delete nx[rowKey]; else nx[rowKey] = 1;
           self.setState({ openOps: nx });
         }
       };
@@ -406,7 +411,7 @@ class KolDetail extends React.Component {
                               ) : (
                                 <div style={s('margin-top:9px;padding:10px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>原文暂不可用：正文分句尚未生成。</div>
                               )}
-                              <div style={s('margin-top:5px;font:400 12px/1.5 var(--font-cjk);color:var(--ink-400)')}>类型置信度 {p.conf}{p.evidenceNote}</div>
+                              <div style={s('margin-top:5px;font:400 12px/1.5 var(--font-cjk);color:var(--ink-400)')}>{p.confidenceText}{p.evidenceNote}</div>
                             </>
                           )}
                         </td>
@@ -502,12 +507,14 @@ class KolDetail extends React.Component {
                 <div style={s('font:600 18px/1.3 var(--font-cjk)')}>其他产品观点及操作</div>
                 <div style={s('margin-top:5px;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>{v.opCount} 条 · 该 KOL 在评论与转发中提到的其他产品（竞品 + 南方东英其他产品），一条内容一行；类型与操作方向由 AI 识别，点「原文」核对</div>
               </div>
-              {!v.opsNa && (
+              {!v.opsNa && !v.opsEmpty && (
                 <div onClick={v.csvGo} style={s('flex:none;display:flex;align-items:center;gap:7px;padding:8px 15px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 14px/1.4 var(--font-cjk);color:var(--ink-700);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>导出 CSV</div>
               )}
             </div>
             {v.opsNa ? (
               <div style={s('padding:34px 22px;text-align:center;font:400 14px/1.7 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>暂不可用<div style={s('margin-top:6px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400)')}>观点、操作与情绪净值均来自 AI 标注，尚未生成 —— 这不等于「他没有提到其他产品」</div></div>
+            ) : v.opsEmpty ? (
+              <div style={s('padding:34px 22px;text-align:center;font:400 14px/1.7 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>暂无相关内容<div style={s('margin-top:6px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400)')}>当前区间未识别到该 KOL 对其他产品的有效观点或操作</div></div>
             ) : (
             <table>
               <thead>
@@ -564,7 +571,7 @@ class KolDetail extends React.Component {
               </tbody>
             </table>
             )}
-            <div style={s('padding:14px 22px;border-top:1px solid var(--border-1);font:400 13px/1.7 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>「类型」与「操作」为同一套 8 类枚举下的两层标注：操作类帖子（晒单 / 操作宣告）附买卖方向；行情解读等观点类如识别出持有 / 观望意向也一并标出。置信度低于 {v.lcText} 标「待确认」。</div>
+            <div style={s('padding:14px 22px;border-top:1px solid var(--border-1);font:400 13px/1.7 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>「类型」与「操作」为同一套 8 类枚举下的两层标注：操作类帖子（晒单 / 操作宣告）附买卖方向；行情解读等观点类如识别出持有 / 观望意向也一并标出。低信心结果标「待确认」；未经本业务校准时不展示数值置信度。</div>
           </div>
         </div>
       </div>

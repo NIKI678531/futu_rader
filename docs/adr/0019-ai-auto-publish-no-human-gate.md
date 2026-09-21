@@ -29,7 +29,8 @@ Gate 0–2 跑完后的状态是：129 个判定单元、225 行 `annotations` �
            ① 没有被任何行 supersede（即链末），且
            ② review_state != 'rejected'
            的那一行；
-           若链末有多条（ADR-0017 遗留的双现行情况），取 created_at 最新的一条；
+           若链末有多条（ADR-0017 遗留的双现行情况），人工 approved/corrected 优先，
+           同一优先级再取 created_at 最新的一条；
            若链末是 rejected ⇒ 该单元当前没有结论（页面显示「暂不可用」，不回退到旧行）。
 ```
 
@@ -94,7 +95,7 @@ Gate 0–2 跑完后的状态是：129 个判定单元、225 行 `annotations` �
 
 | # | 改动 | 落点 | 验收 |
 |---|---|---|---|
-| 1 | 现行结论查询：按第 1 条规则取链末、排除 `rejected`、同链末多行取最新 | `backend/providers/sql.py` 新增 `_current_annotations(kind, target_type, ids=None)` | 单测：pending 可读；rejected 不可读；链末双行取最新；rejected 链末 ⇒ 无结论 |
+| 1 | 现行结论查询：按第 1 条规则取链末、排除 `rejected`、同链末优先人工结论后取最新 | `radar_db/annotations_read.py` 的 `current_annotations(...)` | 单测：pending 可读；rejected 不可读；人工结论优先；普通链末双行取最新；rejected 链末 ⇒ 无结论 |
 | 2 | 评论态度聚合：按产品×时间桶数 `attitude` 的正／负／中；`sampleSufficient` 用 `LOW_SAMPLE` | `sql.py` 的 `pool` / `benchmark` / `_scan`，阈值判定在 `core/` | 有标注的产品 `attitude` 不再为 `None`；没标注的仍为 `None`（不是 0） |
 | 3 | 帖子三件套：`post_type` / `direction` / `summary` 回填到 `_post_common`，替换 `_UNANNOTATED` 中对应键；`summary=false` 占位 ⇒ `hasSummary=false`；`direction="pending"` ⇒ `directionPending=true` | `sql.py` 官号与 KOL 帖子组装 | KOL／官号页显示真实类型与摘要，未标注帖子仍显示缺失态 |
 | 4 | 证据：按 `annotation_evidence` 回填 `evidenceIdx` / `typeEvidence` / `evidenceFor` | `sql.py` `evidence_for`，`core/evidence.py` | 证据侧栏引文能在原文里逐字定位 |

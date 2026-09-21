@@ -211,9 +211,20 @@ class KolOpinionAnnotation(BaseModel):
         return self
 
 
+class KolOpinionAnnotationV2(KolOpinionAnnotation):
+    """KOL 评论观点 v2：在观点与操作之外补齐页面使用的 8 类内容形式。"""
+
+    post_type: Literal[POST_TYPES]  # type: ignore[valid-type]
+
+
 class KolOpinionBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     results: list[KolOpinionAnnotation]
+
+
+class KolOpinionBatchV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    results: list[KolOpinionAnnotationV2]
 
 
 TASKS = {
@@ -227,7 +238,7 @@ TASKS = {
 VERSIONED = {
     "comment_product": {"v1": CommentAnnotation, "v2": CommentAnnotationV2},
     "post_annotation": {"v1": PostAnnotation, "v2": PostAnnotation},
-    "kol_comment_opinion": {"v1": KolOpinionAnnotation, "v2": KolOpinionAnnotation},
+    "kol_comment_opinion": {"v1": KolOpinionAnnotation, "v2": KolOpinionAnnotationV2},
 }
 
 
@@ -272,7 +283,7 @@ BATCHES = {
 VERSIONED_BATCHES = {
     "comment_product": {"v1": CommentBatch, "v2": CommentBatchV2},
     "post_annotation": {"v1": PostBatch, "v2": PostBatch},
-    "kol_comment_opinion": {"v1": KolOpinionBatch, "v2": KolOpinionBatch},
+    "kol_comment_opinion": {"v1": KolOpinionBatch, "v2": KolOpinionBatchV2},
 }
 
 

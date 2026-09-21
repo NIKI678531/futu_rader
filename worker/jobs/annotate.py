@@ -74,6 +74,7 @@ log = logging.getLogger("worker.annotate")
 _HUMAN_SETTLED = ("approved", "corrected")
 
 LEASE_MINUTES = 15
+FILL_MISSING_STAGE = "llm_fill"  # annotation_jobs.stage is VARCHAR(10)
 
 # 帖子正文作为评论上下文时只带开头这么多字。一批 30 条常来自同一篇帖子，正文按 feed_id
 # 只放一次（见 `_user_message_with_context`），但仍要有上限 —— 长文会把系统提示挤出缓存窗口。
@@ -110,18 +111,18 @@ class _Abort(Exception):
 def resolve(task, cfg):
     """取该任务要用的 Prompt 模块与 schema 版本。
 
-    Prompt 由 `cfg.prompt_version` 选（不认识的版本会报错，见 `ai.prompts.get`）；
-    schema 版本以 `cfg.schema_version` 为准，但与该 Prompt 配对的版本不一致时出声 ——
-    v2 Prompt 要求七个字段，用 v1 schema 校验会整批失败，而错误信息看起来像模型的问题。
+    一个全局 `AI_PROMPT_VERSION` 会被多个任务共享：当它属于别的任务时，按 schema 选择
+    本任务的配对 Prompt；当它明确属于本任务却与 schema 不匹配时直接报配置错误。
+    绝不让 v2 Prompt 套 v1 strict schema 后悄悄丢字段。
     """
-    prompt = get_prompt(task, cfg.prompt_version)
+    prompt = get_prompt(task, cfg.prompt_version, schema_version=cfg.schema_version)
     paired = SCHEMA_OF.get(prompt.VERSION)
-    if paired and paired != cfg.schema_version:
-        log.warning(
-            "Prompt %s 配对的 schema 是 %s，但 AI_SCHEMA_VERSION=%s；以配置为准",
-            prompt.VERSION, paired, cfg.schema_version,
+    if paired != cfg.schema_version:
+        raise config.ConfigError(
+            f"Prompt {prompt.VERSION} 配对 schema {paired}，"
+            f"但 AI_SCHEMA_VERSION={cfg.schema_version}；请使用匹配版本"
         )
-    return prompt, cfg.schema_version
+    return prompt, paired
 
 
 def prompt_version(prompt, cfg):
@@ -245,7 +246,7 @@ def job_row_for_comment(cfg, prompt, schema_version, row, *, priority=0, scope_i
 
 
 def enqueue_comments(engine, cfg, *, codes=None, limit=None, since=None, until=None,
-                     priority=0, scope_id=None):
+                     priority=0, scope_id=None, fill_missing=None):
     """把「评论 × 产品」组合排进待办。
 
     判定单元是 `(comment_id, subject_code)`（§10.1），所以同一条评论评价两只 ETF
@@ -265,11 +266,14 @@ def enqueue_comments(engine, cfg, *, codes=None, limit=None, since=None, until=N
                             scope_id=scope_id, now=now)
         for r in _comment_candidates(engine, codes=codes, limit=limit, since=since, until=until)
     ]
-    return _insert_jobs(engine, rows)
+    return _insert_jobs(engine, _prepare_fill_missing(
+        engine, rows, "comment_product", schema_version, cfg, fill_missing
+    ))
 
 
 def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None,
-                  authors=None, priority=0, scope_id=None, priority_of=None):
+                  authors=None, priority=0, scope_id=None, priority_of=None,
+                  fill_missing=None):
     """把帖子排进待办（§11.2：类型／操作方向／摘要）。
 
     与评论任务有三处结构性不同，不是参数差异：
@@ -335,11 +339,14 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None
                     "updated_at": now,
                 }
             )
-    return _insert_jobs(engine, rows)
+    return _insert_jobs(engine, _prepare_fill_missing(
+        engine, rows, task, schema_version, cfg, fill_missing
+    ))
 
 
 def enqueue_kol_comments(engine, cfg, kol_names, *, codes=None, limit=None, since=None, until=None,
-                         priority=0, scope_id=None, priority_of=None):
+                         priority=0, scope_id=None, priority_of=None,
+                         fill_missing=None):
     """把合作 KOL 写的评论排进 `kol_comment_opinion`（PRD §4.4 M7）。
 
     判定单元、payload、指纹都与 comment_product 同构 —— 只是作者被限定在 KOL 名单内，
@@ -356,7 +363,81 @@ def enqueue_kol_comments(engine, cfg, kol_names, *, codes=None, limit=None, sinc
                                         scope_id=scope_id, now=now, task=task))
         if limit and len(rows) >= limit:
             break
-    return _insert_jobs(engine, rows)
+    return _insert_jobs(engine, _prepare_fill_missing(
+        engine, rows, task, schema_version, cfg, fill_missing
+    ))
+
+
+def _prepare_fill_missing(engine, rows, task, schema_version, cfg, requested):
+    """Keep only incomplete annotation units and persist the no-overwrite mode.
+
+    The flag is stored in ``annotation_jobs.stage`` because enqueue and run are
+    deliberately separate commands.  The write path checks it again inside the
+    transaction, so a concurrent worker cannot turn a gap-fill into a replace.
+    """
+    enabled = getattr(cfg, "fill_missing_only", False) if requested is None else bool(requested)
+    if not enabled or not rows:
+        return rows
+
+    keys = {
+        (row["target_type"], row["target_id"], row["subject_code"] or NO_SUBJECT)
+        for row in rows
+    }
+    existing = {key: {} for key in keys}
+    key_list = list(keys)
+    # SQLite 的 bind 参数有上限；全量补洞可能包含几十万个判定单元，分块查询。
+    with engine.connect() as conn:
+        for offset in range(0, len(key_list), 200):
+            found = conn.execute(
+                select(
+                    annotations.c.target_type,
+                    annotations.c.target_id,
+                    annotations.c.subject_code,
+                    annotations.c.kind,
+                    annotations.c.value_json,
+                    annotations.c.annotation_id,
+                )
+                .where(tuple_(
+                    annotations.c.target_type,
+                    annotations.c.target_id,
+                    annotations.c.subject_code,
+                ).in_(key_list[offset:offset + 200]))
+                .order_by(annotations.c.annotation_id)
+            ).all()
+            for target_type, target_id, subject_code, kind, value_json, _annotation_id in found:
+                existing[(target_type, target_id, subject_code)][kind] = value_json
+
+    selected = []
+    for row in rows:
+        key = (row["target_type"], row["target_id"], row["subject_code"] or NO_SUBJECT)
+        values = existing.get(key, {})
+        required = _required_kinds(task, schema_version, values)
+        if required.issubset(values):
+            continue
+        row = dict(row)
+        row["stage"] = FILL_MISSING_STAGE
+        selected.append(row)
+    return selected
+
+
+def _required_kinds(task, schema_version, values):
+    if task == "post_annotation":
+        return {"post_type", "summary", "direction"}
+    if task == "kol_comment_opinion":
+        required = {"kol_summary", "kol_action"}
+        if schema_version != "v1":
+            required.add("post_type")
+        return required
+    required = {"relevance"}
+    if schema_version != "v1":
+        required.add("compliance")
+    try:
+        relevance = json.loads(values.get("relevance", "null"))
+    except (TypeError, ValueError):
+        relevance = None
+    if relevance == "relevant":
+        required.add("attitude")
+    return required
 
 
 def _insert_jobs(engine, rows):
@@ -523,7 +604,8 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
     provider = provider or build_provider(cfg)
     prompt, schema_version = resolve(task, cfg)
 
-    batch_size = cfg.micro_batch_size
+    provider_limit = getattr(provider, "max_batch_size", None)
+    batch_size = min(cfg.micro_batch_size, provider_limit) if provider_limit else cfg.micro_batch_size
     budget = max_items if max_items is not None else batch_size
     run_id = new_run_id()
     started = clock.now()
@@ -593,17 +675,30 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
         pool.shutdown(wait=True)
         if control is not None and control.stop_event.is_set():
             stats["aborted"] = control.reason
-        _close_run(engine, run_id, stats)
+        _close_run(
+            engine,
+            run_id,
+            stats,
+            mark_synthesis_dirty=(
+                task == "comment_product"
+                and getattr(provider, "supports_generation", True)
+            ),
+        )
 
     return stats
 
 
-def _close_run(engine, run_id, stats):
+def _close_run(engine, run_id, stats, *, mark_synthesis_dirty=True):
     from radar_db.revisions import bump_revision, mark_synthesis
     with engine.begin() as conn:
         bump_revision(conn, "annotation")
-        changed_codes = conn.execute(select(annotations.c.subject_code).where(annotations.c.run_id == run_id).distinct()).scalars()
-        mark_synthesis(conn, list(changed_codes), True)
+        if mark_synthesis_dirty:
+            changed_codes = conn.execute(
+                select(annotations.c.subject_code)
+                .where(annotations.c.run_id == run_id)
+                .distinct()
+            ).scalars()
+            mark_synthesis(conn, list(changed_codes), True)
         conn.execute(
             update(annotation_runs)
             .where(annotation_runs.c.run_id == run_id)
@@ -688,12 +783,16 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
         if stop_event is not None and stop_event.is_set():
             raise PermanentError(getattr(stop_event, "reason", "cancelled"))
         local["requests"] += 1
-        comp = provider.complete_json(
-            prompt.SYSTEM,
-            prompt.user_message(payloads),
-            schemas.batch_json_schema(task, schema_version),
-            f"{task}_batch",
-        )
+        complete_annotations = getattr(provider, "complete_annotations", None)
+        if complete_annotations is not None:
+            comp = complete_annotations(task, payloads, schema_version)
+        else:
+            comp = provider.complete_json(
+                prompt.SYSTEM,
+                prompt.user_message(payloads),
+                schemas.batch_json_schema(task, schema_version),
+                f"{task}_batch",
+            )
     except PermanentError as exc:
         if stop_event is not None:
             stop_event.reason = str(exc)
@@ -931,10 +1030,13 @@ def _kinds_for(task, item, src, schema_version):
     if task == "kol_comment_opinion":
         spans = [item.evidence] if item.evidence else []
         # `summary=null`＝「这条评论没有对该产品表达观点」，是结论，落 false 占位（同帖子 summary）。
-        return [
+        kinds = [
             ("kol_summary", item.summary if item.summary is not None else False, spans, item.summary is not None),
             ("kol_action", item.action, [], False),
         ]
+        if schema_version != "v1":
+            kinds.append(("post_type", item.post_type, [], False))
+        return kinds
 
     spans = [item.evidence] if item.evidence else []
     # 相关但没给出可定位证据 ⇒ 存疑。无关/需上下文本来就没有证据可给，不算问题。
@@ -981,6 +1083,17 @@ def _write(engine, task, job, src, item, run_id, schema_version="v1"):
         for kind, value, _spans, _expect in kinds:
             if value is None:
                 continue
+            if job.get("stage") == FILL_MISSING_STAGE:
+                already_present = conn.execute(
+                    select(annotations.c.annotation_id).where(
+                        annotations.c.target_type == job["target_type"],
+                        annotations.c.target_id == job["target_id"],
+                        annotations.c.subject_code == (job["subject_code"] or NO_SUBJECT),
+                        annotations.c.kind == kind,
+                    ).limit(1)
+                ).first()
+                if already_present is not None:
+                    continue
             prev = conn.execute(
                 select(annotations.c.annotation_id, annotations.c.review_state)
                 .where(
@@ -1182,6 +1295,10 @@ def main(argv=None):
     ap.add_argument("--max-http-requests", type=int, help="Required for --run; includes retries")
     ap.add_argument("--scope", help="只处理这个抽取范围（analysis_scopes.scope_id）")
     ap.add_argument("--priority", type=int, default=0)
+    ap.add_argument(
+        "--fill-missing", action="store_true",
+        help="只排缺失 kind，写入时也不替换任何已有标注",
+    )
     args = ap.parse_args(argv)
     if args.run and not args.dry_run and (args.max_http_requests is None or args.max_http_requests < 1):
         ap.error("--run requires --max-http-requests")
@@ -1203,16 +1320,19 @@ def main(argv=None):
         authors = [a.strip() for a in args.authors.split(",")] if args.authors else None
         if args.task == "comment_product":
             n = enqueue_comments(engine, cfg, codes=codes, limit=args.limit, since=since,
-                                 until=until, priority=args.priority, scope_id=args.scope)
+                                 until=until, priority=args.priority, scope_id=args.scope,
+                                 fill_missing=args.fill_missing or cfg.fill_missing_only)
         elif args.task == "post_annotation":
             n = enqueue_posts(engine, cfg, codes=codes, limit=args.limit, since=since,
-                              until=until, authors=authors, priority=args.priority,
-                              scope_id=args.scope)
+                               until=until, authors=authors, priority=args.priority,
+                               scope_id=args.scope,
+                               fill_missing=args.fill_missing or cfg.fill_missing_only)
         elif args.task == "kol_comment_opinion":
             from jobs.extract import master_accounts
             n = enqueue_kol_comments(engine, cfg, authors or master_accounts()[0], codes=codes,
                                      limit=args.limit, since=since, until=until,
-                                     priority=args.priority, scope_id=args.scope)
+                                     priority=args.priority, scope_id=args.scope,
+                                     fill_missing=args.fill_missing or cfg.fill_missing_only)
         else:
             ap.error(f"--task {args.task} 没有对应的排队函数")
         log.info("已排队 %d 条（%s）", n, args.task)

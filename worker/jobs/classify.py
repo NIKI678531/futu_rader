@@ -207,7 +207,7 @@ def route_all_to_llm(engine, scope_id, limit, reason):
         for i in range(0, len(ids), 500):
             conn.execute(update(annotation_jobs).where(annotation_jobs.c.job_id.in_(ids[i:i + 500])).values(
                 stage=annotate.STAGE_LLM, status="pending", lease_until=None, updated_at=now,
-                last_error=f"学生模型不可用，放行 Luna：{reason}"[:2000]))
+                last_error=f"学生模型不可用，放行主模型：{reason}"[:2000]))
     return len(ids)
 
 
@@ -312,7 +312,7 @@ def _process_batch(engine, cfg, prompt, schema_version, student, jobs, run_id, r
     codes = {j["subject_code"] for j in jobs}
     code = next(iter(codes)) if len(codes) == 1 else None
     msg = (f"{code or '多产品'} 批 {len(jobs):,} → 相关 {counts['relevant']:,} / 无关 {counts['irrelevant']:,}"
-           f" / 需上下文 {counts['needs_context']:,} → 路由 Luna {n_routed:,}")
+           f" / 需上下文 {counts['needs_context']:,} → 路由主模型 {n_routed:,}")
     if to_done_direct:
         msg += f"（近重复成员 {len(to_done_direct):,}）"
     emit(engine, "L1", msg, code=code, scope_id=scope_id, run_id=run_id,
@@ -344,9 +344,9 @@ def run(engine, cfg=None, *, scope_id=None, limit=None, batch_size=BATCH_SIZE, s
                 raise
             n = route_all_to_llm(engine, scope_id, limit, str(exc))
             stats.update(student_available=False, routed=n, input=n, reason=str(exc)[:300])
-            emit(engine, "L1", f"学生模型不可用，{n:,} 条评论任务放行 Luna：{str(exc)[:120]}",
+            emit(engine, "L1", f"学生模型不可用，{n:,} 条评论任务放行主模型：{str(exc)[:120]}",
                  level="warn", scope_id=scope_id, data={"routed": n})
-            log.warning("学生模型不可用（%s），%d 条放行 Luna", exc, n)
+            log.warning("学生模型不可用（%s），%d 条放行主模型", exc, n)
             return stats
 
     now = clock.now()
@@ -384,7 +384,7 @@ def main(argv=None):
     ap.add_argument("--batch", type=int, default=BATCH_SIZE)
     ap.add_argument("--model-dir", help="学生权重目录（默认 STUDENT_MODEL_DIR）")
     ap.add_argument("--dry-run", action="store_true", help="只数待办不推理不写")
-    ap.add_argument("--require-model", action="store_true", help="没有学生模型时报错而不是放行 Luna")
+    ap.add_argument("--require-model", action="store_true", help="没有学生模型时报错而不是放行主模型")
     args = ap.parse_args(argv)
     if not args.scope and not args.all_pending:
         ap.error("给 --scope 或 --all-pending")

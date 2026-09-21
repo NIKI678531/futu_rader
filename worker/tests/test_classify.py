@@ -160,10 +160,10 @@ def test_run_writes_student_rows_and_routes(engine, cfg):
             annotation_runs.c.run_id == comp[0]["run_id"])).scalar_one() == "rule"
     assert _rows(engine, 15, "compliance") == []
 
-    # 事件：一批一条 L1，形如「3033 批 7 → 相关 5 / 无关 1 / 需上下文 1 → 路由 Luna 4」。
+    # 事件：一批一条 L1，形如「3033 批 7 → 相关 5 / 无关 1 / 需上下文 1 → 路由主模型 4」。
     evs = [e for e in recent(engine) if e["stage"] == "L1"]
     assert len(evs) == 1
-    assert evs[0]["message"].startswith("3033 批 7 → 相关 5 / 无关 1 / 需上下文 1 → 路由 Luna 4")
+    assert evs[0]["message"].startswith("3033 批 7 → 相关 5 / 无关 1 / 需上下文 1 → 路由主模型 4")
     assert evs[0]["data"]["routed"] == 4 and evs[0]["code"] == CODE
 
     # 幂等：再跑一次没有可领的，不再写行。
@@ -229,7 +229,7 @@ def test_no_student_model_routes_everything_to_llm(engine, cfg, tmp_path):
     jobs = _jobs(engine)
     assert all((j.stage, j.status) == ("llm", "pending") for j in jobs.values())
     evs = recent(engine)
-    assert evs and evs[-1]["level"] == "warn" and "放行 Luna" in evs[-1]["message"]
+    assert evs and evs[-1]["level"] == "warn" and "放行主模型" in evs[-1]["message"]
     with pytest.raises(Exception):
         classify.run(engine, cfg, model_dir=tmp_path / "nope", require_model=True)
 

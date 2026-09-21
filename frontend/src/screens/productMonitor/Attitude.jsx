@@ -41,7 +41,7 @@ function ThemeCard({ t, accent, tint, shareLabel }) {
       </div>
       <div style={s('display:flex;align-items:center;gap:12px;font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>
         <span>{shareLabel} {t.share}</span>
-        <span>AI 置信度 {t.confidence}</span>
+        <span>{t.confidenceText}</span>
         <span style={s('margin-left:auto;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600)')}>证据 {t.evidence} 条 →</span>
       </div>
     </div>

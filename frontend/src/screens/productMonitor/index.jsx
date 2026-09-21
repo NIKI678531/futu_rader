@@ -38,7 +38,7 @@ export default class ProductMonitor extends React.Component {
   state = {
     code: '3033', rangeKey: 'd7', selOpen: false, q: '', pq: '', secF: 'all', newF: 'all',
     posMore: false, negMore: false, panel: null, post: null, hover: null, loading: false,
-    legend: { comments: 1, inter: 1, active: 1, pos: 1, neg: 1, px: 1 }, kolMore: false,
+    legend: { comments: 1, inter: 1, active: 1, pos: 1, neg: 1, px: 1 }, kolMore: false, riskMore: false,
     /* 热度变化与阶段观点：折线悬停桶 / 展开的阶段 / 悬停的阶段 */ heatHover: null, stageOpen: null, stageHover: null,
     /* 两块图表的绘图宽度：按面板实际宽度测量，随窗口变化重算，不再固定 1344 */ trendW: 1344
   };
@@ -95,7 +95,7 @@ export default class ProductMonitor extends React.Component {
   go(patch) {
     var st = this.state;
     if ((patch.code && patch.code !== st.code) || (patch.rangeKey && patch.rangeKey !== st.rangeKey)) {
-      patch = Object.assign({}, patch, { loading: true, hover: null, heatHover: null, stageOpen: null, stageHover: null });
+      patch = Object.assign({}, patch, { loading: true, hover: null, heatHover: null, stageOpen: null, stageHover: null, riskMore: false });
       clearTimeout(this._lt);
       this._lt = setTimeout(() => this.setState({ loading: false }), 520);
     }
@@ -431,7 +431,10 @@ export default class ProductMonitor extends React.Component {
       var meta = t.polarity === 'negative' ? themeMeta(t) : { hasMeta: false };
       return Object.assign(meta, themeSpan(t), {
         title: t.title, summary: t.summary, mentions: String(t.mentions),
-        share: t.share.toFixed(0) + '%', confidence: t.confidence == null ? '数据暂不可用' : t.confidence + '%',
+        share: t.share.toFixed(0) + '%',
+        confidenceText: t.confidence == null
+          ? (t.labelStatus === 'ok' ? 'AI 标签已生成' : '规则归类')
+          : 'AI 置信度 ' + t.confidence + '%',
         delta: t.delta.short, dfg: self.dfg(t.delta), evidence: String(t.evidenceCount),
         cells: themeCells(t),
         go: () => self.openPanel({
@@ -528,20 +531,24 @@ export default class ProductMonitor extends React.Component {
     };
     var kolRows = kolShow.map(function (k) {
       var st = k.dominantAttitude ? ATT_STYLE[k.dominantAttitude] : ['var(--canvas-alt)', 'var(--ink-500)'];
+      var attitudeSampleCount = (k.evidence || []).filter(function (e) { return e.attitude != null; }).length;
       return {
         name: k.kolName, type: k.kolTypeLabel, tags: String(k.kolTags || '').split(',').join(' · '),
         count: String(k.mentionCommentCount), last: k.lastMentionedAt,
-        /* 有效样本 < 3 条时后端给 null，这里是「暂不可用」——PRD §3.6 六态里的字段级
-           null 一律走这一态，设计源那句「样本不足」是六态里的另一态（低于判定阈值但
-           仍有结论）。差别不在字数上：一个是「我们不知道」，一个是「我们知道但不下
-           结论」。screen-diff 的 WHITELIST 有对应条目记录这处有意偏差。 */
-        att: k.dominantLabel == null ? '暂不可用' : k.dominantLabel, abg: st[0], afg: st[1],
+        /* 证据里可以直接数出有效态度：不足 3 条是已知的低样本，不再误报成数据缺失。 */
+        att: k.dominantLabel == null
+          ? (attitudeSampleCount < 3 ? '样本不足' : '暂不可用')
+          : k.dominantLabel,
+        abg: st[0], afg: st[1],
         excerpt: k.representativeExcerpt || '暂无相关内容', evidence: String(k.evidenceCount),
+        detailHref: 'kol-detail.dc.html?kol=' + encodeURIComponent(k.kolName) + '&range=' + encodeURIComponent(s.rangeKey),
+        stop: function (e) { e.stopPropagation(); },
         go: () => self.openPanel(self.kolPanel(k, code, s.rangeKey))
       };
     });
     var cr = naBox(R.complianceFor(code, s.rangeKey));
-    var riskRows = cr.list.map(function (r) {
+    var riskAll = cr.list, riskShow = s.riskMore ? riskAll : riskAll.slice(0, 4);
+    var riskRows = riskShow.map(function (r) {
       return {
         id: r.id,
         tags: r.riskLabels.map(function (l) { return { label: l }; }),
@@ -763,10 +770,14 @@ export default class ProductMonitor extends React.Component {
       pxNote: px.status === 'ok' ? ('行情粒度为' + px.granLabel + '、价格单位 ' + px.currency + '，非交易时段与休市日不补造 K 线') : '当前产品价格数据暂不可用，不以指数或其他产品价格替代',
       kolScope: kolRes.scope, kolHas: kolRes.status === 'ok', kolEmpty: kolRes.status === 'empty', kolUnavailable: kolRes.status === 'unavailable',
       kolRows: kolRows, kolMoreVisible: kolAll.length > 5,
+      kolActivityHref: 'kol-activity.dc.html?etf=' + encodeURIComponent(code) + '&range=' + encodeURIComponent(s.rangeKey),
       kolMoreLabel: s.kolMore ? '收起，只看前 5 位' : '展开全部 ' + kolAll.length + ' 位',
       kolToggle: () => this.setState({ kolMore: !s.kolMore }),
       riskHas: cr.status === 'ok', riskEmpty: cr.status === 'empty', riskUnavailable: cr.status === 'unavailable', riskNa: cr.status === 'na',
       riskN: String(cr.list.length), riskRows: riskRows,
+      riskMoreVisible: riskAll.length > 4, riskExpanded: s.riskMore,
+      riskMoreLabel: s.riskMore ? '收起，只看前 4 条' : '展开全部 ' + riskAll.length + ' 条',
+      riskToggle: () => this.setState({ riskMore: !s.riskMore }),
 
       axisCells: axisCells, dayBands: dayBands, hasDayBands: dayBands.length > 1,
       hasTopics: topics.length > 0, noTopics: !topicsNa && topics.length === 0, topicsUnavailable: topicsNa, topics: topics,

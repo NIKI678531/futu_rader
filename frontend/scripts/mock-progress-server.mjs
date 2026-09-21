@@ -50,7 +50,7 @@ const SCRIPT = [
   ['orchestrator', 'info', null, '开始一轮：scope=%s，anchor=2026-08-25'],
   ['L0', 'info', '%c', '规则预过滤：候选 128 条，近重复合并 9 条'],
   ['L1', 'info', '%c', '学生模型标注 119 条，needs_review 4 条'],
-  ['L2', 'info', '%c', 'Luna 复核 4 条，改判 1 条'],
+  ['L2', 'info', '%c', '主模型复核 4 条，改判 1 条'],
   ['L2', 'warn', '%c', '一次调用超时（12.4s），已重试'],
   ['L3', 'info', '%c', '汇总重新生成：hot_summary／summary／themes'],
   ['orchestrator', 'info', null, '产品 %c 完成，进入下一只'],

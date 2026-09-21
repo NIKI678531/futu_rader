@@ -1,0 +1,17 @@
+# Never bake local credentials or developer databases into backend/worker images.
+.env
+**/.env*
+**/*.env
+!**/.env.example
+.git
+*.db
+*.db-wal
+*.db-shm
+
+# Local build/test artifacts are not image inputs.
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/node_modules
+output
+.playwright-cli

@@ -80,6 +80,8 @@ class AiConfig:
     grouped_batches: bool = False
     max_payload_bytes: int = 12288
     max_output_tokens: int = 8192
+    # 新 provider 上线时默认只补缺失 kind，不替换页面已经在用的历史结论。
+    fill_missing_only: bool = False
 
     def redacted(self):
         """可以安全写进日志与 run 记录的形态。Key 只留尾四位，用于分辨「换过 Key 没有」。"""
@@ -144,4 +146,5 @@ def load(_allow_missing_key=False, **overrides):
         reasoning_effort=os.getenv("AI_REASONING_EFFORT", "low").strip(),
         store=_bool("AI_STORE", False),
         service_tier=os.getenv("AI_SERVICE_TIER", "").strip(),
+        fill_missing_only=_bool("AI_FILL_MISSING_ONLY", False),
     )

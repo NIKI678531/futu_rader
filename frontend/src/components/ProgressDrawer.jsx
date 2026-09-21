@@ -51,7 +51,7 @@ function useStore() {
   return store
 }
 
-const STAGE_NAME = { L0: '规则与近重复', L1: '学生模型', L2: 'Luna', L3: '汇总', orchestrator: '编排' }
+const STAGE_NAME = { L0: '规则与近重复', L1: '学生模型', L2: '主模型', L3: '汇总', orchestrator: '编排' }
 const STAGES = ['L0', 'L1', 'L2', 'L3', 'orchestrator']
 const STATUS_NAME = {
   running: '运行中', complete: '已完成',
@@ -328,7 +328,7 @@ function DrawerBody() {
             row(summary && summary.scope === 'all' ? '全池分析完成' : '自家分析完成', summary ? na(summary.completed) + ' / ' + na(summary.total) + (summary.anchor ? '　锚点 ' + summary.anchor : '') : '暂不可用'),
             summary && summary.text ? row('说明', summary.text) : null,
             row('L1 学生队列', queueText(snapshot.queue ? snapshot.queue.student : null)),
-            row('L2 Luna 队列', queueText(snapshot.queue ? snapshot.queue.llm : null)),
+            row('L2 主模型队列', queueText(snapshot.queue ? snapshot.queue.llm : null)),
             row('帖子标注任务', countsText(snapshot.tasks ? snapshot.tasks.post_annotation : null)),
             row('KOL 评论观点任务', countsText(snapshot.tasks ? snapshot.tasks.kol_comment_opinion : null)),
             row('待更新汇总产品', snapshot.synthesis ? na(snapshot.synthesis.dirtyProducts) + ' 只（已有产出 ' + na(snapshot.synthesis.productsWithOutputs) + ' 只）' : '暂不可用'),
