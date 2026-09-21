@@ -243,6 +243,7 @@ class TestBenchmark:
         assert provider.daily_for("0700") is MISSING
         # 要 AI 的字段同样先验代码：产品在池里才轮到「这个字段暂不可用」。
         assert provider.topics_for("0700", "d1") is MISSING
+        assert provider.kol_mentions_for("0700", "d1") is MISSING
         assert provider.topics_for(OWN_CODE, "d1") is None
 
 
@@ -382,9 +383,9 @@ class TestKolImpact:
         assert leader["typeCounts"] is None and leader["topType"] is None
         assert leader["styleTag"] is None
 
-    def test_opinions_need_annotations(self, provider):
-        """空列表会被读成「这位 KOL 对别的产品没有观点」。"""
-        assert provider.kol_opinions(KOL_NAME, "d1") is None
+    def test_opinions_are_empty_when_the_kol_has_no_candidate_comments(self, provider):
+        """窗口内没有候选评论时无需等待模型，结果就是已知的空列表。"""
+        assert provider.kol_opinions(KOL_NAME, "d1") == []
 
 
 # ── 现行结论：哪一行标注算数（ADR-0019 §1） ────────────────────────────
@@ -393,8 +394,8 @@ class TestKolImpact:
 class TestCurrentAnnotations:
     """`_current_annotations()` —— 发布规则的唯一实现处。
 
-    四条断言逐条对着 ADR-0019 实施清单第 1 项的验收栏：pending 可读；rejected 不可读；
-    链末双行取最新；rejected 链末 ⇒ 无结论。
+    五条断言逐条对着 ADR-0019 实施清单第 1 项的验收栏：pending 可读；rejected 不可读；
+    链末双行优先人工结论、否则取最新；rejected 链末 ⇒ 无结论。
 
     测的是**内部**方法而不是某个契约函数：这条规则被态度、帖子三件套、证据、合规四处
     读取共用，挂在其中任何一个下面，另外三处的回归就没人认领了。契约函数那一层另有
@@ -475,6 +476,21 @@ class TestCurrentAnnotations:
         assert cur[(11, OWN_CODE)]["value"] == "negative"
         assert cur[(11, OWN_CODE)]["annotation_id"] == 1
 
+    def test_human_settled_leaf_wins_over_a_newer_model_leaf(self, provider):
+        p = add_annotations(
+            provider,
+            [
+                {"annotation_id": 1, "target_id": 11, "value": "negative",
+                 "review_state": "approved", "created_at": datetime(2026, 8, 25, 12, 0)},
+                {"annotation_id": 2, "target_id": 11, "value": "positive",
+                 "review_state": "pending", "created_at": datetime(2026, 8, 25, 18, 0)},
+            ],
+        )
+
+        cur = p._current_annotations("attitude", "comment")
+        assert cur[(11, OWN_CODE)]["annotation_id"] == 1
+        assert cur[(11, OWN_CODE)]["value"] == "negative"
+
     def test_a_rejected_chain_end_leaves_the_unit_with_no_verdict(self, provider):
         """④ 链末被否决 ⇒ 这个单元当前没有结论，**不回退**到被它取代的那一行。
 
@@ -551,7 +567,6 @@ class TestAiAndPriceSurfacesAreNone:
             ("neg_cats_for", (OWN_CODE, "d1")),
             ("competitors_for", (OWN_CODE, "d1")),
             ("topics_for", (OWN_CODE, "d1")),
-            ("kol_mentions_for", (OWN_CODE, "d1")),
         ],
     )
     def test_the_panels_are_none_before_any_attitude_annotation(self, provider, fn, args):
@@ -559,6 +574,34 @@ class TestAiAndPriceSurfacesAreNone:
         仍然是整块 None（暂不可用）——不是空列表，空列表是在说「标过了，什么都没有」。
         有标注时的真值断言在 `TestLayerBReadPath`。"""
         assert getattr(provider, fn)(*args) is None
+
+    def test_kol_mentions_uses_the_same_related_post_as_kol_impact(self, provider):
+        """没有 KOL 评论也不能报空：/kol 已展示的相关原帖就是产品页的主证据。"""
+        impact_post = provider.kol_impact("d1")["posts"][0]
+
+        result = provider.kol_mentions_for(OWN_CODE, "d1")
+
+        assert result["status"] == "ok" and result["scope"] == "合作 KOL 名单"
+        assert len(result["list"]) == 1
+        row = result["list"][0]
+        assert row["kolName"] == impact_post["kol"] == KOL_NAME
+        assert row["mentionCommentCount"] == row["evidenceCount"] == 1
+        assert row["evidence"] == [{
+            "id": f"{OWN_CODE}-kp-{KOL_NAME}-2",
+            "productCodes": [OWN_CODE],
+            "publishedAt": "2026-08-25 09:00",
+            "authorName": KOL_NAME,
+            "authorType": "合作 KOL",
+            "isKnownKol": True,
+            "kolType": "partner",
+            "excerpt": FEED_TEXT,
+            "attitude": None,
+            "attitudeLabel": None,
+            "comments": 1,
+            "interactions": None,
+            "sourceKind": "帖子",
+            "sourceUrl": impact_post["url"],
+        }]
 
     def test_hot_summaries_is_per_code_unavailable_before_annotation(self, provider):
         """热议总结整池一份：没标注的产品逐只给 `unavailable`，不是整块 None ——

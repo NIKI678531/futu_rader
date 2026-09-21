@@ -5,7 +5,8 @@ ADR-0019 逐条：
 
 ① **链末** —— 没有任何一行 supersede 它；
 ② `review_state != 'rejected'`；
-③ 链末有多条（ADR-0017 遗留的双现行情况）时取 `created_at` 最新的一条；
+③ 链末有多条（ADR-0017 遗留的双现行情况）时，人工 `approved` / `corrected`
+   优先于模型待审行；同一优先级再取 `created_at` 最新的一条；
 ④ 链末是 rejected ⇒ 该单元**当前没有结论**，不回退到旧行。
 
 ④ 是 ① 与 ② 的乘积，不用另写分支：rejected 的那一行被 ② 滤掉，而被它 supersede 的旧行
@@ -26,6 +27,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from .schema import annotations, comments, feeds
+
+
+_HUMAN_SETTLED = frozenset(("approved", "corrected"))
 
 
 def _chunked(items, n):
@@ -97,9 +101,17 @@ def current_annotations(engine, kind, target_type, ids=None, window=None, subjec
                     prev = out.get(unit)
                     # ③ 同一链末多行取最新。`created_at` 同秒时按 annotation_id 兜底，
                     # 不然「最新」会随库的返回顺序变，两次请求两个答案。
-                    if prev is not None and (prev["created_at"], prev["annotation_id"]) >= (
-                        r.created_at, r.annotation_id,
-                    ):
+                    rank = (
+                        r.review_state in _HUMAN_SETTLED,
+                        r.created_at,
+                        r.annotation_id,
+                    )
+                    prev_rank = None if prev is None else (
+                        prev["review_state"] in _HUMAN_SETTLED,
+                        prev["created_at"],
+                        prev["annotation_id"],
+                    )
+                    if prev_rank is not None and prev_rank >= rank:
                         continue
                     out[unit] = {
                         "annotation_id": r.annotation_id,

@@ -31,6 +31,7 @@ from ai import config  # noqa: E402
 from ai.providers.base import Completion, PermanentError, TransientError, Usage  # noqa: E402
 from jobs import annotate  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
+from radar_db.annotations_read import current_annotations  # noqa: E402
 from radar_db.schema import (  # noqa: E402
     annotation_evidence,
     annotation_jobs,
@@ -41,6 +42,7 @@ from radar_db.schema import (  # noqa: E402
 )
 
 CODE = "3033"
+BUMPED_V1_PROMPT = "comment-product-v1-revised"
 # 真实形状的评论：有产品态度、有可引用的连续片段。
 TEXT_A = "这只ETF点差太大，来回一趟就蚀掉不少，不太适合短线"
 TEXT_B = "费率是同类里最低的，长期拿着很省心"
@@ -205,7 +207,8 @@ def test_changing_prompt_version_makes_a_new_job(engine, cfg, monkeypatch):
     # 换 Prompt 版本 ⇒ input_hash 变 ⇒ 是一件新的待办，不是重复。
     # 反过来（被判成重复而跳过）正是「改了 Prompt 但结果没变」那类查不出原因的 bug。
     prompt = annotate.get_prompt("comment_product", cfg.prompt_version)
-    monkeypatch.setattr(prompt, "VERSION", "comment-product-v2")
+    monkeypatch.setattr(prompt, "VERSION", BUMPED_V1_PROMPT)
+    monkeypatch.setitem(annotate.SCHEMA_OF, BUMPED_V1_PROMPT, "v1")
     assert annotate.enqueue_comments(engine, cfg) == 2
     assert len(rows(engine, annotation_jobs)) == 4
 
@@ -494,7 +497,7 @@ def test_empty_source_text_is_dead_not_retried(engine, cfg):
 # ── 不覆盖人工结论（runbook §11.3 末条） ───────────────────────────────
 
 
-def test_human_approved_annotation_is_not_superseded(engine, cfg):
+def test_human_approved_annotation_is_not_superseded(engine, cfg, monkeypatch):
     annotate.enqueue_comments(engine, cfg)
     annotate.run(engine, cfg, max_items=10,
                  provider=FakeProvider([all_ok(lambda _: "点差太大")]))
@@ -512,15 +515,12 @@ def test_human_approved_annotation_is_not_superseded(engine, cfg):
 
     # 换 Prompt 版本重跑（否则会被幂等挡掉），这次模型给出相反的态度。
     prompt = annotate.get_prompt("comment_product", cfg.prompt_version)
-    old = prompt.VERSION
-    try:
-        prompt.VERSION = "comment-product-v2"
-        annotate.enqueue_comments(engine, cfg)
-        annotate.run(engine, cfg, max_items=10, provider=FakeProvider(
-            [lambda ids: {"results": [ok_item(i, "点差太大", attitude="positive")
-                                      for i in ids]}]))
-    finally:
-        prompt.VERSION = old
+    monkeypatch.setattr(prompt, "VERSION", BUMPED_V1_PROMPT)
+    monkeypatch.setitem(annotate.SCHEMA_OF, BUMPED_V1_PROMPT, "v1")
+    annotate.enqueue_comments(engine, cfg)
+    annotate.run(engine, cfg, max_items=10, provider=FakeProvider(
+        [lambda ids: {"results": [ok_item(i, "点差太大", attitude="positive")
+                                  for i in ids]}]))
 
     after = rows(engine, annotations, annotations.c.kind == "attitude",
                  annotations.c.target_id == 11)
@@ -534,9 +534,12 @@ def test_human_approved_annotation_is_not_superseded(engine, cfg):
     # 新结论照写，但保持待复核 —— 由人再看一次，而不是自动生效或自动丢弃。
     assert new_row["review_state"] == "pending"
     assert json.loads(new_row["value_json"]) == "positive"
+    current = current_annotations(engine, "attitude", "comment", subject_code=CODE)
+    assert current[(11, CODE)]["value"] == "negative"
+    assert current[(11, CODE)]["review_state"] == "approved"
 
 
-def test_unreviewed_annotation_is_superseded_on_rerun(engine, cfg):
+def test_unreviewed_annotation_is_superseded_on_rerun(engine, cfg, monkeypatch):
     annotate.enqueue_comments(engine, cfg)
     annotate.run(engine, cfg, max_items=10,
                  provider=FakeProvider([all_ok(lambda _: "点差太大")]))
@@ -544,19 +547,54 @@ def test_unreviewed_annotation_is_superseded_on_rerun(engine, cfg):
                                               annotations.c.kind == "attitude")}
 
     prompt = annotate.get_prompt("comment_product", cfg.prompt_version)
-    old = prompt.VERSION
-    try:
-        prompt.VERSION = "comment-product-v2"
-        annotate.enqueue_comments(engine, cfg)
-        annotate.run(engine, cfg, max_items=10,
-                     provider=FakeProvider([all_ok(lambda _: "点差太大")]))
-    finally:
-        prompt.VERSION = old
+    monkeypatch.setattr(prompt, "VERSION", BUMPED_V1_PROMPT)
+    monkeypatch.setitem(annotate.SCHEMA_OF, BUMPED_V1_PROMPT, "v1")
+    annotate.enqueue_comments(engine, cfg)
+    annotate.run(engine, cfg, max_items=10,
+                 provider=FakeProvider([all_ok(lambda _: "点差太大")]))
 
     after = rows(engine, annotations, annotations.c.kind == "attitude")
     # 旧行**不删** —— 回滚时要能回到上一版。新行指回它。
     assert {a["annotation_id"] for a in after} > first
     assert {a["supersedes_id"] for a in after if a["supersedes_id"]} == first
+
+
+def test_fill_missing_enqueue_does_not_queue_complete_units(engine, cfg):
+    """换 provider 后的补洞模式不能把已存在的页面结论重新排队。"""
+    annotate.enqueue_comments(engine, cfg)
+    annotate.run(engine, cfg, max_items=10,
+                 provider=FakeProvider([all_ok(lambda _: "点差太大")]))
+
+    replacement = config.load(model="jev-latest", fill_missing_only=True)
+    assert annotate.enqueue_comments(engine, replacement) == 0
+    assert len(rows(engine, annotation_jobs)) == 2
+
+
+def test_fill_missing_write_guard_never_supersedes_existing_rows(engine, cfg):
+    """即使缺口在请求期间被另一线程补上，事务内闸门也不覆盖它。"""
+    annotate.enqueue_comments(engine, cfg)
+    annotate.run(engine, cfg, max_items=10,
+                 provider=FakeProvider([all_ok(lambda _: "点差太大")]))
+    before = rows(engine, annotations)
+
+    replacement = config.load(model="jev-latest", fill_missing_only=True)
+    prompt, schema_version = annotate.resolve("comment_product", replacement)
+    candidate = next(annotate._comment_candidates(engine, codes=[CODE], limit=1))
+    job = annotate.job_row_for_comment(
+        replacement, prompt, schema_version, candidate,
+        task="comment_product",
+    )
+    job["stage"] = annotate.FILL_MISSING_STAGE
+    with engine.begin() as conn:
+        conn.execute(insert(annotation_jobs).values(**job))
+
+    annotate.run(engine, replacement, max_items=1, provider=FakeProvider([
+        lambda ids: {"results": [ok_item(ids[0], "点差太大", attitude="positive")]}
+    ]))
+    after = rows(engine, annotations)
+    assert [(row["annotation_id"], row["value_json"], row["supersedes_id"]) for row in after] == [
+        (row["annotation_id"], row["value_json"], row["supersedes_id"]) for row in before
+    ]
 
 
 # ── 队列计数 ───────────────────────────────────────────────────────────

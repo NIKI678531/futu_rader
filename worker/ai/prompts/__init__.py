@@ -14,6 +14,7 @@ from . import (
     comment_product_v1,
     comment_product_v2,
     kol_opinion_v1,
+    kol_opinion_v2,
     post_annotation_v1,
     post_annotation_v2,
 )
@@ -29,17 +30,20 @@ _REGISTRY = {
         post_annotation_v1.VERSION: post_annotation_v1,
     },
     "kol_comment_opinion": {
+        kol_opinion_v2.VERSION: kol_opinion_v2,
         kol_opinion_v1.VERSION: kol_opinion_v1,
     },
 }
 
-# Prompt 版本 → 它输出的 schema 版本。Prompt 与 schema 是一对：v2 Prompt 要求七个字段，
-# 拿 v1 schema 校验会整批失败。kol_opinion 两版 schema 同形，配哪个都行。
+# Prompt 版本 → 它输出的 schema 版本。Prompt 与 schema 是一对：v2 Prompt 要求新增字段，
+# 拿 v1 schema 校验要么整批失败，要么被供应商的 strict schema 截掉新字段。
 SCHEMA_OF = {
     comment_product_v1.VERSION: "v1",
     comment_product_v2.VERSION: "v2",
     post_annotation_v1.VERSION: "v1",
     post_annotation_v2.VERSION: "v2",
+    kol_opinion_v1.VERSION: "v1",
+    kol_opinion_v2.VERSION: "v2",
 }
 
 
@@ -47,12 +51,12 @@ class UnknownTask(KeyError):
     pass
 
 
-def get(task, version=None):
+def get(task, version=None, schema_version=None):
     """取该任务的 Prompt 模块（有 `VERSION` / `SYSTEM` / `user_message`）。
 
     `version` 给了且属于这个任务 ⇒ 用它；给了但属于**别的**任务（`AI_PROMPT_VERSION` 一个
-    变量盖两个任务时常见）或没给 ⇒ 用该任务的默认版本。给了一个谁都不认识的版本 ⇒ 报错，
-    而不是静默退回默认 —— 那多半是 .env 打错了字。
+    变量盖多个任务时常见）⇒ 优先取该任务与 `schema_version` 配对的版本，没传 schema 时
+    才取默认。给了一个谁都不认识的版本 ⇒ 报错，而不是静默退回默认。
     """
     try:
         versions = _REGISTRY[task]
@@ -63,6 +67,13 @@ def get(task, version=None):
     if version in versions:
         return versions[version]
     if any(version in v for v in _REGISTRY.values()):
+        if schema_version is not None:
+            for module in versions.values():
+                if SCHEMA_OF.get(module.VERSION) == schema_version:
+                    return module
+            raise UnknownTask(
+                f"任务 {task!r} 没有配对 schema {schema_version!r} 的 Prompt"
+            )
         return next(iter(versions.values()))
     raise UnknownTask(
         f"任务 {task!r} 没有 Prompt 版本 {version!r}，可选：{', '.join(versions)}"

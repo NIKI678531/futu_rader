@@ -25,3 +25,16 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
+.playwright-cli/page-2026-09-17T14-38-27-275Z.png
+.gitignore
+.playwright-cli/page-2026-09-17T14-38-48-106Z.png
+.playwright-cli/page-2026-09-17T14-39-52-342Z.png
+.playwright-cli/page-2026-09-17T14-40-22-179Z.png
+.playwright-cli/page-2026-09-17T14-38-51-837Z.png
+.playwright-cli/page-2026-09-17T14-38-44-125Z.png
+.playwright-cli/page-2026-09-17T14-34-58-687Z.yml
+.playwright-cli/page-2026-09-17T14-37-59-482Z.yml
+.playwright-cli/page-2026-09-17T14-39-48-072Z.yml
+.scratch/build_biweekly_update_deck.py
+.playwright-cli/
+output/

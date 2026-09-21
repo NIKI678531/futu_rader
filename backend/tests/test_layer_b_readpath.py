@@ -13,9 +13,10 @@ from datetime import datetime
 import pytest
 from sqlalchemy import insert, update
 
-from radar_db.schema import meta_kv, synthesis_outputs
+from radar_db.schema import feeds, meta_kv, synthesis_outputs
 from sql_fixture import (
-    KOL_NAME, OWN_CODE, PEER_CODE, add_annotations, add_comments, add_evidence, make_sql_provider,
+    FEED_TEXT, KOL_NAME, OWN_CODE, PEER_CODE, add_annotations, add_comments, add_evidence,
+    make_sql_provider,
 )
 
 
@@ -287,32 +288,149 @@ class TestCompetitorsAndKol:
         assert auto["relation"] == "auto_candidate" and auto["positiveThemes"][0]["title"] == "费率更低"
         assert auto["evidencePos"] == 2 and auto["evidenceNeg"] == 0
 
-    def test_kol_mentions_derive_from_attitude_annotations(self, provider):
+    def test_kol_mentions_merge_same_source_posts_with_confirmed_comment_opinions(self, provider):
+        """产品页以 /kol 原帖为主，同时保留已确认的评论观点作补充证据。"""
+        p = annotated(provider, n_pos=2, n_neg=0, kol_n=2)
+        add_comments(p, [{"comment_id": 102, "feed_id": 3, "content": "第三条真实 KOL 观点",
+                          "author_name": KOL_NAME}])
+        add_annotations(p, [
+            {"annotation_id": 950, "target_id": 100, "kind": "kol_summary", "value": "费率较低，适合持有"},
+            {"annotation_id": 951, "target_id": 100, "kind": "kol_action", "value": "持有不动"},
+            {"annotation_id": 952, "target_id": 101, "kind": "kol_summary", "value": "流动性尚可"},
+            {"annotation_id": 953, "target_id": 101, "kind": "kol_action", "value": "观望"},
+            {"annotation_id": 954, "target_id": 102, "kind": "kol_summary", "value": "第三条真实观点"},
+            {"annotation_id": 955, "target_id": 102, "kind": "kol_action", "value": "未提及操作"},
+        ])
+        add_evidence(p, [{"evidence_id": 1, "annotation_id": 954, "source_target_id": 102,
+                          "start_offset": 0, "end_offset": 5, "quote_text": "第三条真实"}])
+
+        km = p.kol_mentions_for(OWN_CODE, "d1")
+
+        assert km["status"] == "ok" and len(km["list"]) == 1
+        k = km["list"][0]
+        assert k["kolName"] == KOL_NAME and k["mentionCommentCount"] == 4
+        assert k["dominantAttitude"] is None, "只有 2 条有效态度，不能用 3 条观点越过态度阈值"
+        assert k["representativeExcerpt"] == FEED_TEXT
+        assert [e["sourceKind"] for e in k["evidence"]].count("帖子") == 1
+        comments = {e["id"].rsplit("-", 1)[-1]: (e["attitude"], e["attitudeLabel"])
+                    for e in k["evidence"] if e["sourceKind"] == "评论"}
+        assert comments == {"100": ("positive", "积极"), "101": ("positive", "积极"),
+                            "102": (None, None)}
+        assert p.kol_mentions_for(PEER_CODE, "d1") == {
+            "status": "empty", "scope": "合作 KOL 名单", "list": [],
+        }
+
+    def test_kol_mentions_use_attitude_only_for_the_dominant_label(self, provider):
         p = annotated(provider)
+        add_annotations(p, [
+            {"annotation_id": 950 + i * 2, "target_id": 100 + i, "kind": "kol_summary",
+             "value": f"第 {i + 1} 条真实观点"}
+            for i in range(3)
+        ] + [
+            {"annotation_id": 951 + i * 2, "target_id": 100 + i, "kind": "kol_action",
+             "value": "未提及操作"}
+            for i in range(3)
+        ])
         km = p.kol_mentions_for(OWN_CODE, "d1")
         assert km["status"] == "ok" and len(km["list"]) == 1
         k = km["list"][0]
-        assert k["kolName"] == KOL_NAME and k["mentionCommentCount"] == 3
+        assert k["kolName"] == KOL_NAME and k["mentionCommentCount"] == 4
         assert k["dominantAttitude"] == "positive"          # 3 条 ⇒ 达到阈值
         assert k["evidence"][0]["authorType"] == "合作 KOL"
 
     def test_kol_mentions_below_three_have_no_dominant(self, provider):
         p = annotated(provider, n_pos=2, n_neg=8, kol_n=2)   # KOL 只写了前 2 条
+        add_annotations(p, [
+            {"annotation_id": 950, "target_id": 100, "kind": "kol_summary", "value": "第一条真实观点"},
+            {"annotation_id": 951, "target_id": 100, "kind": "kol_action", "value": "观望"},
+            {"annotation_id": 952, "target_id": 101, "kind": "kol_summary", "value": "第二条真实观点"},
+            {"annotation_id": 953, "target_id": 101, "kind": "kol_action", "value": "观望"},
+        ])
         k = p.kol_mentions_for(OWN_CODE, "d1")["list"][0]
-        assert k["mentionCommentCount"] == 2 and k["dominantAttitude"] is None
+        assert k["mentionCommentCount"] == 3 and k["dominantAttitude"] is None
+
+    def test_kol_mentions_comment_coverage_never_hides_same_source_posts(self, provider):
+        add_comments(provider, [
+            {"comment_id": 100, "content": "只是路过，没有产品观点", "author_name": KOL_NAME},
+            {"comment_id": 101, "content": "另一条没有观点", "author_name": KOL_NAME},
+        ])
+        add_annotations(provider, [
+            {"annotation_id": 950, "target_id": 100, "kind": "kol_summary", "value": False},
+            {"annotation_id": 951, "target_id": 100, "kind": "kol_action", "value": "未提及操作"},
+        ])
+        before = provider.kol_mentions_for(OWN_CODE, "d1")
+        assert before["status"] == "ok" and before["list"][0]["evidenceCount"] == 1
+        assert before["list"][0]["evidence"][0]["sourceKind"] == "帖子"
+
+        add_annotations(provider, [
+            {"annotation_id": 952, "target_id": 101, "kind": "kol_summary", "value": "   "},
+            {"annotation_id": 953, "target_id": 101, "kind": "kol_action", "value": "未提及操作"},
+        ])
+        after = provider.kol_mentions_for(OWN_CODE, "d1")
+        assert after["status"] == "ok" and after["list"][0]["evidenceCount"] == 1
+
+    def test_kol_mentions_fall_back_to_confirmed_comments_without_a_related_kol_post(self, provider):
+        with provider._engine.begin() as conn:
+            conn.execute(update(feeds).where(feeds.c.feed_id == 3).values(code=PEER_CODE))
+        add_comments(provider, [{"comment_id": 100, "feed_id": 3, "content": "竞品流动性不错",
+                                 "author_name": KOL_NAME}])
+        add_annotations(provider, [
+            {"annotation_id": 950, "target_id": 100, "subject_code": PEER_CODE,
+             "kind": "kol_summary", "value": "竞品流动性不错"},
+        ])
+
+        km = provider.kol_mentions_for(PEER_CODE, "d1")
+
+        assert km["status"] == "ok" and len(km["list"]) == 1
+        row = km["list"][0]
+        assert row["kolName"] == KOL_NAME and row["mentionCommentCount"] == 1
+        assert row["representativeExcerpt"] == "竞品流动性不错"
+        assert row["evidence"][0]["sourceKind"] == "评论"
 
     def test_kol_opinions_need_the_kol_task(self, provider):
-        p = annotated(provider)
+        p = annotated(provider, kol_n=2)
         assert p.kol_opinions(KOL_NAME, "d1") is None
         add_annotations(p, [
             {"annotation_id": 950, "target_id": 100, "kind": "kol_summary", "value": "费率低，准备长期定投"},
             {"annotation_id": 951, "target_id": 100, "kind": "kol_action", "value": "加仓"},
+            {"annotation_id": 952, "target_id": 100, "kind": "post_type", "value": "action",
+             "confidence": 0.88},
+            {"annotation_id": 953, "target_id": 101, "kind": "kol_summary", "value": False},
+            {"annotation_id": 954, "target_id": 101, "kind": "kol_action", "value": "未提及操作"},
+            {"annotation_id": 955, "target_id": 101, "kind": "post_type", "value": "other"},
         ])
         add_evidence(p, [{"evidence_id": 1, "annotation_id": 950, "source_target_id": 100,
                           "start_offset": 0, "end_offset": 5, "quote_text": "补一条评论"}])
         ops = p.kol_opinions(KOL_NAME, "d1")
         assert len(ops) == 1
         o = ops[0]
+        assert o["id"] == f"kol-op-100-{OWN_CODE}"
         assert o["code"] == OWN_CODE and o["action"] == "加仓" and o["actionTone"] == "pos"
         assert o["summary"] == "费率低，准备长期定投" and o["excerpt"] == "补一条评论"
-        assert o["postType"] is None and o["confidence"] is None
+        assert o["postType"] == "action" and o["typeLabel"] == "操作宣言"
+        assert o["confidence"] == 0.88
+
+    def test_kol_opinions_with_only_explicit_no_opinion_results_are_empty(self, provider):
+        add_comments(provider, [{"comment_id": 100, "content": "只聊大盘", "author_name": KOL_NAME}])
+        add_annotations(provider, [
+            {"annotation_id": 950, "target_id": 100, "kind": "kol_summary", "value": False},
+            {"annotation_id": 951, "target_id": 100, "kind": "kol_action", "value": "未提及操作"},
+            {"annotation_id": 952, "target_id": 100, "kind": "post_type", "value": "market"},
+        ])
+
+        assert provider.kol_opinions(KOL_NAME, "d1") == []
+
+    def test_kol_opinions_are_unavailable_until_every_candidate_has_all_v2_fields(self, provider):
+        add_comments(provider, [
+            {"comment_id": 100, "content": "第一条", "author_name": KOL_NAME},
+            {"comment_id": 101, "content": "第二条", "author_name": KOL_NAME},
+        ])
+        add_annotations(provider, [
+            {"annotation_id": 950, "target_id": 100, "kind": "kol_summary", "value": "第一条观点"},
+            {"annotation_id": 951, "target_id": 100, "kind": "kol_action", "value": "观望"},
+            {"annotation_id": 952, "target_id": 100, "kind": "post_type", "value": "qa"},
+            {"annotation_id": 953, "target_id": 101, "kind": "kol_summary", "value": False},
+            {"annotation_id": 954, "target_id": 101, "kind": "kol_action", "value": "未提及操作"},
+        ])
+
+        assert provider.kol_opinions(KOL_NAME, "d1") is None

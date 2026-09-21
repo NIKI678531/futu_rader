@@ -80,7 +80,8 @@ class UniversalFake:
         else:
             ids = [line.split('"')[3] for line in user.splitlines() if '"item_id"' in line]
             if schema_name == "kol_comment_opinion_batch":
-                data = {"results": [{"item_id": i, "summary": "費率低長期持有", "action": "加仓", "evidence": "費率係同類最低",
+                data = {"results": [{"item_id": i, "summary": "費率低長期持有", "post_type": "market",
+                                     "action": "加仓", "evidence": "費率係同類最低",
                                      "needs_review": False} for i in ids]}
             elif schema_name == "post_annotation_batch":
                 data = {"results": [{"item_id": i, "post_type": "market", "direction": None, "direction_pending": False,

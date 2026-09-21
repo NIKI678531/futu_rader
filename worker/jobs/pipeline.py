@@ -120,7 +120,13 @@ def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=
                 ).limit(1)
             ).first()
         summary["complete"] = unfinished is None
-    if not skip_synth:
+    supports_generation = provider is None or getattr(provider, "supports_generation", True)
+    if not skip_synth and not supports_generation:
+        summary["steps"].append({
+            "task": "synthesize",
+            "skipped": "当前 provider 只支持分类；保留已有 Layer-B 生成结果",
+        })
+    elif not skip_synth:
         ranges = list(ranges or synthesize.DEFAULT_RANGES)
         anchor = anchor_override or synthesize.read_anchor(engine)
         pairs = ready_pairs(engine, scope_id, codes, ranges, anchor) if anchor else []

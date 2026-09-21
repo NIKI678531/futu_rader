@@ -34,6 +34,17 @@ class KolActivity extends React.Component {
     /* 首次 render 之前把本屏端点并行发出去（radar.js `urlsFor`），首绘不再是串行往返。 */
     prefetchScreen('kol', { rangeKey: this.state.rangeKey });
   }
+  componentDidMount() {
+    var p = {};
+    try {
+      var u = new URLSearchParams(window.location.search);
+      var etf = u.get('etf'), kol = u.get('kol'), rg = u.get('range');
+      if (etf && R.MASTER[etf]) p.etf = etf;
+      if (kol && R.KOLS.some(function (x) { return x.name === kol && x.active; })) p.kol = kol;
+      if (rg && R.PRESETS.some(function (x) { return x.k === rg; })) p.rangeKey = rg;
+    } catch (e) { /* 深链参数不可用时保留默认筛选 */ }
+    if (Object.keys(p).length) this.setState(p);
+  }
   data() { return R.kolImpact(this.state.rangeKey); }
   primaryOnly() { return this.props.campRule === '仅挂载标的'; }
   camp(p) { return this.primaryOnly() ? p.campPrimary : p.camp; }
