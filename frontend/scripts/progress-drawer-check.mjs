@@ -125,6 +125,18 @@ async function checkDrawer(browser) {
     ok(!/自家分析 \d+\/61/.test(body0), '③ 旧的常显进度横幅已去掉', '页面正文里仍有「自家分析 x/61」')
     const dot = await page.locator('[data-progress-dot]').getAttribute('data-progress-dot')
     ok(dot === 'running', '③ 状态点按 /meta.analysisProgress 着色（运行中）', `data-progress-dot=${dot}`)
+    const collection = await page.locator('[data-collection-disclosure]').innerText()
+    ok(
+      collection.includes('平台评论量 109,870 条 · 已抓取正文 97,730 条')
+        && collection.includes('页面评论量采用平台总数；AI 仅基于已抓取的评论正文，正文为部分覆盖。'),
+      '③ 采集声明区分平台评论量与 AI 实际读取的正文',
+      collection,
+    )
+    ok(
+      await page.locator('[data-collection-disclosure]').getAttribute('data-comment-coverage') === 'partial',
+      '③ 评论正文覆盖状态来自 /meta.dataCollection',
+      collection,
+    )
 
     /* ④ 打开 */
     await btn.click()
@@ -305,7 +317,11 @@ function npm() { return process.platform === 'win32' ? 'npm.cmd' : 'npm' }
 async function boot(label, origin, cmd, args, { cwd, env }) {
   if (await alive(origin)) throw new Error(`${origin} 已经被别的进程占着（${label} 需要独占它）`)
   const win = process.platform === 'win32'
-  const child = spawn(cmd, args, { cwd, env: { ...process.env, ...env }, stdio: 'ignore', shell: win, detached: !win })
+  // Native executables (node/python) must not be routed through cmd.exe: paths
+  // such as "C:\\Program Files\\nodejs\\node.exe" lose their argument boundary.
+  // Only npm.cmd/batch launchers need a Windows shell.
+  const needsShell = win && /\.(?:cmd|bat)$/i.test(cmd)
+  const child = spawn(cmd, args, { cwd, env: { ...process.env, ...env }, stdio: 'ignore', shell: needsShell, detached: !win })
   for (let i = 0; i < 160; i++) {
     await new Promise((r) => setTimeout(r, 500))
     if (await alive(origin)) return child

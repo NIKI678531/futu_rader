@@ -73,6 +73,11 @@
 | **现行结论** | 同一判定单元可能有多行（重跑、人工改写）。算数的那一行 = **链末**（没有被任何一行 `supersedes_id` 指向）**且 `review_state != 'rejected'`**；同一链末有多行取 `created_at` 最新；链末被 `--reject` 掉 ⇒ 该单元**当前没有结论**（走「暂不可用」，不回退到旧行）。`pending` 与 `needs_review` 一样可读 —— **模型写下即发布，没有人工批准门槛**。唯一实现处：`backend/providers/sql.py` 的 `_current_annotations()`。 | [ADR-0019](docs/adr/0019-ai-auto-publish-no-human-gate.md)（取代 ADR-0017 §4） |
 | **证据（evidence）** | 结论在原文里的 `(start, end)` 偏移，**由程序定位**而非模型自报。模型给的引文只是线索：能在原文精确匹配上才存，匹配不上则不存证据并把结论标 `needs_review`。存偏移不存文本 —— 原文一旦漂移，对不上会立刻炸而不是静默出错。 | [ADR-0017](docs/adr/0017-ai-annotation-pipeline-production.md) |
 | **锚点（ANCHOR）** | 「今天」＝**最近一个完整自然日**。由 `/meta` 下发，前端不自算，系统时间从不参与。值随 provider 走：`demo` 冻结在 `2026-09-01`（`NOW` ＝ `2026-09-02 09:00 HKT`），`sql` 取导入实测的 `2026-08-25`（数据实际止于 `2026-08-26 03:00`，另记在 `meta_kv.data_max_ts`）。 | [ADR-0012](docs/adr/0012-frozen-demo-anchor.md) |
+| **采集运行（collection run）** | Airflow 中一次有稳定 ID 的社区采集尝试，记录采集类型、计划时段、终态、high-watermark 和可选完整日期；它是同步边界，不等于 Dataset 事件。 | [ADR-0024](docs/adr/0024-airflow-source-boundary-and-dataset-sync.md) |
+| **同步游标（collector checkpoint）** | Radar 为每条源数据流持久保存的 `(来源时间, 稳定 ID)` 位置；事实页与游标同事务提交，是断点恢复的依据。 | [ADR-0024](docs/adr/0024-airflow-source-boundary-and-dataset-sync.md) |
+| **完整日期（source complete through）** | 已由 collector 的完整配置集合通过 `comments_all` 成功采集并被 Radar 完整同步的最新香港自然日；Radar 只接纳其中自己的 120 产品池，important、details、users 不能推进。 | [ADR-0024](docs/adr/0024-airflow-source-boundary-and-dataset-sync.md) |
+| **评论覆盖状态（comment coverage）** | 对一篇帖子的评论正文集合是否完整的事实，内部为 `complete` / `partial` / `retryable_incomplete` / `unknown`；独立于平台 `comment_count`。 | [ADR-0025](docs/adr/0025-online-fact-reconciliation-and-comment-coverage.md) |
+| **计数观察（counter observation）** | 某次采集看到的帖子平台计数快照；发布未满 24 小时取最新 provisional，满 24 小时取第一条合资格观察并冻结为 settled。 | [ADR-0025](docs/adr/0025-online-fact-reconciliation-and-comment-coverage.md) |
 
 ## 5. 明确不属于本系统的词
 

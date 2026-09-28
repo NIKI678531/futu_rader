@@ -78,8 +78,10 @@ Compose's worker is in the `manual` profile with restart disabled; ordinary
 `docker compose up` starts no worker. Existing running containers need to be stopped
 explicitly when switching configuration. Details are in
 [the runbook, section 23.8](docs/ai-data-integration-runbook.md#238-手动启动与按产品日期分包2026-09-17).
-New normalized Futu exports enter via `worker/jobs/ingest.py`; unknown formats still
-require an adapter. No live Futu collection endpoint is assumed or fabricated.
+New normalized Futu exports can still enter via `worker/jobs/ingest.py`. Production
+incremental collection uses the authorized, read-only MarketInsight adapter behind
+`worker/jobs/refresh.py`; deployment and recovery commands are documented in
+[Automatic Futu collection](docs/automatic-collection.md).
 
 `npm run design` is a design/test-only command serving the read-only static reference
 on `5174`, not the application. Do not start it for daily use.
@@ -212,9 +214,10 @@ docker compose up -d      # mysql 8 (3307) + backend (8008, DATA_PROVIDER=sql) +
 
 This is the production shape: MySQL instead of the local SQLite file, same schema, same
 SQL ([ADR-0016](docs/adr/0016-sqlite-local-mysql-prod.md)). The compose database starts
-empty — the import above targets whatever `RADAR_DB_URL` points at, so run it against the
-MySQL URL to fill it. There is no automated test on the MySQL dialect yet; check the
-headline numbers by hand the first time.
+empty. For an existing local SQLite history, migrate the target to the Alembic head and
+use the verified streaming copy in [Automatic Futu collection](docs/automatic-collection.md).
+Schema tests compile both SQLite and MySQL DDL; the first production cutover still
+requires row-count, sample-hash and API smoke verification against the target instance.
 
 ## Routes
 

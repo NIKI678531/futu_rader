@@ -81,6 +81,22 @@ class DemoProvider:
         """
         return False
 
+    def collection_metadata(self):
+        """演示数据没有在线采集运行，因此所有运行态字段都必须明确为未知。
+
+        `/meta` 在 demo 与 sql provider 下保持同一契约形状，但这里不能拿 fixture 的
+        编造行数冒充生产采集状态。数值用 ``None``，而不是 0：0 的含义是已经完成采集且
+        确认一条都没有。
+        """
+        return {
+            "freshness": "unavailable",
+            "commentCoverage": "unknown",
+            "sourceCompleteThrough": None,
+            "lastSuccessfulSyncAt": None,
+            "platformCommentCount": None,
+            "parsedCommentCount": None,
+        }
+
     # ── PRD §5 契约函数 ────────────────────────────────────────────────
 
     def master(self):

@@ -112,10 +112,10 @@ gpt-5.6-luna
   - `anchor`: 2026-08-25
   - `data_max_ts`: 2026-08-26 03:00
 
-### 2.2 未完成
+### 2.2 当时未完成（历史快照）
 
 - 后端默认仍是 `DATA_PROVIDER=demo`。
-- `worker/jobs/collect.py` 尚未实现在线采集。
+- `worker/jobs/collect.py` 当时尚未实现在线采集；现已由 `jobs.refresh sync` 接替。
 - scheduler 只运行 heartbeat。
 - 没有 AI API Client、Prompt、结构化输出 Schema 或 annotation job。
 - `annotations` 表没有实际 Writer，SqlProvider 也不读取该表。
@@ -1188,20 +1188,21 @@ market_candles
 
 ## 15. 在线社区增量采集
 
-在客户提供合法上游后，`worker/jobs/collect.py` 应实现：
+合法上游现已明确为 MarketInsight MySQL 的只读连接。当前实现集中在
+`worker/collection/FutuRefresh`，Airflow 只调用 `jobs.refresh` 的稳定接口：
 
 1. 按产品/账号分片；
 2. 从 `collector_checkpoints` 读取最后成功时间；
-3. 每次重叠回看 2–24 小时；
+3. 固定每条流的 high-watermark，并用 keyset 分页；源采集侧在第二阶段回看 48 小时；
 4. 分页拉取；
 5. 按稳定 `feed_id/comment_id` 幂等 upsert；
 6. 保留原始 payload、源时间和抓取时间；
 7. 记录评论分页是否完整；
-8. 发布约 24 小时后回补赞/评/转/浏览；
+8. 用 append-only observation 保存计数，并固定发布满 24 小时后的第一条观察；
 9. 正文或上下文 hash 改变时重新排 AI Job；
 10. 成功后推进 checkpoint；
-11. 失败时指数退避和 dead-letter；
-12. 每小时由 scheduler 触发。
+11. 失败保留已提交 checkpoint，由 Airflow 重试同一 source run；
+12. 四个采集 DAG 发布 Dataset，由单实例同步 DAG 唤醒。
 
 在线路径不能使用当前一次性 ETL 的“清空事实表后重建”方案。一次性 dump 重建与在线 upsert 必须是两条独立路径。
 
@@ -1516,19 +1517,19 @@ cd worker
 
 ### Gate 6：在线采集
 
-> **本轮未执行 —— 阻塞在外部接口。** 富途社区增量数据无法从 Futu OpenAPI 取得
-> （§3.1 已述），合法增量接口尚未获得。当前全部数据来自一次性 dump，
-> 因此没有新鲜度可言 —— 这一点应当在页面上如实呈现，而不是让用户以为看到的是实时舆情。
+> **代码实现完成，生产切换待环境验收。** 合法上游采用 MarketInsight MySQL 只读连接；
+> Futu Radar 不访问社区网页，也不持有 Cookie。部署与回滚步骤见
+> [`automatic-collection.md`](automatic-collection.md)。
 
+- [x] 获得合法社区增量来源：MarketInsight MySQL 只读账号。
+- [x] 建 checkpoint、ingestion run 和源 collection run。
+- [x] 实现固定 high-watermark、keyset 分页、幂等 upsert、回补和重放。
+- [x] 语义变化使 AI scope/synthesis 失效；用户资料更新不标记 AI stale。
+- [x] 缓存随数据版本失效。
+- [x] API 与页面展示新鲜度、完整日期和评论正文覆盖。
+- [ ] 在生产 MySQL/Airflow/Kubernetes Secret 环境完成切换演练。
 
-- [ ] 获得合法社区增量接口。
-- [ ] 建 checkpoint 和 ingestion run。
-- [ ] 实现分页、upsert、回补和重放。
-- [ ] 新内容自动进入 AI 队列。
-- [ ] 缓存随数据版本失效。
-- [ ] 建数据新鲜度和失败监控。
-
-完成标准：每小时新增数据可追踪地进入页面，重复运行不重复计数。
+完成标准：源任务成功后 10 分钟内可追踪地进入页面，重复运行不重复事实或 AI 请求。
 
 ---
 
@@ -1577,7 +1578,7 @@ Invoke-RestMethod 'http://localhost:8008/api/v1/products/3033/candles?range=d7'
 | 3 | `/models` 返回的实际 Model ID | ✅ `gpt-5.6-luna` |
 | 4 | 是否允许去标识后的真实评论发送给该供应商 | ✅ 已授权（2026-09-11） |
 | 5 | 当前 `radar.db` 的实际路径，或 dump 的本地 SSD 路径 | ✅ 本机库存在且完整 |
-| 6 | 社区在线增量数据从 API、数据库还是 ChatInsight 获得 | ❌ 未答复 —— 阻塞 Gate 6 |
+| 6 | 社区在线增量数据从 API、数据库还是 ChatInsight 获得 | ✅ MarketInsight MySQL，只读连接 |
 | 7 | Futu OpenD 账号是否具备 120 只 HK ETF 的行情权限 | ❌ 未答复 —— 阻塞 Gate 5 |
 | 8 | 人工标注负责人和合规信号确认人 | ❌ 未答复 —— 阻塞 Gate 3 与 Gate 4 |
 

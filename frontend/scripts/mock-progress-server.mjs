@@ -121,6 +121,14 @@ function eventsAfter(after, limit) {
 const INJECT = {
   '/api/v1/meta': (d) => Object.assign(d, {
     dataProvider: 'sql',
+    dataCollection: {
+      freshness: 'fresh',
+      commentCoverage: 'partial',
+      sourceCompleteThrough: '2026-09-11',
+      lastSuccessfulSyncAt: '2026-09-12T00:05:00Z',
+      platformCommentCount: 109870,
+      parsedCommentCount: 97730,
+    },
     analysisProgress: summary(),
     aiValidation: 'spot_check',
     aiValidationDetail: {

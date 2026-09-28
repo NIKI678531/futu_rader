@@ -36,7 +36,6 @@ import sys
 from contextlib import ExitStack
 from dataclasses import replace
 from collections import Counter
-from datetime import datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import select
@@ -59,6 +58,7 @@ from radar_db import default_data_dir, make_engine  # noqa: E402
 from radar_db.scope_jobs import scope_condition
 from radar_db.leases import WorkerLease
 from radar_db.schema import analysis_scopes, annotation_jobs  # noqa: E402
+from radar_db.time_windows import hkt_range_utc_naive, utc_naive_to_hkt  # noqa: E402
 
 log = logging.getLogger("worker.calibrate")
 OUT_DIR = REPO_ROOT / ".scratch" / "llm-90d"
@@ -103,13 +103,12 @@ def candidates(engine, args, ownership):
                 select(annotation_jobs.c.target_id).where(scope_condition(args.scope),
                                                           annotation_jobs.c.task == "comment_product"))]
         codes = json.loads(sc["codes_json"])
-        since, until = sc["date_from"], sc["date_to"] + timedelta(days=1)
+        since, until = hkt_range_utc_naive(sc["date_from"], sc["date_to"])
         rows = [r for r in annotate._comment_candidates(engine, codes=codes, since=since, until=until)
                 if r.comment_id in set(ids)]
     else:
         codes = [c.strip() for c in args.codes.split(",")]
-        since = datetime.strptime(args.from_, "%Y-%m-%d")
-        until = datetime.strptime(args.to, "%Y-%m-%d") + timedelta(days=1)
+        since, until = hkt_range_utc_naive(args.from_, args.to)
         rows = list(annotate._comment_candidates(engine, codes=codes, since=since, until=until))
     return rows
 
@@ -120,7 +119,11 @@ def label_batch(provider, prompt, schema_version, items, batch_size):
     policy = BatchPolicy(batch_size, getattr(provider, "max_input_tokens", 8000),
                          getattr(provider, "max_payload_bytes", 12288))
     batches, oversized = pack_items(items,
-        key_of=lambda item: (item[0].code, item[0].posted_at.date() if getattr(item[0], "posted_at", None) else None),
+        key_of=lambda item: (
+            item[0].code,
+            utc_naive_to_hkt(item[0].posted_at).date()
+            if getattr(item[0], "posted_at", None) else None,
+        ),
         payload_of=lambda item: item[1], system=prompt.SYSTEM, render=prompt.user_message,
         schema=schemas.batch_json_schema("comment_product", schema_version), policy=policy)
     failed += len(oversized)

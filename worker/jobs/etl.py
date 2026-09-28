@@ -27,7 +27,7 @@ import argparse
 import json
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -36,6 +36,12 @@ sys.path.insert(0, str(REPO_ROOT / "worker"))
 
 from sqlalchemy import delete, insert, select  # noqa: E402
 
+from collection.normalization import (  # noqa: E402
+    first_not_none as _first,
+    mention_code as _mention_code,
+    rich_text,
+    timestamp_from_epoch as _ts,
+)
 from jobs.import_dump import pool_codes, ticker_to_code  # noqa: E402
 from radar_db import make_engine  # noqa: E402
 from radar_db.schema import (  # noqa: E402
@@ -54,70 +60,6 @@ BATCH = 2000
 
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
-
-
-def rich_text(items):
-    """把富途的富文本段还原成纯文本。
-
-    段类型实测只有 6 种：0=文本 1=表情 2=@用户 3=标的 6=大表情 7=带链接文本。
-    表情与标的按上游 `content_text` 的写法还原成 `[捂脸]` 和 `$07709.HK$` ——
-    这样评论正文和帖子正文是同一套写法，将来喂给标注模型时不用分两种 prompt。
-    """
-    if not items:
-        return None
-    out = []
-    for seg in items:
-        t = seg.get("type")
-        if t == 0:
-            out.append(seg.get("text") or "")
-        elif t == 1:
-            out.append(f"[{(seg.get('emotion') or {}).get('text', '')}]")
-        elif t == 2:
-            out.append("@" + ((seg.get("user") or {}).get("nick_name") or ""))
-        elif t == 3:
-            s = seg.get("stock") or {}
-            code = s.get("stock_code") or ""
-            mkt = (s.get("market_type_label") or "").upper()
-            out.append(f"${code}.{mkt}$" if code else "")
-        elif t == 6:
-            out.append("[表情]")
-        elif t == 7:
-            out.append((seg.get("text_link") or {}).get("text") or "")
-    text = "".join(out).strip()
-    return text or None
-
-
-def _first(*vals):
-    """第一个不是 None 的值；全是 None 就返回 None（不是 0）。"""
-    for v in vals:
-        if v is not None:
-            return v
-    return None
-
-
-def _ts(v):
-    """富途的 unix 秒（字符串）→ naive datetime。跟 posted_at 一样用本地无时区形式。"""
-    if v in (None, "", "0"):
-        return None
-    try:
-        return datetime.fromtimestamp(int(v), tz=timezone.utc).replace(tzinfo=None)
-    except (TypeError, ValueError, OSError):
-        return None
-
-
-def _mention_code(stock):
-    """正文提及的标的 → 产品池口径的 code。
-
-    港股 `stock_code` 是 5 位补零（`'07709'`），与产品池的 `'7709'` 差前导零。
-    非港股保留市场前缀，免得 `'AAPL'` 和某只港股 code 撞在一起。
-    """
-    code = stock.get("stock_code")
-    if not code:
-        return None
-    mkt = (stock.get("market_type_label") or "").lower()
-    if mkt == "hk":
-        return code.lstrip("0") or "0"
-    return f"{mkt}:{code}" if mkt else code
 
 
 def run(engine, batch_size=BATCH):

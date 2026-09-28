@@ -38,3 +38,14 @@ If the concept you need isn't in the glossary yet, that's a signal: either you'r
 If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
 
 > _Contradicts ADR-0007 (event-sourced orders), but worth reopening because…_
+
+## Record material decisions
+
+Create the next sequential file in `docs/adr/` in the same change whenever a
+decision is costly to reverse, surprising to a future maintainer, and has a real
+alternative or trade-off. Record the context, decision, reason, consequences and
+rejected alternatives; link any ADR that it extends, supersedes or contradicts.
+
+Routine bug fixes, dependency bumps and behavior-preserving refactors do not need
+an ADR. If a later decision changes an accepted one, add a new ADR and update the
+old ADR's status or cross-reference instead of rewriting history.

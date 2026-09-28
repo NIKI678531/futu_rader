@@ -12,7 +12,7 @@ import os
 import sys
 
 import pytest
-from sqlalchemy import inspect, insert, select
+from sqlalchemy import inspect, insert, select, text
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -68,7 +68,7 @@ def test_every_column_matches(migrated, created):
         assert got == want, f"{table} 的列在两条路径下不一致"
 
 
-def test_indexes_and_unique_constraints_match(migrated, created):
+def test_indexes_and_constraints_match(migrated, created):
     mi, ci = inspect(migrated), inspect(created)
     for table in sorted(set(ci.get_table_names())):
         assert ({i["name"] for i in mi.get_indexes(table)}
@@ -76,6 +76,9 @@ def test_indexes_and_unique_constraints_match(migrated, created):
         assert ({u["name"] for u in mi.get_unique_constraints(table)}
                 == {u["name"] for u in ci.get_unique_constraints(table)}), (
             f"{table} 唯一约束不一致 —— 幂等依赖它们")
+        assert ({c["name"] for c in mi.get_check_constraints(table)}
+                == {c["name"] for c in ci.get_check_constraints(table)}), (
+            f"{table} CHECK 约束不一致 —— 状态与预算上限依赖它们")
 
 
 def test_old_single_table_annotations_is_gone(migrated):
@@ -159,4 +162,40 @@ def test_metadata_is_the_only_schema_definition():
         "feeds", "comments", "mentions", "users", "meta_kv",
         "annotation_runs", "annotation_jobs", "annotations",
         "annotation_evidence", "review_decisions",
+        "ingestion_runs", "collector_checkpoints", "ai_daily_budget",
+        "feed_counter_observations",
     }
+
+
+def test_collection_migration_preserves_feeds_and_backfills_unknown(tmp_path, monkeypatch):
+    """历史 dump 没有覆盖语义；迁移不得把它猜成 complete 或丢掉大表中的行。"""
+    url = "sqlite:///" + (tmp_path / "collection-upgrade.db").as_posix()
+    monkeypatch.setenv("RADAR_DB_URL", url)
+    cfg = alembic_cfg(url)
+    command.upgrade(cfg, "0008")
+    eng = make_engine(url)
+    with eng.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO feeds "
+            "(feed_id, code, posted_at, feed_type, like_count, comment_count, "
+            "image_count, raw_json_broken) "
+            "VALUES (1, '3033', '2026-08-25 10:00:00', 1, 2, 3, 0, 0)"
+        ))
+
+    command.upgrade(cfg, "head")
+    with eng.connect() as conn:
+        row = conn.execute(text(
+            "SELECT feed_id, source_observed_at, comment_coverage_status "
+            "FROM feeds WHERE feed_id = 1"
+        )).one()
+    assert tuple(row) == (1, None, "unknown")
+
+    command.downgrade(cfg, "0008")
+    assert {column["name"] for column in inspect(eng).get_columns("feeds")} == {
+        "feed_id", "code", "posted_at", "feed_type", "author_uid", "author_name",
+        "title", "content", "like_count", "comment_count", "image_count",
+        "share_count", "browse_count", "comments_parsed", "comments_truncated",
+        "original_lang", "raw_json_broken",
+    }
+    with eng.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM feeds")).scalar_one() == 1

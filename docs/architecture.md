@@ -76,23 +76,26 @@ flowchart LR
 
 ETL 会先删除现有事实表，再以 2,000 行一批提交新数据。这个方式适合一次性重建，不适合持续生产写入：任务中断时可能留下半成品库，也没有 staging 表、批次状态或原子切换。
 
-### 3.3 当前没有的写入路径
+### 3.3 持续写入路径
 
-- [`worker/jobs/collect.py`](../worker/jobs/collect.py) 直接抛出 `NotImplementedError`。
-- [`worker/scheduler.py`](../worker/scheduler.py) 只注册 heartbeat，没有运行 dump 导入、ETL、AI 标注或行情同步。
-- [`radar_db/schema.py`](../radar_db/schema.py) 定义了 `annotations`，但仓库内没有任何 `insert(annotations)`；真实库当前记录数为 0。
-- `SqlProvider` 没有查询 `annotations`。即使人工直接写入该表，页面也不会变化。
-- 没有价格事实表或行情同步任务，因此 K 线和日线价格不能由现有 dump 推出。
-- compose 的 [`init_db.sql`](../init_db.sql) 只建库和授权；表结构只会在显式执行导入命令时由 `create_all()` 创建。单独运行 `docker compose up` 不会自动得到表或数据。
+- [`worker/jobs/refresh.py`](../worker/jobs/refresh.py) 是 Airflow 使用的稳定入口；
+  `FutuRefresh` 从 MarketInsight MySQL 只读增量拉取，再幂等写入 Radar。
+- [`worker/jobs/collect.py`](../worker/jobs/collect.py) 保留为兼容入口，并转发到同一同步实现。
+- 三条 keyset 流分别跟踪新帖子、详情正文和用户资料；固定 high-watermark 后逐页提交，
+  每页事实和 checkpoint 在同一个目标库事务中。
+- 在线同步不会清空事实表。评论快照为 partial 时只 upsert 已见评论，不删除历史评论。
+- [`worker/scheduler.py`](../worker/scheduler.py) 仍只负责本地 heartbeat；生产调度唯一来源是 Airflow。
+- 没有价格事实源时，K 线和日线价格仍不能由社区数据推出。
+- compose 的 [`init_db.sql`](../init_db.sql) 只建库和授权；生产 schema 必须显式执行 Alembic。
 
-### 3.4 写入层需要补的生产能力
+### 3.4 写入层仍需部署侧完成的事项
 
-1. 每次运行生成 `ingestion_run`，记录来源、窗口、代码版本、开始/结束、行数、校验和和失败原因。
-2. 写 staging 表，完成行数与完整性校验后原子切换；不要先清空正式表再分批提交。
-3. 在线采集使用幂等 upsert，并分别记录源数据时间、抓取时间和最后成功游标。
-4. schema 采用显式迁移；`create_all()` 只能创建缺失表，不能升级已有表。
-5. 启动时做 readiness 检查：schema 版本、anchor、最晚数据时间、关键表行数。SQL 模式下库未配置应明确失败，不应静默变成全站 `unavailable`。
-6. 将行情作为独立事实源接入，不用模型或其他产品价格填补。
+1. 在目标 MySQL 8 执行 Alembic，并用流式迁移工具复制现有 SQLite 历史。
+2. 为 MarketInsight 创建只读账号，为 Radar 创建最小写入权限账号，并通过 Secret 注入。
+3. 执行 MySQL 集成、Dataset 触发、告警与恢复演练后再切换 Flask/worker。
+4. 将行情作为独立事实源接入，不用模型或其他产品价格填补。
+
+完整上线步骤见 [`automatic-collection.md`](automatic-collection.md)。
 
 ## 4. 已有真实数据与可用程度
 
