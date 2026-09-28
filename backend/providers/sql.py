@@ -65,7 +65,7 @@ import json
 import re
 import sys
 from collections import defaultdict
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from .sentinel import MISSING
@@ -77,7 +77,7 @@ REPO_ROOT = BACKEND_ROOT.parent
 if (REPO_ROOT / "radar_db").is_dir() and str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import func, select  # noqa: E402
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
 from core import stages as core_stages, themes as core_themes, topics as core_topics  # noqa: E402
@@ -87,16 +87,19 @@ from core.delta import delta  # noqa: E402
 from core.heat import heat_of  # noqa: E402
 from radar_db import make_engine  # noqa: E402
 from radar_db.annotations_read import current_annotations  # noqa: E402
+from radar_db.revisions import ai_source_version  # noqa: E402
 from radar_db.schema import (  # noqa: E402
     NO_SUBJECT,
     annotation_evidence,
     annotations,
     comments,
     feeds,
+    ingestion_runs,
     mentions,
     meta_kv,
     synthesis_outputs,
 )
+from radar_db.time_windows import hkt_range_utc_naive, utc_naive_to_hkt  # noqa: E402
 
 # 产品池／官号／KOL 名单是**客户维护的主数据**，当前仓库里唯一一份在这里。
 # worker/jobs/import_dump.py 用的是同一个文件（导入按它过滤），换成正式名单时两处一起换。
@@ -194,6 +197,118 @@ class SqlProvider:
         if self.updated_at is not None:
             out["updatedAt"] = self.updated_at
         return out
+
+    def collection_metadata(self):
+        """返回在线采集状态；控制面缺失时宁可说未知，也不拿历史事实猜。
+
+        ``freshness`` 描述的是「线上采集是否已经覆盖页面当前锚点」，不是系统时钟与最后
+        一次帖子的距离。这样周末没有排程时不会凭空变成 stale，也不需要在查询侧偷偷引入
+        一套交易日历。最近一个终态同步失败、没有成功同步，或完整日期落后于页面锚点时，
+        分别返回 stale / unavailable / stale。
+
+        评论量有两套刻意不同的口径：平台计数来自 feeds.comment_count，AI 实际可读正文数
+        来自 comments 的行数。空库只有在成功的全量运行声明了 complete_through 后才是 0；
+        否则是未知（None），不能把「尚未采集」说成「确认没有」。
+        """
+        unavailable = {
+            "freshness": "unavailable",
+            "commentCoverage": "unknown",
+            "sourceCompleteThrough": None,
+            "lastSuccessfulSyncAt": None,
+            "platformCommentCount": None,
+            "parsedCommentCount": None,
+        }
+        try:
+            with self._engine.connect() as conn:
+                latest_terminal = conn.execute(
+                    select(ingestion_runs.c.status)
+                    .where(ingestion_runs.c.status.in_(("succeeded", "failed")))
+                    .order_by(
+                        ingestion_runs.c.finished_at.desc(),
+                        ingestion_runs.c.started_at.desc(),
+                        ingestion_runs.c.run_id.desc(),
+                    )
+                    .limit(1)
+                ).scalar_one_or_none()
+                latest_success = conn.execute(
+                    select(ingestion_runs.c.finished_at)
+                    .where(ingestion_runs.c.status == "succeeded")
+                    .order_by(
+                        ingestion_runs.c.finished_at.desc(),
+                        ingestion_runs.c.started_at.desc(),
+                        ingestion_runs.c.run_id.desc(),
+                    )
+                    .limit(1)
+                ).scalar_one_or_none()
+                complete_through = conn.execute(
+                    select(func.max(ingestion_runs.c.complete_through)).where(
+                        ingestion_runs.c.status == "succeeded",
+                        ingestion_runs.c.source_kind == "all",
+                    )
+                ).scalar_one()
+
+                coverage_rows = conn.execute(
+                    select(
+                        feeds.c.comment_coverage_status,
+                        func.count(feeds.c.feed_id),
+                        func.sum(feeds.c.comment_count),
+                    ).group_by(feeds.c.comment_coverage_status)
+                ).all()
+                parsed_count = conn.execute(
+                    select(func.count(comments.c.comment_id))
+                ).scalar_one()
+        except SQLAlchemyError:
+            # 支持 API 与数据库迁移的滚动发布：旧库尚无控制面表时 `/meta` 仍应是 200，
+            # 但不能假装采集正常或编造计数。
+            return unavailable
+
+        feed_count = sum(row[1] for row in coverage_rows)
+        statuses = {row[0] for row in coverage_rows}
+        if statuses & {"partial", "retryable_incomplete"}:
+            coverage = "partial"
+        elif not statuses or "unknown" in statuses or statuses != {"complete"}:
+            coverage = "unknown"
+        else:
+            coverage = "complete"
+
+        has_declared_full_scan = complete_through is not None
+        if feed_count:
+            platform_count = sum(row[2] for row in coverage_rows)
+        elif has_declared_full_scan:
+            platform_count = 0
+            parsed_count = 0
+            coverage = "complete"
+        else:
+            platform_count = None
+            parsed_count = None
+
+        if latest_terminal is None:
+            freshness = "unavailable"
+        elif latest_terminal == "failed" or complete_through is None:
+            freshness = "stale"
+        elif self._anchor is not None and complete_through < self._anchor:
+            freshness = "stale"
+        else:
+            freshness = "fresh"
+
+        def iso_utc(value):
+            if value is None:
+                return None
+            # 数据库约定 DateTime 为 UTC-naive；ISO 响应显式补 Z，避免浏览器按本地时间猜。
+            if value.tzinfo is None:
+                return value.isoformat(timespec="seconds") + "Z"
+            return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace(
+                "+00:00", "Z"
+            )
+
+        return {
+            "freshness": freshness,
+            "commentCoverage": coverage,
+            "sourceCompleteThrough": complete_through.isoformat() if complete_through else None,
+            "lastSuccessfulSyncAt": iso_utc(latest_success),
+            "platformCommentCount": platform_count,
+            "parsedCommentCount": parsed_count,
+        }
 
     def build_range(self, key):
         if key not in PRESETS or self._anchor is None:
@@ -673,7 +788,7 @@ class SqlProvider:
             return set()
         if progress["baselineFrom"] > first or progress["anchor"] < last:
             return set()
-        source_version = {key: self._meta[key] for key in ("data_revision", "etl_generation") if key in self._meta}
+        source_version = ai_source_version(self._meta)
         if progress.get("sourceVersion", {}) != source_version:
             return set()
         return {code for code, row in progress.get("products", {}).items()
@@ -732,11 +847,13 @@ class SqlProvider:
                 continue
             units.append({
                 "comment_id": unit[0], "attitude": a["value"],
-                "aspects": (asp.get(unit) or {}).get("value") or [], "posted_at": a["posted_at"],
+                "aspects": (asp.get(unit) or {}).get("value") or [],
+                "posted_at": utc_naive_to_hkt(a["posted_at"]),
                 "annotation_id": (rel.get(unit) or {}).get("annotation_id"),
             })
         market = [
-            {"comment_id": unit[0], "market_direction": m["value"], "posted_at": m["posted_at"]}
+            {"comment_id": unit[0], "market_direction": m["value"],
+             "posted_at": utc_naive_to_hkt(m["posted_at"])}
             for unit, m in mkt.items() if m["value"] in ("bullish", "bearish", "neutral")
         ]
         out = {"units": units, "market": market}
@@ -745,15 +862,15 @@ class SqlProvider:
 
     def _base_units(self, code, rng):
         """基准期的判定单元；基准期一条态度标注都没有 ⇒ None（环比与生命周期暂不可用）。"""
-        blo = datetime.combine(date.fromisoformat(rng["benchFrom"]), time.min)
-        bhi = datetime.combine(date.fromisoformat(rng["benchTo"]) + timedelta(days=1), time.min)
+        blo, bhi = hkt_range_utc_naive(rng["benchFrom"], rng["benchTo"])
         att = self._window_annotations("attitude", blo, bhi).get(code, {})
         if not att and code not in self._completed_codes(rng["benchFrom"], rng["benchTo"]):
             return None
         rel = self._window_annotations("relevance", blo, bhi).get(code, {})
         asp = self._window_annotations("aspect", blo, bhi).get(code, {})
         return [
-            {"attitude": a["value"], "aspects": (asp.get(unit) or {}).get("value") or [], "posted_at": a["posted_at"]}
+            {"attitude": a["value"], "aspects": (asp.get(unit) or {}).get("value") or [],
+             "posted_at": utc_naive_to_hkt(a["posted_at"])}
             for unit, a in att.items() if (rel.get(unit) or {}).get("value") == "relevant"
         ]
 
@@ -1379,8 +1496,7 @@ class SqlProvider:
         nb = len(rng["buckets"]) if rng else 0
         gran = rng["gran"] if rng else None
         origin = date.fromisoformat(frm)
-        lo = datetime.combine(origin, time.min)
-        hi = datetime.combine(date.fromisoformat(to) + timedelta(days=1), time.min)
+        lo, hi = hkt_range_utc_naive(frm, to)
 
         # 帖子级：评论获赞与评论作者。评论挂在帖子上，所以按帖子的 posted_at 取窗口。
         c_likes, c_authors = defaultdict(int), defaultdict(set)
@@ -1418,7 +1534,7 @@ class SqlProvider:
                 s = out.get(code)
                 if s is None:  # in_pool 与产品池名单不同步 —— 跳过，不要凭空造一只产品。
                     continue
-                bi = _bucket(gran, origin, posted) if nb else None
+                bi = _bucket(gran, origin, utc_naive_to_hkt(posted)) if nb else None
                 # 帖子获赞 ＋ 已采集评论获赞（HEAT_NOTE 逐字：「点赞含帖子获赞与评论获赞」）。
                 like_total = (likes or 0) + c_likes.get(feed_id, 0)
                 who = c_authors.get(feed_id, ())
@@ -1439,7 +1555,8 @@ class SqlProvider:
             s = out.get(code)
             if s is None:  # 标注里的产品不在当前池 —— 同 in_pool 那条，跳过。
                 continue
-            _bump_att(s, _bucket(gran, origin, a["posted_at"]) if nb else None, a["value"])
+            posted_hkt = utc_naive_to_hkt(a["posted_at"])
+            _bump_att(s, _bucket(gran, origin, posted_hkt) if nb else None, a["value"])
 
         for code in self._completed_codes(frm, to):
             if code in out:
@@ -1462,8 +1579,7 @@ class SqlProvider:
         if key in self._cache:
             return self._cache[key]
 
-        lo = datetime.combine(frm, time.min)
-        hi = datetime.combine(to + timedelta(days=1), time.min)
+        lo, hi = hkt_range_utc_naive(frm, to)
         window = (mentions.c.code == code, feeds.c.posted_at >= lo, feeds.c.posted_at < hi)
         per = {}
         with self._engine.connect() as conn:
@@ -1473,7 +1589,7 @@ class SqlProvider:
                 .where(*window)
             )
             for posted, author, n in conn.execute(q):
-                cell = per.setdefault(posted.date(), [0, set()])
+                cell = per.setdefault(utc_naive_to_hkt(posted).date(), [0, set()])
                 cell[0] += n or 0
                 if author:
                     cell[1].add(author)
@@ -1489,7 +1605,7 @@ class SqlProvider:
             )
             for posted, author in conn.execute(q):
                 if author:
-                    per.setdefault(posted.date(), [0, set()])[1].add(author)
+                    per.setdefault(utc_naive_to_hkt(posted).date(), [0, set()])[1].add(author)
         out = {d: (v[0], len(v[1])) for d, v in per.items()}
         self._cache[key] = out
         return out
@@ -1501,8 +1617,7 @@ class SqlProvider:
         """
         if not names:
             return []
-        lo = datetime.combine(date.fromisoformat(rng["from"]), time.min)
-        hi = datetime.combine(date.fromisoformat(rng["to"]) + timedelta(days=1), time.min)
+        lo, hi = _window(rng)
         with self._engine.connect() as conn:
             rows = list(
                 conn.execute(
@@ -1538,17 +1653,18 @@ class SqlProvider:
 
     def _post_common(self, rng, row, codes):
         """帖子行里**能数出来**的部分。AI 标注块由调用方并入。"""
-        day = row.posted_at.date()
+        posted_hkt = utc_naive_to_hkt(row.posted_at)
+        day = posted_hkt.date()
         primary = codes[0] if codes else None
         p = self._by_code.get(primary, {})
         likes, n_comments, shares = row.like_count, row.comment_count, row.share_count
         return {
             # `t` ＝ 距区间起点的小时数，设计源用它排序（`dOff * 24 + hr`）。
-            "t": (day - date.fromisoformat(rng["from"])).days * 24 + row.posted_at.hour,
+            "t": (day - date.fromisoformat(rng["from"])).days * 24 + posted_hkt.hour,
             "day": day.isoformat(),
-            "hour": row.posted_at.hour,
+            "hour": posted_hkt.hour,
             "dateText": day.strftime("%m-%d"),
-            "time": row.posted_at.strftime("%m-%d %H:%M"),
+            "time": posted_hkt.strftime("%m-%d %H:%M"),
             "code": primary,
             "name": p.get("name"),
             "sector": p.get("sector"),
@@ -1701,7 +1817,7 @@ class SqlProvider:
                             "authorName": r.author_name,
                             # 评论自己的时间在瘦库里大量为 NULL，退回所在帖子的发布
                             # 时间 —— 和 `_scan` 给评论归桶用的是同一个口径。
-                            "postedAt": r.own_posted or r.feed_posted,
+                            "postedAt": utc_naive_to_hkt(r.own_posted or r.feed_posted),
                             "comments": r.comment_count,
                             "interactions": _add_all([r.like_count, r.share_count]),
                             "url": f"https://www.futunn.com/post/{r.feed_id}",
@@ -1721,7 +1837,7 @@ class SqlProvider:
                         out[r.feed_id] = {
                             "text": "\n".join(x for x in (r.title, r.content) if x),
                             "authorName": r.author_name,
-                            "postedAt": r.posted_at,
+                            "postedAt": utc_naive_to_hkt(r.posted_at),
                             "comments": r.comment_count,
                             "interactions": _add_all([r.like_count, r.share_count]),
                             "url": f"https://www.futunn.com/post/{r.feed_id}",
@@ -1911,10 +2027,8 @@ def _add_all(vals):
 
 
 def _window(rng):
-    """区间的半开时间窗 `[lo, hi)`，与 `_scan` / `_posts` 用的是同一个口径。"""
-    lo = datetime.combine(date.fromisoformat(rng["from"]), time.min)
-    hi = datetime.combine(date.fromisoformat(rng["to"]) + timedelta(days=1), time.min)
-    return lo, hi
+    """HKT 自然日区间对应的 UTC-naive 半开时间窗。"""
+    return hkt_range_utc_naive(rng["from"], rng["to"])
 
 
 def _stamp(dt):

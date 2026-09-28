@@ -3,6 +3,7 @@ import json
 import logging
 import signal
 import sys
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -21,7 +22,9 @@ from ai.providers.base import RunControl
 from core.calendar import PRESETS, build
 from jobs import annotate, extract, full_own
 from radar_db import make_engine
+from radar_db.revisions import ai_source_version
 from radar_db.schema import analysis_scopes, annotation_jobs, comments, feeds, meta_kv
+from radar_db.time_windows import hkt_range_utc_naive, utc_naive_to_hkt
 
 
 def parser():
@@ -98,17 +101,19 @@ def make_plan(engine, args):
                     days.append(day.isoformat())
                 day -= timedelta(days=1)
     codes = [row["code"] for row in products]
+    lo, hi = hkt_range_utc_naive(first, anchor)
     with engine.connect() as conn:
         counts = conn.execute(select(feeds.c.code, func.count(comments.c.comment_id)).select_from(
             comments.join(feeds, comments.c.feed_id == feeds.c.feed_id)).where(
-                feeds.c.code.in_(codes), feeds.c.posted_at >= datetime.combine(date.fromisoformat(first), time.min),
-                feeds.c.posted_at < datetime.combine(anchor + timedelta(days=1), time.min),
+                feeds.c.code.in_(codes), feeds.c.posted_at >= lo,
+                feeds.c.posted_at < hi,
                 comments.c.content.isnot(None), comments.c.content != "",
             ).group_by(feeds.c.code)).all()
+    semantic_version = ai_source_version(meta)
     return {"anchor": anchor.isoformat(), "sourceCompleteThrough": complete.isoformat(), "from": first,
             "ranges": [window["key"] for window in windows], "priorityDays": days, "codes": codes,
             "ownership": {row["code"]: row["ownership"] for row in products},
-            "sourceState": {key: meta[key] for key in ("anchor", "data_revision", "etl_generation") if key in meta},
+            "sourceState": {"anchor": meta["anchor"], **semantic_version},
             "windows": [{key: window[key] for key in ("key", "from", "to", "benchFrom", "benchTo")}
                         for window in windows], "candidatesByProduct": dict(counts),
             "candidateComments": sum(count for _code, count in counts),
@@ -140,7 +145,9 @@ def preview(engine, cfg, plan, page_size):
                         stats["filtered"] += 1
                     else:
                         kept.append(row)
-                reps, members = neardup.fold(kept, key_of=lambda row: (row.code, row.posted_at.date()),
+                reps, members = neardup.fold(
+                    kept,
+                    key_of=lambda row: (row.code, utc_naive_to_hkt(row.posted_at).date()),
                                              id_of=lambda row: row.comment_id, text_of=lambda row: row.content)
                 stats["nearDuplicateMembers"] += len(members)
                 payloads = []
@@ -172,12 +179,15 @@ def preview(engine, cfg, plan, page_size):
     return {**plan, "commentPlan": stats, "note": "Comment estimates only; post/KOL, summary and retry calls also consume the run budget"}
 
 
-def check_calibration(cfg, path):
-    if cfg.micro_batch_size <= 1:
+def check_calibration(cfg, report_source, *, require_singleton=False):
+    if cfg.micro_batch_size <= 1 and not require_singleton:
         return
-    if path is None:
+    if report_source is None:
         raise ValueError("Batch mode requires --calibration-report from scripts.calibrate; no paid requests sent")
-    report = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(report_source, Mapping):
+        report = dict(report_source)
+    else:
+        report = json.loads(Path(report_source).read_text(encoding="utf-8"))
     expected = {"model": cfg.model, "promptVersion": cfg.prompt_version, "schemaVersion": cfg.schema_version,
                 "taxonomyVersion": cfg.taxonomy_version, "batchSize": cfg.micro_batch_size,
                 "maxInputTokens": cfg.max_input_tokens, "maxPayloadBytes": cfg.max_payload_bytes}

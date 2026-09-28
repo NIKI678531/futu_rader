@@ -30,7 +30,9 @@ SQLite（本地）与 MySQL 8（生产）共用。`raw_json` 在 MySQL 下必须
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
+    Date,
     DateTime,
     Float,
     Index,
@@ -49,6 +51,11 @@ metadata = MetaData()
 # 源库 raw_json 是 TEXT（65535），已实测有 0.01% 被静默截断成坏 JSON。我们用 LONGTEXT。
 LONGTEXT = Text().with_variant(mysql.LONGTEXT(charset="utf8mb4"), "mysql")
 MEDIUMTEXT = Text().with_variant(mysql.MEDIUMTEXT(charset="utf8mb4"), "mysql")
+# MySQL's bare DATETIME silently discards sub-second precision.  The collector
+# uses ``(observed_at, id)`` keyset cursors, so two observations in the same
+# second must remain distinguishable.  SQLite's native DateTime rendering is
+# intentionally unchanged for local development and tests.
+DATETIME = DateTime().with_variant(mysql.DATETIME(fsp=6), "mysql")
 
 
 # ── 第一层：dump 镜像 ──────────────────────────────────────────────────────
@@ -70,7 +77,7 @@ src_feeds = Table(
     Column("feed_id", BigInteger, primary_key=True, autoincrement=False),
     Column("stock_id", BigInteger, nullable=False, index=True),
     Column("feed_type", Integer, nullable=False),
-    Column("posted_at", DateTime, nullable=False, index=True),
+    Column("posted_at", DATETIME, nullable=False, index=True),
     Column("author_uid", String(40)),  # 源库大量为 NULL，ETL 从 raw_json 回填
     Column("author_name", String(200)),
     Column("feed_title", MEDIUMTEXT),
@@ -79,7 +86,7 @@ src_feeds = Table(
     Column("comment_count", Integer, nullable=False),
     Column("image_count", Integer, nullable=False),
     Column("raw_json", LONGTEXT, nullable=False),
-    Column("scraped_at", DateTime, nullable=False),
+    Column("scraped_at", DATETIME, nullable=False),
 )
 
 src_users = Table(
@@ -93,7 +100,7 @@ src_users = Table(
     Column("sns_gender", Integer),
     Column("ip_region", String(80)),
     Column("self_description", MEDIUMTEXT),
-    Column("scraped_at", DateTime, nullable=False),
+    Column("scraped_at", DATETIME, nullable=False),
 )
 
 
@@ -106,7 +113,7 @@ feeds = Table(
     # 挂载标的：帖子被采集时所属的个股讨论区（CONTEXT.md「挂载标的」）。
     # code 是产品池里的代码（'3033'），由 ticker '03033.HK' 去前导零得到。
     Column("code", String(10), nullable=False, index=True),
-    Column("posted_at", DateTime, nullable=False, index=True),
+    Column("posted_at", DATETIME, nullable=False, index=True),
     Column("feed_type", Integer, nullable=False),
     Column("author_uid", String(40), index=True),
     Column("author_name", String(200), index=True),
@@ -122,10 +129,26 @@ feeds = Table(
     # 我们实际解析到几条评论，以及上游是不是分页截断了（ADR-0011 两套口径靠这两列区分）。
     Column("comments_parsed", Integer),
     Column("comments_truncated", Boolean),
+    # 最近一次从在线源看到这条帖子的时间。历史 dump 没有这个概念，所以允许 NULL。
+    Column("source_observed_at", DATETIME),
+    # 评论正文是否完整独立于平台 comment_count；未知历史数据统一回填 unknown。
+    Column(
+        "comment_coverage_status",
+        String(24),
+        nullable=False,
+        default="unknown",
+        server_default="unknown",
+    ),
     Column("original_lang", Integer),  # 摘要「随原文语言」用（ADR-0010）
     # raw_json 不是合法 JSON（源库 TEXT 截断）。这一列为真时，上面几个 NULL 是有解释的。
     Column("raw_json_broken", Boolean, nullable=False, default=False),
     Index("ix_feeds_code_posted", "code", "posted_at"),
+    Index("ix_feeds_comment_coverage", "comment_coverage_status"),
+    CheckConstraint(
+        "comment_coverage_status IN "
+        "('complete','partial','retryable_incomplete','unknown')",
+        name="ck_feeds_comment_coverage_status",
+    ),
 )
 
 comments = Table(
@@ -133,7 +156,7 @@ comments = Table(
     metadata,
     Column("comment_id", BigInteger, primary_key=True, autoincrement=False),
     Column("feed_id", BigInteger, nullable=False, index=True),
-    Column("posted_at", DateTime, index=True),
+    Column("posted_at", DATETIME, index=True),
     Column("author_uid", String(40), index=True),
     Column("author_name", String(200)),
     Column("content", MEDIUMTEXT),
@@ -161,6 +184,108 @@ users = Table(
     Column("following_num", Integer),
     Column("ip_region", String(80)),
     Column("self_description", MEDIUMTEXT),
+)
+
+
+# ── 在线采集控制面 ──────────────────────────────────────────────────────
+
+# 一次 MarketInsight → Radar 的同步运行。Airflow 的 Dataset 只是唤醒信号；真正的
+# 幂等边界、游标和完成日期都落库，所以调度重试不会重复发布事实或重复使 AI 失效。
+ingestion_runs = Table(
+    "ingestion_runs",
+    metadata,
+    Column("run_id", String(64), primary_key=True),
+    Column("source", String(40), nullable=False),
+    Column("source_run_id", String(250)),
+    Column("source_kind", String(20), nullable=False),
+    Column("status", String(20), nullable=False),
+    Column("started_at", DATETIME, nullable=False),
+    Column("finished_at", DATETIME),
+    # 一个同步会固定 feeds/details/users 三条流各自的高水位，故使用 JSON 对象而非单个时间。
+    Column("high_watermark_json", Text),
+    Column("complete_through", Date),
+    Column("cursor_before_json", Text),
+    Column("cursor_after_json", Text),
+    Column("counts_json", Text),
+    Column("error_summary", Text),
+    # meta_kv.data_revision 是 UUID hex，不是递增整数。
+    Column("data_revision", String(64)),
+    UniqueConstraint("source", "source_run_id", name="uq_ingestion_runs_source_run"),
+    Index("ix_ingestion_runs_status_finished", "status", "finished_at"),
+    Index("ix_ingestion_runs_complete_through", "complete_through"),
+    CheckConstraint(
+        "status IN ('running','succeeded','failed','dry_run')",
+        name="ck_ingestion_runs_status",
+    ),
+)
+
+
+# 每条源数据流最后一个已与目标事实在同一事务提交的 keyset cursor。
+collector_checkpoints = Table(
+    "collector_checkpoints",
+    metadata,
+    Column("source", String(40), primary_key=True),
+    Column("stream", String(40), primary_key=True),
+    Column("partition_key", String(80), primary_key=True),
+    Column("cursor_at", DATETIME),
+    Column("cursor_id", String(100)),
+    Column("updated_at", DATETIME, nullable=False),
+    Column("last_run_id", String(64)),
+    Column("config_hash", String(64), nullable=False),
+    Index("ix_collector_checkpoints_updated_at", "updated_at"),
+    CheckConstraint(
+        "(cursor_at IS NULL AND cursor_id IS NULL) OR "
+        "(cursor_at IS NOT NULL AND cursor_id IS NOT NULL)",
+        name="ck_collector_checkpoints_cursor_pair",
+    ),
+)
+
+
+# 每个香港自然日只有一行，保证换模型/Prompt 后也不会获得第二份预算。
+ai_daily_budget = Table(
+    "ai_daily_budget",
+    metadata,
+    Column("budget_date", Date, primary_key=True),
+    Column("policy_hash", String(64), nullable=False),
+    Column("request_limit", Integer, nullable=False, default=500, server_default="500"),
+    Column("requests_used", Integer, nullable=False, default=0, server_default="0"),
+    Column("status", String(20), nullable=False, default="open", server_default="open"),
+    Column("updated_at", DATETIME, nullable=False),
+    Index("ix_ai_daily_budget_status_date", "status", "budget_date"),
+    CheckConstraint("request_limit >= 0", name="ck_ai_daily_budget_limit"),
+    CheckConstraint(
+        "requests_used >= 0 AND requests_used <= request_limit",
+        name="ck_ai_daily_budget_used",
+    ),
+    CheckConstraint(
+        "status IN ('open','exhausted','closed')",
+        name="ck_ai_daily_budget_status",
+    ),
+)
+
+
+# 阶段二的 append-only 计数观察。NULL 仍表示源没有返回该计数，不能用 0 冒充。
+feed_counter_observations = Table(
+    "feed_counter_observations",
+    metadata,
+    Column("feed_id", BigInteger, primary_key=True, autoincrement=False),
+    Column("observed_at", DATETIME, primary_key=True),
+    Column("like_count", Integer),
+    Column("comment_count", Integer),
+    Column("image_count", Integer),
+    Column("share_count", Integer),
+    Column("browse_count", Integer),
+    Column("is_settled", Boolean, nullable=False, default=False, server_default="0"),
+    Column("source_run_id", String(250)),
+    Index("ix_feed_counter_observations_settled", "feed_id", "is_settled", "observed_at"),
+    CheckConstraint(
+        "(like_count IS NULL OR like_count >= 0) AND "
+        "(comment_count IS NULL OR comment_count >= 0) AND "
+        "(image_count IS NULL OR image_count >= 0) AND "
+        "(share_count IS NULL OR share_count >= 0) AND "
+        "(browse_count IS NULL OR browse_count >= 0)",
+        name="ck_feed_counter_observations_nonnegative",
+    ),
 )
 
 # ── 第三层：AI 标注（ADR-0017 取代 ADR-0010 的单表形态） ──────────────────
@@ -202,8 +327,8 @@ annotation_runs = Table(
     Column("prompt_version", String(40), nullable=False),
     Column("taxonomy_version", String(40), nullable=False),
     Column("schema_version", String(40), nullable=False),
-    Column("started_at", DateTime, nullable=False),
-    Column("finished_at", DateTime),
+    Column("started_at", DATETIME, nullable=False),
+    Column("finished_at", DATETIME),
     Column("status", String(20), nullable=False),  # 'running' | 'done' | 'failed'
     Column("input_count", Integer, nullable=False, default=0),
     Column("success_count", Integer, nullable=False, default=0),
@@ -231,11 +356,11 @@ annotation_jobs = Table(
     Column("priority", Integer, nullable=False, default=0),
     Column("attempts", Integer, nullable=False, default=0),
     # 租约：worker 崩溃后任务不能永远卡在 claimed。过期即可被重新领取。
-    Column("claimed_at", DateTime),
-    Column("lease_until", DateTime),
+    Column("claimed_at", DATETIME),
+    Column("lease_until", DATETIME),
     Column("last_error", Text),
-    Column("created_at", DateTime, nullable=False),
-    Column("updated_at", DateTime, nullable=False),
+    Column("created_at", DATETIME, nullable=False),
+    Column("updated_at", DATETIME, nullable=False),
     # 这条待办属于哪次「按 ETF × 时间段」的抽取（`analysis_scopes`）。`run(scope_id=…)`
     # 只领本 scope 的任务 —— 没有它，跑 3033 近 7 天时会把队列里别的产品、别的日期一起领走。
     # 可空：Gate 0–2 的影子任务没有 scope。
@@ -253,7 +378,7 @@ annotation_jobs = Table(
 worker_events = Table(
     "worker_events", metadata,
     Column("event_id", AUTO_PK, primary_key=True, autoincrement=True),
-    Column("ts", DateTime, nullable=False),
+    Column("ts", DATETIME, nullable=False),
     Column("level", String(10), nullable=False),
     Column("stage", String(12), nullable=False),
     Column("code", String(10)),
@@ -279,7 +404,7 @@ runtime_leases = Table(
     "runtime_leases", metadata,
     Column("name", String(80), primary_key=True),
     Column("owner", String(40), nullable=False),
-    Column("expires_at", DateTime, nullable=False),
+    Column("expires_at", DATETIME, nullable=False),
 )
 
 source_snapshots = Table(
@@ -288,7 +413,7 @@ source_snapshots = Table(
     Column("source", String(80), nullable=False),
     Column("input_hash", String(64), nullable=False),
     Column("payload_json", LONGTEXT, nullable=False),
-    Column("observed_at", DateTime, nullable=False),
+    Column("observed_at", DATETIME, nullable=False),
 )
 
 analysis_scopes = Table(
@@ -297,8 +422,8 @@ analysis_scopes = Table(
     Column("scope_id", String(40), primary_key=True),  # 时间前缀＋随机尾，同 run_id
     Column("task", String(40), nullable=False),
     Column("codes_json", Text, nullable=False),  # ["3033","7226"]
-    Column("date_from", DateTime, nullable=False),  # 闭区间起
-    Column("date_to", DateTime, nullable=False),  # 闭区间止（实现用半开 < to+1d）
+    Column("date_from", DATETIME, nullable=False),  # 闭区间起
+    Column("date_to", DATETIME, nullable=False),  # 闭区间止（实现用半开 < to+1d）
     Column("time_basis", String(20), nullable=False),  # 'feed_posted_at'（市场域口径）
     Column("with_baseline", Boolean, nullable=False, default=False),
     Column("prompt_version", String(40), nullable=False),
@@ -307,7 +432,7 @@ analysis_scopes = Table(
     # 抽取时的统计快照：候选数、各规则剔除数、可复用数、新排队数、token 估算……
     # 是 JSON 因为这些键会随规则演进而变，而它们只用来给人看与做报表。
     Column("stats_json", Text),
-    Column("created_at", DateTime, nullable=False),
+    Column("created_at", DATETIME, nullable=False),
 )
 
 # 产品 × 区间级的 AI 生成物（热议总结、舆情总结、主题命名、负面类别、阶段观点、话题、竞品原因）。
@@ -337,7 +462,7 @@ synthesis_outputs = Table(
     Column("evidence_ids_json", Text),
     Column("run_id", String(40), nullable=False),
     Column("review_state", String(20), nullable=False, default="pending"),
-    Column("created_at", DateTime, nullable=False),
+    Column("created_at", DATETIME, nullable=False),
     Column("supersedes_id", BigInteger),
     UniqueConstraint(
         "code", "range_key", "anchor", "kind", "subkey", "input_fingerprint",
@@ -372,7 +497,7 @@ annotations = Table(
     # 页面上挂哪一枚徽章（'needs_review' ⇒ 「AI 生成 · 待确认」）。发布规则的唯一实现
     # 处是 backend/providers/sql.py 的 `_current_annotations()`。
     Column("review_state", String(20), nullable=False, default="pending"),
-    Column("created_at", DateTime, nullable=False),
+    Column("created_at", DATETIME, nullable=False),
     # 重跑产生的新行指向被它取代的旧行。**不删旧行**：模型失败或回滚时要能回到上一版
     # （runbook §11.3「模型失败不得覆盖旧的已确认结果」）。
     Column("supersedes_id", BigInteger),
@@ -412,7 +537,7 @@ review_decisions = Table(
     Column("decision", String(20), nullable=False),  # approve|reject|correct
     Column("corrected_value_json", Text),
     Column("reason_code", String(40)),
-    Column("reviewed_at", DateTime, nullable=False),
+    Column("reviewed_at", DATETIME, nullable=False),
 )
 
 # 导入产出的元信息。最要紧的是 anchor：真实数据止于 2026-08-26，「今天」必须取
@@ -433,7 +558,7 @@ price_instruments = Table(
     Column("exchange", String(20), nullable=False),
     Column("name", String(255)),
     Column("timezone", String(40), nullable=False),
-    Column("verified_at", DateTime, nullable=False),
+    Column("verified_at", DATETIME, nullable=False),
 )
 
 price_bars = Table(
@@ -441,12 +566,12 @@ price_bars = Table(
     Column("code", String(10), primary_key=True),
     Column("provider", String(20), primary_key=True),
     Column("interval", String(10), primary_key=True),
-    Column("timestamp", DateTime, primary_key=True),
+    Column("timestamp", DATETIME, primary_key=True),
     Column("adjustment", String(30), primary_key=True),
     Column("session_date", String(10), nullable=False),
     *(Column(field, Numeric(20, 8), nullable=False) for field in ("open", "high", "low", "close")),
     Column("volume", BigInteger),
-    Column("fetched_at", DateTime, nullable=False),
+    Column("fetched_at", DATETIME, nullable=False),
 )
 
 price_syncs = Table(
@@ -458,5 +583,5 @@ price_syncs = Table(
     Column("status", String(30), nullable=False),
     Column("reason", String(80)),
     Column("row_count", Integer, nullable=False),
-    Column("updated_at", DateTime, nullable=False),
+    Column("updated_at", DATETIME, nullable=False),
 )

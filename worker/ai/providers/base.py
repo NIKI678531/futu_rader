@@ -64,6 +64,11 @@ class RunControl:
         self._cooldown_until = 0.0
         self._lock = threading.RLock()
         self.before_request = None
+        # Optional persistent admission hook. It is called for every real HTTP
+        # attempt (including transport retries) after the local cap check but
+        # before the in-memory counter advances. A database-backed hook lets
+        # multiple Airflow retries share one hard daily budget.
+        self.reserve_hook = None
         self.batch_sizes = Counter()
         self.recent_batches = deque(maxlen=20)
         self.latencies = deque(maxlen=1000)
@@ -101,6 +106,13 @@ class RunControl:
                         self.reason = "budget_exhausted"
                         self.stop_event.set()
                         raise RunStopped(self.reason)
+                    if self.reserve_hook is not None:
+                        try:
+                            self.reserve_hook()
+                        except RunStopped as exc:
+                            self.reason = str(exc) or "budget_exhausted"
+                            self.stop_event.set()
+                            raise
                     self.attempts += 1
                     self.retries += int(retry)
                     return

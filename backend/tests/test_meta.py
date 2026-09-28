@@ -4,6 +4,12 @@
 CLAUDE.md 的铁律 1、2 就已经破了，测试必须先红。逐字来源 PRD §3.3、§3.6。
 """
 
+from datetime import date, datetime, timedelta
+
+from sqlalchemy import delete, update
+
+from radar_db.schema import comments, feeds, ingestion_runs
+
 # PRD §3.6 状态体系（六态，STATUS_LEGEND 逐字）
 STATUS_LEGEND = [
     ("0", "已取得数据，且统计值确实为零。"),
@@ -30,6 +36,145 @@ def test_meta_returns_ok_envelope(client):
     r = client.get("/api/v1/meta")
     assert r.status_code == 200
     assert r.get_json()["status"] == "ok"
+
+
+def test_demo_collection_metadata_is_explicitly_unknown(client):
+    """演示 fixture 不是在线采集证据，不能把生成器行数冒充生产计数。"""
+    assert client.get("/api/v1/meta").get_json()["data"]["dataCollection"] == {
+        "freshness": "unavailable",
+        "commentCoverage": "unknown",
+        "sourceCompleteThrough": None,
+        "lastSuccessfulSyncAt": None,
+        "platformCommentCount": None,
+        "parsedCommentCount": None,
+    }
+
+
+def test_sql_collection_metadata_keeps_known_counts_when_run_state_is_unknown(sql_client):
+    """迁移来的历史事实可计数，但没有在线运行记录时不能宣称采集新鲜。"""
+    collection = sql_client.get("/api/v1/meta").get_json()["data"]["dataCollection"]
+    assert collection == {
+        "freshness": "unavailable",
+        "commentCoverage": "unknown",
+        "sourceCompleteThrough": None,
+        "lastSuccessfulSyncAt": None,
+        "platformCommentCount": 17,
+        "parsedCommentCount": 4,
+    }
+
+
+def test_empty_uncollected_sql_database_reports_null_instead_of_zero(sql_provider):
+    """空表在首次成功全量采集前是未知，不是经过检查后的零。"""
+    with sql_provider._engine.begin() as conn:
+        conn.execute(delete(comments))
+        conn.execute(delete(feeds))
+
+    collection = sql_provider.collection_metadata()
+    assert collection["commentCoverage"] == "unknown"
+    assert collection["platformCommentCount"] is None
+    assert collection["parsedCommentCount"] is None
+
+
+def test_successful_collection_run_exposes_coverage_counts_and_utc_timestamp(sql_provider):
+    finished = datetime(2026, 8, 26, 0, 5)
+    with sql_provider._engine.begin() as conn:
+        conn.execute(update(feeds).values(comment_coverage_status="complete"))
+        conn.execute(
+            update(feeds)
+            .where(feeds.c.feed_id == 2)
+            .values(comment_coverage_status="partial")
+        )
+        conn.execute(
+            ingestion_runs.insert().values(
+                run_id="sync-ok",
+                source="market_insight",
+                source_run_id="airflow-all-1",
+                source_kind="all",
+                status="succeeded",
+                started_at=finished - timedelta(minutes=5),
+                finished_at=finished,
+                complete_through=date(2026, 8, 25),
+            )
+        )
+
+    collection = sql_provider.collection_metadata()
+    assert collection == {
+        "freshness": "fresh",
+        "commentCoverage": "partial",
+        "sourceCompleteThrough": "2026-08-25",
+        "lastSuccessfulSyncAt": "2026-08-26T00:05:00Z",
+        "platformCommentCount": 17,
+        "parsedCommentCount": 4,
+    }
+
+
+def test_latest_failed_collection_marks_previous_success_stale(sql_provider):
+    finished = datetime(2026, 8, 26, 0, 5)
+    with sql_provider._engine.begin() as conn:
+        conn.execute(
+            ingestion_runs.insert(),
+            [
+                {
+                    "run_id": "sync-ok",
+                    "source": "market_insight",
+                    "source_run_id": "airflow-all-1",
+                    "source_kind": "all",
+                    "status": "succeeded",
+                    "started_at": finished - timedelta(minutes=5),
+                    "finished_at": finished,
+                    "complete_through": date(2026, 8, 25),
+                },
+                {
+                    "run_id": "sync-failed",
+                    "source": "market_insight",
+                    "source_run_id": "airflow-important-2",
+                    "source_kind": "important",
+                    "status": "failed",
+                    "started_at": finished + timedelta(hours=1),
+                    "finished_at": finished + timedelta(hours=1, minutes=2),
+                    "complete_through": None,
+                    "error_summary": "source unavailable",
+                },
+            ],
+        )
+
+    collection = sql_provider.collection_metadata()
+    assert collection["freshness"] == "stale"
+    assert collection["sourceCompleteThrough"] == "2026-08-25"
+    assert collection["lastSuccessfulSyncAt"] == "2026-08-26T00:05:00Z"
+
+
+def test_important_run_cannot_advance_source_complete_through(sql_provider):
+    finished = datetime(2026, 8, 26, 0, 5)
+    with sql_provider._engine.begin() as conn:
+        conn.execute(
+            ingestion_runs.insert(),
+            [
+                {
+                    "run_id": "sync-all",
+                    "source": "market_insight",
+                    "source_run_id": "airflow-all-1",
+                    "source_kind": "all",
+                    "status": "succeeded",
+                    "started_at": finished - timedelta(minutes=5),
+                    "finished_at": finished,
+                    "complete_through": date(2026, 8, 25),
+                },
+                {
+                    "run_id": "sync-important",
+                    "source": "market_insight",
+                    "source_run_id": "airflow-important-2",
+                    "source_kind": "important",
+                    "status": "succeeded",
+                    "started_at": finished + timedelta(hours=1),
+                    "finished_at": finished + timedelta(hours=1, minutes=2),
+                    # 即使调用方错误地写了更晚日期，读侧也只承认 all 的声明。
+                    "complete_through": date(2026, 8, 26),
+                },
+            ],
+        )
+
+    assert sql_provider.collection_metadata()["sourceCompleteThrough"] == "2026-08-25"
 
 
 def test_sql_data_version_changes_without_restart(sql_provider):

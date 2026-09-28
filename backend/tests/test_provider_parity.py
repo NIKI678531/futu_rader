@@ -160,12 +160,18 @@ def _shape(payload):
 # /meta 的验证声明：
 # - `aiValidationDetail`   `meta_kv.ai_validation` 的整份 JSON。两边都发这个键，但 demo 恒为
 #                          None，sql 有抽检记录时是 dict —— 类型比对要跳过它。
+#
+# /meta 的在线采集声明：
+# - `sourceCompleteThrough` / `lastSuccessfulSyncAt` / 两个 comment count 只在 sql 的采集
+#   控制面与事实表中有真值；demo 必须是 null，不能拿演示生成器冒充生产采集运行。
 EXTENSION_KEYS = frozenset({
     "reviewState", "evidenceIds", "labelStatus", "aiStatus", "reasonStatus",
     "key", "subkey", "aspect", "units", "points", "category",
     "heatUnknownPosts", "baseHeatUnknownPosts",
     "stale",
     "evidenceCount", "aiValidationDetail",
+    "sourceCompleteThrough", "lastSuccessfulSyncAt",
+    "platformCommentCount", "parsedCommentCount",
 })
 
 

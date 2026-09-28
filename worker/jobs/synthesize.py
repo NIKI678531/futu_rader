@@ -37,9 +37,11 @@ import logging
 import os
 import random
 import sys
+import threading
 import uuid
 from collections import defaultdict
-from datetime import date, datetime, time, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime
 from pathlib import Path
 
 from sqlalchemy import insert, select, update
@@ -62,6 +64,7 @@ from core.attitude import LOW_SAMPLE  # noqa: E402
 from core.calendar import PRESETS, build as build_range  # noqa: E402
 from radar_db import make_engine  # noqa: E402
 from radar_db.annotations_read import current_annotations  # noqa: E402
+from radar_db.events import emit  # noqa: E402
 from radar_db.schema import (  # noqa: E402
     NO_SUBJECT,
     analysis_scopes,
@@ -71,6 +74,7 @@ from radar_db.schema import (  # noqa: E402
     meta_kv,
     synthesis_outputs,
 )
+from radar_db.time_windows import hkt_range_utc_naive, utc_naive_to_hkt  # noqa: E402
 
 log = logging.getLogger("worker.synthesize")
 
@@ -85,6 +89,7 @@ EVIDENCE_PER_BUCKET = 6  # 每桶抽几条引文
 EVIDENCE_MAX_CHARS = 140
 COMPETITOR_TOP_K = 3
 COMPETITOR_MIN_EVIDENCE = 3
+WORKERS = 8
 
 
 # ── 工具 ────────────────────────────────────────────────────────────────
@@ -106,15 +111,11 @@ def read_anchor(engine):
 
 
 def _window(rng):
-    lo = datetime.combine(date.fromisoformat(rng["from"]), time.min)
-    hi = datetime.combine(date.fromisoformat(rng["to"]) + timedelta(days=1), time.min)
-    return lo, hi
+    return hkt_range_utc_naive(rng["from"], rng["to"])
 
 
 def _bench_window(rng):
-    lo = datetime.combine(date.fromisoformat(rng["benchFrom"]), time.min)
-    hi = datetime.combine(date.fromisoformat(rng["benchTo"]) + timedelta(days=1), time.min)
-    return lo, hi
+    return hkt_range_utc_naive(rng["benchFrom"], rng["benchTo"])
 
 
 def _bucket_index(rng):
@@ -185,7 +186,8 @@ class Material:
                 self.ann_ids.add(asp_row["annotation_id"])
             self.units.append({
                 "comment_id": unit[0], "attitude": a["value"],
-                "aspects": (asp_row or {}).get("value") or [], "posted_at": a["posted_at"],
+                "aspects": (asp_row or {}).get("value") or [],
+                "posted_at": utc_naive_to_hkt(a["posted_at"]),
                 "annotation_id": r["annotation_id"],
             })
         self.market_units = []
@@ -193,7 +195,8 @@ class Material:
             if m["value"] in ("bullish", "bearish", "neutral"):
                 self.ann_ids.add(m["annotation_id"])
                 self.market_units.append({"comment_id": unit[0], "market_direction": m["value"],
-                                          "posted_at": m["posted_at"], "annotation_id": m["annotation_id"]})
+                                          "posted_at": utc_naive_to_hkt(m["posted_at"]),
+                                          "annotation_id": m["annotation_id"]})
         self.compliance_hits = []
         for unit, c in comp.items():
             tags = (c["value"] or {}).get("tags") or []
@@ -215,7 +218,7 @@ class Material:
         if b_att:
             self.base_units = [
                 {"attitude": a["value"], "aspects": (b_asp.get(unit) or {}).get("value") or [],
-                 "posted_at": a["posted_at"]}
+                 "posted_at": utc_naive_to_hkt(a["posted_at"])}
                 for unit, a in b_att.items()
                 if (b_rel.get(unit) or {}).get("value") == "relevant"
             ]
@@ -470,14 +473,27 @@ class Synthesizer:
                       "low_sample": 0, "no_material": 0, "errors": 0,
                       "tok_in": 0, "tok_out": 0, "usage_known": True, "model": cfg.model}
         self._names = {p["code"]: p["name"] for p in master["products"]}
+        self._lock = threading.Lock()
+        self._tls = threading.local()
+        self.stop = threading.Event()
+
+    def _inc(self, key, n=1):
+        with self._lock:
+            self.stats[key] += n
+        local = getattr(self._tls, "counts", None)
+        if local is not None and key in local:
+            local[key] += n
 
     # 一条 (code, range) 的全流程
     def one(self, code, range_key, anchor, kinds):
+        self._tls.counts = {"calls": 0, "written": 0, "errors": 0, "skipped_same": 0, "low_sample": 0}
+        if self.stop.is_set():
+            return self._tls.counts
         rng = build_range(range_key, anchor)
         mat = Material(self.engine, code, rng, self.plex)
         if not mat.units and not mat.market_units:
-            self.stats["no_material"] += 1
-            return
+            self._inc("no_material")
+            return self._tls.counts
         product = {"code": code, "name": self._names.get(code, code)}
         rng_info = {"key": range_key, "from": rng["from"], "to": rng["to"], "label": rng["label"]}
         labels = {}
@@ -515,6 +531,7 @@ class Synthesizer:
                 facts, evidence, allowed, keys = cp
                 self._generate_batch(code, range_key, anchor, "competitor_reason", mat.ann_ids, facts, evidence,
                                      allowed, keys, product, rng_info, key_attr="code")
+        return self._tls.counts
 
     def _bucket_kind(self, mat, kind, product, rng_info, anchor):
         facts, evidence, allowed, keys = build_theme_payload(mat, kind)
@@ -570,16 +587,17 @@ class Synthesizer:
     # ── 调用与落库 ──
 
     def _call(self, kind, payload, allowed, expected_keys):
-        self.stats["calls"] += 1
+        self._inc("calls")
         comp = self.provider.complete_json(synth.system_prompt(kind), synth.user_message(kind, payload),
                                            synth.json_schema(kind), f"synth_{kind}")
         u = comp.usage
-        if u.input_tokens is None or u.output_tokens is None:
-            self.stats["usage_known"] = False
-        else:
-            self.stats["tok_in"] += u.input_tokens
-            self.stats["tok_out"] += u.output_tokens
-        self.stats["model"] = comp.model
+        with self._lock:
+            if u.input_tokens is None or u.output_tokens is None:
+                self.stats["usage_known"] = False
+            else:
+                self.stats["tok_in"] += u.input_tokens
+                self.stats["tok_out"] += u.output_tokens
+            self.stats["model"] = comp.model
         return synth.parse(kind, comp.data, allowed, expected_keys)
 
     def _payload(self, product, rng_info, facts, evidence):
@@ -593,7 +611,7 @@ class Synthesizer:
                   product, rng_info, to_value):
         fp = fingerprint(kind, ann_ids, facts, self.cfg)
         if not self.force and self._exists(code, range_key, anchor, kind, subkey, fp):
-            self.stats["skipped_same"] += 1
+            self._inc("skipped_same")
             return None
         if self.dry_run:
             log.info("[dry-run] %s %s %s subkey=%s 证据 %d 条", code, range_key, kind, subkey, len(evidence))
@@ -601,7 +619,7 @@ class Synthesizer:
         try:
             obj = self._call(kind, self._payload(product, rng_info, facts, evidence), allowed, None)
         except (SchemaError, TransientError) as exc:
-            self.stats["errors"] += 1
+            self._inc("errors")
             log.warning("%s %s %s 失败：%s", code, range_key, kind, str(exc)[:200])
             return None
         value = to_value(obj)
@@ -618,7 +636,7 @@ class Synthesizer:
         fp = fingerprint(kind, ann_ids, facts, self.cfg)
         existing = self._existing_rows(code, range_key, anchor, kind, fp)
         if not self.force and {row[key_attr] for row in existing} == set(keys):
-            self.stats["skipped_same"] += 1
+            self._inc("skipped_same")
             return existing
         if self.dry_run:
             log.info("[dry-run] %s %s %s ×%d 证据 %d 条", code, range_key, kind, len(keys), len(evidence))
@@ -626,7 +644,7 @@ class Synthesizer:
         try:
             obj = self._call(kind, self._payload(product, rng_info, facts, evidence), allowed, keys)
         except (SchemaError, TransientError) as exc:
-            self.stats["errors"] += 1
+            self._inc("errors")
             log.warning("%s %s %s 失败：%s", code, range_key, kind, str(exc)[:200])
             return None
         rows = []
@@ -641,9 +659,9 @@ class Synthesizer:
     def _write_low_sample(self, code, range_key, anchor, kind, mat):
         fp = fingerprint(kind, mat.ann_ids, {"status": "low_sample", "pos": mat.pos, "neg": mat.neg}, self.cfg)
         if self._exists(code, range_key, anchor, kind, NO_SUBJECT, fp):
-            self.stats["skipped_same"] += 1
+            self._inc("skipped_same")
             return
-        self.stats["low_sample"] += 1
+        self._inc("low_sample")
         if not self.dry_run:
             self._write(code, range_key, anchor, kind, NO_SUBJECT, fp,
                         {"status": "low_sample", "sample": mat.pos + mat.neg}, [], "pending")
@@ -696,7 +714,7 @@ class Synthesizer:
                     run_id=self.run_id, review_state=review, created_at=now, supersedes_id=prev,
                 )
             )
-        self.stats["written"] += 1
+        self._inc("written")
 
     # ── run 记录 ──
 
@@ -727,31 +745,71 @@ class Synthesizer:
             ))
 
 
-def run(engine, cfg, *, codes, ranges=DEFAULT_RANGES, kinds=KINDS, provider=None, dry_run=False, force=False,
-    master=None, anchor_override=None):
+def run(engine, cfg, *, codes=None, ranges=DEFAULT_RANGES, kinds=KINDS, provider=None, dry_run=False, force=False,
+        master=None, pairs=None, workers=WORKERS, scope_id=None, anchor_override=None):
+    """Run Layer B concurrently by ``(code, range)`` and clear only clean pairs."""
     master = master or load_master()
     anchor = anchor_override or read_anchor(engine)
     if anchor is None:
         raise SystemExit("meta_kv 里没有 anchor：先跑 import_dump / etl")
+    if pairs is None:
+        if codes is None:
+            raise ValueError("给 codes 或 pairs")
+        pairs = [(code, range_key) for code in codes for range_key in ranges]
+    pairs = list(pairs)
     provider = provider or (None if dry_run else build_provider(cfg))
     s = Synthesizer(engine, cfg, provider, master, dry_run=dry_run, force=force)
     s.open_run()
+    clean = []
+    permanent = None
+    full_kinds = set(kinds) == set(KINDS)
     try:
-        for code in codes:
-            for rk in ranges:
+        with ThreadPoolExecutor(max_workers=max(1, int(workers or 1)), thread_name_prefix="synth") as pool:
+            futures = {
+                pool.submit(s.one, code, range_key, anchor, set(kinds)): (code, range_key)
+                for code, range_key in pairs
+            }
+            for future in as_completed(futures):
+                code, range_key = futures[future]
                 try:
-                    s.one(code, rk, anchor, set(kinds))
+                    counts = future.result()
                 except PermanentError as exc:
-                    log.error("永久错误，中止：%s", exc)
-                    s.stats["errors"] += 1
-                    raise
+                    if permanent is None:
+                        permanent = exc
+                        log.error("永久错误，中止：%s", exc)
+                    s._inc("errors")
+                    s.stop.set()
+                    continue
+                if s.stop.is_set() and not counts["calls"] and not counts["written"]:
+                    continue
+                if not dry_run and counts["errors"] == 0:
+                    clean.append((code, range_key))
+                if not dry_run and (counts["written"] or counts["errors"]):
+                    message = f"{code} {range_key} 汇总写入 {counts['written']}（调用 {counts['calls']}）"
+                    if counts["errors"]:
+                        message += f" / 失败 {counts['errors']}"
+                    emit(
+                        engine,
+                        "L3",
+                        message,
+                        level="warn" if counts["errors"] else "info",
+                        code=code,
+                        scope_id=scope_id,
+                        run_id=s.run_id,
+                        data={"range": range_key, **counts},
+                    )
     finally:
         s.close_run()
-    if not dry_run and s.stats["errors"] == 0 and set(kinds) == set(KINDS):
+    if permanent is not None:
+        raise permanent
+    if not dry_run and full_kinds and clean:
         from radar_db.revisions import mark_synthesis, bump_revision
         with engine.begin() as conn:
-            mark_synthesis(conn, codes, False, ranges)
+            for code, range_key in clean:
+                mark_synthesis(conn, [code], False, [range_key])
             bump_revision(conn, "synthesis")
+    s.stats["pairs"] = len(pairs)
+    s.stats["pairs_clean"] = len(clean)
     return s.stats
 
 
@@ -771,6 +829,7 @@ def main(argv=None):
     ap.add_argument("--kinds", default=",".join(KINDS))
     ap.add_argument("--dry-run", action="store_true", help="只组原料不调模型")
     ap.add_argument("--force", action="store_true", help="指纹相同也重生成")
+    ap.add_argument("--workers", type=int, default=WORKERS, help="(code, range) 并行线程数")
     ap.add_argument("--max-http-requests", type=int)
     args = ap.parse_args(argv)
     if not args.dry_run and (args.max_http_requests is None or args.max_http_requests < 1):
@@ -791,6 +850,7 @@ def main(argv=None):
         try:
             stats = run(engine, cfg, codes=codes, ranges=[r.strip() for r in args.ranges.split(",")],
                         kinds=[k.strip() for k in args.kinds.split(",")], dry_run=args.dry_run, force=args.force,
+                        workers=args.workers,
                         provider=build_provider(cfg, control=control) if control else None)
         except RunStopped:
             print(json.dumps(control.snapshot()))

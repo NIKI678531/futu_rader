@@ -1,7 +1,7 @@
 # 构建上下文是**仓库根**，不是 worker/ —— 见 docker-compose.yml 顶部注释。
 FROM python:3.11-slim
 
-WORKDIR /app
+WORKDIR /app/worker
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -12,11 +12,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ \
     && rm -rf /var/lib/apt/lists/*
 
-COPY worker/requirements.txt .
+COPY worker/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-COPY worker/ /app
+COPY worker/ /app/worker
 # 表结构 backend 与 worker 共用一份，源在仓库根（radar_db/__init__.py 说明了为什么）。
 COPY radar_db/ /app/radar_db
 # Layer B（jobs/synthesize.py）以只读方式 import backend/core 的叶子模块组事实 JSON ——

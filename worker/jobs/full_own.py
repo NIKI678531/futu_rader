@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sys
+import threading
 from contextlib import nullcontext
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
@@ -17,12 +18,16 @@ for folder in (ROOT, ROOT / "worker", ROOT / "backend"):
 
 from ai import config
 from core.calendar import PRESETS, build
-from jobs import annotate, extract, pipeline
+from jobs import annotate, classify, extract, pipeline
 from radar_db import make_engine
 from radar_db.events import emit
 from radar_db.leases import WorkerLease
+from radar_db.revisions import ai_source_version
 from radar_db.schema import analysis_scopes, annotation_jobs, comments, feeds, meta_kv
 from radar_db.scope_jobs import scope_condition
+from radar_db.time_windows import utc_naive_to_hkt
+
+log = logging.getLogger("worker.full_own")
 
 
 def save_progress(engine, progress):
@@ -34,9 +39,9 @@ def save_progress(engine, progress):
 
 def prepare(engine, cfg, anchor, codes, *, ranges=None, optimized=False, page_size=1000):
     with engine.connect() as conn:
-        source_version = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
-            meta_kv.c.k.in_(("data_revision", "etl_generation")),
-        )).all())
+        source_version = ai_source_version(dict(conn.execute(
+            select(meta_kv.c.k, meta_kv.c.v)
+        ).all()))
     windows = [build(key, anchor) for key in (ranges or PRESETS)]
     start = min(date.fromisoformat(window["benchFrom"]) for window in windows)
     end = datetime.combine(anchor, time.min)
@@ -80,6 +85,48 @@ def queue_status(engine, scope_id):
         ).group_by(annotation_jobs.c.status)).all())
 
 
+class StudentChannel(threading.Thread):
+    """Continuously drain the CPU student stage while the LLM channel runs."""
+
+    def __init__(self, engine, cfg, state, *, idle_seconds=5, model_dir=None):
+        super().__init__(name="student-channel", daemon=True)
+        self.engine, self.cfg, self.state = engine, cfg, state
+        self.idle_seconds, self.model_dir = idle_seconds, model_dir
+        self.stop_event = threading.Event()
+        self.rounds = 0
+
+    def run(self):
+        while not self.stop_event.is_set():
+            processed = 0
+            for code, scope_id in list(self.state.get("scopes", {}).items()):
+                if self.stop_event.is_set():
+                    break
+                try:
+                    stats = classify.run(
+                        self.engine,
+                        self.cfg,
+                        scope_id=scope_id,
+                        model_dir=self.model_dir,
+                    )
+                    processed += stats["input"]
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("学生通道 %s 失败", code)
+                    emit(
+                        self.engine,
+                        "orchestrator",
+                        f"{code} 学生通道失败：{str(exc)[:160]}",
+                        level="error",
+                        code=code,
+                        scope_id=scope_id,
+                    )
+            self.rounds += 1
+            if processed == 0:
+                self.stop_event.wait(self.idle_seconds)
+
+    def stop(self):
+        self.stop_event.set()
+
+
 def prioritize_scope(engine, scope_id, anchor, *, own, daily=False):
     changes = defaultdict(list)
     for target_type, source in (
@@ -95,7 +142,8 @@ def prioritize_scope(engine, scope_id, anchor, *, own, daily=False):
             for job_id, priority, posted_at in rows:
                 updated = annotate.job_priority(posted_at, anchor, own=own, current=True)
                 if daily and posted_at is not None:
-                    updated = 100000 - (anchor - posted_at.date()).days * 100 + (2 if own else 0)
+                    posted_day = utc_naive_to_hkt(posted_at).date()
+                    updated = 100000 - (anchor - posted_day).days * 100 + (2 if own else 0)
                 if priority != updated:
                     changes[updated].append(job_id)
     with engine.begin() as conn:
@@ -108,9 +156,11 @@ def prioritize_scope(engine, scope_id, anchor, *, own, daily=False):
 
 def source_state(engine):
     with engine.connect() as conn:
-        return dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
-            meta_kv.c.k.in_(("anchor", "data_revision", "etl_generation")),
-        )).all())
+        values = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v)).all())
+    return {
+        **({"anchor": values["anchor"]} if values.get("anchor") else {}),
+        **ai_source_version(values),
+    }
 
 
 def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
@@ -158,9 +208,11 @@ def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
                 order.remove(code)
                 order.append(code)
                 before = queue_status(engine, scopes[code])
+                classify.run(engine, cfg, scope_id=scopes[code])
                 result = pipeline.run(engine, cfg, scopes[code], provider=provider,
                                       max_items=cfg.micro_batch_size * cfg.concurrency,
-                                      ranges=plan["ranges"], anchor_override=anchor, audit_report=False)
+                                      ranges=plan["ranges"], anchor_override=anchor, audit_report=False,
+                                      synth_workers=cfg.concurrency, stage=annotate.STAGE_LLM)
                 after = queue_status(engine, scopes[code])
                 priorities[code] = priority_for(code)
                 row = progress["products"][code]
@@ -193,6 +245,8 @@ def main():
     parser.add_argument("--anchor")
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--max-items", type=int, default=300)
+    parser.add_argument("--student-model-dir", help="学生权重目录（默认 STUDENT_MODEL_DIR）")
+    parser.add_argument("--no-student", action="store_true", help="不开学生推理，评论任务全部放行主模型")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--ranges", default=",".join(PRESETS))
     parser.add_argument("--max-http-requests", type=int, required=True)
@@ -223,19 +277,21 @@ def main():
     with WorkerLease(engine, "own-analysis") as lease, control.interruptible():
         emit(engine, "orchestrator", f"Starting LLM analysis for {len(codes)} products: {','.join(ranges)}")
         scopes, start = prepare(engine, cfg, anchor, codes, ranges=ranges)
+        student_state = {"scopes": scopes}
         for code, scope_id in scopes.items():
             prioritize_scope(engine, scope_id, anchor, own=ownership[code] == "own")
         with engine.connect() as conn:
-            source_version = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
-                meta_kv.c.k.in_(("data_revision", "etl_generation")),
-            )).all())
+            source_version = ai_source_version(dict(conn.execute(
+                select(meta_kv.c.k, meta_kv.c.v)
+            ).all()))
             saved = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "own_analysis_progress")).scalar()
         prior = json.loads(saved) if saved else {}
         reusable = (prior.get("anchor") == anchor.isoformat() and prior.get("model") == cfg.model
                     and prior.get("sourceVersion", {}) == source_version)
         progress = {"anchor": anchor.isoformat(), "baselineFrom": start.isoformat(), "products": {},
                     "status": "running", "model": cfg.model, "batchSize": cfg.micro_batch_size,
-                    "sourceVersion": source_version, "scope": "all" if args.all else "own", "ranges": ranges}
+                    "sourceVersion": source_version, "scope": "all" if args.all else "own", "ranges": ranges,
+                    "student": not args.no_student}
         for code, scope_id in scopes.items():
             previous = prior.get("products", {}).get(code, {})
             status = queue_status(engine, scope_id)
@@ -244,6 +300,18 @@ def main():
             progress["products"][code] = {"scope": scope_id, "queue": status, "complete": complete}
         save_progress(engine, progress)
         order = sorted(codes, key=lambda code: sum(count for state, count in progress["products"][code]["queue"].items() if state != "done"))
+
+        student = None
+        if args.watch and not args.no_student:
+            student = StudentChannel(engine, cfg, student_state, model_dir=args.student_model_dir)
+            student.start()
+            emit(engine, "orchestrator", "学生通道线程已启动（与主模型通道并行）")
+
+        def run_student_inline(scope_id):
+            if args.no_student:
+                routed = classify.route_all_to_llm(engine, scope_id, None, "--no-student")
+                return {"input": routed, "routed": routed}
+            return classify.run(engine, cfg, scope_id=scope_id, model_dir=args.student_model_dir)
 
         def tick():
             nonlocal scopes, start, anchor, source_version, order
@@ -262,13 +330,14 @@ def main():
                 return
             with engine.connect() as conn:
                 current_anchor = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar_one()
-                current_source = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
-                    meta_kv.c.k.in_(("data_revision", "etl_generation")),
-                )).all())
+                current_source = ai_source_version(dict(conn.execute(
+                    select(meta_kv.c.k, meta_kv.c.v)
+                ).all()))
             if current_source != source_version or (not args.anchor and current_anchor != anchor.isoformat()):
                 if not args.anchor:
                     anchor = date.fromisoformat(current_anchor)
                 scopes, start = prepare(engine, cfg, anchor, codes, ranges=ranges)
+                student_state["scopes"] = scopes
                 source_version = current_source
                 progress.update(status="running", anchor=anchor.isoformat(), baselineFrom=start.isoformat())
                 progress["sourceVersion"] = source_version
@@ -291,9 +360,29 @@ def main():
             status = queue_status(engine, scopes[code])
             if status.get("dead") or status.get("failed"):
                 progress["products"][code]["blocked"] = "failed_jobs"
+            if student is None:
+                student_stats = run_student_inline(scopes[code])
+                if student_stats["input"]:
+                    emit(
+                        engine,
+                        "orchestrator",
+                        f"{code} 学生段：{student_stats['input']:,} 条 → 路由主模型 {student_stats['routed']:,}",
+                        code=code,
+                        scope_id=scopes[code],
+                        data={"input": student_stats["input"], "routed": student_stats["routed"]},
+                    )
             emit(engine, "L2", f"Processing {code}", code=code, scope_id=scopes[code], data=status)
             try:
-                result = pipeline.run(engine, cfg, scopes[code], max_items=args.max_items, ranges=ranges, provider=provider)
+                result = pipeline.run(
+                    engine,
+                    cfg,
+                    scopes[code],
+                    max_items=args.max_items,
+                    ranges=ranges,
+                    provider=provider,
+                    synth_workers=cfg.concurrency,
+                    stage=annotate.STAGE_LLM,
+                )
             except RunStopped:
                 result = {"complete": False, "aborted": control.reason}
             progress["products"][code].update(queue=queue_status(engine, scopes[code]),
@@ -311,26 +400,31 @@ def main():
             save_progress(engine, progress)
             print(json.dumps({"code": code, **progress["products"][code]}, ensure_ascii=True), flush=True)
 
-        if args.watch:
-            scheduler = BlockingScheduler(timezone="Asia/Hong_Kong")
-            logging.getLogger("apscheduler").setLevel(logging.ERROR)
-            if args.sync_prices and os.getenv("FMP_API_KEY"):
-                from jobs.sync_prices import sync
-                from market_data.fmp import FmpClient
-                scheduler.add_job(lambda: sync(engine, FmpClient(), codes, start, anchor, force=True),
-                                  "interval", hours=1, max_instances=1, coalesce=True)
-            scheduler.add_job(tick, "interval", seconds=5, max_instances=1, coalesce=True,
-                              next_run_time=datetime.now())
-            try:
-                scheduler.start()
-            except (KeyboardInterrupt, SystemExit):
-                scheduler.shutdown(wait=True)
-        else:
-            for _ in codes:
-                tick()
-                if control.stop_event.is_set():
-                    break
-            return 0 if all(row["complete"] for row in progress["products"].values()) else 2
+        try:
+            if args.watch:
+                scheduler = BlockingScheduler(timezone="Asia/Hong_Kong")
+                logging.getLogger("apscheduler").setLevel(logging.ERROR)
+                if args.sync_prices and os.getenv("FMP_API_KEY"):
+                    from jobs.sync_prices import sync
+                    from market_data.fmp import FmpClient
+                    scheduler.add_job(lambda: sync(engine, FmpClient(), codes, start, anchor, force=True),
+                                      "interval", hours=1, max_instances=1, coalesce=True)
+                scheduler.add_job(tick, "interval", seconds=5, max_instances=1, coalesce=True,
+                                  next_run_time=datetime.now())
+                try:
+                    scheduler.start()
+                except (KeyboardInterrupt, SystemExit):
+                    scheduler.shutdown(wait=True)
+            else:
+                for _ in codes:
+                    tick()
+                    if control.stop_event.is_set():
+                        break
+                return 0 if all(row["complete"] for row in progress["products"].values()) else 2
+        finally:
+            if student is not None:
+                student.stop()
+                student.join(timeout=30)
 
 
 if __name__ == "__main__":

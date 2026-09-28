@@ -39,7 +39,7 @@ import sys
 import threading
 import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 
 from sqlalchemy import and_, func, insert, or_, select, update, tuple_
 from sqlalchemy.exc import IntegrityError
@@ -58,6 +58,7 @@ from ai.lexicon import product_aliases  # noqa: E402
 from ai.prompts import SCHEMA_OF, get as get_prompt  # noqa: E402
 from ai.providers import PermanentError, TransientError, build as build_provider  # noqa: E402
 from radar_db import make_engine  # noqa: E402
+from radar_db.events import emit  # noqa: E402
 from radar_db.schema import (  # noqa: E402
     NO_SUBJECT,
     annotation_evidence,
@@ -67,6 +68,7 @@ from radar_db.schema import (  # noqa: E402
     comments,
     feeds,
 )
+from radar_db.time_windows import hkt_range_utc_naive, utc_naive_to_hkt  # noqa: E402
 
 log = logging.getLogger("worker.annotate")
 
@@ -75,6 +77,13 @@ _HUMAN_SETTLED = ("approved", "corrected")
 
 LEASE_MINUTES = 15
 FILL_MISSING_STAGE = "llm_fill"  # annotation_jobs.stage is VARCHAR(10)
+STAGE_STUDENT = "student"
+STAGE_LLM = "llm"
+
+
+def default_stage(task):
+    """Return the first processing stage for a newly queued task."""
+    return STAGE_STUDENT if task == "comment_product" else STAGE_LLM
 
 # 帖子正文作为评论上下文时只带开头这么多字。一批 30 条常来自同一篇帖子，正文按 feed_id
 # 只放一次（见 `_user_message_with_context`），但仍要有上限 —— 长文会把系统提示挤出缓存窗口。
@@ -147,7 +156,7 @@ def new_run_id():
 def recency_tier(posted_at, anchor):
     if posted_at is None or anchor is None:
         return 0
-    day = posted_at.date() if isinstance(posted_at, datetime) else posted_at
+    day = utc_naive_to_hkt(posted_at).date() if isinstance(posted_at, datetime) else posted_at
     anchor_day = anchor.date() if isinstance(anchor, datetime) else anchor
     age = max(0, (anchor_day - day).days)
     for max_days, bonus in ((7, 30), (14, 20), (30, 10)):
@@ -239,7 +248,7 @@ def job_row_for_comment(cfg, prompt, schema_version, row, *, priority=0, scope_i
         "priority": priority,
         "attempts": 0,
         "scope_id": scope_id,
-        "stage": "llm",
+        "stage": default_stage(task),
         "created_at": now,
         "updated_at": now,
     }
@@ -334,7 +343,7 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None
                     "priority": priority_of(posted_at, code) if priority_of else priority,
                     "attempts": 0,
                     "scope_id": scope_id,
-                    "stage": "llm",
+                    "stage": default_stage(task),
                     "created_at": now,
                     "updated_at": now,
                 }
@@ -498,7 +507,7 @@ def _insert_jobs(engine, rows):
 # ── 领取 ───────────────────────────────────────────────────────────────
 
 
-def claim(engine, task, n, *, now=None, scope_id=None, grouped=False):
+def claim(engine, task, n, *, now=None, scope_id=None, grouped=False, stage=None):
     """领取至多 n 条待办，打上租约。
 
     可领取 = `pending`，或 `claimed` 但租约已过期。后者是 worker 崩溃后的回收路径 ——
@@ -506,6 +515,8 @@ def claim(engine, task, n, *, now=None, scope_id=None, grouped=False):
 
     `scope_id` 给了就只领这个抽取范围的任务（ADR-0020）：跑「3033 近 7 天」时，
     队列里别的产品、别的日期的待办一条都不该被带走。
+
+    `stage` 给了就只领这一段的任务（ADR-0021）；不给则保持旧调用方的不分段行为。
     """
     now = now or clock.now()
     lease_until = now + timedelta(minutes=LEASE_MINUTES)
@@ -522,6 +533,8 @@ def claim(engine, task, n, *, now=None, scope_id=None, grouped=False):
                 ),
             )
         )
+        if stage is not None:
+            q = q.where(annotation_jobs.c.stage == stage)
         if scope_id is not None:
             from radar_db.scope_jobs import scope_condition
             q = q.where(scope_condition(scope_id))
@@ -541,8 +554,9 @@ def claim(engine, task, n, *, now=None, scope_id=None, grouped=False):
             q = q.where(annotation_jobs.c.subject_code == first["subject_code"],
                         feeds.c.code == first["feed_code"])
             if first["posted_at"] is not None:
-                day = datetime.combine(first["posted_at"].date(), time.min)
-                q = q.where(feeds.c.posted_at >= day, feeds.c.posted_at < day + timedelta(days=1))
+                day = utc_naive_to_hkt(first["posted_at"]).date()
+                lo, hi = hkt_range_utc_naive(day, day)
+                q = q.where(feeds.c.posted_at >= lo, feeds.c.posted_at < hi)
             else:
                 q = q.where(annotation_jobs.c.job_id == first["job_id"])
         q = (
@@ -594,11 +608,13 @@ def _merge(stats, local):
 
 
 def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=None,
-        scope_id=None, budget_requests=None):
+        scope_id=None, budget_requests=None, stage=None):
     """跑一轮标注。返回 run 统计。
 
     `budget_requests`：本轮最多**领取**多少批（≈ 请求数，不含重试与二分）。
     价格未知时这是唯一能卡住花费的旋钮 —— 条数×批大小算出来的请求数是可以对着账单核的。
+
+    `stage` 只领取指定漏斗段；不给则兼容直接调用时处理所有阶段。
     """
     cfg = cfg or config.load()
     provider = provider or build_provider(cfg)
@@ -610,6 +626,7 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
     run_id = new_run_id()
     started = clock.now()
     stats = _fresh_stats(cfg, run_id, task)
+    stats["stage"] = stage
     workers = max(1, int(cfg.concurrency or 1))
 
     with engine.begin() as conn:
@@ -640,7 +657,7 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
                 and (budget_requests is None or batches_started < budget_requests)
             ):
                 jobs = claim(engine, task, min(batch_size, budget), scope_id=scope_id,
-                             grouped=cfg.grouped_batches)
+                             grouped=cfg.grouped_batches, stage=stage)
                 if not jobs:
                     break
                 if stop_event.is_set():
@@ -655,14 +672,16 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
                     jobs, _local_stats(),
                     stop_event=stop_event,
                 )
-                inflight[fut] = len(jobs)
+                inflight[fut] = (len(jobs), jobs[0]["subject_code"] or None)
             if not inflight:
                 break
             done, _ = wait(list(inflight), return_when=FIRST_COMPLETED)
             for fut in done:
-                inflight.pop(fut)
+                n_jobs, batch_code = inflight.pop(fut)
                 try:
-                    _merge(stats, fut.result())
+                    local = fut.result()
+                    _merge(stats, local)
+                    _emit_batch(engine, task, run_id, scope_id, batch_code, n_jobs, local)
                 except _Abort as exc:
                     # 别的线程可能同时撞上同一个永久错误；记第一条即可。
                     if stats["aborted"] is None:
@@ -684,21 +703,91 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
                 and getattr(provider, "supports_generation", True)
             ),
         )
+        if stats["aborted"]:
+            emit(
+                engine,
+                _STAGE_OF.get(task, "L2"),
+                f"{task} 中止：{stats['aborted'][:160]}",
+                level="error",
+                scope_id=scope_id,
+                run_id=run_id,
+            )
 
     return stats
 
 
+_STAGE_OF = {"comment_product": "L2", "kol_comment_opinion": "L2", "post_annotation": "L2"}
+_TASK_LABEL = {"comment_product": "评论", "kol_comment_opinion": "KOL 评论", "post_annotation": "帖子"}
+
+
+def _emit_batch(engine, task, run_id, scope_id, code, n_jobs, local):
+    """Record one concise event after a Luna batch finishes."""
+    label = _TASK_LABEL.get(task, task)
+    message = f"{code or '—'} Luna {label}批 {n_jobs} → 写入 {local['success']}"
+    if local["error"]:
+        message += f" / 失败 {local['error']}"
+    if local["requests"] > 1:
+        message += f"（{local['requests']} 次请求）"
+    emit(
+        engine,
+        _STAGE_OF.get(task, "L2"),
+        message,
+        level="warn" if local["error"] else "info",
+        code=code,
+        scope_id=scope_id,
+        run_id=run_id,
+        data={
+            "task": task,
+            "n": n_jobs,
+            "success": local["success"],
+            "error": local["error"],
+            "requests": local["requests"],
+        },
+    )
+
+
+def _mark_touched_ranges(conn, run_id, mark_synthesis, ranges_touching):
+    """Mark only synthesis windows intersecting comments changed by this run."""
+    from datetime import date
+
+    from radar_db.schema import meta_kv
+
+    anchor_s = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar()
+    anchor = date.fromisoformat(anchor_s[:10]) if anchor_s else None
+    spans = conn.execute(
+        select(annotations.c.subject_code, func.min(feeds.c.posted_at), func.max(feeds.c.posted_at))
+        .select_from(
+            annotations
+            .join(
+                comments,
+                and_(annotations.c.target_type == "comment", comments.c.comment_id == annotations.c.target_id),
+            )
+            .join(feeds, feeds.c.feed_id == comments.c.feed_id)
+        )
+        .where(annotations.c.run_id == run_id)
+        .group_by(annotations.c.subject_code)
+    ).all()
+    for code, lo, hi in spans:
+        if not code:
+            continue
+        if anchor is None or lo is None or hi is None:
+            mark_synthesis(conn, [code], True)
+            continue
+        touched = ranges_touching(
+            anchor,
+            utc_naive_to_hkt(lo).date(),
+            utc_naive_to_hkt(hi).date(),
+        )
+        if touched:
+            mark_synthesis(conn, [code], True, touched)
+
+
 def _close_run(engine, run_id, stats, *, mark_synthesis_dirty=True):
-    from radar_db.revisions import bump_revision, mark_synthesis
+    from radar_db.revisions import bump_revision, mark_synthesis, ranges_touching
     with engine.begin() as conn:
         bump_revision(conn, "annotation")
         if mark_synthesis_dirty:
-            changed_codes = conn.execute(
-                select(annotations.c.subject_code)
-                .where(annotations.c.run_id == run_id)
-                .distinct()
-            ).scalars()
-            mark_synthesis(conn, list(changed_codes), True)
+            _mark_touched_ranges(conn, run_id, mark_synthesis, ranges_touching)
         conn.execute(
             update(annotation_runs)
             .where(annotation_runs.c.run_id == run_id)
@@ -762,7 +851,8 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
         packed, oversized = pack_items(
             list(zip(usable, payloads)), key_of=lambda entry: (
                 entry[0][0]["subject_code"], entry[0][1].get("code"),
-                entry[0][1].get("posted_at").date() if entry[0][1].get("posted_at") else None),
+                utc_naive_to_hkt(entry[0][1].get("posted_at")).date()
+                if entry[0][1].get("posted_at") else None),
             payload_of=lambda entry: entry[1], system=prompt.SYSTEM, render=prompt.user_message,
             schema=schemas.batch_json_schema(task, schema_version), policy=policy,
         )
@@ -860,6 +950,7 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
         return local
 
     latest_sources = _load_sources(engine, task, [job for job, _ in usable])
+    to_write = []
     for job, src in usable:
         if _item_id(task, job) in invalid:
             continue
@@ -871,13 +962,10 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
                              .values(status="superseded", lease_until=None, last_error="Source changed during inference"))
             local["error"] += 1
             continue
-        try:
-            _write(engine, task, job, src, item, run_id, schema_version)
-            local["success"] += 1
-        except Exception as exc:  # noqa: BLE001
-            log.exception("写库失败 job=%s", job["job_id"])
-            _fail(engine, job, f"写库失败：{exc}")
-            local["error"] += 1
+        to_write.append((job, src, item))
+    ok, bad = _write_batch(engine, task, to_write, run_id, schema_version)
+    local["success"] += ok
+    local["error"] += bad
     if invalid:
         rejected = [(job, src) for job, src in usable if _item_id(task, job) in invalid]
         if by_id and depth < 6:
@@ -895,6 +983,30 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
         else:
             _retry_or_dead(engine, cfg, rejected, local, "Invalid or missing batch items")
     return local
+
+
+def _write_batch(engine, task, items, run_id, schema_version="v1"):
+    """Write a batch atomically, then isolate individual bad rows on failure."""
+    if not items:
+        return 0, 0
+    try:
+        with engine.begin() as conn:
+            for job, src, item in items:
+                _write(engine, task, job, src, item, run_id, schema_version, conn)
+        return len(items), 0
+    except Exception as exc:  # noqa: BLE001
+        if len(items) == 1:
+            job = items[0][0]
+            log.exception("写库失败 job=%s", job["job_id"])
+            _fail(engine, job, f"写库失败：{exc}")
+            return 0, 1
+        log.warning("整批写库失败（%s），退化为逐条写", str(exc)[:120])
+        ok = bad = 0
+        for item in items:
+            item_ok, item_bad = _write_batch(engine, task, [item], run_id, schema_version)
+            ok += item_ok
+            bad += item_bad
+        return ok, bad
 
 
 def _record_usage(comp, stats):
@@ -1057,8 +1169,10 @@ def _kinds_for(task, item, src, schema_version):
     return kinds
 
 
-def _write(engine, task, job, src, item, run_id, schema_version="v1"):
-    """把一条标注写进库，连同通过校验的证据。"""
+def _write(engine, task, job, src, item, run_id, schema_version="v1", conn=None):
+    """把一条标注写进库，连同通过校验的证据；可复用调用方事务。"""
+    from contextlib import nullcontext
+
     now = clock.now()
     source_text = src["text"] or ""
     if task == "post_annotation":
@@ -1078,7 +1192,7 @@ def _write(engine, task, job, src, item, run_id, schema_version="v1"):
         if (spans and not verified) or (expect and not spans):
             needs_review = True
 
-    with engine.begin() as conn:
+    with (nullcontext(conn) if conn is not None else engine.begin()) as conn:
         written_rows = []
         for kind, value, _spans, _expect in kinds:
             if value is None:
@@ -1162,8 +1276,10 @@ def _write(engine, task, job, src, item, run_id, schema_version="v1"):
 # ── 任务状态流转 ───────────────────────────────────────────────────────
 
 
-def _done(engine, job):
-    with engine.begin() as conn:
+def _done(engine, job, conn=None):
+    from contextlib import nullcontext
+
+    with (nullcontext(conn) if conn is not None else engine.begin()) as conn:
         conn.execute(
             update(annotation_jobs)
             .where(annotation_jobs.c.job_id == job["job_id"])
@@ -1229,7 +1345,7 @@ def _retry_or_dead(engine, cfg, usable, stats, err):
     log.warning("批失败（%s），%d 条已按重试策略处理", err, len(usable))
 
 
-def pending_count(engine, task, scope_id=None):
+def pending_count(engine, task, scope_id=None, stage=None):
     with engine.connect() as conn:
         q = (
             select(func.count())
@@ -1237,15 +1353,98 @@ def pending_count(engine, task, scope_id=None):
             .where(annotation_jobs.c.task == task,
                    annotation_jobs.c.status.in_(("pending", "claimed")))
         )
+        if stage is not None:
+            q = q.where(annotation_jobs.c.stage == stage)
         if scope_id is not None:
             from radar_db.scope_jobs import scope_condition
             q = q.where(scope_condition(scope_id))
         return conn.execute(q).scalar_one()
 
 
-def estimate(engine, cfg, task, scope_id=None):
+def reprioritize(engine, *, anchor=None, ownership=None, dry_run=False):
+    """Recompute priorities for live jobs using the current anchor and scope windows."""
+    from datetime import date
+
+    from radar_db.schema import analysis_scopes, meta_kv
+
+    with engine.connect() as conn:
+        if anchor is None:
+            anchor_s = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar()
+            anchor = date.fromisoformat(anchor_s[:10]) if anchor_s else None
+        elif isinstance(anchor, datetime):
+            anchor = anchor.date()
+        scopes = {row.scope_id: row for row in conn.execute(select(analysis_scopes))}
+    if ownership is None:
+        from jobs.import_dump import pool_codes
+
+        ownership = pool_codes()
+
+    def as_date(value):
+        return value.date() if isinstance(value, datetime) else value
+
+    def current_from(scope_id):
+        scope = scopes.get(scope_id)
+        if scope is None or not scope.with_baseline:
+            return None
+        date_from = as_date(scope.date_from)
+        date_to = as_date(scope.date_to)
+        total_days = (date_to - date_from).days + 1
+        return date_from + timedelta(days=total_days // 2)
+
+    live = annotation_jobs.c.status.in_(("pending", "claimed"))
+    comment_q = (
+        select(
+            annotation_jobs.c.job_id,
+            annotation_jobs.c.priority,
+            annotation_jobs.c.scope_id,
+            feeds.c.code,
+            feeds.c.posted_at,
+        )
+        .select_from(
+            annotation_jobs
+            .join(comments, comments.c.comment_id == annotation_jobs.c.target_id)
+            .join(feeds, feeds.c.feed_id == comments.c.feed_id)
+        )
+        .where(live, annotation_jobs.c.target_type == "comment")
+    )
+    feed_q = (
+        select(
+            annotation_jobs.c.job_id,
+            annotation_jobs.c.priority,
+            annotation_jobs.c.scope_id,
+            feeds.c.code,
+            feeds.c.posted_at,
+        )
+        .select_from(annotation_jobs.join(feeds, feeds.c.feed_id == annotation_jobs.c.target_id))
+        .where(live, annotation_jobs.c.target_type == "feed")
+    )
+    changes = []
+    with engine.connect() as conn:
+        for query in (comment_q, feed_q):
+            for job_id, old, scope_id, code, posted_at in conn.execute(query):
+                boundary = current_from(scope_id)
+                posted_day = utc_naive_to_hkt(posted_at).date() if posted_at is not None else None
+                current = boundary is None or (posted_day is not None and posted_day >= boundary)
+                new = job_priority(posted_at, anchor, own=ownership.get(code) == "own", current=current)
+                if new != old:
+                    changes.append((job_id, new))
+    if not dry_run and changes:
+        now = clock.now()
+        with engine.begin() as conn:
+            for offset in range(0, len(changes), 500):
+                for job_id, new in changes[offset:offset + 500]:
+                    conn.execute(
+                        update(annotation_jobs)
+                        .where(annotation_jobs.c.job_id == job_id)
+                        .values(priority=new, updated_at=now)
+                    )
+    log.info("重排优先级：%d 条改动%s", len(changes), "（dry-run 未写）" if dry_run else "")
+    return len(changes)
+
+
+def estimate(engine, cfg, task, scope_id=None, stage=None):
     """`--dry-run` 的用量估算。**不是报价**：网关没有给价格，这里只给条数、请求数与 token 区间。"""
-    n = pending_count(engine, task, scope_id)
+    n = pending_count(engine, task, scope_id, stage=stage)
     prompt, _sv = resolve(task, cfg)
     batch = max(1, cfg.micro_batch_size)
     requests = math.ceil(n / batch) if n else 0
@@ -1253,7 +1452,7 @@ def estimate(engine, cfg, task, scope_id=None):
     sys_chars = len(prompt.SYSTEM)
     sys_tok_lo, sys_tok_hi = sys_chars / 1.6, sys_chars / 1.0
     return {
-        "task": task, "scope_id": scope_id, "pending_items": n, "batch_size": batch,
+        "task": task, "scope_id": scope_id, "stage": stage, "pending_items": n, "batch_size": batch,
         "requests": requests,
         "tokens_in_low": int(n * EST_IN_PER_ITEM + requests * sys_tok_lo),
         "tokens_in_high": int(n * EST_IN_PER_ITEM * 1.3 + requests * sys_tok_hi),
@@ -1283,6 +1482,7 @@ def main(argv=None):
     ap.add_argument("--enqueue", action="store_true", help="排进待办；排哪种由 --task 决定")
     ap.add_argument("--run", action="store_true", help="领取待办并调模型")
     ap.add_argument("--status", action="store_true", help="只看队列状态")
+    ap.add_argument("--reprioritize", action="store_true", help="按当前锚点重算存量任务优先级")
     ap.add_argument("--dry-run", action="store_true", help="只估算待办的请求数与 token，不调模型")
     ap.add_argument("--task", default="comment_product")
     ap.add_argument("--codes", help="逗号分隔的产品代码，留空＝全部")
@@ -1294,6 +1494,8 @@ def main(argv=None):
     ap.add_argument("--budget-requests", type=int, help="本轮最多领取多少批（≈请求数）")
     ap.add_argument("--max-http-requests", type=int, help="Required for --run; includes retries")
     ap.add_argument("--scope", help="只处理这个抽取范围（analysis_scopes.scope_id）")
+    ap.add_argument("--stage", choices=(STAGE_STUDENT, STAGE_LLM, FILL_MISSING_STAGE),
+                    help="只处理指定漏斗段；默认不分段")
     ap.add_argument("--priority", type=int, default=0)
     ap.add_argument(
         "--fill-missing", action="store_true",
@@ -1311,6 +1513,10 @@ def main(argv=None):
     # 配置里唯一敏感的是 Key，`redacted()` 只留尾四位 —— 够分辨「换过 Key 没有」，
     # 又不会把它写进任何一份可能被贴出去的日志（runbook §0）。
     log.info("配置：%s", json.dumps(cfg.redacted(), ensure_ascii=False))
+
+    if args.reprioritize:
+        print(json.dumps({"reprioritized": reprioritize(engine, dry_run=args.dry_run)}, ensure_ascii=False))
+        return 0
 
     since = _parse_day(args.since)
     until = _parse_day(args.until, end=True)
@@ -1338,7 +1544,7 @@ def main(argv=None):
         log.info("已排队 %d 条（%s）", n, args.task)
 
     if args.dry_run:
-        print(json.dumps(estimate(engine, cfg, args.task, args.scope), ensure_ascii=False, indent=1))
+        print(json.dumps(estimate(engine, cfg, args.task, args.scope, args.stage), ensure_ascii=False, indent=1))
         return 0
 
     if args.run:
@@ -1347,7 +1553,8 @@ def main(argv=None):
         control = RunControl(args.max_http_requests)
         with WorkerLease(engine, "own-analysis"), control.interruptible():
             stats = run(engine, cfg, task=args.task, max_items=args.max_items, scope_id=args.scope,
-                        budget_requests=args.budget_requests, provider=build_provider(cfg, control=control))
+                        budget_requests=args.budget_requests, stage=args.stage,
+                        provider=build_provider(cfg, control=control))
         log.info("本轮：%s", json.dumps(stats, ensure_ascii=False))
         return 2 if stats["aborted"] or stats["error"] else 0
 
@@ -1357,12 +1564,10 @@ def main(argv=None):
 
 
 def _parse_day(s, end=False):
-    from datetime import datetime
-
     if not s:
         return None
-    d = datetime.strptime(s, "%Y-%m-%d")
-    return d + timedelta(days=1) if end else d
+    lo, hi = hkt_range_utc_naive(s, s)
+    return hi if end else lo
 
 
 def _print_status(engine, task):

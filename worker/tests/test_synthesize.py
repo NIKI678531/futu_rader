@@ -88,7 +88,8 @@ def engine(tmp_path):
     with eng.begin() as conn:
         conn.execute(insert(meta_kv).values(k="anchor", v="2026-08-25"))
         conn.execute(insert(feeds).values(
-            feed_id=1, code=CODE, posted_at=datetime(2026, 8, 22, 10), feed_type=1, title="t", content="c",
+            # UTC-naive 08-21 16:00 is HKT midnight at the start of 08-22.
+            feed_id=1, code=CODE, posted_at=datetime(2026, 8, 21, 16), feed_type=1, title="t", content="c",
             like_count=0, comment_count=0, image_count=0, raw_json_broken=False))
         rows, anns = [], []
         aid = 0

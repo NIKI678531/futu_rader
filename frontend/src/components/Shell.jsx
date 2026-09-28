@@ -3,12 +3,51 @@ import DcLink from './DcLink'
 import R from '../data/radar'
 import { ProgressButton } from './ProgressDrawer'
 
+const COLLECTION_LABEL = {
+  fresh: '采集正常',
+  stale: '采集可能滞后',
+  unavailable: '采集状态暂不可用',
+}
+
+function CollectionDisclosure({ data }) {
+  const freshness = data?.freshness
+  const status = COLLECTION_LABEL[freshness] || COLLECTION_LABEL.unavailable
+  const complete = data?.sourceCompleteThrough
+    ? ` · 完整至 ${data.sourceCompleteThrough}`
+    : ''
+  const hasCounts = data?.platformCommentCount != null && data?.parsedCommentCount != null
+  const counts = hasCounts
+    ? `平台评论量 ${data.platformCommentCount.toLocaleString('en-US')} 条 · 已抓取正文 ${data.parsedCommentCount.toLocaleString('en-US')} 条`
+    : '评论覆盖统计暂不可用'
+  const coverage = data?.commentCoverage === 'complete'
+    ? '当前采集范围内正文覆盖完整。'
+    : data?.commentCoverage === 'partial'
+      ? '正文为部分覆盖。'
+      : '正文覆盖情况未知，可能为部分覆盖。'
+  const fg = freshness === 'fresh' ? 'var(--ink-600)' : 'var(--warning-700)'
+
+  return (
+    <div
+      data-collection-disclosure
+      data-freshness={freshness || 'unavailable'}
+      data-comment-coverage={data?.commentCoverage || 'unknown'}
+      role="note"
+      style={s('padding:5px 24px;background:var(--canvas-alt);font:400 12px/1.5 var(--font-cjk);color:var(--ink-600)')}
+    >
+      <span style={{ color: fg, fontWeight: 600 }}>{status}{complete}</span>
+      <span> · {counts}。页面评论量采用平台总数；AI 仅基于已抓取的评论正文，{coverage}</span>
+    </div>
+  )
+}
+
 /* Rows 1 and 2 of the sticky header — brand, domain tabs, sub-nav, range/updated.
    Byte-identical in all four .dc.html screens, so it lives here once. The third row
    (the filter bar) differs per screen and is passed in as children. */
 export default function Shell({ vals, children }) {
   const { navGroups = [], rangeText, updated } = vals
   const progress = vals.skeleton ? null : R.ANALYSIS_PROGRESS
+  const isSql = !vals.skeleton && R.DATA_PROVIDER === 'sql'
+  const collection = isSql ? R.DATA_COLLECTION : null
 
   return (
     <div style={s('position:sticky;top:0;z-index:40;box-shadow:0 1px 0 var(--border-2)')}>
@@ -44,7 +83,7 @@ export default function Shell({ vals, children }) {
             <span style={s('font:600 12px/1.4 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)')}>最近更新</span>
             <span style={s('font:600 14px/1.4 var(--font-mono);color:var(--ink-800)')}>{updated}</span>
           </div>
-          {!vals.skeleton && R.DATA_PROVIDER === 'sql' && <ProgressButton />}
+          {isSql && <ProgressButton />}
         </div>
       </div>
       <div style={s('display:flex;align-items:stretch;height:42px;padding:0 24px;background:#fff;border-bottom:1px solid var(--border-1)')}>
@@ -64,6 +103,7 @@ export default function Shell({ vals, children }) {
         ))}
       </div>
       {children}
+      {isSql && <CollectionDisclosure data={collection} />}
       {progress && <div role="status" style={s('padding:5px 24px;background:var(--canvas-alt);font:400 12px/1.4 var(--font-cjk);color:var(--ink-600)')}>{progress.text}</div>}
     </div>
   )

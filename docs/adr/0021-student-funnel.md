@@ -1,6 +1,8 @@
 # ADR-0021 — 蒸馏漏斗：规则与近重复折叠 → CPU 学生模型 → Luna 难例 → Layer B 逐区间并行
 
-- **状态**：已接受（项目负责人 2026-09-15 定：CPU-only、可访问 Hugging Face；400 条人工核对集只做量尺不做门槛；LLM 通道批 5 × 并发 16–24，一致率 ≥0.9 才切批；端到端 ≤30 分钟）
+- **状态**：已接受；2026-09-25 起，生产定时链路的并发 16–24 与 30／40 分钟容量目标
+  由 [ADR-0026](0026-scheduled-ai-budget-and-calibration-gate.md) 取代。Student 漏斗、
+  批 5 一致性闸门与逐区间 dirty 语义不变。
 - **日期**：2026-09-15
 - **取代**：[ADR-0020](0020-llm-only-90d-pilot.md) 中「全部用 `gpt-5.6-luna`，不引入任何预训练情感模型」这一条。ADR-0020 的其余各条（抽取范围 `analysis_scopes`、五条规则预过滤、v2 七维单次调用、Layer B 生成物、读路径三态、并发与预算、范围与授权）**全部保留**；本文只是在规则层与 Luna 之间插入一层，并把 Luna 之后的汇总改成逐区间并行。
 - **保留**：[ADR-0017](0017-ai-annotation-pipeline-production.md)（判定单元、五张表、证据程序定位、Alembic、口径归属）、[ADR-0019](0019-ai-auto-publish-no-human-gate.md)（模型写下即发布、徽章由 `review_state` 驱动、`aiValidation` 如实披露）。

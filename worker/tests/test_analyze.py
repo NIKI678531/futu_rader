@@ -7,7 +7,7 @@ from sqlalchemy import insert
 from ai import config
 from jobs import analyze
 from radar_db import create_all, make_engine
-from radar_db.schema import meta_kv
+from radar_db.schema import comments, feeds, meta_kv
 
 
 @pytest.fixture
@@ -28,6 +28,39 @@ def test_plan_uses_complete_source_day_and_deduplicates_ranges(engine):
     assert plan["priorityDays"] == ["2026-08-25", "2026-08-24", "2026-08-23", "2026-08-22"]
     assert plan["ranges"] == ["d1", "d2"]
     assert plan["modelRequestsMade"] == 0
+
+
+def test_plan_candidate_count_uses_hkt_bounds_for_utc_naive_feeds(engine):
+    timestamps = (
+        datetime(2026, 8, 23, 15, 59, 59),
+        datetime(2026, 8, 23, 16, 0, 0),
+        datetime(2026, 8, 25, 15, 59, 59),
+        datetime(2026, 8, 25, 16, 0, 0),
+    )
+    with engine.begin() as conn:
+        conn.execute(insert(feeds), [
+            {
+                "feed_id": i,
+                "code": "3033",
+                "posted_at": posted_at,
+                "feed_type": 1,
+                "like_count": 0,
+                "comment_count": 1,
+                "image_count": 0,
+                "raw_json_broken": False,
+            }
+            for i, posted_at in enumerate(timestamps, 1)
+        ])
+        conn.execute(insert(comments), [
+            {"comment_id": i, "feed_id": i, "content": "ETF", "author_uid": f"u{i}"}
+            for i in range(1, 5)
+        ])
+
+    args = analyze.parser().parse_args(["plan", "--ranges", "d1", "--codes", "3033"])
+    plan = analyze.make_plan(engine, args)
+
+    # d1 includes its 08-24 baseline when estimating candidates: HKT [08-24, 08-26).
+    assert plan["candidateComments"] == 2
 
 
 def test_future_source_dates_are_refused(engine):
@@ -66,3 +99,24 @@ def test_run_requires_budget_before_accessing_database(monkeypatch):
 def test_batch_run_requires_matching_passed_calibration():
     with pytest.raises(ValueError, match="calibration-report"):
         analyze.check_calibration(config.load(micro_batch_size=5), None)
+    with pytest.raises(ValueError, match="calibration-report"):
+        analyze.check_calibration(
+            config.load(micro_batch_size=1), None, require_singleton=True
+        )
+
+
+def test_calibration_accepts_inline_secret_json():
+    cfg = config.load(micro_batch_size=5)
+    analyze.check_calibration(cfg, {
+        "policy": {
+            "model": cfg.model,
+            "promptVersion": cfg.prompt_version,
+            "schemaVersion": cfg.schema_version,
+            "taxonomyVersion": cfg.taxonomy_version,
+            "batchSize": cfg.micro_batch_size,
+            "maxInputTokens": cfg.max_input_tokens,
+            "maxPayloadBytes": cfg.max_payload_bytes,
+            "maxOutputTokens": cfg.max_output_tokens,
+        },
+        "batchGatePassed": True,
+    })

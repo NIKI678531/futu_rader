@@ -54,7 +54,9 @@ def _feed(feed_id, day, hour, uid, name, likes, n_comments, shares, browse=None)
     return {
         "feed_id": feed_id,
         "code": OWN_CODE,  # 冗余列，读路径一律走 mentions，这里只是不能为空
-        "posted_at": datetime(2026, 8, day, hour, 0),
+        # Feed timestamps are canonical UTC-naive; test labels below describe
+        # their HKT wall time, so store the corresponding UTC value.
+        "posted_at": datetime(2026, 8, day, hour, 0) - timedelta(hours=8),
         "feed_type": 1,
         "author_uid": uid,
         "author_name": name,

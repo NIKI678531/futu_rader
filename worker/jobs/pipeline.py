@@ -46,6 +46,7 @@ from jobs import annotate, audit, synthesize  # noqa: E402
 from radar_db import make_engine  # noqa: E402
 from radar_db.schema import analysis_scopes, annotation_jobs, comments, feeds  # noqa: E402
 from radar_db.scope_jobs import scope_condition
+from radar_db.time_windows import utc_naive_to_hkt  # noqa: E402
 
 log = logging.getLogger("worker.pipeline")
 
@@ -65,7 +66,7 @@ def pending_days(engine, scope_id):
             .distinct()
         )
         for code, posted_at in rows:
-            days[code].add(posted_at.date() if posted_at is not None else None)
+            days[code].add(utc_naive_to_hkt(posted_at).date() if posted_at is not None else None)
     return days
 
 
@@ -85,7 +86,9 @@ def ready_pairs(engine, scope_id, codes, ranges, anchor, *, days=None):
 
 
 def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=None, max_items=None,
-    skip_synth=False, ranges=None, anchor_override=None, audit_report=True):
+        skip_synth=False, ranges=None, anchor_override=None, audit_report=True,
+        synth_workers=None, stage=None):
+    """Run one scope; ``stage`` limits only comment-product annotation work."""
     with engine.connect() as conn:
         scope = conn.execute(select(analysis_scopes).where(analysis_scopes.c.scope_id == scope_id)).mappings().first()
     if scope is None:
@@ -95,15 +98,19 @@ def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=
 
     provider = provider or (None if dry_run else build_provider(cfg))
     for task in TASK_ORDER:
-        pending = annotate.pending_count(engine, task, scope_id)
+        task_stage = stage if task == "comment_product" else None
+        pending = annotate.pending_count(engine, task, scope_id, stage=task_stage)
         if pending == 0:
             summary["steps"].append({"task": task, "skipped": "队列为空"})
             continue
         if dry_run:
-            summary["steps"].append({"task": task, "estimate": annotate.estimate(engine, cfg, task, scope_id)})
+            summary["steps"].append({
+                "task": task,
+                "estimate": annotate.estimate(engine, cfg, task, scope_id, task_stage),
+            })
             continue
         stats = annotate.run(engine, cfg, task=task, max_items=max_items or pending, provider=provider,
-                             scope_id=scope_id, budget_requests=budget_requests)
+                             scope_id=scope_id, budget_requests=budget_requests, stage=task_stage)
         summary["steps"].append({"task": task, **{k: stats[k] for k in ("run_id", "input", "success", "error",
                                                                           "requests", "tok_in", "tok_out", "aborted")}})
         if stats["aborted"]:
@@ -132,15 +139,34 @@ def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=
         pairs = ready_pairs(engine, scope_id, codes, ranges, anchor) if anchor else []
         summary["synth_pairs"] = len(pairs)
         summary["synth_pairs_total"] = len(codes) * len(ranges)
-        for code, range_key in pairs:
-            kwargs = {"anchor_override": anchor_override} if anchor_override is not None else {}
-            st = synthesize.run(engine, cfg, codes=[code], ranges=[range_key],
-                                provider=provider, dry_run=dry_run, **kwargs)
-            summary["steps"].append({"task": "synthesize", "code": code, "range": range_key,
-                                     **{key: st[key] for key in ("run_id", "calls", "written", "skipped_same",
-                                                                "low_sample", "errors", "tok_in", "tok_out")}})
+        if pairs:
+            kwargs = {"workers": synth_workers} if synth_workers else {}
+            st = synthesize.run(
+                engine,
+                cfg,
+                pairs=pairs,
+                provider=provider,
+                dry_run=dry_run,
+                scope_id=scope_id,
+                anchor_override=anchor_override,
+                **kwargs,
+            )
+            summary["steps"].append({
+                "task": "synthesize",
+                **{
+                    key: st[key]
+                    for key in (
+                        "run_id", "calls", "written", "skipped_same", "low_sample", "errors",
+                        "tok_in", "tok_out", "pairs", "pairs_clean",
+                    )
+                },
+            })
             if not dry_run and st["errors"]:
                 summary["complete"] = False
+        elif anchor is None:
+            summary["steps"].append({"task": "synthesize", "skipped": "meta_kv 里没有 anchor"})
+        else:
+            summary["steps"].append({"task": "synthesize", "skipped": "没有就绪的 (code, range)"})
     if not dry_run and audit_report:
         rep = audit.report(engine, scope_id)
         summary["audit"] = {"queue": rep["queue"], "needs_review_rate": rep["annotations"]["needs_review_rate"],
@@ -159,6 +185,7 @@ def main(argv=None):
     ap.add_argument("--max-items", type=int)
     ap.add_argument("--skip-synth", action="store_true")
     ap.add_argument("--ranges", help="Layer B 只做这些区间，如 d7,d30")
+    ap.add_argument("--synth-workers", type=int, help="Layer B (code, range) 并行线程数，默认 8")
     args = ap.parse_args(argv)
     if not args.dry_run and (args.max_http_requests is None or args.max_http_requests < 1):
         ap.error("AI execution requires --max-http-requests")
@@ -175,7 +202,8 @@ def main(argv=None):
             out = run(engine, cfg, args.scope, dry_run=args.dry_run, budget_requests=args.budget_requests,
                       max_items=args.max_items, skip_synth=args.skip_synth,
                       provider=build_provider(cfg, control=control) if control else None,
-                      ranges=[r.strip() for r in args.ranges.split(",")] if args.ranges else None)
+                      ranges=[r.strip() for r in args.ranges.split(",")] if args.ranges else None,
+                      synth_workers=args.synth_workers)
         except RunStopped:
             out = {"complete": False, "status": control.reason}
     print(json.dumps(out, ensure_ascii=False, indent=1, default=str))

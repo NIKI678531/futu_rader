@@ -54,6 +54,7 @@ from jobs import annotate  # noqa: E402
 from jobs.import_dump import pool_codes  # noqa: E402
 from radar_db import make_engine  # noqa: E402
 from radar_db.schema import analysis_scopes, meta_kv  # noqa: E402
+from radar_db.time_windows import hkt_range_utc_naive, utc_naive_to_hkt  # noqa: E402
 
 log = logging.getLogger("worker.extract")
 
@@ -112,8 +113,10 @@ def candidate_snapshot(engine, codes, since, until, page_size=1000):
     with tempfile.TemporaryDirectory(prefix="radar-extract-") as directory:
         handles, paths = OrderedDict(), {}
         try:
-            for row in annotate._comment_candidates(engine, codes=codes, since=since, until=until, page_size=page_size):
-                key = (row.code, row.posted_at.date().isoformat())
+            for row in _comment_candidates_hkt(
+                engine, codes=codes, since=since, until=until, page_size=page_size,
+            ):
+                key = (row.code, utc_naive_to_hkt(row.posted_at).date().isoformat())
                 if key not in handles:
                     if len(handles) >= 32:
                         handles.popitem(last=False)[1].close()
@@ -136,6 +139,16 @@ def candidate_snapshot(engine, codes, since, until, page_size=1000):
                         value["posted_at"] = datetime.fromisoformat(value["posted_at"])
                         yield SimpleNamespace(**value)
         yield reader
+
+
+def _utc_bounds(since, until):
+    """Translate local-midnight ``[since, until)`` markers to database bounds."""
+    return hkt_range_utc_naive(since.date(), (until - timedelta(days=1)).date())
+
+
+def _comment_candidates_hkt(engine, *, codes, since, until, **kwargs):
+    lo, hi = _utc_bounds(since, until)
+    return annotate._comment_candidates(engine, codes=codes, since=lo, until=hi, **kwargs)
 
 
 def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_baseline=False,
@@ -189,11 +202,14 @@ def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_
         )
         # 合作 KOL 的评论顺手排进 `kol_comment_opinion`（KOL 详情 M7 要它；量很小）。
         kols, _officials = master_accounts()
-        stats["kol_comments"] = 0 if dry_run else sum(
-            annotate.enqueue_kol_comments(engine, cfg, kols, codes=codes, since=since, until=until,
-                                          scope_id=scope_id, priority_of=priority_of(name))
-            for name, since, until in windows
-        )
+        stats["kol_comments"] = 0
+        if not dry_run:
+            for name, since, until in windows:
+                lo, hi = _utc_bounds(since, until)
+                stats["kol_comments"] += annotate.enqueue_kol_comments(
+                    engine, cfg, kols, codes=codes, since=lo, until=hi,
+                    scope_id=scope_id, priority_of=priority_of(name),
+                )
     if task in ("post_annotation", "both"):
         stats["posts"] = _extract_posts(
             engine, cfg, scope_id, codes, windows, authors, dry_run=dry_run, priority_of=priority_of,
@@ -247,7 +263,9 @@ def _extract_comments(engine, cfg, prompt, schema_version, scope_id, codes, wind
     for name, since, until in windows:
         kept_rows, decisions = [], []
         n_cand = 0
-        for r in (candidate_reader or annotate._comment_candidates)(engine, codes=codes, since=since, until=until):
+        for r in (candidate_reader or _comment_candidates_hkt)(
+            engine, codes=codes, since=since, until=until,
+        ):
             n_cand += 1
             d = pf.classify(r.content, r.code, comment_id=r.comment_id,
                             author_uid=r.author_uid, feed_id=r.feed_id)
@@ -260,7 +278,9 @@ def _extract_comments(engine, cfg, prompt, schema_version, scope_id, codes, wind
         if fold_neardup:
             reps, members = neardup.fold(
                 kept_rows,
-                key_of=lambda r: (r.code, r.posted_at.date() if r.posted_at else None),
+                key_of=lambda r: (
+                    r.code, utc_naive_to_hkt(r.posted_at).date() if r.posted_at else None,
+                ),
                 id_of=lambda r: r.comment_id, text_of=lambda r: r.content,
             )
         else:
@@ -316,6 +336,7 @@ def _extract_posts(engine, cfg, scope_id, codes, windows, authors, *, dry_run, p
         names = list(authors)
     out = {"authors": len(names), "queued_new": 0, "by_window": {}}
     for name, since, until in windows:
+        lo, hi = _utc_bounds(since, until)
         if dry_run:
             # 只数不排：复用排队函数的查询会写库，这里直接数候选。
             from sqlalchemy import and_, func, or_
@@ -323,14 +344,14 @@ def _extract_posts(engine, cfg, scope_id, codes, windows, authors, *, dry_run, p
             with engine.connect() as conn:
                 n = conn.execute(
                     select(func.count()).select_from(feeds).where(
-                        feeds.c.code.in_(codes), feeds.c.posted_at >= since, feeds.c.posted_at < until,
+                        feeds.c.code.in_(codes), feeds.c.posted_at >= lo, feeds.c.posted_at < hi,
                         feeds.c.author_name.in_(names),
                         or_(and_(feeds.c.content.isnot(None), feeds.c.content != ""),
                             and_(feeds.c.title.isnot(None), feeds.c.title != "")),
                     )
                 ).scalar_one()
         else:
-            n = annotate.enqueue_posts(engine, cfg, codes=codes, since=since, until=until,
+            n = annotate.enqueue_posts(engine, cfg, codes=codes, since=lo, until=hi,
                                        authors=names, scope_id=scope_id,
                                        priority=1 if name == "current" else 0,
                                        priority_of=priority_of(name) if priority_of else None)

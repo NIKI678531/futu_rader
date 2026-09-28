@@ -1,16 +1,11 @@
-"""富途牛牛社区采集任务 —— 占位，尚未实现。
+"""Compatibility entry point for the automatic MarketInsight refresh.
 
 对象是 PRD §3.8 的产品池：61 只自家（CSOP 南方东英）＋ 59 只竞品，客户维护固定对位映射。
-采集帖子与评论元数据；**评论区逐条内容不可得**（PRD §3.10 2026-09-06 实测：仅第一页，
-重点 KOL 帖 66.8% 被截断），账号域一切依赖评论区内容的分析已下线，别再往这条路上设计。
+采集帖子与可取得的评论正文。评论分页可能只覆盖一部分，因此平台评论总数与实际正文数
+分别保存；AI 只读取已抓到的正文，绝不把部分覆盖描述成完整评论集。
 
-断点续拉（沿用 ChatInsight 已验证的做法，见 P:/NIKI/ChatInsight-main/backend/sync/）：
-
-1. 按分片（产品 / 账号）查库里最新一条的时间戳 last_ts。
-2. last_ts 存在 → 增量拉取；不存在 → 从头拉。
-3. 超出回看窗口的 last_ts 视为过期，从窗口下沿重新开始，避免补一段永远补不完的历史。
-4. limit/offset 分页，直到返回条数不足一页。
-5. 凭据走环境变量，不硬编码。
+生产数据先由 Airflow 采集进 MarketInsight MySQL，本任务只使用只读账号做 keyset 增量同步。
+实现位于 ``collection.FutuRefresh``；本模块保留旧入口，避免已有运维命令失效。
 
 写入原则（CLAUDE.md 铁律 1、2）：
 - 只落原始字段，不在这里做任何聚合或口径计算 —— 那是 backend/core/ 的事。
@@ -18,6 +13,12 @@
 - 平台计数字段（赞/评论数/转发/浏览）取发布后约 24 小时的值（PRD §3.10）。
 """
 
+from jobs.refresh import main as refresh_main
 
-def run():
-    raise NotImplementedError("采集任务待实现，见本模块 docstring 的续拉与写入约定")
+
+def run(argv=None):
+    return refresh_main(["sync", *(argv or [])])
+
+
+if __name__ == "__main__":
+    raise SystemExit(run())

@@ -55,6 +55,9 @@ def meta_payload():
 
     provider = get_provider()
     payload.update(version_payload())
+    # 在线采集状态是数据属性，不是 fixture 口径常量。两个 provider 都返回同一形状；
+    # demo 明确下发 unavailable/null，不能用演示生成器里的行数冒充生产采集状态。
+    payload["dataCollection"] = provider.collection_metadata()
     master = provider.master()
     if master:
         # 只并入 provider 确实给出的键。缺的键不补空值——见模块头最后一段。

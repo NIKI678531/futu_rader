@@ -293,6 +293,7 @@ const sectorsOf = memoBy((sectors) =>
 
 const constants = {
   get DATA_PROVIDER() { return meta().dataProvider },
+  get DATA_COLLECTION() { return meta().dataCollection },
   get ANALYSIS_PROGRESS() { return meta().analysisProgress },
   get DEFAULT_RANGE() { return meta().defaultRange },
   get UPDATED() { return meta().updatedAt },

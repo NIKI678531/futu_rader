@@ -158,6 +158,55 @@ def test_range_resolves_against_anchor(engine):
     assert (frm, to) == (datetime(2026, 8, 19), datetime(2026, 8, 25))
 
 
+def test_hkt_day_extracts_utc_naive_boundary_rows(engine, cfg, tmp_path):
+    timestamps = (
+        datetime(2026, 8, 24, 15, 59, 59),
+        datetime(2026, 8, 24, 16, 0, 0),
+        datetime(2026, 8, 25, 15, 59, 59),
+        datetime(2026, 8, 25, 16, 0, 0),
+    )
+    with engine.begin() as conn:
+        conn.execute(insert(feeds), [
+            {
+                "feed_id": 100 + i,
+                "code": OWN,
+                "posted_at": posted_at,
+                "feed_type": 1,
+                "title": "邊界帖",
+                "content": "正文",
+                "author_name": "路人",
+                "like_count": 0,
+                "comment_count": 1,
+                "image_count": 0,
+                "raw_json_broken": False,
+            }
+            for i, posted_at in enumerate(timestamps, 1)
+        ])
+        conn.execute(insert(comments), [
+            {
+                "comment_id": 100 + i,
+                "feed_id": 100 + i,
+                "content": f"ETF 費率邊界評論 {i}",
+                "author_uid": f"boundary-{i}",
+            }
+            for i in range(1, 5)
+        ])
+
+    stats = extract.run(
+        engine,
+        cfg,
+        codes=[OWN],
+        date_from=datetime(2026, 8, 25),
+        date_to=datetime(2026, 8, 25),
+        dry_run=True,
+        drop_offpool=False,
+        ownership=OWNERSHIP,
+        report_dir=tmp_path,
+    )
+
+    assert stats["comments"]["candidates"] == 2
+
+
 def test_resolve_codes_rejects_unknown():
     class A:
         codes = "3033,9999"
