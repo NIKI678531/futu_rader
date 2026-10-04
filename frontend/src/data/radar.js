@@ -345,7 +345,7 @@ const constants = {
   /* 官号名单。`url` 由后端下发，不再由屏幕用 hash() 现算（ADR-0004）。 */
   get OFFICIAL() { return meta().officials },
 
-  /* 合作 KOL 名单（标签来自合作名单，PRD §4.4）。形状从设计源的三元组
+  /* 重点KOL 名单（身份来源于重点名单，PRD §4.4）。形状从设计源的三元组
      `[名字, '标签,标签', 1]` 换成 `{name, tags, active}` —— 三元组是手写数据表的
      形状，接口没有理由让屏幕靠下标位置认字段。唯一的消费者是 KOL 详情页的标签行。 */
   get KOLS() { return meta().kols },

@@ -1,12 +1,11 @@
 import { s, hover } from '../../lib/dc'
 
 /* The two 前 3 cells differ only in heading, list and empty flag, so they share one body. */
-function TopCard({ box, title, note, rows, empty }) {
+function TopCard({ box, title, rows, empty }) {
   return (
     <div style={s(box)}>
       <div style={s('display:flex;align-items:baseline;gap:8px;margin-bottom:8px')}>
         <span style={s('font:500 13px/1.4 var(--font-cjk);color:var(--ink-500);white-space:nowrap')}>{title}</span>
-        <span style={s('margin-left:auto;font:400 12px/1.4 var(--font-cjk);color:var(--ink-400);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{note}</span>
       </div>
       <div style={s('display:flex;flex-direction:column;gap:3px')}>
         {rows.map((t) => (
@@ -15,7 +14,7 @@ function TopCard({ box, title, note, rows, empty }) {
             <span style={s('flex:none;font:600 13px/1.4 var(--font-mono);color:var(--ink-900)')}>{t.code}</span>
             <span style={s('flex:1;min-width:0;font:400 13px/1.4 var(--font-cjk);color:var(--ink-700);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{t.name}</span>
             <span style={s('flex:none;font:600 13px/1.4 var(--font-mono);color:var(--positive-700)')}>{t.growth}</span>
-            <span style={s('flex:none;font:400 12px/1.4 var(--font-mono);color:var(--ink-400);white-space:nowrap')}>评论 {t.comments}</span>
+            <span style={s('flex:none;font:400 11px/1.4 var(--font-mono);color:var(--ink-400);white-space:nowrap')}>筛后 {t.comments} · 相关 {t.relatedComments}</span>
           </div>
         ))}
       </div>
@@ -39,12 +38,14 @@ export default function Kpis({ v }) {
           <span style={s('font:600 26px/1 var(--font-mono);letter-spacing:-0.01em;color:var(--ink-900)')}>{k1.value}</span>
           <span style={s(`font:500 13px/1.4 var(--font-mono);color:${k1.dfg}`)}>{k1.delta}</span>
         </div>
-        <div style={s('margin-top:7px;font:400 12px/1.5 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>{k1.sub}</div>
       </div>
       <div style={s('padding:14px 20px;border-right:1px solid var(--border-1);min-width:0')}>
         <div style={s('display:flex;align-items:baseline;gap:8px;margin-bottom:8px')}>
           <span style={s('font:500 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>舆情管理</span>
           <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>CSOP 自家产品</span>
+          {k2.partialData && (
+            <span style={s('margin-left:auto;padding:1px 6px;border-radius:999px;background:#FFF7E6;font:500 10px/1.5 var(--font-cjk);color:#9A6700;white-space:nowrap')}>{k2.coverageLabel}</span>
+          )}
         </div>
         <div style={s('display:grid;grid-template-columns:1fr 1fr;gap:12px')}>
           <div>
@@ -66,15 +67,14 @@ export default function Kpis({ v }) {
           <span style={s(`width:${k2.negW}%;background:var(--negative-600)`)}></span>
           <span style={s(`width:${k2.posW}%;background:var(--positive-600)`)}></span>
         </div>
-        <div style={s('margin-top:6px;font:400 12px/1.5 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>{k2.sub}</div>
       </div>
       <TopCard
         box="padding:14px 20px;border-right:1px solid var(--border-1);min-width:0"
-        title="近期热议飙升的CSOP产品" note={v.topNote} rows={v.topOwn} empty={v.topOwnEmpty}
+        title="近期热议飙升的CSOP产品" rows={v.topOwn} empty={v.topOwnEmpty}
       />
       <TopCard
         box="padding:14px 20px;min-width:0"
-        title="近期热议提升的其他产品" note={v.topNote} rows={v.topPeer} empty={v.topPeerEmpty}
+        title="近期热议提升的其他产品" rows={v.topPeer} empty={v.topPeerEmpty}
       />
     </div>
   )

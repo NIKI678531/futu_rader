@@ -1,6 +1,8 @@
 """演示 provider：读 fixtures/demo/ 下由设计源导出的 JSON（生成器见 fixtures/generate.mjs）。
 
-这里**没有任何口径计算**。数值逐字来自 design/radar-data.js，本模块只做「按参数键查表」。
+主体数值逐字来自 design/radar-data.js，本模块只做「按参数键查表」。官号域是例外：
+旧设计源把讨论区挂载标的混进 `mentioned`，因此 fixture 另行固化 v3 显式归属；本模块
+只从该归属投影兼容字段与 ETF 汇总，绝不把旧 `mentioned` / `etf_mentions` 当证据。
 所以它天然满足两条要求：
 
 - 确定性：同参数永远同结果，逐字节相同（Playwright 逐字比对的前提）。
@@ -23,6 +25,8 @@
 
 import json
 import os
+import re
+from collections import defaultdict
 from pathlib import Path
 
 # 哨兵本体搬去了 providers/sentinel.py —— sql provider 也要用它，而 sql 去 import demo
@@ -32,6 +36,42 @@ from .sentinel import MISSING  # noqa: F401  （re-export，见上）
 
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures"
 FIXTURE_DIR = FIXTURE_ROOT / "demo"
+
+_OFFICIAL_ATTRIBUTION_STATUSES = frozenset({"explicit", "inferred", "unattributed"})
+_OFFICIAL_CASHTAG_CODE = re.compile(
+    r"\$(?:[^$]*?[（(]\s*)?(0*\d{4,5})\.HK\s*[）)]?\$",
+    re.IGNORECASE,
+)
+_SHORT_PREFIX = re.compile(r"^南方[東东]英")
+_SHORT_SUFFIX = re.compile(r"(指數|指数)?ETF$")
+
+
+def _official_camp(products):
+    camps = {
+        "own" if product.get("ownership") == "own" else "competitor"
+        for product in products
+    }
+    return "both" if len(camps) > 1 else next(iter(camps)) if camps else "none"
+
+
+def _normalise_hk_code(raw):
+    code = str(raw).lstrip("0") or "0"
+    return code.zfill(4) if len(code) < 4 else code
+
+
+def _explicit_cashtag_counts(post):
+    counts = defaultdict(int)
+    for line in post.get("fullText") or []:
+        for raw_code in _OFFICIAL_CASHTAG_CODE.findall(str(line)):
+            counts[_normalise_hk_code(raw_code)] += 1
+    return counts
+
+
+def _short_name(name, n=10):
+    value = _SHORT_SUFFIX.sub("", _SHORT_PREFIX.sub("", str(name or "")))
+    if not value:
+        value = str(name or "")
+    return value if len(value) <= n else value[:n] + "…"
 
 
 class DemoProvider:
@@ -110,14 +150,49 @@ class DemoProvider:
     def build_range(self, key):
         return self._lookup("ranges", key)
 
+    @staticmethod
+    def _with_comment_funnel(observation):
+        """把旧 demo 的完整观测映射到父帖筛选后的漏斗契约。"""
+        comments = observation["comments"]
+        # The bundled demo is a closed fixture.  A zero-comment product is a
+        # completed empty result, not missing coverage.
+        coverage = 1.0
+        return {
+            **observation,
+            "commentFunnel": {
+                "rawPlatformCount": comments,
+                "platformCount": comments,
+                "qualifyingFeedCount": observation["mentions"],
+                "filterExcludedPlatformCount": 0,
+                "parsedCount": comments,
+                "ruleEligibleCount": comments,
+                "ruleExcludedCount": 0,
+                "aiCompletedCount": comments,
+                "relevantCount": comments,
+                "needsContextCount": 0,
+                "pendingCount": 0,
+                "sourceCoverage": coverage,
+                "analysisCoverage": coverage,
+            },
+        }
+
     def pool(self, range_key):
-        return self._lookup("pool", range_key)
+        data = self._lookup("pool", range_key)
+        if data is MISSING:
+            return MISSING
+        return {
+            **data,
+            "list": [self._with_comment_funnel(item) for item in data["list"]],
+        }
 
     def ranks(self, range_key):
         return self._lookup("ranks", range_key)
 
     def benchmark(self, code, range_key):
-        return self._lookup("benchmark", code, range_key)
+        data = self._lookup("benchmark", code, range_key)
+        if data is MISSING:
+            return MISSING
+        return {**data, "base": self._with_comment_funnel(data["base"])}
 
     def hot_summaries(self, range_key):
         """整池一份 `{code: 热议总结}`，按区间查表。
@@ -185,7 +260,113 @@ class DemoProvider:
         return self._lookup("kol_opinions", kol, range_key)
 
     def official_posts(self, range_key):
-        return self._lookup("official_posts", range_key)
+        posts = self._lookup("official_posts", range_key)
+        if posts is MISSING:
+            return MISSING
+        try:
+            by_code = {item["code"]: item for item in self.master().get("products", [])}
+        except FileNotFoundError:
+            # Tiny contract fixtures used by unit tests need not copy the
+            # entire product master.  Their attributed product object still
+            # carries the fields required below.
+            by_code = {}
+        out = []
+        for post in posts:
+            status = post.get("attributionStatus")
+            products = post.get("attributedProducts")
+            # Fail closed on pre-v3 fixtures.  ``mentioned``/``camp`` used to
+            # include the forum anchor and are therefore not attribution
+            # evidence.  They remain response aliases only, populated below
+            # from the explicit v3 fields.
+            if (
+                status not in _OFFICIAL_ATTRIBUTION_STATUSES
+                or not isinstance(products, list)
+                or (status == "unattributed" and products)
+            ):
+                status = "unattributed"
+                attributed = []
+            else:
+                attributed = [item for item in products if isinstance(item, dict) and item.get("code")]
+                if not attributed:
+                    status = "unattributed"
+            attributed_camp = _official_camp(attributed)
+            primary = attributed[0] if attributed else {}
+            primary_details = by_code.get(primary.get("code"), primary)
+            out.append({
+                **post,
+                # ``code`` in old fixtures is still useful as source metadata,
+                # but it is never promoted into the attribution set.
+                "sourceAnchorCode": post.get("sourceAnchorCode", post.get("code")),
+                "attributedProducts": attributed,
+                "attributionStatus": status,
+                "attributedCamp": attributed_camp,
+                # Compatibility fields consumed by older cards must share the
+                # same source of truth; otherwise they reintroduce the anchor.
+                "code": primary.get("code"),
+                "name": primary_details.get("name"),
+                "sector": primary_details.get("sector"),
+                "ownership": primary_details.get("ownership"),
+                "issuer": primary_details.get("issuer"),
+                "mentioned": attributed,
+                "camp": attributed_camp,
+                "campPrimary": _official_camp(attributed[:1]),
+            })
+        return out
 
     def etf_mentions_for(self, account, range_key):
-        return self._lookup("etf_mentions", account, range_key)
+        officials = self.master().get("officials", [])
+        official = next(
+            (item for item in officials if account in (item.get("short"), item.get("full"))),
+            None,
+        )
+        if official is None:
+            return MISSING
+        posts = self.official_posts(range_key)
+        if posts is MISSING:
+            return MISSING
+
+        rows = {}
+        post_ids = set()
+        account_names = {official.get("short"), official.get("full")}
+        for post in posts:
+            if post.get("account") not in account_names and post.get("accountFull") not in account_names:
+                continue
+            occurrence_counts = _explicit_cashtag_counts(post)
+            seen = set()
+            for product in post["attributedProducts"]:
+                code = str(product["code"])
+                if code in seen:
+                    continue
+                seen.add(code)
+                row = rows.setdefault(
+                    code,
+                    {
+                        "code": code,
+                        "name": product.get("name"),
+                        "short": _short_name(product.get("name")),
+                        "issuer": product.get("issuer"),
+                        "ownership": product.get("ownership"),
+                        "count": 0,
+                        "posts": 0,
+                    },
+                )
+                row["count"] += max(1, occurrence_counts.get(code, 0))
+                row["posts"] += 1
+                post_ids.add(post.get("id"))
+
+        items = sorted(
+            rows.values(),
+            key=lambda item: (
+                0 if item["ownership"] == "own" else 1,
+                -item["count"],
+                item["code"],
+            ),
+        )
+        return {
+            "list": items,
+            "own": [item for item in items if item["ownership"] == "own"],
+            "peer": [item for item in items if item["ownership"] != "own"],
+            "etfCount": len(items),
+            "total": sum(item["count"] for item in items),
+            "postCount": len(post_ids),
+        }

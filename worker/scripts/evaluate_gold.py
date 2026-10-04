@@ -1,7 +1,7 @@
 """人工核对集评估（ADR-0021 §人工核对）—— 三套系统对 400 条人工标签的准确率，写 `meta_kv.ai_validation`。
 
     cd worker && python -m scripts.evaluate_gold --file gold-400.xlsx
-    cd worker && python -m scripts.evaluate_gold --file gold-llm-400.xlsx                # 只核对 Luna 的那份表
+    cd worker && python -m scripts.evaluate_gold --file gold-llm-400.xlsx                # v3 生产门禁只接受这类直接 LLM 样本
     cd worker && python -m scripts.evaluate_gold --file D:/x/gold-400.xlsx --labels-file D:/x/gold-400-model-labels.xlsx
     cd worker && python -m scripts.evaluate_gold --file gold-400.xlsx --from-db          # 不用标签表，按正文回库取现行结论
     cd worker && python -m scripts.evaluate_gold --file gold-400.xlsx --no-write         # 只算不写库
@@ -50,7 +50,8 @@
 
 评估只要两个 xlsx，不要库；写库只要库，不要 xlsx。`--no-write` 在没有库的机器上算出报告
 （`.scratch/llm-90d/gold-eval-<stamp>.json`，只有计数，可进 git），`--apply <报告>` 在有库的机器上把报告里的
-`ai_validation` 原样写进 `meta_kv`。报告里另带 `by_stratum_agreement`（每个抽样层里 Luna 与人的一致条数）——
+`ai_validation` 原样写进 `meta_kv`。生产报告还绑定模型标签实际来自的 model/prompt/schema/taxonomy；
+混用版本、旧 v2 或缺来源字段都会拒绝。报告里另带 `by_stratum_agreement`（每个抽样层里 Luna 与人的一致条数）——
 低分是集中在某一层还是均匀分布，决定该改 Prompt、改判定规则，还是重新对齐标注口径。
 """
 
@@ -60,6 +61,7 @@ import logging
 import os
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from pathlib import Path
 
 from sqlalchemy import insert, select, update
@@ -71,8 +73,18 @@ for cand in (REPO_ROOT, Path(__file__).resolve().parents[1]):
         sys.path.insert(0, str(cand))
 
 import clock  # noqa: E402
+from ai import config  # noqa: E402
+from ai import release_regressions  # noqa: E402
 from models import registry  # noqa: E402
+from scripts.gold_sample import format_parent_comments  # noqa: E402
 from radar_db import default_data_dir, make_engine  # noqa: E402
+from radar_db.comment_routes import (  # noqa: E402
+    COMMENT_ROUTE_VERSION,
+    product_pool_digest,
+    report_policy_fields,
+    readiness_on_connection as comment_routes_ready_on_connection,
+    require_ready as require_comment_routes_ready,
+)
 from radar_db.schema import annotation_runs, annotations, comments, feeds, meta_kv  # noqa: E402
 
 log = logging.getLogger("worker.evaluate_gold")
@@ -83,6 +95,8 @@ ATT_FROM_ZH = {"积极": "positive", "消极": "negative", "中性": "neutral"}
 REL_LABELS = ("relevant", "irrelevant", "needs_context")
 ATT_LABELS = ("positive", "neutral", "negative")
 SYSTEMS = ("student", "llm", "combined")
+RELEASE_REPORT_TYPE = "comment-relevance-human-gold-v1"
+RELEASE_PROMPT_VERSION = "comment-product-v3"
 # 不算 Luna 结论的写入方（ADR-0021 §8）：规则行是词表判的，学生行与抄来的行不是 Luna 说的。
 NON_LLM_PROVIDERS = ("rule", "local_model", "propagated")
 
@@ -92,6 +106,10 @@ LABEL_COLUMNS = {
     "student_relevance": "学生相关性", "student_relevance_p": "学生相关性概率",
     "student_attitude": "学生态度", "student_attitude_p": "学生态度概率",
     "llm_relevance": "Luna相关性", "llm_attitude": "Luna态度",
+    "llm_model": "LLM模型", "llm_requested_model": "LLM请求模型", "llm_prompt": "LLM Prompt",
+    "llm_schema": "LLM Schema", "llm_taxonomy": "LLM Taxonomy",
+    "comment_route_version": "评论路由版本", "product_pool_digest": "产品池摘要",
+    "regression_case_id": "回归案例ID",
 }
 
 
@@ -171,6 +189,18 @@ def read_model_labels(path):
             continue
         g = {k: _cell(r, idx, col) for k, col in LABEL_COLUMNS.items()}
         code = g["code"]
+        llm_policy = {
+            "model": g["llm_model"],
+            "requestedModel": g["llm_requested_model"],
+            "promptVersion": g["llm_prompt"],
+            "schemaVersion": g["llm_schema"],
+            "taxonomyVersion": g["llm_taxonomy"],
+        }
+        if g["comment_route_version"] and g["product_pool_digest"]:
+            llm_policy.update(
+                commentRouteVersion=g["comment_route_version"],
+                productPoolDigest=g["product_pool_digest"],
+            )
         out[str(_cell(r, idx, "编号"))] = {
             "sample_source": _cell(r, idx, "抽样来源") or "student",
             "comment_id": g["comment_id"], "code": str(code) if code is not None else None, "stratum": g["stratum"],
@@ -179,6 +209,8 @@ def read_model_labels(path):
                         "relevance_p": g["student_relevance_p"], "attitude_p": g["student_attitude_p"]},
             "llm": {"relevance": _norm(g["llm_relevance"], REL_FROM_ZH),
                     "attitude": _norm(g["llm_attitude"], ATT_FROM_ZH)},
+            "llm_policy": llm_policy,
+            "regression_case_id": g["regression_case_id"],
         }
     wb.close()
     return out
@@ -225,33 +257,102 @@ def labels_from_db(engine, gold):
     复读评论（同产品同正文多条）用帖子标题＋父评论消歧；仍分不开且各候选的结论不一致 ⇒ 记
     `ambiguous`，这一行不进评估。匹配不到 ⇒ `unmatched`。两种都不猜。
     """
-    from radar_db.annotations_read import current_annotations
+    from ai.prompts.comment_product_v3 import VERSION as comment_prompt_version
+    from radar_db.annotations_read import released_annotations
+    from radar_db.comment_filter import load_comment_filter_config, require_filter_ready
+
+    filter_config = load_comment_filter_config()
+    with engine.connect() as conn:
+        route_active = comment_routes_ready_on_connection(conn)
+    if not route_active:
+        require_filter_ready(engine, filter_config)
+    routing_policy = report_policy_fields(engine) if route_active else {}
 
     wanted = {k: g for k, g in gold.items() if g.get("code") and g.get("text")}
     texts = sorted({g["text"] for g in wanted.values()})
     parent = comments.alias("parent")
+    grandparent = comments.alias("grandparent")
+    great_grandparent = comments.alias("great_grandparent")
     candidates = defaultdict(list)  # text -> [(comment_id, title, parent_text)]
     with engine.connect() as conn:
         for chunk in _chunks(texts, 400):
             rows = conn.execute(
-                select(comments.c.comment_id, comments.c.content, feeds.c.title, parent.c.content.label("parent_text"))
+                select(
+                    comments.c.comment_id,
+                    comments.c.content,
+                    feeds.c.title,
+                    parent.c.content.label("parent_text"),
+                    grandparent.c.content.label("grandparent_text"),
+                    great_grandparent.c.content.label("great_grandparent_text"),
+                )
                 .select_from(comments.outerjoin(feeds, feeds.c.feed_id == comments.c.feed_id)
-                             .outerjoin(parent, parent.c.comment_id == comments.c.reply_to_comment_id))
+                             .outerjoin(parent, parent.c.comment_id == comments.c.reply_to_comment_id)
+                             .outerjoin(
+                                 grandparent,
+                                 grandparent.c.comment_id == parent.c.reply_to_comment_id,
+                             )
+                             .outerjoin(
+                                 great_grandparent,
+                                 great_grandparent.c.comment_id == grandparent.c.reply_to_comment_id,
+                             ))
                 .where(comments.c.content.in_(chunk))
             )
-            for cid, content, title, parent_text in rows:
-                candidates[content].append((cid, title, parent_text))
-        provider_of = dict(conn.execute(select(annotation_runs.c.run_id, annotation_runs.c.provider)).all())
+            for (
+                cid,
+                content,
+                title,
+                parent_text,
+                grandparent_text,
+                great_grandparent_text,
+            ) in rows:
+                candidates[content].append((
+                    cid,
+                    title,
+                    format_parent_comments(
+                        (parent_text, grandparent_text, great_grandparent_text)
+                    ),
+                ))
+        run_meta = {
+            row.run_id: {
+                "provider": row.provider,
+                "model": row.model_id,
+                "promptVersion": row.prompt_version,
+                "schemaVersion": row.schema_version,
+                "taxonomyVersion": row.taxonomy_version,
+            }
+            for row in conn.execute(select(
+                annotation_runs.c.run_id,
+                annotation_runs.c.provider,
+                annotation_runs.c.model_id,
+                annotation_runs.c.prompt_version,
+                annotation_runs.c.schema_version,
+                annotation_runs.c.taxonomy_version,
+            ))
+        }
 
     all_ids = sorted({cid for lst in candidates.values() for cid, _t, _p in lst})
-    cur_rel = current_annotations(engine, "relevance", "comment", ids=all_ids)
-    cur_att = current_annotations(engine, "attitude", "comment", ids=all_ids)
-    st_rel = _student_rows(engine, "relevance", all_ids)
-    st_att = _student_rows(engine, "attitude", all_ids)
+    annotation_scope = {
+        "ids": all_ids,
+        "task": "comment_product",
+        "prompt_version": comment_prompt_version,
+        "parent_filter_config": filter_config,
+    }
+    cur_rel = released_annotations(engine, "relevance", "comment", **annotation_scope)
+    cur_att = released_annotations(engine, "attitude", "comment", **annotation_scope)
+    # 学生预测是 provider 维度的历史快照，不能用全局链末替代；但只允许共享
+    # current_annotations 接缝确认过的合格、同产品判定单元进入回库结果。
+    st_rel = {
+        unit: row for unit, row in _student_rows(engine, "relevance", all_ids).items()
+        if unit in cur_rel
+    }
+    st_att = {
+        unit: row for unit, row in _student_rows(engine, "attitude", all_ids).items()
+        if unit in cur_rel
+    }
 
     def luna(cur, unit):
         r = cur.get(unit)
-        if r is None or provider_of.get(r["run_id"], "llm") in NON_LLM_PROVIDERS:
+        if r is None or run_meta.get(r["run_id"], {}).get("provider", "llm") in NON_LLM_PROVIDERS:
             return None
         return r["value"]
 
@@ -259,10 +360,21 @@ def labels_from_db(engine, gold):
         rel, rel_p = st_rel.get(unit, (None, None))
         att, att_p = st_att.get(unit, (None, None))
         l_rel = luna(cur_rel, unit)
+        rel_row = cur_rel.get(unit)
+        rel_meta = run_meta.get(rel_row["run_id"], {}) if rel_row is not None else {}
+        llm_policy = ({
+            "model": rel_meta.get("model"),
+            "requestedModel": rel_meta.get("model"),
+            **{key: rel_meta.get(key) for key in
+               ("promptVersion", "schemaVersion", "taxonomyVersion")},
+            **routing_policy,
+        }
+                      if l_rel is not None else None)
         return {
             "student": {"relevance": rel, "attitude": att if rel == "relevant" else None,
                         "relevance_p": rel_p, "attitude_p": att_p if rel == "relevant" else None},
             "llm": {"relevance": l_rel, "attitude": luna(cur_att, unit) if l_rel == "relevant" else None},
+            "llm_policy": llm_policy,
         }
 
     def _same(a, b):
@@ -345,6 +457,19 @@ def _macro_f1(pairs, labels):
     return round(sum(f1s) / len(f1s), 4) if f1s else None
 
 
+def _relevant_precision_recall(pairs):
+    """Treat ``relevant`` as the positive class for the release gate."""
+    pairs = [(g, p) for g, p in pairs if g is not None]
+    if not pairs:
+        return None, None
+    tp = sum(g == "relevant" and p == "relevant" for g, p in pairs)
+    fp = sum(g != "relevant" and p == "relevant" for g, p in pairs)
+    fn = sum(g == "relevant" and p != "relevant" for g, p in pairs)
+    precision = round(tp / (tp + fp), 4) if tp + fp else None
+    recall = round(tp / (tp + fn), 4) if tp + fn else None
+    return precision, recall
+
+
 def evaluate(gold, model, *, threshold=None):
     """返回 `{n, n_gold, n_unmatched, by_system: {system: {relevance_accuracy, attitude_accuracy,
     attitude_macro_f1, n_relevance, n_attitude, n_unlabeled, coverage, confusion}}}`。
@@ -353,11 +478,15 @@ def evaluate(gold, model, *, threshold=None):
     两边都没标的行算错 —— 那条评论在页面上就是没结论。整套系统一行都没判过 ⇒ 三个指标全 None。
     """
     joined = [(gold[k], model[k]) for k in sorted(gold) if k in model]
+    manifest, _digest = release_regressions.load_manifest()
+    fixed_expectations = {
+        row["caseId"]: row["expectedRelevance"] for row in manifest["commentCases"]
+    }
     source = "llm" if joined and all(m.get("sample_source") == "llm" for _, m in joined) else "student"
     out = {"n": len(joined), "n_gold": len(gold), "n_unmatched": len(set(gold) - set(model)),
            "sample_source": source, "by_system": {}}
     for system in SYSTEMS:
-        rel_pairs, att_pairs, unlabeled = [], [], 0
+        rel_pairs, att_pairs, complaint_checks, unlabeled = [], [], [], 0
         system_rows = [] if source == "llm" and system != "llm" else joined
         for g, m in system_rows:
             pred = combined_label(m, threshold) if system == "combined" else _label_or_none(m[system])
@@ -366,21 +495,198 @@ def evaluate(gold, model, *, threshold=None):
                 if system != "combined":
                     continue
             rel_pairs.append((g["relevance"], pred.get("relevance")))
+            case_id = m.get("regression_case_id")
+            if case_id in fixed_expectations:
+                expected = fixed_expectations[case_id]
+                complaint_checks.append(
+                    g["relevance"] == expected and pred.get("relevance") == expected
+                )
             if g["relevance"] == "relevant" and g["attitude"] is not None:
                 att_pairs.append((g["attitude"], pred.get("attitude") if pred.get("relevance") == "relevant" else None))
         rel_acc, n_rel = _accuracy(rel_pairs)
         att_acc, n_att = _accuracy(att_pairs)
+        rel_precision, rel_recall = _relevant_precision_recall(rel_pairs)
         # 一行都没判过的系统给 None 不给 0：0 是「量了，全错」，这里是「没有东西可量」。
         labeled_any = any(p is not None for _g, p in rel_pairs)
         out["by_system"][system] = {
             "relevance_accuracy": rel_acc if labeled_any else None,
+            "relevant_precision": rel_precision if labeled_any else None,
+            "relevant_recall": rel_recall if labeled_any else None,
             "attitude_accuracy": att_acc if labeled_any else None,
             "attitude_macro_f1": _macro_f1(att_pairs, ATT_LABELS) if labeled_any else None,
             "n_relevance": n_rel, "n_attitude": n_att, "n_unlabeled": unlabeled,
+            "complaint_n": len(complaint_checks),
+            "complaint_pass_count": sum(complaint_checks),
+            "complaint_passed": all(complaint_checks) if complaint_checks else None,
             "coverage": round(n_rel / len(joined), 4) if joined else None,
             "confusion": {"relevance": _confusion(rel_pairs, REL_LABELS), "attitude": _confusion(att_pairs, ATT_LABELS)},
         }
     return out
+
+
+def relevance_quality_gate(result, *, system=None, min_samples=400,
+                           min_precision=0.95, min_recall=0.90):
+    """Return the production release decision for comment relevance.
+
+    Passing requires enough human gold rows, both class metrics, and the fixed
+    repository-owned complaint cases with no mismatches.
+    """
+    system = system or ("llm" if result.get("sample_source") == "llm" else "combined")
+    metrics = result["by_system"][system]
+    precision = metrics.get("relevant_precision")
+    recall = metrics.get("relevant_recall")
+    complaint_n = metrics.get("complaint_n", 0)
+    complaints_passed = metrics.get("complaint_passed")
+    sample_count = metrics.get("n_relevance", 0)
+    passed = (
+        sample_count >= min_samples
+        and precision is not None and precision >= min_precision
+        and recall is not None and recall >= min_recall
+        and complaint_n > 0 and complaints_passed is True
+    )
+    return {
+        "passed": passed,
+        "system": system,
+        "minSamples": min_samples,
+        "sampleCount": sample_count,
+        "minPrecision": min_precision,
+        "precision": precision,
+        "minRecall": min_recall,
+        "recall": recall,
+        "complaintCount": complaint_n,
+        "complaintsPassed": complaints_passed,
+    }
+
+
+def release_policy(gold, model):
+    """Return the one LLM policy that produced every scored gold label."""
+    base_keys = (
+        "model",
+        "requestedModel",
+        "promptVersion",
+        "schemaVersion",
+        "taxonomyVersion",
+    )
+    route_keys = ("commentRouteVersion", "productPoolDigest")
+    policies = []
+    for gid in gold:
+        row = model.get(gid)
+        if row is None or row.get("llm", {}).get("relevance") is None:
+            continue
+        policy = row.get("llm_policy")
+        if not isinstance(policy, dict) or any(not policy.get(key) for key in base_keys):
+            raise ValueError("LLM gold labels are missing model/prompt/schema/taxonomy provenance")
+        present_route = tuple(bool(policy.get(key)) for key in route_keys)
+        if any(present_route) and not all(present_route):
+            raise ValueError("LLM gold labels have incomplete comment routing provenance")
+        keys = base_keys + route_keys if all(present_route) else base_keys
+        policies.append({key: policy[key] for key in keys})
+    if not policies:
+        raise ValueError("No LLM gold labels have policy provenance")
+    key_sets = {tuple(policy) for policy in policies}
+    if len(key_sets) != 1:
+        raise ValueError("LLM gold labels contain mixed routing provenance")
+    keys = tuple(policies[0])
+    unique = {tuple(policy[key] for key in keys) for policy in policies}
+    if len(unique) != 1:
+        raise ValueError("LLM gold labels contain mixed model/prompt/schema/taxonomy policies")
+    return policies[0]
+
+
+def _metrics_from_relevance_confusion(confusion):
+    """Recompute gate metrics from counts so a stale/edited summary cannot self-approve."""
+    try:
+        matrix = confusion["relevance"]
+        counts = {
+            gold: {pred: matrix[gold][pred] for pred in REL_LABELS + ("none",)}
+            for gold in REL_LABELS
+        }
+    except (KeyError, TypeError):
+        raise ValueError("Quality report has no complete relevance confusion matrix") from None
+    if any(type(value) is not int or value < 0 for row in counts.values() for value in row.values()):
+        raise ValueError("Quality report relevance confusion matrix must contain non-negative integer counts")
+    sample_count = sum(value for row in counts.values() for value in row.values())
+    tp = counts["relevant"]["relevant"]
+    fp = sum(counts[gold]["relevant"] for gold in REL_LABELS if gold != "relevant")
+    fn = sum(value for pred, value in counts["relevant"].items() if pred != "relevant")
+    precision = round(tp / (tp + fp), 4) if tp + fp else None
+    recall = round(tp / (tp + fn), 4) if tp + fn else None
+    return sample_count, precision, recall
+
+
+def validate_release_report(report, *, expected_policy=None):
+    """Validate a production human-gold release report.
+
+    The caller-provided ``qualityGate.passed`` flag is never authoritative: sample
+    size and precision/recall are recomputed from the report's confusion counts.
+    Fixed complaint cases are identified by a repository-owned manifest.  Free-form
+    annotator notes and a caller-provided ``passed`` flag are not release evidence.
+    """
+    if not isinstance(report, Mapping) or report.get("reportType") != RELEASE_REPORT_TYPE:
+        raise ValueError(f"Quality report must be {RELEASE_REPORT_TYPE}")
+    if report.get("sample_source") != "llm":
+        raise ValueError("Quality report must evaluate the LLM directly on an llm-only gold sample")
+    policy = report.get("policy")
+    base_policy = {
+        "model",
+        "requestedModel",
+        "promptVersion",
+        "schemaVersion",
+        "taxonomyVersion",
+    }
+    route_policy = {"commentRouteVersion", "productPoolDigest"}
+    required_policy = (
+        base_policy | route_policy
+        if expected_policy is not None and route_policy <= set(expected_policy)
+        else base_policy
+    )
+    if not isinstance(policy, dict) or set(policy) != required_policy or any(not policy[key] for key in required_policy):
+        raise ValueError("Quality report has no complete model/prompt/schema/taxonomy policy")
+    if policy["promptVersion"] != RELEASE_PROMPT_VERSION:
+        raise ValueError(f"Quality report must be for {RELEASE_PROMPT_VERSION}")
+    if expected_policy is not None and any(policy.get(key) != value for key, value in expected_policy.items()):
+        raise ValueError("Quality report does not match this requested model/prompt/schema/taxonomy policy")
+
+    release_regressions.validate_report_evidence(report.get("fixedRegressions"))
+
+    try:
+        metrics = report["by_system"]["llm"]
+        sample_count, precision, recall = _metrics_from_relevance_confusion(metrics["confusion"])
+        complaint_n = metrics["complaint_n"]
+        complaint_pass_count = metrics["complaint_pass_count"]
+    except (KeyError, TypeError):
+        raise ValueError("Quality report is missing required LLM gate evidence") from None
+    if metrics.get("n_relevance") != sample_count:
+        raise ValueError("Quality report sample count does not match its confusion matrix")
+    if metrics.get("relevant_precision") != precision or metrics.get("relevant_recall") != recall:
+        raise ValueError("Quality report metrics do not match its confusion matrix")
+    if type(complaint_n) is not int or type(complaint_pass_count) is not int:
+        raise ValueError("Quality report complaint counts must be integers")
+    manifest, _digest = release_regressions.load_manifest()
+    fixed_comment_count = len(manifest["commentCases"])
+    if complaint_n != fixed_comment_count or complaint_pass_count < 0 or complaint_pass_count > complaint_n:
+        raise ValueError("Quality report has invalid complaint regression counts")
+    if metrics.get("complaint_passed") is not (complaint_pass_count == complaint_n):
+        raise ValueError("Quality report complaint result does not match its counts")
+
+    recomputed = relevance_quality_gate(report, system="llm")
+    recomputed["complaintsPassed"] = complaint_pass_count == complaint_n
+    recomputed["passed"] = (
+        recomputed["sampleCount"] >= recomputed["minSamples"]
+        and precision is not None and precision >= recomputed["minPrecision"]
+        and recall is not None and recall >= recomputed["minRecall"]
+        and complaint_n > 0 and complaint_pass_count == complaint_n
+    )
+    if recomputed["passed"] is not True:
+        raise ValueError("Quality report did not pass 400 gold rows, precision/recall, and complaint regressions")
+    if report.get("qualityGate", {}).get("passed") is not True:
+        raise ValueError("Quality report is not marked as passed")
+    if report.get("n") != sample_count or report.get("n_gold", sample_count) < sample_count:
+        raise ValueError("Quality report evaluated-row totals are inconsistent")
+    validation = report.get("ai_validation")
+    if not isinstance(validation, dict) or validation.get("level") != "spot_check" or validation.get("n") != sample_count:
+        raise ValueError("Quality report has inconsistent ai_validation metadata")
+    return recomputed
 
 
 def stratum_agreement(gold, model, system="llm"):
@@ -556,7 +862,7 @@ def apply_recheck(gold, recheck):
 
 
 def read_report_payload(path):
-    """从 `gold-eval-*.json` 取 `ai_validation`；形状不对就停，不把半份记录写进库。"""
+    """Read a validated report payload; never bypass the relevance gate."""
     report = json.loads(Path(path).read_text(encoding="utf-8"))
     payload = report.get("ai_validation") if isinstance(report, dict) else None
     required = {"level", "n", "date", "relevance_accuracy", "attitude_accuracy", "attitude_macro_f1", "by_system"}
@@ -564,6 +870,19 @@ def read_report_payload(path):
         raise SystemExit(f"{path} 里没有合法的 ai_validation（需要 {sorted(required)}，level=spot_check）")
     if set(payload["by_system"]) != set(SYSTEMS):
         raise SystemExit(f"{path} 的 by_system 不是 {SYSTEMS}")
+    try:
+        cfg = config.load(_allow_missing_key=True)
+        expected_policy = {
+            "requestedModel": cfg.model,
+            "promptVersion": cfg.prompt_version,
+            "schemaVersion": cfg.schema_version,
+            "taxonomyVersion": cfg.taxonomy_version,
+            "commentRouteVersion": COMMENT_ROUTE_VERSION,
+            "productPoolDigest": product_pool_digest(),
+        }
+        validate_release_report(report, expected_policy=expected_policy)
+    except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+        raise SystemExit(f"{path} 未通过生产人工金标门禁：{exc}") from None
     return payload
 
 
@@ -580,12 +899,13 @@ def main(argv=None):
     ap.add_argument("--threshold", type=float, help="combined 路由阈值，默认 STUDENT_ROUTE_THRESHOLD")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s")
-
     if args.apply:
         if args.file or args.no_write:
             ap.error("--apply 单独用：它不读 xlsx，也不能配 --no-write")
         payload = read_report_payload(args.apply)
-        write_validation(make_engine(), payload)
+        engine = make_engine()
+        require_comment_routes_ready(engine)
+        write_validation(engine, payload)
         log.info("已把 %s 的 ai_validation 写入 meta_kv 并 bump annotation revision", Path(args.apply).name)
         print(json.dumps(payload, ensure_ascii=False, indent=1))
         return 0
@@ -621,8 +941,23 @@ def main(argv=None):
         print(f"分歧 {len(ids)} 行 → {out_xlsx}（含原文，留在数据目录）")
     stamp = clock.now()
     payload = ai_validation_payload(result, stamp.strftime("%Y-%m-%d"))
-    report = {"stamp": stamp.strftime("%Y%m%dT%H%M%S"), "gold_file": gold_path.name,
+    quality_gate = relevance_quality_gate(result)
+    policy_error = None
+    try:
+        policy = release_policy(gold, model)
+    except ValueError as exc:
+        policy, policy_error = None, str(exc)
+    if (result.get("sample_source") != "llm" or not policy
+            or policy.get("promptVersion") != RELEASE_PROMPT_VERSION):
+        quality_gate["passed"] = False
+    fixed_regressions = release_regressions.build_report_evidence(gold, model)
+    quality_gate["fixedRegressionsPassed"] = fixed_regressions["passed"]
+    quality_gate["passed"] = quality_gate["passed"] and fixed_regressions["passed"]
+    report = {"reportType": RELEASE_REPORT_TYPE,
+              "stamp": stamp.strftime("%Y%m%dT%H%M%S"), "gold_file": gold_path.name,
               "labels_source": source, "labels_stats": source_stats, "recheck": recheck_stats,
+              "policy": policy, "policyError": policy_error,
+              "fixedRegressions": fixed_regressions,
               "by_stratum": dict(Counter(str(model[k].get("stratum")) for k in gold if k in model)),
               "by_stratum_agreement": {s: stratum_agreement(gold, model, s) for s in ("llm", "combined")},
               "gold_distribution": {
@@ -635,14 +970,20 @@ def main(argv=None):
                                                and model[k][s]["attitude"]))}
                   for s in ("student", "llm")
               },
-              **result, "ai_validation": payload}
+              **result, "qualityGate": quality_gate, "ai_validation": payload}
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out = OUT_DIR / f"gold-eval-{report['stamp']}.json"
     out.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
-    if not args.no_write:
-        write_validation(make_engine(), payload)
+    gate_blocks_write = not quality_gate["passed"]
+    if not args.no_write and not gate_blocks_write:
+        engine = make_engine()
+        require_comment_routes_ready(engine)
+        write_validation(engine, payload)
         log.info("meta_kv.ai_validation 已写入并 bump annotation revision")
+    elif gate_blocks_write:
+        log.error("相关性质量门槛未通过；未写入 meta_kv.ai_validation")
     print(json.dumps(payload, ensure_ascii=False, indent=1))
+    print("相关性上线门槛：" + json.dumps(quality_gate, ensure_ascii=False))
     for system in SYSTEMS:
         s = result["by_system"][system]
         print(f"{system:9s} 判过 {s['n_relevance']:>4}/{result['n']} 行（覆盖 {s['coverage']}），"
@@ -650,7 +991,9 @@ def main(argv=None):
     if result["n_unmatched"]:
         print(f"未匹配 {result['n_unmatched']} 行（不进分母）")
     print(f"\n完整报告：{out}")
-    return 0
+    # ``--no-write`` suppresses the database mutation, not the release result.
+    # CI and operators must still receive a non-zero status for a failed gate.
+    return 2 if gate_blocks_write else 0
 
 
 if __name__ == "__main__":

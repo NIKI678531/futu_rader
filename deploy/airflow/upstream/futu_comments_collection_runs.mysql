@@ -1,0 +1,22 @@
+-- MarketInsight-owned contract table. Apply in the MarketInsight database
+-- through that repository's normal migration mechanism (prefer Alembic).
+CREATE TABLE futu_comments_collection_runs (
+    run_id VARCHAR(250) NOT NULL PRIMARY KEY,
+    collection_kind VARCHAR(40) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    scheduled_for DATETIME(6) NULL,
+    started_at DATETIME(6) NULL,
+    finished_at DATETIME(6) NULL,
+    high_watermark_at DATETIME(6) NULL,
+    complete_through DATE NULL,
+    configured_symbol_count INT NULL,
+    configured_symbols_fingerprint VARCHAR(128) NULL,
+    attempted_symbol_count INT NULL,
+    succeeded_symbol_count INT NULL,
+    error_summary TEXT NULL,
+    INDEX ix_futu_collection_kind_finished (collection_kind, finished_at),
+    INDEX ix_futu_collection_complete (complete_through),
+    CONSTRAINT ck_futu_collection_status
+        CHECK (status IN ('running', 'succeeded', 'failed'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+

@@ -39,6 +39,8 @@ TypeError，整屏白；而屏级边界把它报成「后端服务连不上」�
 而不是放宽这里的断言。
 """
 
+import re
+
 import pytest
 
 from sql_fixture import KOL_NAME, OFFICIAL_SHORT, OWN_CODE
@@ -99,11 +101,22 @@ def _walk(value, path, shape):
         return
     if isinstance(value, dict):
         types.setdefault(path, set()).add("dict")
-        keys.setdefault(path, set()).update(value)
+        normalized = {
+            "{product_code}"
+            if isinstance(key, str) and re.fullmatch(r"[1-9][0-9]{3}", key)
+            else key
+            for key in value
+        }
+        keys.setdefault(path, set()).update(normalized)
         if isinstance(value.get("status"), str):
             _STATUS.setdefault(id(shape), {})[path] = value["status"]
         for k, v in value.items():
-            _walk(v, f"{path}.{k}", shape)
+            child = (
+                "{product_code}"
+                if isinstance(k, str) and re.fullmatch(r"[1-9][0-9]{3}", k)
+                else k
+            )
+            _walk(v, f"{path}.{child}", shape)
         return
     if isinstance(value, list):
         types.setdefault(path, set()).add("list")

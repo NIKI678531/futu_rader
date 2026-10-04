@@ -12,12 +12,39 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from radar_db import create_all, make_engine  # noqa: E402
-from radar_db.schema import annotation_runs, annotations, comments, feeds, meta_kv  # noqa: E402
+from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config  # noqa: E402
+from radar_db.comment_routes import (  # noqa: E402
+    COMMENT_ROUTE_VERSION,
+    product_pool_digest,
+    readiness_values as route_readiness_values,
+)
+from radar_db.schema import (  # noqa: E402
+    annotation_runs, annotations, comments, feed_mentions, feeds, meta_kv,
+)
+from ai import release_regressions  # noqa: E402
 from scripts import evaluate_gold, gold_sample  # noqa: E402
 
 openpyxl = pytest.importorskip("openpyxl")
 
 OWN, PEER = "3033", "2800"
+
+
+def _passing_fixed_regressions():
+    manifest, digest = release_regressions.load_manifest()
+    comments = [{
+        "caseId": row["caseId"],
+        "expectedRelevance": row["expectedRelevance"],
+        "humanRelevance": row["expectedRelevance"],
+        "modelRelevance": row["expectedRelevance"],
+        "passed": True,
+    } for row in manifest["commentCases"]]
+    return {
+        "manifestVersion": manifest["manifestVersion"],
+        "manifestSha256": digest,
+        "commentCases": comments,
+        "officialAttributionCases": release_regressions.official_regression_results(),
+        "passed": True,
+    }
 
 
 @pytest.fixture()
@@ -26,16 +53,26 @@ def engine(tmp_path):
     create_all(eng)
     now = datetime(2026, 8, 26)
     with eng.begin() as conn:
+        conn.execute(insert(meta_kv), [
+            {"k": key, "v": value}
+            for key, value in filter_readiness_values(load_comment_filter_config()).items()
+        ])
         for rid, prov in (("stu-1", "local_model"), ("luna-1", "openai_compatible"), ("rule-1", "rule")):
             conn.execute(insert(annotation_runs).values(
-                run_id=rid, task="comment_product", provider=prov, model_id="m", prompt_version="p",
+                run_id=rid, task="comment_product", provider=prov, model_id="m", prompt_version="comment-product-v3",
                 taxonomy_version="v2", schema_version="v2", started_at=now, status="done",
                 input_count=0, success_count=0, error_count=0))
         conn.execute(insert(feeds), [
-            {"feed_id": 1, "code": OWN, "posted_at": now, "feed_type": 1, "title": "恒科", "content": "c",
+            {"feed_id": 1, "code": OWN, "source_ticker": "03033.HK", "posted_at": now,
+             "feed_type": 1, "title": "恒科", "content": "c",
              "like_count": 0, "comment_count": 0, "image_count": 0, "raw_json_broken": False},
-            {"feed_id": 2, "code": PEER, "posted_at": now, "feed_type": 1, "title": "盈富", "content": "c",
+            {"feed_id": 2, "code": PEER, "source_ticker": "02800.HK", "posted_at": now,
+             "feed_type": 1, "title": "盈富", "content": "c",
              "like_count": 0, "comment_count": 0, "image_count": 0, "raw_json_broken": False},
+        ])
+        conn.execute(insert(feed_mentions), [
+            {"feed_id": 1, "raw_ticker": "03033.HK", "market": "HK", "occurrences": 1},
+            {"feed_id": 2, "raw_ticker": "02800.HK", "market": "HK", "occurrences": 1},
         ])
         rows, anns = [], []
         texts = ["费率同类最低，长期持有", "點差太大，唔會再買", "呢隻幾時派息", "恒指要崩了", "這隻不錯"]
@@ -96,7 +133,56 @@ def test_sample_is_stratified_and_workbooks_have_shape(engine, tmp_path):
     ws2 = wb2.active
     header = [c.value for c in ws2[1]]
     assert header[:4] == ["编号", "comment_id", "产品代码", "层"] and "Luna相关性" in header
+    assert header[-8:] == [
+        "LLM模型", "LLM请求模型", "LLM Prompt", "LLM Schema", "LLM Taxonomy",
+        "评论路由版本", "产品池摘要", "回归案例ID",
+    ]
     assert ws2.max_row == 21
+    reread = evaluate_gold.read_model_labels(labels)
+    assert {tuple(row["llm_policy"].values()) for row in reread.values() if row["llm"]["relevance"]} == {
+            ("m", "m", "comment-product-v3", "v2", "v2")
+    }
+
+
+def test_gold_workbook_exposes_all_three_parent_levels(engine, tmp_path):
+    now = datetime(2026, 8, 26)
+    with engine.begin() as conn:
+        conn.execute(insert(comments), [
+            {"comment_id": 1000, "feed_id": 1, "content": "第三层", "author_uid": "p3",
+             "reply_to_comment_id": None},
+            {"comment_id": 1001, "feed_id": 1, "content": "第二层", "author_uid": "p2",
+             "reply_to_comment_id": 1000},
+            {"comment_id": 1002, "feed_id": 1, "content": "第一层", "author_uid": "p1",
+             "reply_to_comment_id": 1001},
+            {"comment_id": 1003, "feed_id": 1, "content": "同意", "author_uid": "child",
+             "reply_to_comment_id": 1002},
+        ])
+        conn.execute(insert(annotations).values(
+            target_type="comment",
+            target_id=1003,
+            subject_code=OWN,
+            kind="relevance",
+            value_json='"needs_context"',
+            calibrated_confidence=0.6,
+            run_id="stu-1",
+            input_hash="parent-chain",
+            review_state="pending",
+            created_at=now,
+        ))
+
+    unit = next(
+        row for row in gold_sample.collect_units(
+            engine, ownership={OWN: "own", PEER: "peer"}
+        )
+        if row["comment_id"] == 1003
+    )
+    assert unit["parents"] == ["第一层", "第二层", "第三层"]
+    assert unit["parent"] == "第1层（直接父评论）：第一层\n第2层：第二层\n第3层：第三层"
+
+    picked = gold_sample.sample([unit], 1, seed=1)
+    gold_path, _ = gold_sample.write_workbooks(picked, tmp_path, names={OWN: "产品"})
+    ws = openpyxl.load_workbook(gold_path)["标注"]
+    assert ws["E2"].value == unit["parent"]
 
 
 def test_llm_sample_without_students_uses_current_labels(engine, tmp_path):
@@ -151,6 +237,59 @@ def test_llm_sample_without_students_uses_current_labels(engine, tmp_path):
     assert payload["by_system"]["student"]["relevance_accuracy"] is None
     with engine.connect() as conn:
         assert conn.execute(select(annotations)).all() == before
+
+
+def test_gold_db_consumers_exclude_unqualified_and_cross_product_comments(engine):
+    now = datetime(2026, 8, 27)
+    with engine.begin() as conn:
+        conn.execute(insert(feeds), [
+            {"feed_id": 3, "code": OWN, "source_ticker": "03033.HK", "posted_at": now,
+             "feed_type": 1, "title": "未提及自身", "content": "普通帖子", "like_count": 0,
+             "comment_count": 1, "image_count": 0, "raw_json_broken": False},
+            {"feed_id": 4, "code": OWN, "source_ticker": "03033.HK", "posted_at": now,
+             "feed_type": 1, "title": "$03033.HK$", "content": "合格帖子", "like_count": 0,
+             "comment_count": 1, "image_count": 0, "raw_json_broken": False},
+        ])
+        conn.execute(insert(feed_mentions).values(
+            feed_id=4, raw_ticker="03033.HK", market="HK", occurrences=1,
+        ))
+        conn.execute(insert(comments), [
+            {"comment_id": 9001, "feed_id": 3, "content": "不合格样本正文", "author_uid": "u9001"},
+            {"comment_id": 9002, "feed_id": 4, "content": "跨产品样本正文", "author_uid": "u9002"},
+        ])
+        extra = []
+        for cid, code in ((9001, OWN), (9002, PEER)):
+            for run_id in ("stu-1", "luna-1"):
+                extra.append({
+                    "target_type": "comment", "target_id": cid, "subject_code": code,
+                    "kind": "relevance", "value_json": '"relevant"', "run_id": run_id,
+                    "input_hash": f"scope-{cid}-{run_id}", "review_state": "pending",
+                    "created_at": now,
+                })
+        conn.execute(insert(annotations), extra)
+
+    units = gold_sample.collect_units(engine, ownership={OWN: "own", PEER: "peer"})
+    assert not {9001, 9002} & {unit["comment_id"] for unit in units}
+
+    gold = {
+        "G9001": {"code": OWN, "text": "不合格样本正文", "title": "未提及自身", "parent": ""},
+        "G9002": {"code": PEER, "text": "跨产品样本正文", "title": "$03033.HK$", "parent": ""},
+    }
+    model, stats = evaluate_gold.labels_from_db(engine, gold)
+    assert model == {}
+    assert stats["unmatched"] == 2
+
+
+def test_gold_db_consumers_fail_closed_without_filter_readiness(tmp_path):
+    eng = make_engine("sqlite:///" + (tmp_path / "gold-not-ready.db").as_posix())
+    create_all(eng)
+    with pytest.raises(RuntimeError, match="parent-feed comment filter is not ready"):
+        gold_sample.collect_units(eng, ownership={OWN: "own"})
+    with pytest.raises(RuntimeError, match="parent-feed comment filter is not ready"):
+        evaluate_gold.labels_from_db(
+            eng,
+            {"G1": {"code": OWN, "text": "正文", "title": "标题", "parent": ""}},
+        )
 
 
 def test_evaluate_three_systems_and_validation_shape(engine, tmp_path):
@@ -213,6 +352,141 @@ def test_evaluate_never_writes_zero_for_missing():
     assert s["relevance_accuracy"] == 1.0
     assert s["attitude_accuracy"] is None and s["attitude_macro_f1"] is None  # 没有人填态度 ⇒ null 不是 0
     assert res["by_system"]["combined"]["relevance_accuracy"] == 1.0  # Luna 没标 ⇒ 用学生
+
+
+def test_relevant_precision_recall_and_release_gate_cover_complaint_samples():
+    gold = {
+        "G0001": {"relevance": "relevant", "attitude": "positive", "note": "投诉样本"},
+        "G0002": {"relevance": "relevant", "attitude": "neutral", "note": None},
+        "G0003": {"relevance": "irrelevant", "attitude": None, "note": "投诉样本"},
+        "G0004": {"relevance": "irrelevant", "attitude": None, "note": "投诉（自由备注不能进门禁）"},
+    }
+    predictions = ["relevant", "irrelevant", "relevant", "irrelevant"]
+    model = {
+        gid: {
+            "sample_source": "llm",
+            "student": {"relevance": None, "attitude": None,
+                        "relevance_p": None, "attitude_p": None},
+            "llm": {"relevance": prediction,
+                    "attitude": "positive" if prediction == "relevant" else None},
+        }
+        for gid, prediction in zip(gold, predictions)
+    }
+    model["G0001"]["regression_case_id"] = "feedback-3037-explicit-self"
+    model["G0003"]["regression_case_id"] = "feedback-3037-underlying-hsi-only"
+
+    result = evaluate_gold.evaluate(gold, model)
+    llm = result["by_system"]["llm"]
+    assert llm["relevant_precision"] == 0.5
+    assert llm["relevant_recall"] == 0.5
+    assert llm["complaint_n"] == 2
+    assert llm["complaint_passed"] is False
+    gate = evaluate_gold.relevance_quality_gate(result, system="llm", min_samples=4)
+    assert gate == {
+        "passed": False,
+        "system": "llm",
+        "minSamples": 4,
+        "sampleCount": 4,
+        "minPrecision": 0.95,
+        "precision": 0.5,
+        "minRecall": 0.9,
+        "recall": 0.5,
+        "complaintCount": 2,
+        "complaintsPassed": False,
+    }
+
+
+def test_release_report_recomputes_metrics_and_binds_the_v3_model_policy():
+    policy = {
+        "model": "provider-returned-snapshot",
+        "requestedModel": "gpt-5.6-luna",
+        "promptVersion": "comment-product-v3",
+        "schemaVersion": "v2",
+        "taxonomyVersion": "v2",
+    }
+    llm = {
+        "n_relevance": 400,
+        "relevant_precision": 0.9524,
+        "relevant_recall": 0.9,
+        "complaint_n": 3,
+        "complaint_pass_count": 3,
+        "complaint_passed": True,
+        "confusion": {
+            "relevance": {
+                "relevant": {"relevant": 180, "irrelevant": 20, "needs_context": 0, "none": 0},
+                "irrelevant": {"relevant": 9, "irrelevant": 191, "needs_context": 0, "none": 0},
+                "needs_context": {"relevant": 0, "irrelevant": 0, "needs_context": 0, "none": 0},
+            },
+        },
+    }
+    report = {
+        "reportType": "comment-relevance-human-gold-v1",
+        "sample_source": "llm",
+        "n": 400,
+        "n_gold": 400,
+        "policy": policy,
+        "by_system": {"student": {}, "llm": llm, "combined": {}},
+        "fixedRegressions": _passing_fixed_regressions(),
+        "qualityGate": {"passed": True},
+        "ai_validation": {"level": "spot_check", "n": 400},
+    }
+
+    checked = evaluate_gold.validate_release_report(report, expected_policy=policy)
+    assert checked["passed"] is True
+
+    forged = json.loads(json.dumps(report))
+    forged["by_system"]["llm"]["relevant_precision"] = 1.0
+    with pytest.raises(ValueError, match="confusion matrix"):
+        evaluate_gold.validate_release_report(forged, expected_policy=policy)
+
+    below_threshold = json.loads(json.dumps(report))
+    below_threshold["by_system"]["llm"]["confusion"]["relevance"]["irrelevant"].update(
+        relevant=12, irrelevant=188,
+    )
+    below_threshold["by_system"]["llm"]["relevant_precision"] = 0.9375
+    with pytest.raises(ValueError, match="did not pass"):
+        evaluate_gold.validate_release_report(below_threshold, expected_policy=policy)
+
+    old_v2 = json.loads(json.dumps(report))
+    old_v2["policy"]["promptVersion"] = "comment-product-v2"
+    with pytest.raises(ValueError, match="comment-product-v3"):
+        evaluate_gold.validate_release_report(old_v2)
+
+    missing_case = json.loads(json.dumps(report))
+    missing_case["fixedRegressions"]["commentCases"].pop()
+    with pytest.raises(ValueError, match="every fixed complaint case"):
+        evaluate_gold.validate_release_report(missing_case, expected_policy=policy)
+
+    fake_note_case = json.loads(json.dumps(report))
+    fake_note_case["fixedRegressions"]["commentCases"][-1]["caseId"] = "annotator-note-投诉"
+    with pytest.raises(ValueError, match="every fixed complaint case"):
+        evaluate_gold.validate_release_report(fake_note_case, expected_policy=policy)
+
+    wrong_official = json.loads(json.dumps(report))
+    wrong_official["fixedRegressions"]["officialAttributionCases"][0].update(
+        actualCodes=["3068"], passed=True,
+    )
+    with pytest.raises(ValueError, match="Official attribution regression failed"):
+        evaluate_gold.validate_release_report(wrong_official, expected_policy=policy)
+
+
+def test_release_policy_comes_from_every_scored_llm_run_not_runtime_claims(engine, tmp_path):
+    units = gold_sample.collect_units(engine, ownership={OWN: "own", PEER: "peer"}, source="llm")
+    picked = gold_sample.sample(units, 20, seed=4)
+    gold_path, labels_path = gold_sample.write_workbooks(picked, tmp_path, names={}, source="llm")
+    _fill_gold(gold_path, picked, flip_every=999)
+    gold = evaluate_gold.read_gold(gold_path)
+    model = evaluate_gold.read_model_labels(labels_path)
+
+    assert evaluate_gold.release_policy(gold, model) == {
+            "model": "m", "requestedModel": "m", "promptVersion": "comment-product-v3",
+        "schemaVersion": "v2", "taxonomyVersion": "v2",
+    }
+
+    first = next(iter(model.values()))
+    first["llm_policy"] = {**first["llm_policy"], "promptVersion": "comment-product-v2"}
+    with pytest.raises(ValueError, match="mixed"):
+        evaluate_gold.release_policy(gold, model)
 
 
 def test_combined_routing_rule():
@@ -304,6 +578,18 @@ def _fill_gold(gold_path, picked, flip_every=2):
     return truth
 
 
+def test_no_write_still_returns_nonzero_when_release_gate_fails(engine, tmp_path, monkeypatch):
+    units = gold_sample.collect_units(engine, ownership={OWN: "own", PEER: "peer"}, source="llm")
+    picked = gold_sample.sample(units, 10, seed=99)
+    gold_path, _labels_path = gold_sample.write_workbooks(
+        picked, tmp_path, names={}, source="llm",
+    )
+    _fill_gold(gold_path, picked, flip_every=999)
+    monkeypatch.setattr(evaluate_gold, "OUT_DIR", tmp_path / "reports")
+
+    assert evaluate_gold.main(["--file", str(gold_path), "--no-write"]) == 2
+
+
 def test_evaluate_llm_only_sheet_student_null_and_combined_equals_llm(engine, tmp_path):
     units = gold_sample.collect_units(engine, ownership={OWN: "own", PEER: "peer"}, llm_only=True)
     picked = gold_sample.sample(units, 20, seed=5)
@@ -351,9 +637,17 @@ def test_db_fallback_disambiguates_by_context_and_refuses_to_guess(engine, tmp_p
     now = datetime(2026, 8, 26)
     with engine.begin() as conn:
         # 两条复读：同产品同正文，一条在标题「恒科」的帖子下、一条在「盈富」下；Luna 结论不同
+        conn.execute(insert(feeds).values(
+            feed_id=5, code=OWN, source_ticker="03033.HK", posted_at=now, feed_type=1,
+            title="盈富", content="对照上下文", like_count=0, comment_count=1,
+            image_count=0, raw_json_broken=False,
+        ))
+        conn.execute(insert(feed_mentions).values(
+            feed_id=5, raw_ticker="03033.HK", market="HK", occurrences=1,
+        ))
         conn.execute(insert(comments), [
             {"comment_id": 901, "feed_id": 1, "content": "呢隻幾時派息X", "author_uid": "a", "author_name": "n"},
-            {"comment_id": 902, "feed_id": 2, "content": "呢隻幾時派息X", "author_uid": "b", "author_name": "n"},
+            {"comment_id": 902, "feed_id": 5, "content": "呢隻幾時派息X", "author_uid": "b", "author_name": "n"},
             {"comment_id": 903, "feed_id": 1, "content": "呢隻幾時派息Y", "author_uid": "c", "author_name": "n"},
             {"comment_id": 904, "feed_id": 1, "content": "呢隻幾時派息Y", "author_uid": "d", "author_name": "n"},
         ])
@@ -375,6 +669,10 @@ def test_db_fallback_disambiguates_by_context_and_refuses_to_guess(engine, tmp_p
     model, stats = evaluate_gold.labels_from_db(engine, gold)
     assert stats == {"matched": 1, "ambiguous": 1, "unmatched": 1, "skipped_no_text": 1}
     assert model["G0001"]["comment_id"] == 902 and model["G0001"]["llm"]["relevance"] == "irrelevant"
+    assert model["G0001"]["llm_policy"] == {
+            "model": "m", "requestedModel": "m", "promptVersion": "comment-product-v3",
+        "schemaVersion": "v2", "taxonomyVersion": "v2",
+    }
     assert "G0002" not in model and "G0003" not in model
 
 
@@ -401,8 +699,48 @@ def test_apply_writes_report_payload_without_xlsx(engine, tmp_path, monkeypatch)
                              "llm": {"relevance_accuracy": 0.35, "attitude_accuracy": 0.12, "attitude_macro_f1": 0.17},
                              "combined": {"relevance_accuracy": 0.35, "attitude_accuracy": 0.12, "attitude_macro_f1": 0.17}}}
     report = tmp_path / "gold-eval-x.json"
-    report.write_text(json.dumps({"stamp": "x", "ai_validation": payload}, ensure_ascii=False), encoding="utf-8")
+    report.write_text(json.dumps({
+        "reportType": "comment-relevance-human-gold-v1",
+        "stamp": "x",
+        "sample_source": "llm",
+        "n": 400,
+        "n_gold": 400,
+        "policy": {"model": "provider-returned-snapshot", "requestedModel": "m",
+                   "promptVersion": "comment-product-v3",
+                       "schemaVersion": "v2", "taxonomyVersion": "v2",
+                       "commentRouteVersion": COMMENT_ROUTE_VERSION,
+                       "productPoolDigest": product_pool_digest()},
+        "qualityGate": {"passed": True},
+        "fixedRegressions": _passing_fixed_regressions(),
+        "by_system": {
+            "student": {},
+            "combined": {},
+            "llm": {
+                "n_relevance": 400,
+                "relevant_precision": 0.9583,
+                "relevant_recall": 0.92,
+                "complaint_n": 3,
+                "complaint_pass_count": 3,
+                "complaint_passed": True,
+                "confusion": {"relevance": {
+                    "relevant": {"relevant": 184, "irrelevant": 16, "needs_context": 0, "none": 0},
+                    "irrelevant": {"relevant": 8, "irrelevant": 192, "needs_context": 0, "none": 0},
+                    "needs_context": {"relevant": 0, "irrelevant": 0, "needs_context": 0, "none": 0},
+                }},
+            },
+        },
+        "ai_validation": payload,
+    }, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(evaluate_gold, "make_engine", lambda: engine)
+    cfg = evaluate_gold.config.load(
+        model="m", prompt_version="comment-product-v3", schema_version="v2", taxonomy_version="v2",
+    )
+    monkeypatch.setattr(evaluate_gold.config, "load", lambda **_kwargs: cfg)
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv), [
+            {"k": key, "v": value}
+            for key, value in route_readiness_values().items()
+        ])
     assert evaluate_gold.main(["--apply", str(report)]) == 0
     with engine.connect() as conn:
         stored = json.loads(conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "ai_validation")).scalar_one())
@@ -412,6 +750,22 @@ def test_apply_writes_report_payload_without_xlsx(engine, tmp_path, monkeypatch)
     bad.write_text(json.dumps({"ai_validation": {"level": "spot_check", "n": 1}}), encoding="utf-8")
     with pytest.raises(SystemExit):
         evaluate_gold.main(["--apply", str(bad)])
+    below_gate = tmp_path / "below-gate.json"
+    below_gate.write_text(json.dumps({
+        "sample_source": "llm",
+        "by_system": {
+            "llm": {
+                "n_relevance": 399,
+                "relevant_precision": 1.0,
+                "relevant_recall": 1.0,
+                "complaint_n": 1,
+                "complaint_passed": True,
+            },
+        },
+        "ai_validation": payload,
+    }), encoding="utf-8")
+    with pytest.raises(SystemExit, match="未通过"):
+        evaluate_gold.main(["--apply", str(below_gate)])
     with pytest.raises(SystemExit):
         evaluate_gold.main(["--apply", str(report), "--no-write"])
 

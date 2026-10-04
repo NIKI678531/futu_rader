@@ -184,15 +184,31 @@ def write_cluster_rows(engine, run_id, members, now):
 
 
 def ensure_propagation_run(conn, base_run_id, now, *, taxonomy_version="", schema_version=""):
-    """`prop-<base_run_id>`：一次学生／Luna 运行对应一条 propagated 运行记录。"""
+    """`prop-<base_run_id>`：复制代表运行的发布契约并保留 lineage。"""
     from radar_db.schema import annotation_runs
 
     run_id = ("prop-" + base_run_id)[:40]
     if conn.execute(select(annotation_runs.c.run_id).where(annotation_runs.c.run_id == run_id)).first() is None:
+        base = conn.execute(
+            select(
+                annotation_runs.c.model_id,
+                annotation_runs.c.prompt_version,
+                annotation_runs.c.taxonomy_version,
+                annotation_runs.c.schema_version,
+            ).where(annotation_runs.c.run_id == base_run_id)
+        ).mappings().first()
         conn.execute(insert(annotation_runs).values(
-            run_id=run_id, task="comment_product", provider="propagated", model_id=VERSION,
-            model_revision=None, prompt_version=VERSION, taxonomy_version=taxonomy_version,
-            schema_version=schema_version, started_at=now, finished_at=None, status="running",
+            run_id=run_id,
+            task="comment_product",
+            provider="propagated",
+            model_id=base["model_id"] if base else VERSION,
+            # This is the auditable pointer from a copied row back to the run
+            # that actually classified the representative comment.
+            model_revision=base_run_id,
+            prompt_version=base["prompt_version"] if base else VERSION,
+            taxonomy_version=(base["taxonomy_version"] if base else taxonomy_version),
+            schema_version=base["schema_version"] if base else schema_version,
+            started_at=now, finished_at=None, status="running",
             input_count=0, success_count=0, error_count=0,
             token_input=None, token_output=None, token_reasoning=None,
         ))

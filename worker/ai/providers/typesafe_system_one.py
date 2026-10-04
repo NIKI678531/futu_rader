@@ -199,13 +199,22 @@ def _questions_for(task, payload, schema_version):
     if task == "comment_product":
         questions = {
             "relevance_attitude": _choice(
-                "只判断 comment 对 state.product 指定 ETF 的态度；上下文仅用于消歧。",
+                (
+                    "只判断 comment 对 state.product 指定 ETF 的态度；"
+                    "product.code/name/aliases 是产品唯一标识；"
+                    "family_terms/underlying_terms 仅供消歧，不能单独证明相关；"
+                    "parent_comments（由近到远最多三层）、parent_comment、post_title、"
+                    "post_context 只用于消歧，不能移植上下文观点。"
+                ),
                 {
                     "relevant_positive": "明确评价该 ETF 且认可、看好、愿意买入或称赞",
                     "relevant_neutral": "明确评价该 ETF，但只是客观陈述且无褒贬",
                     "relevant_negative": "明确评价该 ETF 且不满、看空、卖出或批评",
-                    "irrelevant": "只聊个股、大盘、其他产品、拉群或普通互动，没有评价该 ETF",
-                    "needs_context": "结合所给父评论和帖子上下文仍无法判断指代对象",
+                    "irrelevant": (
+                        "只聊个股、大盘、其他产品、拉群或普通互动，或只出现 "
+                        "family_terms/underlying_terms，没有评价该 ETF"
+                    ),
+                    "needs_context": "结合最多三层父回复和帖子上下文后仍无法判断指代对象",
                 },
             ),
             "market_direction": _choice(
@@ -318,6 +327,8 @@ def _map_answers(task, payload, questions, answers, context, schema_version):
             relevance, attitude = "relevant", combined.removeprefix("relevant_")
         else:
             relevance, attitude = combined, None
+        if relevance == "needs_context":
+            reasons.append("结合最多三层父回复与帖子上下文后仍无法确定产品指代")
         if confidence < _LOW_CONFIDENCE:
             reasons.append("产品相关性或态度置信度较低")
 

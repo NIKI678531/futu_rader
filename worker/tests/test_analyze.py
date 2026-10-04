@@ -5,9 +5,12 @@ import pytest
 from sqlalchemy import insert
 
 from ai import config
+from ai import release_regressions
 from jobs import analyze
+from scripts import calibrate
 from radar_db import create_all, make_engine
-from radar_db.schema import comments, feeds, meta_kv
+from radar_db.comment_routes import COMMENT_ROUTE_VERSION, product_pool_digest
+from radar_db.schema import comments, feeds, mentions, meta_kv
 
 
 @pytest.fixture
@@ -69,6 +72,37 @@ def test_future_source_dates_are_refused(engine):
         analyze.make_plan(engine, args)
 
 
+def test_preview_uses_exact_routes_and_counts_the_actual_subject(engine):
+    with engine.begin() as conn:
+        conn.execute(insert(feeds).values(
+            feed_id=77, code="3037", source_ticker="03037.HK",
+            posted_at=datetime(2026, 8, 25, 3),
+            feed_type=1, title="恒指讨论", content="市场讨论",
+            like_count=0, comment_count=2, image_count=0, raw_json_broken=False,
+        ))
+        conn.execute(insert(mentions).values(
+            feed_id=77, code="3037", source="anchor", in_pool=True,
+        ))
+        conn.execute(insert(comments), [
+            {"comment_id": 7701, "feed_id": 77, "content": "恒指和 HSI 今天走弱", "author_uid": "u1"},
+            {"comment_id": 7702, "feed_id": 77, "content": "$盈富基金 (02800.HK)$ 费率更低", "author_uid": "u2"},
+        ])
+
+    args = analyze.parser().parse_args(["plan", "--ranges", "d1", "--codes", "3037"])
+    plan = analyze.make_plan(engine, args)
+    cfg = config.load(
+        _allow_missing_key=True, prompt_version="comment-product-v3",
+        schema_version="v2", taxonomy_version="v2",
+    )
+    result = analyze.preview(engine, cfg, plan, 100)
+
+    # 3037 uses exclude mode and neither reply can rescue or reroute its parent;
+    # both remain anchored to 3037 because the parent contains no excluded tag.
+    assert result["commentPlan"]["filtered"] == 0
+    assert result["commentPlan"]["newOrPending"] == 2
+    assert result["commentPlan"]["plannedCommentBatches"] == 2
+
+
 def test_filters_intersect_and_unknown_values_fail():
     assert analyze.selected_products(analyze.parser().parse_args([
         "plan", "--codes", "3033", "--ownership", "own", "--sector", "hk"]))[0]["code"] == "3033"
@@ -108,15 +142,90 @@ def test_batch_run_requires_matching_passed_calibration():
 def test_calibration_accepts_inline_secret_json():
     cfg = config.load(micro_batch_size=5)
     analyze.check_calibration(cfg, {
+        "policy": calibrate.calibration_policy(
+            cfg,
+            requested_batch_size=5,
+            effective_batch_size=5,
+            max_input_tokens=cfg.max_input_tokens,
+            max_payload_bytes=cfg.max_payload_bytes,
+            max_output_tokens=cfg.max_output_tokens,
+        ),
+        "batchGatePassed": True,
+    })
+
+
+def _passed_gold_report(cfg):
+    llm = {
+        "n_relevance": 400,
+        "relevant_precision": 0.9524,
+        "relevant_recall": 0.9,
+        "complaint_n": 3,
+        "complaint_pass_count": 3,
+        "complaint_passed": True,
+        "confusion": {"relevance": {
+            "relevant": {"relevant": 180, "irrelevant": 20, "needs_context": 0, "none": 0},
+            "irrelevant": {"relevant": 9, "irrelevant": 191, "needs_context": 0, "none": 0},
+            "needs_context": {"relevant": 0, "irrelevant": 0, "needs_context": 0, "none": 0},
+        }},
+    }
+    manifest, digest = release_regressions.load_manifest()
+    fixed = {
+        "manifestVersion": manifest["manifestVersion"],
+        "manifestSha256": digest,
+        "commentCases": [{
+            "caseId": row["caseId"],
+            "expectedRelevance": row["expectedRelevance"],
+            "humanRelevance": row["expectedRelevance"],
+            "modelRelevance": row["expectedRelevance"],
+            "passed": True,
+        } for row in manifest["commentCases"]],
+        "officialAttributionCases": release_regressions.official_regression_results(),
+        "passed": True,
+    }
+    return {
+        "reportType": "comment-relevance-human-gold-v1",
+        "sample_source": "llm",
+        "n": 400,
+        "n_gold": 400,
         "policy": {
-            "model": cfg.model,
+            "model": "provider-returned-snapshot",
+            "requestedModel": cfg.model,
             "promptVersion": cfg.prompt_version,
             "schemaVersion": cfg.schema_version,
             "taxonomyVersion": cfg.taxonomy_version,
-            "batchSize": cfg.micro_batch_size,
-            "maxInputTokens": cfg.max_input_tokens,
-            "maxPayloadBytes": cfg.max_payload_bytes,
-            "maxOutputTokens": cfg.max_output_tokens,
+            "commentRouteVersion": COMMENT_ROUTE_VERSION,
+            "productPoolDigest": product_pool_digest(),
         },
-        "batchGatePassed": True,
-    })
+        "by_system": {"student": {}, "llm": llm, "combined": {}},
+        "fixedRegressions": fixed,
+        "qualityGate": {"passed": True},
+        "ai_validation": {"level": "spot_check", "n": 400},
+    }
+
+
+def test_production_analysis_requires_matching_v3_human_gold_report():
+    cfg = config.load(
+        model="gpt-5.6-luna", prompt_version="comment-product-v3",
+        schema_version="v2", taxonomy_version="v2", micro_batch_size=5,
+    )
+    with pytest.raises(ValueError, match="quality-report"):
+        analyze.check_quality(cfg, None)
+
+    report = _passed_gold_report(cfg)
+    analyze.check_quality(cfg, report)
+
+    stale_routes = json.loads(json.dumps(report))
+    stale_routes["policy"].pop("commentRouteVersion")
+    stale_routes["policy"].pop("productPoolDigest")
+    with pytest.raises(ValueError, match="policy"):
+        analyze.check_quality(cfg, stale_routes)
+
+    old = json.loads(json.dumps(report))
+    old["policy"]["promptVersion"] = "comment-product-v2"
+    with pytest.raises(ValueError, match="comment-product-v3"):
+        analyze.check_quality(cfg, old)
+
+    forged = json.loads(json.dumps(report))
+    forged["by_system"]["llm"]["relevant_precision"] = 1.0
+    with pytest.raises(ValueError, match="confusion matrix"):
+        analyze.check_quality(cfg, forged)

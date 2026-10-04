@@ -28,6 +28,7 @@ const MIRROR = process.env.RADAR_MIRROR || path.join(os.homedir(), '.futu-radar'
 const DIRS = [
   'frontend/src',
   'frontend/scripts',
+  'frontend/tests',
   'frontend/public',
   'backend/api',
   'backend/core',

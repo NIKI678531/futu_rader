@@ -17,9 +17,11 @@
 
 ## 产品池从哪来
 
-61 自家 ＋ 59 竞品是**客户维护的主数据**，当前仓库里唯一一份在
-`backend/fixtures/demo/master.json`。实测这 120 个代码在 dump 的 323 只标的里
-**一只不缺**。将来客户给正式名单时换掉这个来源即可，其余不变。
+产品池是**客户维护的主数据**，由冻结的 demo 基线与经核验的 Excel 增量合并。
+导入始终读取当前生产目录，新增产品不需要再同步改一份硬编码清单。历史 dump 只校验
+快照日当时已经上市的正式代码：默认以 dump 文件 mtime 的日期为快照日，也可用
+``--catalog-as-of YYYY-MM-DD`` 显式覆盖。这样后来上市的产品不会令旧快照硬失败，但
+快照日当时应有而缺失的产品仍然会硬失败。
 
 ## 时间窗
 
@@ -29,11 +31,10 @@
 """
 
 import argparse
-import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -44,6 +45,8 @@ from sqlalchemy import delete, func, insert, select  # noqa: E402
 
 from jobs.dumpio import DumpReader, to_python  # noqa: E402
 from radar_db import create_all, db_url, make_engine  # noqa: E402
+from radar_db.comment_filter import source_ticker_to_code  # noqa: E402
+from radar_db.product_catalog import load_products  # noqa: E402
 from radar_db.schema import meta_kv, src_feeds, src_stocks, src_users  # noqa: E402
 
 # dump 里的列数，取自各表的 CREATE TABLE。**写死是故意的**：列数变了要炸，
@@ -52,7 +55,6 @@ FEEDS_COLS = 14
 STOCKS_COLS = 10
 USERS_COLS = 13
 
-MASTER = REPO_ROOT / "backend" / "fixtures" / "demo" / "master.json"
 BATCH = 2000
 
 
@@ -60,17 +62,41 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def pool_codes(path=MASTER):
-    """产品池的 120 个代码。返回 ``{code: ownership}``。"""
-    with open(path, encoding="utf-8") as fh:
-        master = json.load(fh)
-    return {p["code"]: p["ownership"] for p in master["products"]}
+def pool_codes(as_of=None):
+    """生产产品池代码；给定日期时只返回届时已上市的正式产品。"""
+    if isinstance(as_of, datetime):
+        as_of = as_of.date()
+    elif isinstance(as_of, str):
+        as_of = date.fromisoformat(as_of)
+    elif as_of is not None and not isinstance(as_of, date):
+        raise TypeError("as_of must be a date, datetime, ISO date string, or None")
+
+    products = load_products()
+    if as_of is not None:
+        products = [
+            product
+            for product in products
+            if date.fromisoformat(product["listingDate"]) <= as_of
+        ]
+    return {product["code"]: product["ownership"] for product in products}
+
+
+def _catalog_as_of_arg(value):
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("必须是 YYYY-MM-DD 格式") from exc
+
+
+def catalog_as_of_for(dump, explicit=None):
+    """返回本次历史导入应使用的产品目录快照日。"""
+    return explicit or datetime.fromtimestamp(Path(dump).stat().st_mtime).date()
 
 
 def ticker_to_code(ticker):
-    """``'03033.HK'`` → ``'3033'``。实测 120/120 与产品池对得上。"""
-    head = ticker.split(".", 1)[0]
-    return head.lstrip("0") or "0"
+    """Map suffix/prefix source ticker forms to a discussion-section code."""
+
+    return source_ticker_to_code(ticker) or ""
 
 
 def _dt(s):
@@ -232,9 +258,15 @@ def main(argv=None):
     ap.add_argument("--dump", default=os.getenv("DUMP_PATH"), help="dump 文件路径")
     ap.add_argument("--days", type=int, default=120, help="保留最近多少天的帖子")
     ap.add_argument(
+        "--catalog-as-of",
+        type=_catalog_as_of_arg,
+        metavar="YYYY-MM-DD",
+        help="产品目录快照日；默认取 dump 文件 mtime，只校验届时已上市的正式产品",
+    )
+    ap.add_argument(
         "--all-stocks",
         action="store_true",
-        help="连产品池之外的 203 只标的也留下（默认只留 120 只）",
+        help="连产品池之外的标的也留下（默认只留目录快照日的生产产品池）",
     )
     args = ap.parse_args(argv)
 
@@ -244,10 +276,15 @@ def main(argv=None):
     if not dump.exists():
         ap.error(f"dump 不存在：{dump}")
 
-    codes = pool_codes()
+    # mtime 是历史 dump 的打包时间，也是第二遍时间窗的既有上界。允许显式覆盖，
+    # 以处理文件复制工具改写 mtime、或另有已确认快照日的情况。
+    ceiling = datetime.fromtimestamp(dump.stat().st_mtime)
+    catalog_as_of = catalog_as_of_for(dump, args.catalog_as_of)
+    codes = pool_codes(as_of=catalog_as_of)
     engine = make_engine(bulk=True)
     log(f"瘦库：{db_url()}")
     log(f"dump：{dump}（{dump.stat().st_size / 1e9:.1f} GB）")
+    log(f"产品目录快照日：{catalog_as_of:%Y-%m-%d}（{len(codes)} 只已上市正式产品）")
     create_all(engine)
 
     keep_ids = pass1(dump, engine, codes, args.all_stocks)
@@ -255,14 +292,13 @@ def main(argv=None):
     # 时间窗要相对**数据的最大日**，不是系统时间。真实数据止于 2026-08-26，
     # 按系统时间（2026-09-10）往回数 120 天会白白丢掉两周数据。
     # dump 文件的 mtime 是打包时间，够用来定这个上界；真正的锚点在导入完实测。
-    ceiling = datetime.fromtimestamp(dump.stat().st_mtime)
     cutoff = ceiling - timedelta(days=args.days)
     log(f"第二遍：保留 {cutoff:%Y-%m-%d} 起、{len(keep_ids)} 只标的的帖子")
 
     stats = pass2(dump, engine, keep_ids, cutoff)
 
     with engine.begin() as conn:
-        n, lo = write_meta(conn, dump, stats["read"])
+        n, lo = write_meta(conn, dump, stats["read"], catalog_as_of=catalog_as_of)
 
     log(
         f"完成：扫 {stats['read']:,} 帖，留 {stats['kept']:,} 帖；"
@@ -273,7 +309,7 @@ def main(argv=None):
         raise SystemExit(f"对账失败：过滤后 {stats['kept']} 行，库里只有 {n} 行")
 
 
-def write_meta(conn, dump, rows_scanned):
+def write_meta(conn, dump, rows_scanned, catalog_as_of=None):
     """把锚点等元信息写进 `meta_kv`。导入完调用，也可单独重跑。"""
     anchor, hi = anchor_of(conn)
     lo, n = conn.execute(
@@ -293,6 +329,10 @@ def write_meta(conn, dump, rows_scanned):
             {"k": "imported_rows", "v": str(n)},
             {"k": "dump_rows_scanned", "v": str(rows_scanned)},
             {"k": "source", "v": dump.name},
+            {
+                "k": "catalog_as_of",
+                "v": (catalog_as_of or catalog_as_of_for(dump)).strftime("%Y-%m-%d"),
+            },
         ],
     )
     log(f"锚点 anchor = {anchor:%Y-%m-%d}（最近一个完整自然日；数据止于 {hi:%Y-%m-%d %H:%M}）")

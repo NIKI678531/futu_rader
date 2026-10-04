@@ -38,6 +38,15 @@ def test_meta_returns_ok_envelope(client):
     assert r.get_json()["status"] == "ok"
 
 
+def test_meta_exposes_comment_ai_routing_generation(client, sql_client):
+    demo = client.get("/api/v1/meta").get_json()["data"]["aiCommentRouting"]
+    real = sql_client.get("/api/v1/meta").get_json()["data"]["aiCommentRouting"]
+    for value in (demo, real):
+        assert value["ready"] is False
+        assert value["ruleVersion"] == "content-cashtag-v1"
+        assert len(value["productPoolDigest"]) == 64
+
+
 def test_demo_collection_metadata_is_explicitly_unknown(client):
     """演示 fixture 不是在线采集证据，不能把生成器行数冒充生产计数。"""
     assert client.get("/api/v1/meta").get_json()["data"]["dataCollection"] == {
@@ -319,9 +328,10 @@ def test_stage_half_day_threshold_is_half_of_low_sample(client):
 
 
 ETF_MENTION_RULE = (
-    "提及 ETF 口径：帖子挂载标的 ∪ 正文出现的产品代码／名称，对照 ETF 产品池"
-    "（61 自家 + 59 竞品）匹配；个股代码、个股名称不在词表内，不计入。"
-    "次数按出现次数，一帖内出现 3 次计 3，挂载标的至少计 1。"
+    "提及 ETF 口径：官号正文中的产品代码／Cashtag／唯一产品名称，对照当前 ETF 产品池匹配；"
+    "若正文未明确产品，仅在发行商、明确资产类别与唯一产品同时成立时推断，多义内容不归属。"
+    "个股代码、个股名称不在词表内，不计入。次数按出现次数，一帖内出现 3 次计 3；"
+    "挂载标的仅作来源审计，不参与归属。"
 )
 
 

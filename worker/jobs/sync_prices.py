@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "worker"))
 from ai import config
 from market_data.fmp import FmpClient, MarketDataError
 from radar_db import make_engine
+from radar_db.product_catalog import load_products
 from radar_db.revisions import bump_revision
 from radar_db.schema import meta_kv, price_bars, price_instruments, price_syncs
 
@@ -85,8 +86,7 @@ def main():
         anchor = date.fromisoformat(conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar_one())
     end = date.fromisoformat(args.end) if args.end else anchor
     start = date.fromisoformat(args.start) if args.start else end - timedelta(days=59)
-    master = json.loads((ROOT / "backend/fixtures/demo/master.json").read_text(encoding="utf-8"))
-    own = [product["code"] for product in master["products"] if product["ownership"] == "own"]
+    own = [product["code"] for product in load_products() if product["ownership"] == "own"]
     codes = args.codes.split(",") if args.codes else own
     if not set(codes) <= set(own):
         parser.error("Only configured own products are supported")

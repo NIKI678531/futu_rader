@@ -18,9 +18,16 @@ from jobs import annotate  # noqa: E402
 from models import dataset, registry  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
 from radar_db import events  # noqa: E402
+from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config  # noqa: E402
+from radar_db.comment_routes import (  # noqa: E402
+    COMMENT_ROUTE_VERSION,
+    readiness_values as route_readiness_values,
+)
 from radar_db.revisions import ranges_touching  # noqa: E402
 from radar_db.schema import (  # noqa: E402
-    annotation_evidence, annotation_jobs, annotation_runs, annotations, comments, feeds, meta_kv, worker_events,
+    annotation_evidence, annotation_jobs, annotation_runs, annotations, comment_product_routes,
+    comments, feed_mentions, feeds, meta_kv,
+    worker_events,
 )
 
 CODE = "3033"
@@ -36,6 +43,11 @@ def cfg():
 def _engine(tmp_path, name="t.db"):
     eng = make_engine("sqlite:///" + (tmp_path / name).as_posix())
     create_all(eng)
+    with eng.begin() as conn:
+        conn.execute(insert(meta_kv), [
+            {"k": key, "v": value}
+            for key, value in filter_readiness_values(load_comment_filter_config()).items()
+        ])
     return eng
 
 
@@ -43,11 +55,34 @@ def _seed(eng, texts, *, day=datetime(2026, 8, 22, 10), code=CODE, first=11, fee
     with eng.begin() as conn:
         conn.execute(insert(meta_kv).values(k="anchor", v=ANCHOR.isoformat()))
         conn.execute(insert(feeds).values(
-            feed_id=feed_id, code=code, posted_at=day, feed_type=1, title="恒科今日走势", content="今日恒科低开高走",
+            feed_id=feed_id, code=code, source_ticker=f"0{code}.HK", posted_at=day, feed_type=1,
+            title="恒科今日走势", content="今日恒科低开高走",
             like_count=0, comment_count=len(texts), image_count=0, raw_json_broken=False))
+        conn.execute(insert(feed_mentions).values(
+            feed_id=feed_id, raw_ticker=f"0{code}.HK", market="HK", occurrences=1,
+        ))
         conn.execute(insert(comments), [
             {"comment_id": first + i, "feed_id": feed_id, "content": t, "author_uid": f"u{i}"} for i, t in enumerate(texts)
         ])
+
+
+def _activate_routes(conn, comment_ids, *, code=CODE, feed_id=1):
+    conn.execute(insert(comment_product_routes), [
+        {
+            "comment_id": comment_id,
+            "subject_code": code,
+            "feed_id": feed_id,
+            "matched_parent": True,
+            "matched_comment": False,
+            "rule_version": COMMENT_ROUTE_VERSION,
+            "updated_at": datetime(2026, 8, 26),
+        }
+        for comment_id in comment_ids
+    ])
+    conn.execute(insert(meta_kv), [
+        {"k": key, "v": value}
+        for key, value in route_readiness_values().items()
+    ])
 
 
 # ── 事件表 ─────────────────────────────────────────────────────────────
@@ -166,7 +201,7 @@ def test_write_batch_matches_per_item_path(tmp_path, cfg):
         by_id = schemas.parse_batch("comment_product", raw, ids, "v2")
         with eng.begin() as conn:
             conn.execute(insert(annotation_runs).values(
-                run_id="r1", task="comment_product", provider="openai_compatible", model_id="m", prompt_version="p",
+                run_id="r1", task="comment_product", provider="openai_compatible", model_id="m", prompt_version="comment-product-v3",
                 taxonomy_version="v2", schema_version="v2", started_at=datetime(2026, 8, 26), status="running",
                 input_count=0, success_count=0, error_count=0))
         items = [(j, src[("comment", j["target_id"])], by_id[annotate._item_id("comment_product", j)]) for j in jobs]
@@ -195,7 +230,7 @@ def test_write_batch_isolates_the_bad_row(tmp_path, cfg, monkeypatch):
                                                                 for i in ids]}, ids, "v2")
     with eng.begin() as conn:
         conn.execute(insert(annotation_runs).values(
-            run_id="r1", task="comment_product", provider="openai_compatible", model_id="m", prompt_version="p",
+            run_id="r1", task="comment_product", provider="openai_compatible", model_id="m", prompt_version="comment-product-v3",
             taxonomy_version="v2", schema_version="v2", started_at=datetime(2026, 8, 26), status="running",
             input_count=0, success_count=0, error_count=0))
     real_write = annotate._write
@@ -311,7 +346,7 @@ def test_cluster_rows_and_propagation(tmp_path, cfg):
     with eng.begin() as conn:
         for rid, prov in (("rule-1", "rule"), ("luna-1", "openai_compatible")):
             conn.execute(insert(annotation_runs).values(
-                run_id=rid, task="comment_product", provider=prov, model_id="m", prompt_version="p",
+                run_id=rid, task="comment_product", provider=prov, model_id="m", prompt_version="comment-product-v3",
                 taxonomy_version="v2", schema_version="v2", started_at=now, status="running",
                 input_count=0, success_count=0, error_count=0))
     assert neardup.write_cluster_rows(eng, "rule-1", [(12, CODE, 11, 1), (13, CODE, 11, 2)], now) == 2
@@ -336,6 +371,8 @@ def test_cluster_rows_and_propagation(tmp_path, cfg):
                                                       annotations.c.kind.in_(("relevance", "attitude")))).mappings().all()
         run = conn.execute(select(annotation_runs).where(annotation_runs.c.run_id == prop[0]["run_id"])).mappings().one()
     assert len(prop) == 2 and run["provider"] == "propagated" and run["run_id"] == "prop-luna-1"
+    assert run["model_revision"] == "luna-1"
+    assert run["prompt_version"] == "comment-product-v3"
     assert {json.loads(p["value_json"]) for p in prop} == {"relevant", "positive"}
     assert {p["calibrated_confidence"] for p in prop} == {0.93, 0.9}
 
@@ -379,7 +416,7 @@ def test_collect_units_takes_only_llm_current_rows_with_luna_payload(tmp_path, c
     with eng.begin() as conn:
         for rid, prov in (("luna-1", "openai_compatible"), ("rule-1", "rule"), ("stu-1", "local_model"), ("prop-1", "propagated")):
             conn.execute(insert(annotation_runs).values(
-                run_id=rid, task="comment_product", provider=prov, model_id="m", prompt_version="p",
+                run_id=rid, task="comment_product", provider=prov, model_id="m", prompt_version="comment-product-v3",
                 taxonomy_version="v2", schema_version="v2", started_at=now, status="done",
                 input_count=0, success_count=0, error_count=0))
 
@@ -397,6 +434,7 @@ def test_collect_units_takes_only_llm_current_rows_with_luna_payload(tmp_path, c
         # 12 后来被 Luna supersede 了 ⇒ 现行是 Luna 的，要收
         res = conn.execute(select(annotations.c.annotation_id).where(annotations.c.target_id == 12)).scalar_one()
         conn.execute(insert(annotations).values(**ann(12, "relevance", "irrelevant", "luna-1", sup=res)))
+        _activate_routes(conn, [11, 12, 13, 14])
     units = dataset.collect_units(eng)
     assert [u["unit"] for u in units] == [[11, CODE], [12, CODE]]
     u11 = units[0]
@@ -408,6 +446,54 @@ def test_collect_units_takes_only_llm_current_rows_with_luna_payload(tmp_path, c
     meta = dataset.build(eng, tmp_path / "ds")
     assert meta["n_units"] == 2 and (tmp_path / "ds" / "train.jsonl").exists()
     assert meta["aspect_head"] is False
+
+
+def test_training_units_exclude_unqualified_and_cross_product_comments(tmp_path, cfg):
+    eng = _engine(tmp_path)
+    _seed(eng, ["合格评论"], first=11, feed_id=1)
+    now = datetime(2026, 8, 26)
+    with eng.begin() as conn:
+        conn.execute(insert(feeds), [
+            {"feed_id": 2, "code": CODE, "source_ticker": "03033.HK", "posted_at": now,
+             "feed_type": 1, "title": "无 cashtag", "content": "无 cashtag", "like_count": 0,
+             "comment_count": 1, "image_count": 0, "raw_json_broken": False},
+            {"feed_id": 3, "code": CODE, "source_ticker": "03033.HK", "posted_at": now,
+             "feed_type": 1, "title": "$03033.HK$", "content": "合格父帖", "like_count": 0,
+             "comment_count": 1, "image_count": 0, "raw_json_broken": False},
+        ])
+        conn.execute(insert(feed_mentions).values(
+            feed_id=3, raw_ticker="03033.HK", market="HK", occurrences=1,
+        ))
+        conn.execute(insert(comments), [
+            {"comment_id": 12, "feed_id": 2, "content": "不合格父帖下评论", "author_uid": "u2"},
+            {"comment_id": 13, "feed_id": 3, "content": "跨产品旧结论", "author_uid": "u3"},
+        ])
+        conn.execute(insert(annotation_runs).values(
+            run_id="scope-luna", task="comment_product", provider="openai_compatible", model_id="m",
+            prompt_version="comment-product-v3", taxonomy_version="v2", schema_version="v2", started_at=now,
+            status="done", input_count=0, success_count=0, error_count=0,
+        ))
+        conn.execute(insert(annotations), [
+            {"target_type": "comment", "target_id": 11, "subject_code": CODE, "kind": "relevance",
+             "value_json": '"relevant"', "run_id": "scope-luna", "input_hash": "valid",
+             "review_state": "pending", "created_at": now},
+            {"target_type": "comment", "target_id": 12, "subject_code": CODE, "kind": "relevance",
+             "value_json": '"relevant"', "run_id": "scope-luna", "input_hash": "unqualified",
+             "review_state": "pending", "created_at": now},
+            {"target_type": "comment", "target_id": 13, "subject_code": "2800", "kind": "relevance",
+             "value_json": '"relevant"', "run_id": "scope-luna", "input_hash": "cross",
+             "review_state": "pending", "created_at": now},
+        ])
+        _activate_routes(conn, [11])
+
+    assert [unit["unit"] for unit in dataset.collect_units(eng)] == [[11, CODE]]
+
+
+def test_training_units_fail_closed_without_route_readiness(tmp_path):
+    eng = make_engine("sqlite:///" + (tmp_path / "not-ready.db").as_posix())
+    create_all(eng)
+    with pytest.raises(RuntimeError, match="comment AI routes are not ready"):
+        dataset.collect_units(eng)
 
 
 def test_payload_text_puts_comment_first_and_caps_aliases():

@@ -15,7 +15,16 @@ from ai import config, schemas  # noqa: E402
 from ai.providers.base import Completion, Usage  # noqa: E402
 from jobs import annotate  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
-from radar_db.schema import annotation_evidence, annotation_jobs, annotations, comments, feeds  # noqa: E402
+from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config  # noqa: E402
+from radar_db.schema import (  # noqa: E402
+    annotation_evidence,
+    annotation_jobs,
+    annotations,
+    comments,
+    feed_mentions,
+    feeds,
+    meta_kv,
+)
 
 KOL = "孫子的末代傳人"
 
@@ -25,8 +34,16 @@ def engine(tmp_path):
     eng = make_engine("sqlite:///" + (tmp_path / "k.db").as_posix())
     create_all(eng)
     with eng.begin() as conn:
-        conn.execute(insert(feeds).values(feed_id=1, code="3033", posted_at=datetime(2026, 8, 20), feed_type=1,
+        conn.execute(insert(feeds).values(feed_id=1, code="3033", source_ticker="03033.HK",
+                                          posted_at=datetime(2026, 8, 20), feed_type=1,
                                           like_count=0, comment_count=2, image_count=0, raw_json_broken=False))
+        conn.execute(insert(feed_mentions).values(
+            feed_id=1, raw_ticker="03033.HK", market="HK", occurrences=1,
+        ))
+        conn.execute(insert(meta_kv), [
+            {"k": key, "v": value}
+            for key, value in filter_readiness_values(load_comment_filter_config()).items()
+        ])
         conn.execute(insert(comments), [
             {"comment_id": 1, "feed_id": 1, "content": "費率低，準備長期定投呢隻", "author_name": KOL, "author_uid": "k"},
             {"comment_id": 2, "feed_id": 1, "content": "路人的評論", "author_name": "路人", "author_uid": "r"},
@@ -145,6 +162,40 @@ def test_enqueue_only_kol_authors_and_run_writes_two_kinds(engine, cfg):
     assert {(a["kind"], json.loads(a["value_json"])) for a in anns} == {("kol_summary", "準備長期定投"), ("kol_action", "加仓")}
     assert len(ev) == 1 and ev[0]["quote_text"] == "準備長期定投"
     assert all(a["review_state"] == "pending" for a in anns)
+
+
+def test_enqueue_kol_comments_uses_the_same_parent_feed_filter(engine, cfg):
+    with engine.begin() as conn:
+        conn.execute(insert(feeds).values(
+            feed_id=2,
+            code="3033",
+            source_ticker="03033.HK",
+            posted_at=datetime(2026, 8, 20),
+            feed_type=1,
+            like_count=0,
+            comment_count=1,
+            image_count=0,
+            raw_json_broken=False,
+        ))
+        conn.execute(insert(feed_mentions).values(
+            feed_id=2, raw_ticker="800000.HK", market="HK", occurrences=1,
+        ))
+        conn.execute(insert(comments).values(
+            comment_id=3,
+            feed_id=2,
+            content="KOL reply cannot rescue its parent",
+            author_name=KOL,
+            author_uid="k",
+        ))
+
+    assert annotate.enqueue_kol_comments(engine, cfg, [KOL]) == 1
+    with engine.connect() as conn:
+        target_ids = conn.execute(
+            select(annotation_jobs.c.target_id).where(
+                annotation_jobs.c.task == "kol_comment_opinion"
+            )
+        ).scalars().all()
+    assert target_ids == [1]
 
 
 def test_no_opinion_writes_false_placeholder(engine, cfg):

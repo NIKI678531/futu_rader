@@ -21,7 +21,7 @@ If any of these files don't exist, **proceed silently**. Don't flag their absenc
 │   └── 0002-....md
 ├── frontend/       ← the React app
 ├── backend/        ← the Flask API
-├── worker/         ← the collection scheduler
+├── worker/         ← MarketInsight database sync and AI jobs
 └── design/         ← read-only design mirror
 ```
 

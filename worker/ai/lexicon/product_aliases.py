@@ -1,4 +1,4 @@
-"""产品别名词表 —— 120 只产品在富途评论区里的各种写法。
+"""产品别名词表 —— 当前生产产品池在富途评论区里的各种写法。
 
 ## 为什么模型需要它
 
@@ -23,17 +23,17 @@
 
 ## 简繁
 
-不引 OpenCC 之类的依赖：120 个名字里出现的繁体字是有限集合，一张字表就够，并且这张表
+不引 OpenCC 之类的依赖：产品名字里出现的繁体字是有限集合，一张字表就够，并且这张表
 **只在这里用**（评论正文的简繁由模型处理，不在程序里转）。
 """
 
 import json
 import re
-from pathlib import Path
+import unicodedata
 
-VERSION = "aliases-v1"
+from radar_db.product_catalog import load_products as load_catalog_products
 
-_MASTER = Path(__file__).resolve().parents[3] / "backend" / "fixtures" / "demo" / "master.json"
+VERSION = "aliases-v3"
 
 # 名称里出现过的繁体字 → 简体，成对列出；两张转换表都从这一份生成，不会长短不齐。
 _PAIRS = (
@@ -204,19 +204,19 @@ _NICKNAMES = {
 # 键是族名，值是成员产品。预过滤用它放行，Prompt 用它告诉模型「这些叫法可能指本产品」。
 _FAMILY = {
     "恒科": {"terms": ["恒科", "恒生科技", "恆科", "恒生科指", "HSTECH", "科指"],
-             "codes": ["3033", "3032", "3589", "3067", "2837", "3088", "7226", "7552"]},
-    "恒指": {"terms": ["恒指", "恒生指數", "恒生指数", "HSI", "大市", "盈富"],
+             "codes": ["3033", "3032", "3589", "3067", "2837", "3088", "3423", "7226", "7552"]},
+    "恒指": {"terms": ["恒指", "恒生指數", "恒生指数", "HSI", "大市"],
              "codes": ["3037", "2800", "3115", "7200", "7300", "7500"]},
     "國指": {"terms": ["國指", "国指", "國企指數", "国企指数", "H股", "HSCEI", "國企", "国企"],
              "codes": ["2802", "2828", "3519", "3416", "7288", "7588"]},
     "納指": {"terms": ["納指", "纳指", "納斯達克", "纳斯达克", "NDX", "Nasdaq", "QQQ"],
-             "codes": ["3034", "3086", "3451", "7266", "7568", "7261", "7522"]},
+             "codes": ["3034", "3086", "3451", "2834", "3455", "7266", "7568", "7261", "7522"]},
     "A50": {"terms": ["A50", "A股50", "中國A50", "中国A50"],
-            "codes": ["2822", "3003", "2838", "2823", "2839"]},
+            "codes": ["2822", "3003", "2838", "2823", "2839", "3111", "2843"]},
     "滬深300": {"terms": ["滬深300", "沪深300", "300ETF", "CSI300"],
                "codes": ["3133", "2846", "3188", "2827", "7233"]},
     "黃金": {"terms": ["黃金", "黄金", "金ETF", "Gold", "GLD", "金價", "金价"],
-             "codes": ["3030", "7299", "3170", "2840", "3533", "3081"]},
+             "codes": ["3030", "7299", "3170", "2840", "3533", "3081", "3418"]},
     "比特幣": {"terms": ["比特幣", "比特币", "BTC", "Bitcoin"],
                "codes": ["3066", "7376", "3042"]},
     "以太幣": {"terms": ["以太幣", "以太币", "ETH", "Ethereum", "以太坊"],
@@ -238,11 +238,18 @@ _FAMILY = {
     "生科": {"terms": ["生科", "生物科技", "醫藥ETF", "医药ETF", "生物醫藥", "生物医药"],
              "codes": ["3174", "3069"]},
     "備兌": {"terms": ["備兌", "备兑", "Covered Call", "covered call", "期權ETF", "期权ETF", "月月派", "高息ETF"],
-             "codes": ["2802", "3469", "3589", "3519", "3416", "3070", "3488", "3451", "3533"]},
+             "codes": ["2802", "3469", "3589", "3519", "3416", "3070", "3488", "3451", "3533", "3537", "3031"]},
     "科創": {"terms": ["科創", "科创", "科創板", "科创板"],
-             "codes": ["3109", "3151"]},
+             "codes": ["3109", "3151", "2832"]},
     "新經濟": {"terms": ["新經濟", "新经济"], "codes": ["3167", "3173"]},
-    "韓國": {"terms": ["韓國", "韩国", "韓股", "韩股", "KOSPI", "Kospi"], "codes": ["3431", "2848"]},
+    "韓國": {"terms": ["韓國", "韩国", "韓股", "韩股", "KOSPI", "Kospi"],
+             "codes": ["3431", "2848", "3121", "3537", "3408"]},
+    "港股紅利": {"terms": ["港股紅利", "港股红利", "港股通高股息", "港股高息", "紅利低波", "红利低波"],
+                 "codes": ["3469", "3070", "3488", "3031"]},
+    "香港股票": {"terms": ["香港股票", "港股大盤", "港股大盘", "MPF香港", "富時香港", "富时香港"],
+                 "codes": ["3443", "3444", "3579"]},
+    "亞太房托": {"terms": ["亞太房托", "亚太房托", "亞太REIT", "亚太REIT", "亞太房地產信託", "亚太房地产信托"],
+                 "codes": ["3447", "3187"]},
     "英偉達": {"terms": ["英偉達", "英伟达", "輝達", "辉达", "NVDA", "Nvidia", "NVIDIA", "老黃", "老黄"],
                "codes": ["7788", "7388"]},
     "特斯拉": {"terms": ["特斯拉", "TSLA", "Tesla", "馬斯克", "马斯克"], "codes": ["7766", "7366"]},
@@ -260,6 +267,12 @@ _FAMILY = {
     "中證500": {"terms": ["中證500", "中证500", "CSI500"], "codes": ["3005"]},
     "A500": {"terms": ["A500"], "codes": ["3101"]},
 }
+
+# 这些族名描述的是单一股票杠反产品所跟踪的正股，不是 ETF 自身。它们与指数／资产族
+# 分开外发，避免下游把「NVDA」这类标的词误当成「7788」的产品别名。
+_UNDERLYING_FAMILIES = frozenset(
+    {"英偉達", "特斯拉", "三星", "海力士", "Coinbase", "MicroStrategy", "Berkshire"}
+)
 
 # 泛指当前讨论对象的指代词。评论区里「呢隻」「這隻」「佢」几乎总是指本讨论区的 ETF。
 DEICTIC = (
@@ -286,7 +299,9 @@ TAG_RE = re.compile(r"\$([A-Za-z0-9.]{1,12})\.(HK|US|SH|SZ|hk|us|sh|sz)\$")
 BARE_CODE_RE = re.compile(r"(?<![0-9])0?(\d{4})(?:\.HK|\.hk|HK)?(?![0-9])")
 
 
-def load_products(path=_MASTER):
+def load_products(path=None):
+    if path is None:
+        return load_catalog_products()
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)["products"]
 
@@ -297,13 +312,15 @@ def _code_forms(code):
     return [f"{code}.HK", f"{padded}.HK", f"${padded}.HK$", f"{code}.hk", f"{padded}.hk"]
 
 
-def _name_forms(name):
+def _name_forms(name, *, strip_product_suffix=True):
     forms = {name, to_simplified(name), to_traditional(name)}
-    # 去掉「ETF」「產品」尾巴与空格的写法也算全名的变体。
+    # 宽松语境识别历史上接受去掉「ETF／產品」的写法；exact 产品归属不能这样做，
+    # 否则 3037 的「恒生指數ETF」会退化成共享底层词「恒生指數」。
     for n in list(forms):
         stripped = re.sub(r"\s+", "", n)
         forms.add(stripped)
-        forms.add(re.sub(r"(ETF|產品|产品)$", "", stripped))
+        if strip_product_suffix:
+            forms.add(re.sub(r"(ETF|產品|产品)$", "", stripped))
     return [f for f in forms if f]
 
 
@@ -312,71 +329,158 @@ def _family_of(code):
 
 
 class ProductLexicon:
-    """120 只产品的别名词表，带「这段文字提到了这只产品吗」的判定。"""
+    """生产产品池的别名词表，带「这段文字提到了这只产品吗」的判定。"""
 
     def __init__(self, products=None):
         products = products or load_products()
         self.by_code = {}
         for p in products:
             code = p["code"]
-            nick = _NICKNAMES.get(code, [])
+            raw_source_aliases = list(p.get("shortNames", [])) + list(p.get("aliases", []))
+            source_aliases = _dedupe(
+                variant
+                for alias in raw_source_aliases
+                for variant in (alias, unicodedata.normalize("NFKC", alias))
+            )
+            nick = _dedupe(_NICKNAMES.get(code, []) + source_aliases)
+            source_names = _dedupe([p["name"], p.get("officialName")] + source_aliases)
             fams = _family_of(code)
-            family_terms = _dedupe(t for f in fams for t in _FAMILY[f]["terms"])
+            family_terms = _dedupe(
+                term
+                for family in fams
+                if family not in _UNDERLYING_FAMILIES
+                for term in _FAMILY[family]["terms"]
+            )
+            underlying_terms = _dedupe(
+                term
+                for family in fams
+                if family in _UNDERLYING_FAMILIES
+                for term in _FAMILY[family]["terms"]
+            )
+            context_terms = {
+                term.casefold() for term in family_terms + underlying_terms
+            }
+            direct_nick = [
+                alias for alias in nick if alias.casefold() not in context_terms
+            ]
+            exact_names = _dedupe([p["name"], p.get("officialName")] + direct_nick)
             self.by_code[code] = {
                 "code": code,
                 "name": p["name"],
                 "name_simplified": to_simplified(p["name"]),
                 "ownership": p["ownership"],
                 # 唯一别名：代码写法＋俗称。`test_lexicon.py` 断言跨产品不冲突。
-                "aliases": _dedupe(_code_forms(code) + nick),
+                "aliases": _dedupe(_code_forms(code) + direct_nick),
+                "nicknames": direct_nick,
                 # 全名变体：**允许**跨产品重名 —— 3033「恒生科技指數ETF」与同业 3032
                 # 「恒生科技指数ETF」只差简繁，这是产品命名的事实，不是词表的错。
-                "name_forms": _name_forms(p["name"]),
+                "name_forms": _dedupe(
+                    form for name in source_names if name for form in _name_forms(name)
+                ),
+                # Deterministic routing accepts only the full product form (or
+                # a unique direct nickname), never suffix-stripped index/asset
+                # names such as 「恒生指數」, BTC or ETH.
+                "exact_name_forms": _dedupe(
+                    form
+                    for name in exact_names
+                    if name
+                    for form in _name_forms(name, strip_product_suffix=False)
+                ),
                 "family": fams,
                 "family_terms": family_terms,
+                "underlying_terms": underlying_terms,
             }
+        name_owners = {}
+        for code, product in self.by_code.items():
+            for name in {value.casefold() for value in product["exact_name_forms"]}:
+                name_owners.setdefault(name, set()).add(code)
+        self._unique_name_forms = {
+            code: [
+                name for name in product["exact_name_forms"]
+                if len(name_owners[name.casefold()]) == 1
+            ]
+            for code, product in self.by_code.items()
+        }
 
     # ── 给 Prompt 用 ───────────────────────────────────────────────
 
     def product_block(self, code, max_aliases=12):
-        """发给模型的产品块（runbook §11.4 白名单：code / name / aliases 三键）。
+        """发给模型的产品块，明确区分唯一标识与仅供消歧的上下文词。
 
-        别名只挑对识别最有用的：俗称在前、代码形式在后、全名变体最后。太长会稀释系统提示。
+        ``aliases`` 只放能唯一指向该产品的代码／俗称。``family_terms`` 与
+        ``underlying_terms`` 可能同时指向多只产品或标的资产，绝不能被调用方当成产品
+        相关性的充分证据。
         """
         p = self.by_code[code]
-        nick = _NICKNAMES.get(code, [])
         ordered = _dedupe(
-            nick
-            + p["family_terms"][:4]
-            + [f"{code}", f"{code.zfill(5)}.HK"]
-            + [p["name_simplified"]]
+            p["nicknames"]
+            + [f"{code}", f"{code.zfill(5)}.HK", f"${code.zfill(5)}.HK$"]
         )
-        return {"code": code, "name": p["name"], "aliases": ordered[:max_aliases]}
+        return {
+            "code": code,
+            "name": p["name"],
+            "aliases": ordered[:max_aliases],
+            "family_terms": list(p["family_terms"]),
+            "underlying_terms": list(p["underlying_terms"]),
+        }
 
     # ── 给预过滤用 ─────────────────────────────────────────────────
 
     def references(self, text, code):
-        """文字里有没有提到这只产品（唯一别名、族叫法、或标的标签命中）。
+        """文字里有没有足以让预过滤放行的候选信号。
 
-        族叫法命中也算「提到」：作者在 3033 的讨论区里写「恒科」，说的多半就是 3033。
-        这里宁可放行交给模型，不可把它当个股评论剔掉。
+        这是召回优先的预过滤接口，不是「已证明产品相关」。共享族名与标的词只会让
+        评论继续进入判定，不能直接产出 ``relevance=relevant``。需要严格判断唯一产品
+        标识时使用 :meth:`references_product`。
         """
+        signals = self.reference_signals(text, code)
+        return any(signals.values())
+
+    def references_product(self, text, code):
+        """是否命中当前产品的唯一代码、唯一俗称或非歧义名称。"""
+        return bool(self.reference_signals(text, code)["product"])
+
+    def reference_signals(self, text, code):
+        """返回命中的产品唯一标识、共享族词和标的词，三类永不混装。"""
+        empty = {"product": [], "family": [], "underlying": []}
         if not text:
-            return False
+            return empty
         p = self.by_code.get(code)
         if p is None:
-            return False
-        for tag in TAG_RE.findall(text):
-            if _tag_to_code(tag[0], tag[1]) == code:
-                return True
-        if any(m == code for m in BARE_CODE_RE.findall(text)):
-            return True
-        low = text.lower()
-        for group in (p["aliases"], p["name_forms"], p["family_terms"]):
-            for a in group:
-                if a.lower() in low:
-                    return True
-        return False
+            return empty
+
+        product = []
+        tag_spans = []
+        for match in TAG_RE.finditer(text):
+            if _tag_to_code(match.group(1), match.group(2)) == code:
+                product.append(match.group(0))
+                tag_spans.append(match.span())
+        for match in BARE_CODE_RE.finditer(text):
+            inside_tag = any(start <= match.start() and match.end() <= end for start, end in tag_spans)
+            if match.group(1) == code and not inside_tag:
+                product.append(match.group(0))
+
+        low = text.casefold()
+        code_forms = {form.casefold() for form in _code_forms(code)}
+        for alias in p["aliases"]:
+            if alias.casefold() in code_forms:
+                continue
+            if alias.casefold() in low:
+                product.append(alias)
+
+        # 全名只有在没有被别的产品共享时才算唯一标识。简繁转换可能把两个发行商产品
+        # 归成同一名称，因此不能假设每个 name_form 都唯一。
+        for name in self._unique_name_forms[code]:
+            if name.casefold() in low:
+                product.append(name)
+
+        family = [term for term in p["family_terms"] if term.casefold() in low]
+        underlying = [term for term in p["underlying_terms"] if term.casefold() in low]
+        return {
+            "product": _dedupe(product),
+            "family": _dedupe(family),
+            "underlying": _dedupe(underlying),
+        }
 
     def mentions_deictic(self, text):
         """有没有「呢隻／它」这类指代，或费率／点差／加仓这类产品属性与交易动作词。"""
@@ -390,11 +494,7 @@ class ProductLexicon:
         p = self.by_code.get(code)
         if p is None:
             return set()
-        out = set()
-        for fam in p["family"]:
-            if fam in ("英偉達", "特斯拉", "三星", "海力士", "Coinbase", "MicroStrategy", "Berkshire"):
-                out.update(_FAMILY[fam]["terms"])
-        return out
+        return set(p["underlying_terms"])
 
     def pool_codes(self):
         return set(self.by_code)

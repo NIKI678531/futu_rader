@@ -5,7 +5,7 @@
 | 类别 | 例子 | 来源 | 变更方式 |
 |---|---|---|---|
 | **口径常量** | 预设区间、板块、阈值、六态图例、热度公式、口径说明文字 | `fixtures/meta.json` 手写 | 改 PRD → 改这份文件 → 守卫测试跟着改 |
-| **主数据** | 产品池（61 自家 + 59 竞品）、官号名单、数据截至时间 | provider | 接真实库后来自库表 |
+| **主数据** | 当前生产产品池、官号名单、数据截至时间 | provider | 接真实库后来自库表 |
 
 `updatedAt`（页面上的「数据截至」／「最近更新」）曾经手写在 `fixtures/meta.json` 里，
 因为它长得像个常量。它不是：它是**这批数据**最后一条帖子的时间。放在常量那边的后果
@@ -45,6 +45,12 @@ import hashlib
 from pathlib import Path
 
 from providers import get_provider
+from radar_db.comment_routes import (
+    COMMENT_ROUTE_VERSION,
+    is_ready as comment_routes_ready,
+    product_pool_digest,
+)
+from radar_db.revisions import ai_source_version
 
 CONSTANTS = Path(__file__).resolve().parents[1] / "fixtures" / "meta.json"
 
@@ -77,20 +83,71 @@ def meta_payload():
 def version_payload():
     provider = get_provider()
     if provider.name != "sql":
-        return {"dataProvider": provider.name, "dataRevision": "demo", "analysisProgress": None}
+        return {
+            "dataProvider": provider.name,
+            "dataRevision": "demo",
+            "analysisProgress": None,
+            "aiCommentRouting": {
+                "ready": False,
+                "ruleVersion": COMMENT_ROUTE_VERSION,
+                "productPoolDigest": product_pool_digest(),
+            },
+        }
     source = provider._meta
-    revision = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
+    catalog_state = [
+        (product["code"], product["ownership"], product.get("listingDate"), product.get("isNew"))
+        for product in provider._products
+    ]
+    revision = hashlib.sha256(
+        json.dumps({"meta": source, "catalog": catalog_state}, sort_keys=True).encode()
+    ).hexdigest()
     progress = json.loads(source.get("own_analysis_progress", "null"))
     summary = None
     if progress:
-        products = progress.get("products", {})
-        done = sum(bool(row.get("complete")) for row in products.values())
-        state_text = {"configuration_error": "配置错误，已暂停", "lease_lost": "执行锁异常，已暂停",
-                  "source_changed": "数据范围已变化，已暂停"}.get(progress["status"], "处理中")
+        products = {
+            code: dict(row) for code, row in progress.get("products", {}).items()
+        }
         scope = progress.get("scope", "own")
+        status = progress["status"]
+        source_changed = (
+            progress.get("sourceVersion", {}) != ai_source_version(source)
+        )
+        if source_changed:
+            status = "source_changed"
+            products = {
+                code: {**row, "complete": False} for code, row in products.items()
+            }
+        total = len(products)
+        done = sum(bool(row.get("complete")) for row in products.values())
+        catalog_gap = set()
+        if status == "complete" and scope == "all":
+            expected_codes = {product["code"] for product in provider._products}
+            catalog_gap = expected_codes - set(products)
+            if catalog_gap:
+                status = "source_changed"
+                total = len(expected_codes)
+                done = sum(
+                    bool(products.get(code, {}).get("complete")) for code in expected_codes
+                )
+        state_text = {"configuration_error": "配置错误，已暂停", "lease_lost": "执行锁异常，已暂停",
+                  "source_changed": "数据范围已变化，已暂停"}.get(status, "处理中")
         label = "全池分析" if scope == "all" else "自家分析"
-        summary = {"completed": done, "total": len(products), "status": progress["status"],
-               "text": f"{label} {done}/{len(products)} · " + ("已完成" if done == len(products) else state_text),
+        if catalog_gap:
+            state_text = f"产品目录已更新，需补跑 {len(catalog_gap)} 只"
+        summary = {"completed": done, "total": total, "status": status,
+               "text": f"{label} {done}/{total} · " + ("已完成" if done == total else state_text),
                    "anchor": progress["anchor"], "products": products, "scope": scope,
                    "ranges": progress.get("ranges")}
-    return {"dataProvider": "sql", "dataRevision": revision, "analysisProgress": summary}
+    return {
+        "dataProvider": "sql",
+        "dataRevision": revision,
+        "analysisProgress": summary,
+        "aiCommentRouting": {
+            "ready": comment_routes_ready(source),
+            "ruleVersion": source.get("comment_route_version", COMMENT_ROUTE_VERSION),
+            "productPoolDigest": source.get(
+                "comment_route_pool_digest",
+                product_pool_digest(product["code"] for product in provider._products),
+            ),
+        },
+    }

@@ -179,6 +179,64 @@ def test_summary_mirrors_meta_analysis_progress(progress_provider, progress_clie
     assert d["summary"]["completed"] == 1 and d["summary"]["total"] == 2
 
 
+def test_completed_full_pool_is_marked_stale_after_catalog_expands(
+    progress_provider, progress_client
+):
+    old_codes = [
+        product["code"] for product in progress_provider._products
+        if not product.get("sourceRows")
+    ]
+    assert len(old_codes) == 120
+    with progress_provider._engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k="own_analysis_progress", v=json.dumps({
+            "anchor": "2026-08-25", "status": "complete", "scope": "all",
+            "products": {code: {"complete": True} for code in old_codes},
+        })))
+
+    summary = progress_client.get("/api/v1/version").get_json()["data"]["analysisProgress"]
+
+    assert summary["completed"] == 120
+    assert summary["total"] == 135
+    assert summary["status"] == "source_changed"
+    assert summary["text"] == "全池分析 120/135 · 产品目录已更新，需补跑 15 只"
+
+
+def test_source_revision_change_masks_stale_per_product_completion(
+    progress_provider, progress_client
+):
+    with progress_provider._engine.begin() as conn:
+        conn.execute(insert(meta_kv), [
+            {"k": "data_revision", "v": "new-source"},
+            {"k": "own_analysis_progress", "v": json.dumps({
+                "anchor": "2026-08-25",
+                "status": "complete",
+                "scope": "own",
+                "sourceVersion": {"data_revision": "old-source"},
+                "products": {"3037": {"complete": True, "queue": {"done": 9}}},
+            })},
+        ])
+
+    summary = progress_client.get("/api/v1/version").get_json()["data"]["analysisProgress"]
+
+    assert summary["status"] == "source_changed"
+    assert summary["completed"] == 0
+    assert summary["products"]["3037"]["complete"] is False
+
+
+def test_data_revision_changes_when_product_catalog_changes(
+    progress_provider, progress_client
+):
+    before = progress_client.get("/api/v1/version").get_json()["data"]["dataRevision"]
+    progress_provider._products = [
+        *progress_provider._products,
+        {"code": "9998", "ownership": "peer", "listingDate": "2026-09-28", "isNew": True},
+    ]
+
+    after = progress_client.get("/api/v1/version").get_json()["data"]["dataRevision"]
+
+    assert after != before
+
+
 def test_db_without_migration_0008_is_unavailable(progress_client, progress_provider):
     from sqlalchemy import text
     with progress_provider._engine.begin() as conn:

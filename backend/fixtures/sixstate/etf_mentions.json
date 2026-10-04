@@ -3,48 +3,48 @@
   "etfCount": 2,
   "list": [
    {
-    "code": "2802",
-    "count": 3,
+    "code": "7266",
+    "count": 5,
     "issuer": "CSOP 南方东英",
-    "name": "國指備兌認購期權主動型ETF",
+    "name": "納斯達克100指數每日槓桿(2x)產品",
     "ownership": "own",
-    "posts": 2,
-    "short": "國指備兌認購期權主動…"
+    "posts": 5,
+    "short": "納斯達克100指數每日槓桿(2x)產品"
    },
    {
-    "code": "2838",
-    "count": 1,
-    "issuer": "恒生投资",
-    "name": "恒生富时中国50指数上市基金",
+    "code": "7261",
+    "count": 5,
+    "issuer": "AMC 华夏",
+    "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
     "ownership": "peer",
-    "posts": 1,
-    "short": "恒生富时中国50指数…"
+    "posts": 5,
+    "short": "华夏纳斯达克100指数每日杠杆(2x)产品"
    }
   ],
   "own": [
    {
-    "code": "2802",
-    "count": 3,
+    "code": "7266",
+    "count": 5,
     "issuer": "CSOP 南方东英",
-    "name": "國指備兌認購期權主動型ETF",
+    "name": "納斯達克100指數每日槓桿(2x)產品",
     "ownership": "own",
-    "posts": 2,
-    "short": "國指備兌認購期權主動…"
+    "posts": 5,
+    "short": "納斯達克100指數每日槓桿(2x)產品"
    }
   ],
   "peer": [
    {
-    "code": "2838",
-    "count": 1,
-    "issuer": "恒生投资",
-    "name": "恒生富时中国50指数上市基金",
+    "code": "7261",
+    "count": 5,
+    "issuer": "AMC 华夏",
+    "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
     "ownership": "peer",
-    "posts": 1,
-    "short": "恒生富时中国50指数…"
+    "posts": 5,
+    "short": "华夏纳斯达克100指数每日杠杆(2x)产品"
    }
   ],
-  "postCount": 3,
-  "total": 4
+  "postCount": 5,
+  "total": 10
  },
  "易方达|d7": {
   "etfCount": 0,

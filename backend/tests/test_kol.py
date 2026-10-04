@@ -51,6 +51,13 @@ def test_post_carries_every_field_the_table_needs(client, field):
     assert field in client.get("/api/v1/kol/impact?range=d7").get_json()["data"]["posts"][0]
 
 
+def test_mentioned_products_carry_the_company_details_needed_by_the_timeline(client):
+    posts = client.get("/api/v1/kol/impact?range=d30").get_json()["data"]["posts"]
+    mentions = [m for p in posts for m in p["mentioned"]]
+    assert mentions, "演示数据应至少有一条产品提及，否则这条契约断言没有覆盖对象"
+    assert all(set(m) >= {"code", "name", "issuer", "ownership"} for m in mentions)
+
+
 def test_dual_label_direction_is_optional_but_form_is_not(client):
     """双标签（PRD §4.3、`rules.postType` 逐字）：内容形式必有一枚，操作方向可以没有。
 

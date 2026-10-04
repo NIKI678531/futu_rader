@@ -14,7 +14,6 @@
 
 import json
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from core.calendar import parse_anchor
 
@@ -22,14 +21,21 @@ from core.calendar import parse_anchor
 # （见 providers/sql.py 顶部的 sys.path 守卫）。
 from providers.sql import SqlProvider
 from radar_db import create_all
-from radar_db.schema import annotation_evidence, annotations, comments, feeds, mentions, meta_kv
+from radar_db.comment_filter import filter_readiness_values
+from radar_db.product_catalog import load_products
+from radar_db.schema import (
+    annotation_evidence,
+    annotation_runs,
+    annotations,
+    comments,
+    feed_mentions,
+    feeds,
+    mentions,
+    meta_kv,
+)
 
 ANCHOR = "2026-08-25"  # 真实数据的锚点：最近一个完整自然日
-MASTER = json.loads(
-    (Path(__file__).resolve().parents[1] / "fixtures" / "demo" / "master.json").read_text(
-        encoding="utf-8"
-    )
-)
+MASTER = {"products": load_products()}
 OWN_CODE = "3033"  # 恒生科技指數ETF，CSOP 南方东英
 PEER_CODE = "3032"  # 同名竞品，恒生投资
 OFFICIAL_FULL = "恒生投資管理有限公司"  # 有 comps ⇒ 发行商官号
@@ -50,10 +56,13 @@ COMMENT_TEXT = {
 }
 
 
-def _feed(feed_id, day, hour, uid, name, likes, n_comments, shares, browse=None):
+def _feed(
+    feed_id, day, hour, uid, name, likes, n_comments, shares, browse=None, *, code=OWN_CODE
+):
     return {
         "feed_id": feed_id,
-        "code": OWN_CODE,  # 冗余列，读路径一律走 mentions，这里只是不能为空
+        "code": code,
+        "source_ticker": f"0{code}.HK",
         # Feed timestamps are canonical UTC-naive; test labels below describe
         # their HKT wall time, so store the corresponding UTC value.
         "posted_at": datetime(2026, 8, day, hour, 0) - timedelta(hours=8),
@@ -86,7 +95,7 @@ def make_sql_provider(broken_share=True, anchor=ANCHOR):
         # 08-25 09:30 → 同一个小时桶。转发数未知
         _feed(2, 25, 9, "u2", KOL_NAME, 0, 1, None if broken_share else 0, browse=888),
         # 08-25 14:00 竞品讨论区
-        _feed(3, 25, 14, "u3", "路人甲", 5, 2, 0),
+        _feed(3, 25, 14, "u3", "路人甲", 5, 2, 0, code=PEER_CODE),
         # 08-24：基准区间那天
         _feed(4, 24, 11, "u4", "路人乙", 100, 10, 1),
     ]
@@ -115,15 +124,69 @@ def make_sql_provider(broken_share=True, anchor=ANCHOR):
         {"feed_id": 3, "code": PEER_CODE, "source": "anchor", "in_pool": True},
         {"feed_id": 4, "code": OWN_CODE, "source": "anchor", "in_pool": True},
     ]
+    rows_feed_mentions = [
+        {"feed_id": 1, "raw_ticker": "03033.HK", "market": "HK", "occurrences": 1},
+        {"feed_id": 1, "raw_ticker": "03032.HK", "market": "HK", "occurrences": 1},
+        {"feed_id": 2, "raw_ticker": "03033.HK", "market": "HK", "occurrences": 1},
+        {"feed_id": 3, "raw_ticker": "03032.HK", "market": "HK", "occurrences": 1},
+        {"feed_id": 4, "raw_ticker": "03033.HK", "market": "HK", "occurrences": 1},
+    ]
     with p._engine.begin() as conn:
         conn.execute(feeds.insert(), rows_feeds)
         conn.execute(comments.insert(), rows_comments)
         conn.execute(mentions.insert(), rows_mentions)
+        conn.execute(feed_mentions.insert(), rows_feed_mentions)
+        # ``add_annotations`` defaults to this auditable current-policy run.
+        # Product read paths deliberately reject untraceable or old-prompt
+        # rows, so the shared fixture must model the production lineage too.
+        conn.execute(
+            annotation_runs.insert(),
+            {
+                "run_id": "run-test",
+                "task": "comment_product",
+                "provider": "openai_compatible",
+                "model_id": "test-model",
+                "prompt_version": "comment-product-v3",
+                "taxonomy_version": "test-v1",
+                "schema_version": "test-v1",
+                "started_at": datetime(2026, 8, 25, 12, 0),
+                "finished_at": datetime(2026, 8, 25, 12, 1),
+                "status": "done",
+                "input_count": 0,
+                "success_count": 0,
+                "error_count": 0,
+            },
+        )
+        conn.execute(
+            annotation_runs.insert(),
+            {
+                "run_id": "kol-run-test",
+                "task": "kol_comment_opinion",
+                "provider": "openai_compatible",
+                "model_id": "test-model",
+                "prompt_version": "kol-opinion-v2",
+                "taxonomy_version": "test-v1",
+                "schema_version": "test-v1",
+                "started_at": datetime(2026, 8, 25, 12, 0),
+                "finished_at": datetime(2026, 8, 25, 12, 1),
+                "status": "done",
+                "input_count": 0,
+                "success_count": 0,
+                "error_count": 0,
+            },
+        )
+        metadata = [
+            {"k": key, "v": value}
+            for key, value in filter_readiness_values(p._comment_filter_config).items()
+        ]
         if anchor:
-            conn.execute(
-                meta_kv.insert(),
-                [{"k": "anchor", "v": anchor}, {"k": "anchor_ts", "v": f"{anchor} 23:59:59"}],
+            metadata.extend(
+                [
+                    {"k": "anchor", "v": anchor},
+                    {"k": "anchor_ts", "v": f"{anchor} 23:59:59"},
+                ]
             )
+        conn.execute(meta_kv.insert(), metadata)
 
     # provider 在 __init__ 里就把 meta 读进来了（生产环境是先导库后起服务）。内存库只能
     # 由 provider 自己那个 engine 建，顺序反了，所以这里重放 __init__ 的最后两行。
@@ -159,7 +222,13 @@ def add_annotations(provider, rows):
             "kind": r.get("kind", "attitude"),
             "value_json": json.dumps(r.get("value", "positive"), ensure_ascii=False),
             "calibrated_confidence": r.get("confidence"),
-            "run_id": r.get("run_id", "run-test"),
+            "run_id": r.get(
+                "run_id",
+                "kol-run-test"
+                if r.get("target_type", "comment") == "comment"
+                and r.get("kind", "attitude") in {"kol_summary", "kol_action", "post_type"}
+                else "run-test",
+            ),
             "input_hash": r.get("input_hash", f"h{i}"),
             "review_state": r.get("review_state", "pending"),
             "created_at": r.get("created_at", base + timedelta(minutes=i)),

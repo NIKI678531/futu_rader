@@ -24,6 +24,9 @@ from alembic.operations import Operations  # noqa: E402
 migration = import_module(
     "radar_db.migrations.versions.0010_mysql_datetime_precision"
 )
+routes_migration = import_module(
+    "radar_db.migrations.versions.0012_comment_product_routes"
+)
 
 
 def _datetime_columns():
@@ -49,7 +52,8 @@ def _render_migration(monkeypatch, dialect, direction: str) -> str:
 def test_all_metadata_datetimes_use_microseconds_only_on_mysql():
     columns = _datetime_columns()
 
-    assert set(columns) == set(migration.DATETIME_COLUMNS)
+    expected = set(migration.DATETIME_COLUMNS) | set(routes_migration.DATETIME_COLUMNS)
+    assert set(columns) == expected
     for column in columns.values():
         assert column.type.compile(dialect=mysql.dialect()) == "DATETIME(6)"
         assert column.type.compile(dialect=sqlite.dialect()) == "DATETIME"

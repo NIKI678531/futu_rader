@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -15,9 +15,19 @@ sys.path.insert(0, os.path.join(REPO, "backend"))
 
 from ai import config, neardup  # noqa: E402
 from ai.providers.base import Completion, Usage  # noqa: E402
-from jobs import audit, extract, pipeline  # noqa: E402
+from jobs import audit, backfill_comment_routes, extract, pipeline  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
-from radar_db.schema import annotations, comments, feeds, meta_kv, synthesis_outputs  # noqa: E402
+from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config  # noqa: E402
+from radar_db.schema import (  # noqa: E402
+    analysis_scopes,
+    annotations,
+    comments,
+    feed_mentions,
+    feeds,
+    mentions,
+    meta_kv,
+    synthesis_outputs,
+)
 
 CODE = "3033"
 KOL = "孫子的末代傳人"
@@ -29,9 +39,21 @@ def engine(tmp_path):
     create_all(eng)
     with eng.begin() as conn:
         conn.execute(insert(meta_kv).values(k="anchor", v="2026-08-25"))
-        conn.execute(insert(feeds).values(feed_id=1, code=CODE, posted_at=datetime(2026, 8, 22, 10), feed_type=1,
-                                          title="恒科", content="正文", author_name=KOL,
+        conn.execute(insert(meta_kv), [
+            {"k": key, "v": value}
+            for key, value in filter_readiness_values(load_comment_filter_config()).items()
+        ])
+        conn.execute(insert(feeds).values(feed_id=1, code=CODE, source_ticker="03033.HK",
+                                          posted_at=datetime(2026, 8, 22, 10), feed_type=1,
+                                          title="恒科", content="$03033.HK$ 正文", author_name=KOL,
                                           like_count=0, comment_count=0, image_count=0, raw_json_broken=False))
+        conn.execute(insert(mentions), [
+            {"feed_id": 1, "code": CODE, "source": source, "in_pool": True}
+            for source in ("anchor", "body")
+        ])
+        conn.execute(insert(feed_mentions).values(
+            feed_id=1, raw_ticker="03033.HK", market="HK", occurrences=1
+        ))
         rows = []
         for i in range(14):
             rows.append({"comment_id": 100 + i, "feed_id": 1,
@@ -43,8 +65,8 @@ def engine(tmp_path):
 
 @pytest.fixture()
 def cfg():
-    return config.load(model="m", prompt_version="comment-product-v2", schema_version="v2", taxonomy_version="v2",
-                       micro_batch_size=30, concurrency=2)
+    return config.load(model="m", prompt_version="comment-product-v3", schema_version="v2", taxonomy_version="v2",
+                       micro_batch_size=5, concurrency=2)
 
 
 class UniversalFake:
@@ -146,6 +168,7 @@ def test_manual_batch_workflow_is_bounded_and_second_run_sends_nothing(engine, c
             self.control.reserve()
             return super().complete_json(*args)
 
+    backfill_comment_routes.run(engine, activate_routes=True)
     cfg = replace(cfg, micro_batch_size=5, grouped_batches=True)
     plan = analyze.make_plan(engine, analyze.parser().parse_args(["plan", "--codes", CODE]))
     limited = BoundedFake(1)
@@ -179,9 +202,57 @@ def test_pipeline_dry_run_estimates_only(engine, cfg, tmp_path):
                       ownership={CODE: "own"}, report_dir=tmp_path)
     out = pipeline.run(engine, cfg, ext["scope_id"], dry_run=True, ranges=["d7"])
     est = out["steps"][0]["estimate"]
-    assert est["pending_items"] == 13 and est["requests"] == 1
+    assert est["pending_items"] == 13 and est["requests"] == 3
     with engine.connect() as conn:
         assert conn.execute(select(annotations).where(annotations.c.kind == "attitude")).first() is None
+
+
+@pytest.mark.parametrize(
+    "scope_stats",
+    [None, "{}", json.dumps({"exactRuleVersion": "exact-v0"})],
+    ids=("legacy-null", "missing-version", "stale-version"),
+)
+def test_pipeline_paid_run_rejects_scope_without_current_exact_provenance(
+        engine, cfg, tmp_path, scope_stats):
+    ext = extract.run(
+        engine,
+        cfg,
+        codes=[CODE],
+        date_from=datetime(2026, 8, 19),
+        date_to=datetime(2026, 8, 25),
+        ownership={CODE: "own"},
+        report_dir=tmp_path,
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            update(analysis_scopes)
+            .where(analysis_scopes.c.scope_id == ext["scope_id"])
+            .values(stats_json=scope_stats)
+        )
+
+    provider = UniversalFake()
+    with pytest.raises(ValueError, match="exactRuleVersion"):
+        pipeline.run(
+            engine,
+            cfg,
+            ext["scope_id"],
+            provider=provider,
+            skip_synth=True,
+        )
+    assert provider.calls == []
+
+
+def test_pipeline_cli_fails_closed_without_both_release_reports(monkeypatch):
+    load_config = config.load
+    monkeypatch.setattr(pipeline, "make_engine", lambda: object())
+    monkeypatch.setattr(pipeline.config, "load", lambda **_kwargs: load_config(
+        model="gate-model", prompt_version="comment-product-v3",
+        schema_version="v2", taxonomy_version="v2", micro_batch_size=5,
+    ))
+
+    with pytest.raises(SystemExit) as exc:
+        pipeline.main(["--scope", "scope-x", "--max-http-requests", "1"])
+    assert exc.value.code == 2
 
 
 def test_incomplete_pipeline_does_not_synthesize(engine, cfg, tmp_path):
@@ -217,9 +288,17 @@ def test_ready_range_synthesizes_while_older_comments_remain(engine, cfg, tmp_pa
                       date_to=datetime(2026, 8, 25), ownership={CODE: "own"}, report_dir=tmp_path)
     pipeline.run(engine, cfg, ext["scope_id"], provider=UniversalFake(), skip_synth=True)
     with engine.begin() as conn:
-        conn.execute(insert(feeds).values(feed_id=2, code=CODE, posted_at=datetime(2026, 7, 20),
-                                         feed_type=1, title="ETF", content="ETF", raw_json_broken=False,
+        conn.execute(insert(feeds).values(feed_id=2, code=CODE, source_ticker="03033.HK",
+                                         posted_at=datetime(2026, 7, 20), feed_type=1, title="ETF",
+                                         content="$03033.HK$ ETF", raw_json_broken=False,
                                          like_count=0, comment_count=1, image_count=0))
+        conn.execute(insert(mentions), [
+            {"feed_id": 2, "code": CODE, "source": source, "in_pool": True}
+            for source in ("anchor", "body")
+        ])
+        conn.execute(insert(feed_mentions).values(
+            feed_id=2, raw_ticker="03033.HK", market="HK", occurrences=1
+        ))
         conn.execute(insert(comments).values(comment_id=999, feed_id=2, content="ETF fee too high",
                                             author_name="reader", author_uid="old-reader"))
     extended = extract.run(engine, cfg, codes=[CODE], date_from=datetime(2026, 6, 27),

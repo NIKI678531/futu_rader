@@ -17,6 +17,30 @@ export default function Overview({ v }) {
         ))}
       </div>
 
+      <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04);margin-bottom:14px;overflow:hidden')}>
+        <div style={s('display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border-1)')}>
+          <span style={s('font:600 15px/1.4 var(--font-cjk);color:var(--ink-900)')}>评论分析漏斗</span>
+          <span style={s(`padding:2px 8px;border-radius:9999px;background:${v.commentFunnelPartial ? 'var(--warning-100)' : 'var(--csop-blue-50)'};font:600 12px/1.6 var(--font-cjk);color:${v.commentFunnelPartial ? 'var(--warning-700)' : 'var(--csop-blue-700)'}`)}>{v.commentFunnelDataLabel}</span>
+          <span style={s('margin-left:auto;font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>源数据覆盖 {v.commentFunnelSourceCoverage} · AI 覆盖 {v.commentFunnelAnalysisCoverage}</span>
+        </div>
+        {v.commentFunnelAvailable ? (
+          <>
+            <div style={s('display:grid;grid-template-columns:repeat(6,minmax(0,1fr));align-items:center;padding:15px 18px 12px')}>
+              {v.commentFunnelSteps.map((step, i) => (
+                <div key={step.key} style={s('position:relative;min-width:0;text-align:center')}>
+                  <div style={s('font:600 20px/1.2 var(--font-mono);color:var(--ink-900)')}>{step.value}</div>
+                  <div style={s('margin-top:5px;font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>{step.label}</div>
+                  {i < v.commentFunnelSteps.length - 1 && <span style={s('position:absolute;right:-5px;top:9px;color:var(--ink-300)')}>→</span>}
+                </div>
+              ))}
+            </div>
+            <div style={s('padding:0 18px 12px;text-align:right;font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>合格父帖 {v.commentFunnelQualifyingFeeds} · 父帖筛选剔除平台评论 {v.commentFunnelFilterExcluded} · 评论规则剔除 {v.commentFunnelExcluded} · 待上下文 {v.commentFunnelNeedsContext} · 待分析 {v.commentFunnelPending}</div>
+          </>
+        ) : (
+          <div style={s('padding:14px 18px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>数据暂不可用 — 评论分析漏斗尚未生成。</div>
+        )}
+      </div>
+
       <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:14px;overflow:hidden')}>
         <div style={s('display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--border-1)')}>
           <span style={s('font:600 18px/1.3 var(--font-cjk)')}>当前舆情总结</span>

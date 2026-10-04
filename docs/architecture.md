@@ -80,7 +80,6 @@ ETL 会先删除现有事实表，再以 2,000 行一批提交新数据。这个
 
 - [`worker/jobs/refresh.py`](../worker/jobs/refresh.py) 是 Airflow 使用的稳定入口；
   `FutuRefresh` 从 MarketInsight MySQL 只读增量拉取，再幂等写入 Radar。
-- [`worker/jobs/collect.py`](../worker/jobs/collect.py) 保留为兼容入口，并转发到同一同步实现。
 - 三条 keyset 流分别跟踪新帖子、详情正文和用户资料；固定 high-watermark 后逐页提交，
   每页事实和 checkpoint 在同一个目标库事务中。
 - 在线同步不会清空事实表。评论快照为 partial 时只 upsert 已见评论，不删除历史评论。

@@ -32,13 +32,17 @@ from ai.providers.base import Completion, PermanentError, TransientError, Usage 
 from jobs import annotate  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
 from radar_db.annotations_read import current_annotations  # noqa: E402
+from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config  # noqa: E402
 from radar_db.schema import (  # noqa: E402
+    analysis_scopes,
     annotation_evidence,
     annotation_jobs,
     annotation_runs,
     annotations,
     comments,
+    feed_mentions,
     feeds,
+    meta_kv,
 )
 
 CODE = "3033"
@@ -58,10 +62,18 @@ def engine(tmp_path):
     with eng.begin() as conn:
         conn.execute(
             insert(feeds).values(
-                feed_id=1, code=CODE, posted_at=datetime(2026, 8, 1, 10, 0), feed_type=1,
+                feed_id=1, code=CODE, source_ticker=f"0{CODE}.HK",
+                posted_at=datetime(2026, 8, 1, 10, 0), feed_type=1,
                 like_count=0, comment_count=2, image_count=0, raw_json_broken=False,
             )
         )
+        conn.execute(insert(feed_mentions).values(
+            feed_id=1, raw_ticker=f"0{CODE}.HK", market="HK", occurrences=1,
+        ))
+        conn.execute(insert(meta_kv), [
+            {"k": key, "v": value}
+            for key, value in filter_readiness_values(load_comment_filter_config()).items()
+        ])
         conn.execute(
             insert(comments),
             [
@@ -230,9 +242,13 @@ def threaded(engine):
     """
     with engine.begin() as conn:
         conn.execute(insert(feeds).values(
-            feed_id=2, code=CODE, posted_at=datetime(2026, 8, 2, 10, 0), feed_type=1,
+            feed_id=2, code=CODE, source_ticker=f"0{CODE}.HK",
+            posted_at=datetime(2026, 8, 2, 10, 0), feed_type=1,
             title="3033 半年定投记录", like_count=0, comment_count=1, image_count=0,
             raw_json_broken=False,
+        ))
+        conn.execute(insert(feed_mentions).values(
+            feed_id=2, raw_ticker=f"0{CODE}.HK", market="HK", occurrences=1,
         ))
         conn.execute(insert(comments).values(
             comment_id=20, feed_id=2, content="这只的跟踪误差控制得不错"))
@@ -474,8 +490,8 @@ def test_run_status_is_partial_when_anything_failed(engine, cfg):
     assert rows(engine, annotation_runs)[0]["status"] == "partial"
 
 
-def test_empty_source_text_is_dead_not_retried(engine, cfg):
-    """空文本该在规则层就拦下（§6.5），不该进队列，更不该反复调 GPT。"""
+def test_missing_comment_source_is_not_claimed(engine, cfg):
+    """来源行已消失的遗留任务不能绕过父帖门禁发给 GPT。"""
     with engine.begin() as conn:
         conn.execute(insert(comments).values(comment_id=13, feed_id=1, content="   "))
     annotate.enqueue_comments(engine, cfg)
@@ -491,7 +507,7 @@ def test_empty_source_text_is_dead_not_retried(engine, cfg):
     annotate.run(engine, cfg, max_items=10,
                  provider=FakeProvider([all_ok(lambda _: "点差太大")]))
     ghost = rows(engine, annotation_jobs, annotation_jobs.c.target_id == 99)[0]
-    assert ghost["status"] == "dead"
+    assert ghost["status"] == "pending"
 
 
 # ── 不覆盖人工结论（runbook §11.3 末条） ───────────────────────────────
@@ -763,3 +779,94 @@ def test_a_real_summary_is_stored_as_the_text(posts, cfg):
     """占位值不能把正常摘要也变成 false。"""
     v = run_posts(posts, cfg, summary="作者暂不加仓，继续观察恒科走势")
     assert v["summary"] == "作者暂不加仓，继续观察恒科走势"
+
+
+def test_cli_rejects_raw_comment_product_enqueue():
+    with pytest.raises(SystemExit) as exc:
+        annotate.main(["--enqueue", "--task", "comment_product"])
+    assert exc.value.code == 2
+
+
+def test_cli_rejects_unscoped_comment_product_model_run():
+    with pytest.raises(SystemExit) as exc:
+        annotate.main([
+            "--run",
+            "--task",
+            "comment_product",
+            "--max-http-requests",
+            "1",
+        ])
+    assert exc.value.code == 2
+
+
+def test_cli_rejects_scoped_comment_product_run_without_release_reports(monkeypatch):
+    gated_cfg = config.load(
+        model="gate-model", prompt_version="comment-product-v3",
+        schema_version="v2", taxonomy_version="v2", micro_batch_size=5,
+    )
+    monkeypatch.setattr(annotate, "make_engine", lambda: object())
+    monkeypatch.setattr(annotate.config, "load", lambda **_kwargs: gated_cfg)
+
+    with pytest.raises(SystemExit) as exc:
+        annotate.main([
+            "--run", "--task", "comment_product", "--scope", "scope-x",
+            "--max-http-requests", "1",
+        ])
+    assert exc.value.code == 2
+
+
+def test_cli_rejects_paid_comment_product_run_from_legacy_scope_before_provider(
+        engine, cfg, monkeypatch, capsys):
+    from jobs import analyze
+
+    with engine.begin() as conn:
+        conn.execute(insert(analysis_scopes).values(
+            scope_id="legacy-scope",
+            task="comment_product",
+            codes_json=json.dumps([CODE]),
+            date_from=datetime(2026, 8, 1),
+            date_to=datetime(2026, 8, 1),
+            time_basis="feed_posted_at",
+            with_baseline=False,
+            prompt_version=cfg.prompt_version,
+            taxonomy_version=cfg.taxonomy_version,
+            schema_version=cfg.schema_version,
+            stats_json=None,
+            created_at=datetime(2026, 8, 1),
+        ))
+    monkeypatch.setattr(annotate, "make_engine", lambda: engine)
+    monkeypatch.setattr(annotate.config, "load", lambda **_kwargs: cfg)
+    monkeypatch.setattr(analyze, "check_calibration", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(analyze, "check_quality", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        annotate,
+        "build_provider",
+        lambda *_args, **_kwargs: pytest.fail("provider must not be built for an untrusted scope"),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        annotate.main([
+            "--run", "--task", "comment_product", "--scope", "legacy-scope",
+            "--max-http-requests", "1",
+        ])
+    assert exc.value.code == 2
+    assert "exactRuleVersion" in capsys.readouterr().err
+
+
+def test_reenqueue_reactivates_an_identical_superseded_job(engine, cfg):
+    assert annotate.enqueue_comments(engine, cfg, limit=1) == 1
+    with engine.begin() as conn:
+        conn.execute(
+            update(annotation_jobs)
+            .where(annotation_jobs.c.target_id == 11)
+            .values(status="superseded", last_error="temporarily ineligible")
+        )
+
+    assert annotate.enqueue_comments(engine, cfg, limit=1) == 1
+    with engine.connect() as conn:
+        job = conn.execute(
+            select(annotation_jobs).where(annotation_jobs.c.target_id == 11)
+        ).mappings().one()
+    assert job["status"] == "pending"
+    assert job["attempts"] == 0
+    assert job["last_error"] is None

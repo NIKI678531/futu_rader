@@ -40,7 +40,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
-from sqlalchemy import insert, select
+from sqlalchemy import insert, or_, select
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -50,10 +50,33 @@ if str(REPO_ROOT) not in sys.path:
 import clock  # noqa: E402
 from ai import config, neardup, prefilter  # noqa: E402
 from ai.lexicon import offpool_stocks, product_aliases  # noqa: E402
+from collection.exact import (  # noqa: E402
+    EXACT_RULE,
+    EXACT_RULE_VERSION,
+    ExactProductMatcher,
+    route_parent_feed,
+)
 from jobs import annotate  # noqa: E402
 from jobs.import_dump import pool_codes  # noqa: E402
 from radar_db import make_engine  # noqa: E402
-from radar_db.schema import analysis_scopes, meta_kv  # noqa: E402
+from radar_db.comment_filter import (  # noqa: E402
+    load_comment_filter_config,
+    require_filter_ready,
+)
+from radar_db.comment_routes import (  # noqa: E402
+    COMMENT_ROUTE_VERSION,
+    readiness_on_connection as comment_routes_ready_on_connection,
+)
+from radar_db.schema import (  # noqa: E402
+    analysis_scopes,
+    annotation_jobs,
+    annotations,
+    comments,
+    feed_mentions,
+    feeds,
+    mentions,
+    meta_kv,
+)
 from radar_db.time_windows import hkt_range_utc_naive, utc_naive_to_hkt  # noqa: E402
 
 log = logging.getLogger("worker.extract")
@@ -110,11 +133,14 @@ def resolve_window(args, engine):
 
 @contextmanager
 def candidate_snapshot(engine, codes, since, until, page_size=1000):
+    with engine.connect() as conn:
+        comment_routes = comment_routes_ready_on_connection(conn)
     with tempfile.TemporaryDirectory(prefix="radar-extract-") as directory:
         handles, paths = OrderedDict(), {}
         try:
             for row in _comment_candidates_hkt(
                 engine, codes=codes, since=since, until=until, page_size=page_size,
+                comment_routes=comment_routes,
             ):
                 key = (row.code, utc_naive_to_hkt(row.posted_at).date().isoformat())
                 if key not in handles:
@@ -146,15 +172,241 @@ def _utc_bounds(since, until):
     return hkt_range_utc_naive(since.date(), (until - timedelta(days=1)).date())
 
 
-def _comment_candidates_hkt(engine, *, codes, since, until, **kwargs):
+def _comment_candidates_hkt(engine, *, codes, since, until, comment_routes=None, **kwargs):
     lo, hi = _utc_bounds(since, until)
-    return annotate._comment_candidates(engine, codes=codes, since=lo, until=hi, **kwargs)
+    if comment_routes is None:
+        with engine.connect() as conn:
+            comment_routes = comment_routes_ready_on_connection(conn)
+    return annotate._comment_candidates(
+        engine,
+        codes=codes,
+        since=lo,
+        until=hi,
+        include_body_targets=False,
+        include_empty=True,
+        comment_routes=comment_routes,
+        **kwargs,
+    )
+
+
+def _candidate_values(row):
+    mapping = getattr(row, "_mapping", None)
+    return dict(mapping) if mapping is not None else dict(vars(row))
+
+
+def _exact_candidate_routes(
+    engine,
+    rows,
+    matcher=None,
+    *,
+    batch_size=500,
+    filter_config=None,
+):
+    """Yield one anchor route per comment based only on its parent feed."""
+
+    # ``matcher`` is accepted for preview/calibration compatibility. Product
+    # aliases and reply text are intentionally outside the parent-feed seam.
+    del matcher
+    filter_config = filter_config or load_comment_filter_config()
+
+    iterator = iter(rows)
+    while True:
+        batch = []
+        try:
+            for _ in range(batch_size):
+                batch.append(next(iterator))
+        except StopIteration:
+            pass
+        if not batch:
+            return
+
+        feed_ids = {row.feed_id for row in batch}
+        by_feed = {feed_id: set() for feed_id in feed_ids}
+        feed_facts = {}
+        with engine.connect() as conn:
+            feed_facts = {
+                row.feed_id: row
+                for row in conn.execute(
+                    select(feeds.c.feed_id, feeds.c.code, feeds.c.source_ticker).where(
+                        feeds.c.feed_id.in_(feed_ids)
+                    )
+                )
+            }
+            records = conn.execute(
+                select(feed_mentions.c.feed_id, feed_mentions.c.raw_ticker).where(
+                    feed_mentions.c.feed_id.in_(feed_ids),
+                )
+            )
+            for feed_id, ticker in records:
+                by_feed.setdefault(feed_id, set()).add(ticker)
+
+        for row in batch:
+            parent = feed_facts.get(row.feed_id)
+            anchor_code = parent.code if parent is not None else getattr(
+                row, "anchor_code", row.code
+            )
+            route = route_parent_feed(
+                anchor_code=anchor_code,
+                source_ticker=parent.source_ticker if parent is not None else None,
+                mentioned_tickers=by_feed.get(row.feed_id, ()),
+                config=filter_config,
+            )
+            routed = []
+            for code in route.subject_codes:
+                values = _candidate_values(row)
+                values["code"] = code
+                routed.append(SimpleNamespace(**values))
+            yield row, route, routed
+
+
+def _historical_exact_units(engine, *, codes, since, until):
+    """Return active historical comment/subject units in the current scope.
+
+    Most units are reachable through today's section-scoped candidate query.
+    The ``subject_code`` arm is deliberate: legacy exact-v2 could route a reply
+    outside its parent section, so those old subjects must still be retired.
+    """
+
+    selected_codes = tuple(dict.fromkeys(str(code) for code in codes))
+    if not selected_codes:
+        return []
+    lo, hi = _utc_bounds(since, until)
+    def scope(subject_code):
+        return or_(
+            subject_code.in_(selected_codes),
+            feeds.c.code.in_(selected_codes),
+        )
+
+    def columns(subject):
+        return (
+            comments.c.comment_id,
+            subject.label("subject_code"),
+            comments.c.content,
+            comments.c.feed_id,
+            feeds.c.code.label("anchor_code"),
+        )
+    job_query = (
+        select(*columns(annotation_jobs.c.subject_code))
+        .select_from(
+            annotation_jobs
+            .join(comments, comments.c.comment_id == annotation_jobs.c.target_id)
+            .join(feeds, feeds.c.feed_id == comments.c.feed_id)
+        )
+        .where(
+            annotation_jobs.c.target_type == "comment",
+            annotation_jobs.c.task == "comment_product",
+            annotation_jobs.c.status.in_(("pending", "claimed", "failed", "done")),
+            feeds.c.posted_at >= lo,
+            feeds.c.posted_at < hi,
+            scope(annotation_jobs.c.subject_code),
+        )
+    )
+    newer = annotations.alias("newer_exact_route")
+    annotation_query = (
+        select(*columns(annotations.c.subject_code))
+        .select_from(
+            annotations
+            .join(comments, comments.c.comment_id == annotations.c.target_id)
+            .join(feeds, feeds.c.feed_id == comments.c.feed_id)
+        )
+        .where(
+            annotations.c.target_type == "comment",
+            annotations.c.kind == "relevance",
+            annotations.c.review_state != "rejected",
+            ~select(newer.c.annotation_id).where(
+                newer.c.supersedes_id == annotations.c.annotation_id
+            ).exists(),
+            feeds.c.posted_at >= lo,
+            feeds.c.posted_at < hi,
+            scope(annotations.c.subject_code),
+        )
+    )
+
+    units = {}
+    with engine.connect() as conn:
+        for row in conn.execute(job_query):
+            units[(row.comment_id, row.subject_code)] = row
+        for row in conn.execute(annotation_query):
+            units.setdefault((row.comment_id, row.subject_code), row)
+    return list(units.values())
+
+
+def _stale_exact_route_decisions(
+    engine, *, codes, since, until, matcher=None, filter_config=None, now
+):
+    """Build exclusions for historical subjects no longer selected by routing."""
+
+    units = _historical_exact_units(
+        engine,
+        codes=codes,
+        since=since,
+        until=until,
+    )
+    if not units:
+        return []
+
+    del matcher
+    filter_config = filter_config or load_comment_filter_config()
+    feed_ids = sorted({row.feed_id for row in units})
+    by_feed = {feed_id: set() for feed_id in feed_ids}
+    feed_facts = {}
+    with engine.connect() as conn:
+        for offset in range(0, len(feed_ids), 500):
+            batch = feed_ids[offset:offset + 500]
+            for fact in conn.execute(
+                select(feeds.c.feed_id, feeds.c.code, feeds.c.source_ticker).where(
+                    feeds.c.feed_id.in_(batch)
+                )
+            ):
+                feed_facts[fact.feed_id] = fact
+            records = conn.execute(
+                select(feed_mentions.c.feed_id, feed_mentions.c.raw_ticker).where(
+                    feed_mentions.c.feed_id.in_(batch),
+                )
+            )
+            for feed_id, ticker in records:
+                by_feed.setdefault(feed_id, set()).add(ticker)
+
+    decisions = []
+    for row in units:
+        parent = feed_facts.get(row.feed_id)
+        route = route_parent_feed(
+            anchor_code=parent.code if parent is not None else row.anchor_code,
+            source_ticker=parent.source_ticker if parent is not None else None,
+            mentioned_tickers=by_feed.get(row.feed_id, ()),
+            config=filter_config,
+        )
+        if row.subject_code in route.subject_codes:
+            continue
+        decisions.append((
+            row.comment_id,
+            row.subject_code,
+            row.content,
+            prefilter.Decision(
+                EXACT_RULE,
+                {
+                    "reason": "stale_subject_route",
+                    "route_reason": route.reason,
+                    "matched_tickers": list(route.matched_tickers),
+                    "rule_version": EXACT_RULE_VERSION,
+                    "decided_at": now.isoformat(timespec="seconds"),
+                },
+            ),
+        ))
+    return decisions
 
 
 def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_baseline=False,
         drop_offpool=True, dry_run=False, authors=None, ownership=None, report_dir=REPORT_DIR,
         candidate_reader=None):
     """执行一次抽取。返回 stats dict（也写进 `analysis_scopes.stats_json`）。"""
+    filter_config = None
+    with engine.connect() as conn:
+        comment_routes = comment_routes_ready_on_connection(conn)
+    if task in ("comment_product", "both"):
+        filter_config = load_comment_filter_config()
+        if not dry_run and not comment_routes:
+            _require_comment_filter_ready(engine, filter_config)
     ownership = ownership or pool_codes()
     now = clock.now()
     scope_id = new_scope_id()
@@ -173,7 +425,8 @@ def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_
         "date_to": date_to.strftime("%Y-%m-%d"), "with_baseline": with_baseline,
         "time_basis": "feed_posted_at", "dry_run": dry_run, "anchor": anchor.isoformat(),
         "prompt_version": prompt.VERSION, "taxonomy_version": cfg.taxonomy_version,
-        "schema_version": schema_version,
+        "schema_version": schema_version, "exactRuleVersion": EXACT_RULE_VERSION,
+        "commentRouteVersion": COMMENT_ROUTE_VERSION if comment_routes else None,
         "comments": None, "posts": None, "estimate": None,
     }
 
@@ -198,7 +451,8 @@ def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_
         stats["comments"] = _extract_comments(
             engine, cfg, prompt, schema_version, scope_id, codes, windows, ownership,
             drop_offpool=drop_offpool, dry_run=dry_run, now=now, priority_of=priority_of,
-            candidate_reader=candidate_reader,
+            candidate_reader=candidate_reader, filter_config=filter_config,
+            comment_routes=comment_routes,
         )
         # 合作 KOL 的评论顺手排进 `kol_comment_opinion`（KOL 详情 M7 要它；量很小）。
         kols, _officials = master_accounts()
@@ -209,6 +463,7 @@ def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_
                 stats["kol_comments"] += annotate.enqueue_kol_comments(
                     engine, cfg, kols, codes=codes, since=lo, until=hi,
                     scope_id=scope_id, priority_of=priority_of(name),
+                    filter_config=filter_config,
                 )
     if task in ("post_annotation", "both"):
         stats["posts"] = _extract_posts(
@@ -239,16 +494,30 @@ def _read_anchor(engine):
     return date.fromisoformat(a[:10]) if a else None
 
 
+def _require_comment_filter_ready(engine, filter_config):
+    """Prevent task mutations until the historical parent facts are activated."""
+
+    if filter_config.version != EXACT_RULE_VERSION:
+        raise RuntimeError(
+            f"worker exact rule version {EXACT_RULE_VERSION!r} does not match "
+            f"comment filter config {filter_config.version!r}"
+        )
+    require_filter_ready(engine, filter_config)
+
+
 def _extract_comments(engine, cfg, prompt, schema_version, scope_id, codes, windows, ownership,
-                      *, drop_offpool, dry_run, now, priority_of=None, fold_neardup=True, candidate_reader=None):
+                      *, drop_offpool, dry_run, now, priority_of=None, fold_neardup=True,
+                      candidate_reader=None, filter_config=None, comment_routes=False):
     plex = product_aliases.ProductLexicon()
+    filter_config = filter_config or load_comment_filter_config()
     extra = offpool_stocks.load_from_db(engine, set(ownership))
     slex = offpool_stocks.StockLexicon(extra)
     pf = prefilter.Prefilter(plex, slex, drop_offpool=drop_offpool)
 
-    counts = {"candidates": 0, "dropped": {r: 0 for r in prefilter.RULES}, "kept": 0,
+    counts = {"candidates": 0, "dropped": {r: 0 for r in (*prefilter.RULES, EXACT_RULE)}, "kept": 0,
               "near_duplicate_members": 0, "cluster_rows_written": 0,
               "queued_new": 0, "already_queued_or_done": 0, "rule_rows_written": 0,
+              "rule_rows_withdrawn": 0,
               "by_window": {}, "earliest": None, "latest": None, "offpool_stock_size": slex.size()}
     rule_run_id = None
     if not dry_run:
@@ -261,19 +530,71 @@ def _extract_comments(engine, cfg, prompt, schema_version, scope_id, codes, wind
                     since + timedelta(days=offset), min(until, since + timedelta(days=offset + 1)))
                    for name, since, until in windows for offset in range((until - since).days)]
     for name, since, until in windows:
-        kept_rows, decisions = [], []
+        kept_rows, decisions = [], {}
         n_cand = 0
-        for r in (candidate_reader or _comment_candidates_hkt)(
+        candidate_rows = (candidate_reader or _comment_candidates_hkt)(
             engine, codes=codes, since=since, until=until,
-        ):
+            comment_routes=comment_routes,
+        )
+        routed_candidates = (
+            (
+                row,
+                SimpleNamespace(
+                    subject_codes=(row.code,),
+                    reason="content_cashtag_route",
+                    matched_tickers=(),
+                ),
+                (row,),
+            )
+            for row in candidate_rows
+        ) if comment_routes else _exact_candidate_routes(
+            engine, candidate_rows, filter_config=filter_config
+        )
+        for anchor_row, route, routed_rows in routed_candidates:
             n_cand += 1
-            d = pf.classify(r.content, r.code, comment_id=r.comment_id,
-                            author_uid=r.author_uid, feed_id=r.feed_id)
-            if d.dropped:
+            # Candidate discovery is section-scoped. A filtered parent writes
+            # one auditable exclusion for its anchor; a qualifying parent sends
+            # every reply through the unchanged downstream prefilter/model.
+            if not comment_routes and anchor_row.code not in route.subject_codes:
+                d = prefilter.Decision(
+                    EXACT_RULE,
+                    {
+                        "reason": route.reason,
+                        "matched_tickers": list(route.matched_tickers),
+                        "rule_version": EXACT_RULE_VERSION,
+                        "decided_at": now.isoformat(timespec="seconds"),
+                    },
+                )
                 counts["dropped"][d.rule] += 1
-                decisions.append((r.comment_id, r.code, r.content, d))
-                continue
-            kept_rows.append(r)
+                decisions[(anchor_row.comment_id, anchor_row.code)] = (
+                    anchor_row.comment_id,
+                    anchor_row.code,
+                    anchor_row.content,
+                    d,
+                )
+            for r in routed_rows:
+                d = pf.classify(r.content, r.code, comment_id=r.comment_id,
+                                author_uid=r.author_uid, feed_id=r.feed_id)
+                if d.dropped:
+                    counts["dropped"][d.rule] += 1
+                    decisions[(r.comment_id, r.code)] = (r.comment_id, r.code, r.content, d)
+                    continue
+                kept_rows.append(r)
+        # Re-evaluate historical subjects independently of today's discovery
+        # rows so legacy cross-product routes and newly ineligible parents are
+        # superseded even though they no longer appear as current candidates.
+        if not comment_routes:
+            for item in _stale_exact_route_decisions(
+                engine,
+                codes=codes,
+                since=since,
+                until=until,
+                filter_config=filter_config,
+                now=now,
+            ):
+                decisions.setdefault((item[0], item[1]), item)
+        # A comment/product unit is queued exactly once.
+        kept_rows = list({(r.comment_id, r.code): r for r in kept_rows}.values())
         # 第 6 条：同产品同日近重复折叠（ADR-0021）。成员不排任务，只写簇行；代表照常排。
         if fold_neardup:
             reps, members = neardup.fold(
@@ -306,8 +627,14 @@ def _extract_comments(engine, cfg, prompt, schema_version, scope_id, codes, wind
             inserted = annotate._insert_jobs(engine, rows)
             counts["queued_new"] += inserted
             counts["already_queued_or_done"] += len(rows) - inserted
+            counts["rule_rows_withdrawn"] += prefilter.withdraw_rule_exclusions(
+                engine,
+                rule_run_id,
+                [(r.comment_id, r.code, r.content) for r in kept_rows],
+                now,
+            )
             counts["rule_rows_written"] += prefilter.write_rule_annotations(
-                engine, rule_run_id, decisions, now)
+                engine, rule_run_id, list(decisions.values()), now)
             counts["cluster_rows_written"] += neardup.write_cluster_rows(
                 engine, rule_run_id, [(r.comment_id, r.code, rep, d) for r, rep, d in members], now)
         else:
@@ -319,7 +646,8 @@ def _extract_comments(engine, cfg, prompt, schema_version, scope_id, codes, wind
             conn.execute(
                 annotation_runs.update().where(annotation_runs.c.run_id == rule_run_id)
                 .values(finished_at=clock.now(), status="done",
-                        input_count=counts["candidates"], success_count=counts["rule_rows_written"])
+                        input_count=counts["candidates"],
+                        success_count=(counts["rule_rows_written"] + counts["rule_rows_withdrawn"]))
             )
     return counts
 
@@ -411,8 +739,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="按 ETF × 时间段抽取候选并预过滤、排队（不调模型）")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--codes", help="逗号分隔的产品代码")
-    g.add_argument("--own", action="store_true", help="全部 61 只自家产品（默认）")
-    g.add_argument("--all", action="store_true", help="全部 120 只")
+    g.add_argument("--own", action="store_true", help="全部自家产品（默认）")
+    g.add_argument("--all", action="store_true", help="完整生产产品池")
     ap.add_argument("--from", dest="from_", help="起始日期 YYYY-MM-DD（含）")
     ap.add_argument("--to", help="结束日期 YYYY-MM-DD（含）")
     ap.add_argument("--range", choices=sorted(RANGE_DAYS), help="相对 meta_kv.anchor 的预设区间")

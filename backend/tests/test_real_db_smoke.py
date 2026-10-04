@@ -98,6 +98,23 @@ def body(client, path):
     return env["data"]
 
 
+@pytest.fixture(scope="module")
+def filtered_pool(real):
+    """Return the published pool, or skip facts that require an activated backfill.
+
+    The checked-in local database may deliberately be between migration phases.
+    In that state the read contract is ``unavailable`` (never an empty/zero
+    market), while raw account-domain smoke tests below must keep running.
+    """
+    res = real.get(f"/api/v1/pool?range={RANGE}")
+    assert res.status_code == 200
+    env = res.get_json()
+    if env["data"] is None:
+        assert env["status"] == "unavailable"
+        pytest.skip("父帖筛选历史回填尚未 activate；产品筛选指标按契约暂不可用")
+    return env["data"]["list"]
+
+
 # ── 库本身 ─────────────────────────────────────────────────────────────
 
 
@@ -140,23 +157,72 @@ def test_range_buckets_cover_the_window(real):
     assert len(rng["buckets"]) == 7, "d7 的桶数必须等于天数（PRD §3.1：后端下发，前端不算桶）"
 
 
+def test_parent_filter_rollout_fails_closed_before_activation(real):
+    """未完成版本化回填时只能 unavailable，不能把缺失事实冒充成零。"""
+    res = real.get(f"/api/v1/pool?range={RANGE}")
+    assert res.status_code == 200
+    env = res.get_json()
+    if env["data"] is None:
+        assert env["status"] == "unavailable"
+    else:
+        assert env["status"] in {"ok", "empty"}
+
+
+def test_locked_3037_parent_filter_acceptance_baseline(real, filtered_pool):
+    """Pin the explicitly approved 3037 rollout baseline on its frozen DB.
+
+    Unlike the generic smoke checks in this module, these exact values are a
+    release acceptance fixture supplied with ADR-0029.  They only apply to the
+    2026-08-25 snapshot and must not make a newer database fail.
+    """
+    import sqlite3
+
+    con = sqlite3.connect(f"file:{DB_PATH.as_posix()}?mode=ro", uri=True)
+    try:
+        anchor = con.execute(
+            "select v from meta_kv where k = 'anchor'"
+        ).fetchone()
+        if not anchor or anchor[0] != "2026-08-25":
+            pytest.skip("3037 exact acceptance baseline only applies to anchor 2026-08-25")
+        raw_parent_count = con.execute(
+            """
+            select count(*)
+            from feeds
+            where code = '3037'
+              and posted_at >= '2026-08-18 16:00:00'
+              and posted_at <  '2026-08-25 16:00:00'
+            """
+        ).fetchone()[0]
+    finally:
+        con.close()
+
+    product = next(item for item in filtered_pool if item["code"] == "3037")
+    funnel = product["commentFunnel"]
+    assert raw_parent_count == 4_423
+    assert funnel["rawPlatformCount"] == 3_494
+    assert funnel["qualifyingFeedCount"] == product["mentions"] == 238
+    assert funnel["platformCount"] == product["comments"] == 195
+    assert funnel["parsedCount"] == 177
+    assert funnel["filterExcludedPlatformCount"] == 3_299
+
+
 # ── 板块总览 ───────────────────────────────────────────────────────────
 
 
-def test_pool_returns_the_whole_active_universe(real):
+def test_pool_returns_the_whole_active_universe(filtered_pool):
     """完整活跃 ETF 池 ≈ 120 只（自家 61 ＋ 竞品 59），且计数是真的。
 
     上界卡在 200：`mentions` 表有 92.7 万行，一个写错的 JOIN 会让池子涨到几千只，
     而那时页面照样渲染得出来 —— 只是热力图密密麻麻，没人会当成 bug。
     """
-    pool = body(real, f"/api/v1/pool?range={RANGE}")["list"]
+    pool = filtered_pool
     assert 100 <= len(pool) <= 200, f"活跃池 {len(pool)} 只，与 61+59 的量级对不上"
     assert sum(1 for p in pool if (p["comments"] or 0) > 0) >= 10, (
         "整池没有 10 只有评论 —— 要么区间取空了，要么 comments 根本没接上"
     )
 
 
-def test_heat_is_unknown_exactly_when_one_of_its_inputs_is(real):
+def test_heat_is_unknown_exactly_when_one_of_its_inputs_is(filtered_pool):
     """讨论热度缺失 ⟺ 它的某一项输入缺失（铁律 2 的传播律）。
 
     热度 ＝ 评论量 ＋ 0.3 × 点赞 ＋ 1 × 转发。真库上确实有产品的 `shares` 取不到
@@ -164,7 +230,7 @@ def test_heat_is_unknown_exactly_when_one_of_its_inputs_is(real):
     数字长得和真的一模一样，只是偏小，没人看得出来。
     反过来也钉死：三项都在的产品**必须**有热度，不许因为「反正 None 也合法」而整列不算。
     """
-    for p in body(real, f"/api/v1/pool?range={RANGE}")["list"]:
+    for p in filtered_pool:
         inputs_known = all(p[f] is not None for f in ("comments", "likes", "shares"))
         assert (p["discussionHeat"] is not None) == inputs_known, (
             f"{p['code']}：热度 {p['discussionHeat']!r}，"
@@ -173,9 +239,9 @@ def test_heat_is_unknown_exactly_when_one_of_its_inputs_is(real):
         )
 
 
-def test_ranks_cover_the_whole_market(real):
+def test_ranks_cover_the_whole_market(real, filtered_pool):
     """全市场评论量排名由后端算好（铁律 3），总数与池子一致。"""
-    pool = body(real, f"/api/v1/pool?range={RANGE}")["list"]
+    pool = filtered_pool
     ranks = body(real, f"/api/v1/ranks?range={RANGE}")
     assert ranks["total"] == len(pool), "排名总数与活跃池不一致 —— 排名不是按全市场算的"
 
@@ -184,15 +250,14 @@ def test_ranks_cover_the_whole_market(real):
 
 
 @pytest.fixture(scope="module")
-def busiest_code(real):
+def busiest_code(filtered_pool):
     """区间内评论最多的那只产品的代码。
 
     挑最热的那只，是为了让下面「事实类字段应当有值」的断言有意义：随便挑一只可能
     整个区间一条评论都没有，那时「摘要为 None」既可能是没标注也可能是没内容，
     断言分不出来。代码从库里现查（约束 2）。
     """
-    pool = body(real, f"/api/v1/pool?range={RANGE}")["list"]
-    return max(pool, key=lambda p: p["comments"] or 0)["code"]
+    return max(filtered_pool, key=lambda p: p["comments"] or 0)["code"]
 
 
 def test_product_endpoints_all_answer_on_real_data(real, busiest_code):

@@ -3,7 +3,7 @@
 > 版本：v1.2（v1.0 初版；v1.1 记录 Gate 0–2 执行结果于 §16；v1.2 新增 §20 重点舆情识别专项、§21 无人工金标路线、§22 公开数据集清单）  
 > 日期：2026-09-11  
 > 适用环境：Windows 11、PowerShell、Python 3.11、SQLite（本地）/ MySQL 8（生产）  
-> 目标：先恢复真实数据展示，再建立可追溯的 AI 标注、Hugging Face 本地模型、行情与在线采集链路。
+> 目标：先恢复真实数据展示，再建立可追溯的 AI 标注、Hugging Face 本地模型、行情与上游数据库同步链路。
 
 ## 0. 安全红线
 
@@ -34,7 +34,7 @@ git diff -- . ':!*.env'
 
 | 层 | 选定方案 | 用途 |
 |---|---|---|
-| 原始数据 | `dump-market_insight-*.sql` → 本地 SQLite 瘦库 | 历史帖子、评论、提及和用户事实 |
+| 原始数据 | 历史 dump；生产由第三方／Airflow 写入 MarketInsight MySQL | 帖子、评论、提及和用户事实 |
 | 真实查询 | `DATA_PROVIDER=sql` | 让五个页面读取真实统计 |
 | 外部生成式模型 | OpenAI-compatible API，实际模型 ID 待供应商确认 | 冷启动标注、复杂抽取、摘要、难例 |
 | 本地分类器 P0 | `Langboat/mengzi-bert-base-fin` 微调 | 评论相关性、产品态度、帖子分类 |
@@ -43,7 +43,7 @@ git diff -- . ':!*.env'
 | 本地分类挑战者 P1 | `Qwen/Qwen3-1.7B-Base` 微调 | 当 Mengzi 质量不达标时比较替换 |
 | 本地教师/隐私兜底 P1 | `Qwen/Qwen3.5-4B` | 外部 API 不可用时做难例、抽取和摘要 |
 | 行情 | Futu OpenAPI/OpenD | 港股 ETF 小时线、日线、最新价格 |
-| 在线社区采集 | 客户授权 API/数据库增量源 | Futu OpenAPI 不提供社区帖子和评论 |
+| 在线社区数据 | 第三方服务 → Airflow → MarketInsight MySQL | Radar 只读数据库；不直连社区接口 |
 
 ### 1.2 关于“GPT-5.6 Luna”
 
@@ -86,7 +86,7 @@ gpt-5.6-luna
   → 接入本地 Hugging Face 分类/向量模型
   → SqlProvider 读取 annotations
   → 接行情
-  → 接授权后的在线社区增量源
+  → 接第三方／Airflow 写入的 MarketInsight MySQL 增量同步
 ```
 
 不要在五个真实页面仍会崩溃时先跑全量 AI；否则即使 annotations 已写入，也无法区分模型问题和前端契约问题。
@@ -140,7 +140,7 @@ gpt-5.6-luna
 | 尚无任务 | **`compliance_signal`（重点舆情五类）**、主题聚类、热议总结、竞品候选 —— 见 §20 |
 | 人工复核 | `worker/jobs/review.py` 已可用；129 条全部 `pending`／`needs_review`，0 条 approved。[ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md) 起它是**可选工具**，不再是闸口 |
 | 页面 AI 输出 | 当时为「暂不可用」：`SqlProvider` 只读 approved／corrected，而没有人批过。**该门槛已由 [ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md) 取消并实施** —— 现行结论＝链末且非 `rejected`，`pending` 与 `needs_review` 一样可读 |
-| 未答复 | 供应商数据治理四项（区域、日志保留、训练使用、删除）；OpenD 行情权限；社区增量源 |
+| 未答复 | 供应商数据治理四项（区域、日志保留、训练使用、删除）；OpenD 行情权限。社区增量链路已确定为第三方／Airflow → MarketInsight MySQL |
 
 结论：管线**通了**，页面**没亮**，卡在「谁来批准」。项目负责人已裁决**不设批准门槛、不做人工复核与抽检**，规则见 [ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md)；§21 保留为该裁决之前的方案记录。
 
@@ -180,7 +180,7 @@ gpt-5.6-luna
 |---|---:|---|---|---|
 | `dump-market_insight-*.sql` | 是 | 客户/现有数据团队 | 历史瘦库重建 | 文件不进 Git |
 | 本地 `radar.db` | 是 | dump 导入生成 | 本地真实 Provider | 需确认实际路径 |
-| 社区增量 API 或数据库账号 | 上线必需 | 客户/ChatInsight/数据团队 | 在线帖子评论更新 | 当前未提供 |
+| MarketInsight MySQL 只读账号 | 上线必需 | 客户/数据团队 | 读取第三方／Airflow 已入库的帖子评论 | 链路已确定，生产凭据由 Secret 注入 |
 | 120 只产品正式主数据与别名 | 是 | 客户 | 产品绑定、候选召回 | 当前有 fixture，需业务核验 |
 | 官号/KOL 真实 UID 映射 | 是 | 客户 | 替代不稳定的名称匹配 | 当前只部分命中 |
 | OpenAI-compatible API 资料 | AI P0 必需 | 模型供应商 | 冷启动、摘要、难例 | `GPT-5.6 Luna` 待确认 |
@@ -188,16 +188,12 @@ gpt-5.6-luna
 | 人工金标 | AI P0 必需 | 产品/标注团队 | 选型、阈值、校准 | 建议评论 3,000、帖子 1,000 |
 | Futu OpenD 账号和行情权限 | 行情必需 | Futu | 港股 ETF K 线 | 需确认 120 只配额 |
 
-### 3.1 社区在线数据不能从 Futu OpenAPI 获得
+### 3.1 社区在线数据链路已确定
 
-Futu OpenAPI 官方能力是行情与交易，没有社区帖子/评论接口。在线社区数据必须来自以下之一：
-
-1. 客户授权的 MarketInsight 增量 API；
-2. 客户授权的 MarketInsight 数据库只读账号；
-3. 已合法运行的 ChatInsight 数据连接器；
-4. 经书面授权和法务审查的采集器。
-
-没有合法增量源时，只能展示 dump 截止日之前的历史数据，不能把它描述成实时监控。
+Futu OpenAPI 官方能力是行情与交易，没有社区帖子/评论接口。当前唯一生产链路是：
+第三方服务自动采集，Airflow 将结果写入 MarketInsight MySQL，Radar 使用只读账号同步
+数据库事实后再执行分析。Radar 不访问社区网页，也不调用任何社区采集 API；源库尚未
+写入的评论不能由 Radar 自行补抓。
 
 ---
 
@@ -479,14 +475,14 @@ AI_PRIMARY_MODEL=
 # 调用控制
 AI_REQUEST_TIMEOUT_SECONDS=60
 AI_MAX_RETRIES=3
-AI_MICRO_BATCH_SIZE=30
+AI_MICRO_BATCH_SIZE=5
 AI_MAX_INPUT_TOKENS=8000
 AI_CONCURRENCY=4
 
 # 数据与版本
-AI_PROMPT_VERSION=comment-product-v1
-AI_TAXONOMY_VERSION=v1
-AI_SCHEMA_VERSION=v1
+AI_PROMPT_VERSION=comment-product-v3
+AI_TAXONOMY_VERSION=v2
+AI_SCHEMA_VERSION=v2
 
 # 只有供应商明确支持时启用
 AI_STRUCTURED_OUTPUT=true
@@ -1186,23 +1182,24 @@ market_candles
 
 ---
 
-## 15. 在线社区增量采集
+## 15. 在线社区数据库增量同步
 
-合法上游现已明确为 MarketInsight MySQL 的只读连接。当前实现集中在
-`worker/collection/FutuRefresh`，Airflow 只调用 `jobs.refresh` 的稳定接口：
+合法上游现已明确为第三方服务经 Airflow 写入的 MarketInsight MySQL。Radar 仅通过
+只读连接同步数据库，当前实现集中在 `worker/collection/FutuRefresh`，Airflow 调用
+`jobs.refresh` 的稳定接口：
 
-1. 按产品/账号分片；
-2. 从 `collector_checkpoints` 读取最后成功时间；
-3. 固定每条流的 high-watermark，并用 keyset 分页；源采集侧在第二阶段回看 48 小时；
-4. 分页拉取；
+1. 第三方服务按产品／账号采集，Airflow 写入 MarketInsight 并记录源运行状态；
+2. Radar 从 `collector_checkpoints` 读取最后成功位置；
+3. 固定数据库各条流的 high-watermark，并用 keyset 分页读取；
+4. 只从 MarketInsight 拉取已入库的数据；
 5. 按稳定 `feed_id/comment_id` 幂等 upsert；
 6. 保留原始 payload、源时间和抓取时间；
-7. 记录评论分页是否完整；
+7. 保留上游声明的评论覆盖状态；
 8. 用 append-only observation 保存计数，并固定发布满 24 小时后的第一条观察；
 9. 正文或上下文 hash 改变时重新排 AI Job；
 10. 成功后推进 checkpoint；
 11. 失败保留已提交 checkpoint，由 Airflow 重试同一 source run；
-12. 四个采集 DAG 发布 Dataset，由单实例同步 DAG 唤醒。
+12. 上游 Airflow DAG 发布 Dataset，由单实例 Radar 同步 DAG 唤醒。
 
 在线路径不能使用当前一次性 ETL 的“清空事实表后重建”方案。一次性 dump 重建与在线 upsert 必须是两条独立路径。
 
@@ -1489,7 +1486,9 @@ cd worker
 > 入口不再是 `annotate --enqueue`，而是 **`jobs/extract.py`**（按 ETF × 时间段抽取、五条规则预过滤、
 > 打 `scope_id`）→ **`jobs/pipeline.py --scope`**（评论 → KOL 评论 → 帖子 → Layer B → 报表，幂等续跑）。
 > 放量前先跑 `scripts/probe_gateway.py`（flex／batches／缓存／限流）与 `scripts/calibrate.py`
-> （b=1 vs b=30、v1 vs v2 一致率、仅个股规则误杀抽查）。
+> （b=1 vs b=5 一致率与吞吐、v1 vs 当前 Prompt 诊断、仅个股规则误杀抽查）。
+> `batch=30` 已禁用；System One 的批量上限为 1，不用于批量回填。当前放量门槛与命令
+> 以 [llm-90d-operations.md](llm-90d-operations.md) 为准。
 
 - [x] 词表：`worker/ai/lexicon/{product_aliases,offpool_stocks,compliance_zh}.py`
 - [x] 抽取＋预过滤：`worker/jobs/extract.py`、`worker/ai/prefilter.py`
@@ -1515,13 +1514,14 @@ cd worker
 
 完成标准：有数据时显示真实 OHLC，休市/缺失时不补造。
 
-### Gate 6：在线采集
+### Gate 6：在线数据同步
 
-> **代码实现完成，生产切换待环境验收。** 合法上游采用 MarketInsight MySQL 只读连接；
+> **代码实现完成，生产切换待环境验收。** 第三方服务经 Airflow 写入 MarketInsight，
+> Radar 采用 MySQL 只读连接；
 > Futu Radar 不访问社区网页，也不持有 Cookie。部署与回滚步骤见
 > [`automatic-collection.md`](automatic-collection.md)。
 
-- [x] 获得合法社区增量来源：MarketInsight MySQL 只读账号。
+- [x] 确定合法社区增量链路：第三方／Airflow → MarketInsight MySQL → Radar 只读同步。
 - [x] 建 checkpoint、ingestion run 和源 collection run。
 - [x] 实现固定 high-watermark、keyset 分页、幂等 upsert、回补和重放。
 - [x] 语义变化使 AI scope/synthesis 失效；用户资料更新不标记 AI stale。
@@ -1578,7 +1578,7 @@ Invoke-RestMethod 'http://localhost:8008/api/v1/products/3033/candles?range=d7'
 | 3 | `/models` 返回的实际 Model ID | ✅ `gpt-5.6-luna` |
 | 4 | 是否允许去标识后的真实评论发送给该供应商 | ✅ 已授权（2026-09-11） |
 | 5 | 当前 `radar.db` 的实际路径，或 dump 的本地 SSD 路径 | ✅ 本机库存在且完整 |
-| 6 | 社区在线增量数据从 API、数据库还是 ChatInsight 获得 | ✅ MarketInsight MySQL，只读连接 |
+| 6 | 社区在线增量链路 | ✅ 第三方服务／Airflow 写入 MarketInsight MySQL，Radar 只读连接 |
 | 7 | Futu OpenD 账号是否具备 120 只 HK ETF 的行情权限 | ❌ 未答复 —— 阻塞 Gate 5 |
 | 8 | 人工标注负责人和合规信号确认人 | ❌ 未答复 —— 阻塞 Gate 3 与 Gate 4 |
 
@@ -1885,7 +1885,7 @@ worker\.venv\Scripts\python.exe -X utf8 worker\jobs\repair_feed_metrics.py
 
 本轮实测 167 条转发缺失均为坏 JSON。60 条虽有 `share_count` 文本，但保守结构校验
 没有找到可安全恢复的完整计数对象，因此**写回 0 条**。源 dump 第 14 列已核实为
-`detail_updated_at`，不是额外的转发列。缺失尾部只能由完整历史导出或获授权源API补采。
+`detail_updated_at`，不是额外的转发列。缺失尾部只能由上游第三方重新采集并经 Airflow 写回 MarketInsight，或由完整历史导出补齐。
 不得用AI、当前累计转发、平均数或0替代当时的未知计数；FMP不提供社区互动数据。
 现行显示遵循 [ADR-0022](adr/0022-heat-lower-bound-disclosure.md)：公式及权重不变，
 窗口内转发按已知项求和，热度、互动与转发披露为下限，同时下发 `heatUnknownPosts`。
@@ -1900,7 +1900,7 @@ worker\.venv\Scripts\python.exe -X utf8 worker\jobs\ingest.py --source futu-expo
 每行一个 `FeedRecord`，schema 位于 `worker/jobs/ingest.py`。必需字段：`feed_id`、`code`、
 `posted_at`、`observed_at`、`feed_type`、`like_count`、`comment_count`、`image_count`。
 可提供正文、作者、转发/浏览、`comments` 数组与 `mentioned_codes`。未知数显式 `null`，
-不由适配器补0；稳定 Futu ID 跨导出/API来源去重，逐记录事务更新，不删除整个事实库。
+不由适配器补0；稳定 Futu ID 跨 dump／数据库来源去重，逐记录事务更新，不删除整个事实库。
 导入是更新/追加语义，不是删除未出现在文件里的评论或提及。
 
 已有历史记录的计数修复要求同一个 `observed_at`，拒绝把当前回抓的累计数静默混入历史快照。
@@ -1911,7 +1911,7 @@ worker\.venv\Scripts\python.exe -X utf8 worker\jobs\ingest.py --source futu-expo
 源或标注变化后旧汇总标记为待更新，完整汇总成功后才解除。`/version` 通知可见页面
 重取数据，保留产品和日期筛选；隐藏页面暂停检查，重新聚焦恢复。
 
-这提供规范化接入契约，并不代表任意格式无需适配，也没有凭空实现富途在线采集API。
+这提供规范化接入契约，并不代表任意格式无需适配；Radar 不实现或调用富途社区采集 API。
 直接重跑旧的 `jobs.etl` 仍是一次性全量重建流程，日常增量不得用它替代 `ingest`。
 
 ### 23.5 验证与排查
@@ -1936,7 +1936,11 @@ node "$env:USERPROFILE\.futu-radar\mirror\frontend\scripts\live-data-check.mjs"
 
 ```powershell
 Set-Location worker
-./.venv/Scripts/python.exe -X utf8 -m jobs.full_own --watch --all --ranges d1,d2,d7 --max-items 100
+./.venv/Scripts/python.exe -X utf8 -m jobs.refresh analyze --mode daily --ranges d1 `
+  --batch-size 5 --concurrency 2 --max-http-attempts 500 `
+  --calibration-report ../.scratch/llm-90d/calibration-<时间>.json `
+  --quality-report ../.scratch/llm-90d/gold-eval-<时间>.json
+# d1 完成后再以相同门禁参数分别运行 --ranges d2、--ranges d7。
 ```
 
 - 启动前确认没有另一个 `full_own`。已有标注及历史待办保留；当前 scope 只关联所需日期的任务。
@@ -1976,8 +1980,9 @@ Set-Location worker
 
 ### 23.8 手动启动与按产品日期分包（2026-09-17）
 
-本节取代上文未带预算的旧启动命令。API 只供数；第二个终端在 `worker/` 执行
-`python -m jobs.analyze plan|run|status|resume`。本轮代码测试使用假模型，
+本节取代上文未带预算的旧启动命令。API 只供数；本地只读估算／状态可在 `worker/`
+执行 `python -m jobs.analyze plan|status`，生产写入一律通过带持久化日预算的
+`python -m jobs.refresh analyze`。本轮代码测试使用假模型，
 没有运行收费校准、重新标注真实库或证明实际提速。
 
 1. 窗口 A 在 `backend/` 运行 `.venv/Scripts/python.exe -X utf8 app.py`。
@@ -1985,23 +1990,26 @@ Set-Location worker
       `.venv/Scripts/python.exe -X utf8 -m jobs.analyze plan --ranges d1,d2 --ownership all`。
       这是只读计划，不写入任务或标注，不构造模型客户端。报告中的分包/token估算只覆盖评论，
       KOL/帖子任务、Layer B 与重试需要额外预算；价格未知仍为 null。
-3. 要导入新数据，单独使用 `jobs.ingest --source <来源> --file <规范化JSONL>`；
-      不执行全量 ETL。只有来源明确声明完整日才传 `--complete-through`。
-      导入不会启动 AI；当前没有可用的富途社区在线采集器。
+3. 新数据由第三方服务／Airflow 写入 MarketInsight MySQL；Radar 使用 `jobs.refresh sync`
+      从数据库增量同步，不执行社区采集，也不会自动启动 AI。`jobs.ingest` 只保留为历史
+      dump／离线规范化文件的兼容入口，不是生产在线数据路径。
 4. 在明确授权模型用量时运行 `scripts.calibrate --codes <产品> --from <日期> --to <日期>
-      --n 300 --batch 5 --skip-v1 --max-http-requests 500`。可先用 `--n 60` 冒烟，但不放量。
+      --n 400 --batch 5 --skip-v1 --max-http-requests 500`。可先用 `--n 60` 冒烟，但不放量。
       校准与正式执行共享产品/帖子自然日分组、输入 token/字节限制与输出 token 预算。
       >=300 条完整返回且证据可定位、相关性和态度与单条对照均 >=90% 才生成
       `batchGatePassed=true`；跳过单条对照、预算不足或失败样本不能通过。
       一致率不是准确率，不修改 `aiValidation=none`。
-5. 使用通过的报告运行
-      `jobs.analyze run --ranges d1,d2 --ownership all --batch-size 5 --concurrency 2
-      --calibration-report ../.scratch/llm-90d/calibration-<时间>.json --max-http-requests 500`。
+5. 完成校准导出的 400 条盲标表，并用 `scripts.evaluate_gold --file <gold-llm-400.xlsx> --no-write` 生成通过的质量报告。固定投诉 case ID 由校准器注入，备注不参与门禁；请求模型 alias 与供应商实际返回 snapshot 分开记录。
+6. 使用通过的两份报告运行（生产必须走带持久化日预算的入口）
+      `jobs.refresh analyze --mode daily --ranges d1 --batch-size 5 --concurrency 2
+      --calibration-report ../.scratch/llm-90d/calibration-<时间>.json
+      --quality-report ../.scratch/llm-90d/gold-eval-<时间>.json --max-http-attempts 500`。
       报告须匹配模型、Prompt、schema、taxonomy、批大小及输入/输出限制；不匹配则拒绝发请求。
-      本轮不自动修改 worker/.env 的批大小。显式 `--batch-size 1` 可走单条模式，
-      但批量失败时不会自动偷偷切回全量逐条收费。
-6. `jobs.analyze status` 查看逐产品 scope 和 `batchRun`；预算耗尽后可以用相同 run 参数
-      重跑，或 `resume --scope <id>` 加原日期参数、校准报告及新的请求预算继续。
+      本轮不自动修改 worker/.env 的批大小。显式 `--batch-size 1` 也必须有与该批大小匹配的
+      校准报告和同一 v3 质量报告；批量失败时不会自动偷偷切回全量逐条收费。
+7. `jobs.analyze status` 查看逐产品 scope 和 `batchRun`；`jobs.refresh status` 查看持久化日预算。
+      预算耗尽或进程中断后以相同 codes/ranges 和两份报告重跑 `jobs.refresh analyze` 幂等续做；
+      `d1` 完成后再分别运行 `d2`、`d7`，不要把三个区间合并后失去优先级。
       `failed/dead` 不自动复活，原文改变/版本不符需要新 plan/run，不能冒用旧 scope。
 
 默认日期是最新完整源日。`d1` 与页面“昨日”同义，不是滑动24小时；`d1,d2` 会合并当前期

@@ -15,6 +15,7 @@ for folder in (ROOT, ROOT / "worker", ROOT / "backend"):
 
 from sqlalchemy import func, select
 
+import clock
 from ai import config
 from ai.batching import BatchPolicy, pack_items, measure
 from ai.providers import build as build_provider
@@ -22,8 +23,23 @@ from ai.providers.base import RunControl
 from core.calendar import PRESETS, build
 from jobs import annotate, extract, full_own
 from radar_db import make_engine
+from radar_db.comment_routes import (
+    COMMENT_ROUTE_VERSION,
+    is_ready as comment_routes_ready,
+    readiness_on_connection as comment_routes_ready_on_connection,
+    require_ready as require_comment_routes_ready,
+    product_pool_digest,
+)
+from radar_db.product_catalog import load_products
 from radar_db.revisions import ai_source_version
-from radar_db.schema import analysis_scopes, annotation_jobs, comments, feeds, meta_kv
+from radar_db.schema import (
+    analysis_scopes,
+    annotation_jobs,
+    comment_product_routes,
+    comments,
+    feeds,
+    meta_kv,
+)
 from radar_db.time_windows import hkt_range_utc_naive, utc_naive_to_hkt
 
 
@@ -46,12 +62,13 @@ def parser():
     cli.add_argument("--page-size", type=int, default=1000)
     cli.add_argument("--max-http-requests", type=int)
     cli.add_argument("--calibration-report", type=Path)
+    cli.add_argument("--quality-report", type=Path)
     cli.add_argument("--watch", action="store_true")
     return cli
 
 
 def selected_products(args):
-    master = json.loads(extract.MASTER.read_text(encoding="utf-8"))["products"]
+    master = load_products()
     selected = master
     for argument, field in (("codes", "code"), ("sector", "sector"), ("struct", "struct")):
         raw = getattr(args, argument)
@@ -80,7 +97,7 @@ def make_plan(engine, args):
     if args.anchor_mode == "calendar-yesterday":
         if args.anchor:
             raise ValueError("Use either --anchor or --anchor-mode")
-        anchor = datetime.now(ZoneInfo("Asia/Hong_Kong")).date() - timedelta(days=1)
+        anchor = clock.now(ZoneInfo("Asia/Hong_Kong")).date() - timedelta(days=1)
     if anchor > complete:
         raise ValueError(f"Requested {anchor}, but source is complete only through {complete}")
     ranges = list(dict.fromkeys(value.strip() for value in args.ranges.split(",") if value.strip()))
@@ -102,17 +119,41 @@ def make_plan(engine, args):
                 day -= timedelta(days=1)
     codes = [row["code"] for row in products]
     lo, hi = hkt_range_utc_naive(first, anchor)
+    route_active = comment_routes_ready(meta)
     with engine.connect() as conn:
-        counts = conn.execute(select(feeds.c.code, func.count(comments.c.comment_id)).select_from(
-            comments.join(feeds, comments.c.feed_id == feeds.c.feed_id)).where(
+        if route_active:
+            counts_query = select(
+                comment_product_routes.c.subject_code,
+                func.count(comments.c.comment_id),
+            ).select_from(
+                comment_product_routes
+                .join(comments, comments.c.comment_id == comment_product_routes.c.comment_id)
+                .join(feeds, feeds.c.feed_id == comments.c.feed_id)
+            ).where(
+                comment_product_routes.c.subject_code.in_(codes),
+                comment_product_routes.c.rule_version == COMMENT_ROUTE_VERSION,
+                feeds.c.posted_at >= lo,
+                feeds.c.posted_at < hi,
+                comments.c.content.isnot(None),
+                comments.c.content != "",
+            ).group_by(comment_product_routes.c.subject_code)
+        else:
+            counts_query = select(
+                feeds.c.code,
+                func.count(comments.c.comment_id),
+            ).select_from(
+                comments.join(feeds, comments.c.feed_id == feeds.c.feed_id)
+            ).where(
                 feeds.c.code.in_(codes), feeds.c.posted_at >= lo,
                 feeds.c.posted_at < hi,
                 comments.c.content.isnot(None), comments.c.content != "",
-            ).group_by(feeds.c.code)).all()
+            ).group_by(feeds.c.code)
+        counts = conn.execute(counts_query).all()
     semantic_version = ai_source_version(meta)
     return {"anchor": anchor.isoformat(), "sourceCompleteThrough": complete.isoformat(), "from": first,
             "ranges": [window["key"] for window in windows], "priorityDays": days, "codes": codes,
             "ownership": {row["code"]: row["ownership"] for row in products},
+            "commentRoutingReady": route_active,
             "sourceState": {"anchor": meta["anchor"], **semantic_version},
             "windows": [{key: window[key] for key in ("key", "from", "to", "benchFrom", "benchTo")}
                         for window in windows], "candidatesByProduct": dict(counts),
@@ -129,53 +170,99 @@ def preview(engine, cfg, plan, page_size):
     stats = {"filtered": 0, "nearDuplicateMembers": 0, "alreadyDone": 0, "newOrPending": 0,
              "plannedCommentBatches": 0, "singletonBatches": 0, "oversizedItems": 0, "inputTokensEstimate": 0}
     lexicon = product_aliases.ProductLexicon()
+    matcher = extract.ExactProductMatcher({
+        code: value["exact_name_forms"]
+        for code, value in lexicon.by_code.items()
+    })
     stock = offpool_stocks.StockLexicon(offpool_stocks.load_from_db(engine, set(plan["codes"])))
-    filter_ = prefilter.Prefilter(lexicon, stock, drop_offpool=False)
+    filter_ = prefilter.Prefilter(lexicon, stock, drop_offpool=True)
     first = datetime.combine(date.fromisoformat(plan["from"]), time.min)
     end = datetime.combine(date.fromisoformat(plan["anchor"]) + timedelta(days=1), time.min)
+    with engine.connect() as conn:
+        route_active = comment_routes_ready_on_connection(conn)
     with extract.candidate_snapshot(engine, plan["codes"], first, end, page_size) as reader:
         for day in plan["priorityDays"]:
             since = datetime.combine(date.fromisoformat(day), time.min)
-            for code in plan["codes"]:
-                kept = []
-                for row in reader(engine, codes=[code], since=since, until=since + timedelta(days=1)):
-                    decision = filter_.classify(row.content, code, comment_id=row.comment_id,
-                                               author_uid=row.author_uid, feed_id=row.feed_id)
+            kept = []
+            raw_rows = reader(
+                engine, codes=plan["codes"], since=since, until=since + timedelta(days=1),
+            )
+            routed_candidates = ((row, None, (row,)) for row in raw_rows) if route_active else (
+                extract._exact_candidate_routes(engine, raw_rows, matcher)
+            )
+            for _anchor_row, route, routed_rows in routed_candidates:
+                if route is not None and route.anchor_rejected:
+                    stats["filtered"] += 1
+                for row in routed_rows:
+                    decision = filter_.classify(row.content, row.code, comment_id=row.comment_id,
+                                                author_uid=row.author_uid, feed_id=row.feed_id)
                     if decision.dropped:
                         stats["filtered"] += 1
                     else:
                         kept.append(row)
-                reps, members = neardup.fold(
-                    kept,
-                    key_of=lambda row: (row.code, utc_naive_to_hkt(row.posted_at).date()),
-                                             id_of=lambda row: row.comment_id, text_of=lambda row: row.content)
-                stats["nearDuplicateMembers"] += len(members)
-                payloads = []
-                for offset in range(0, len(reps), 200):
-                    chunk = reps[offset:offset + 200]
-                    with engine.connect() as conn:
-                        existing = set(conn.execute(select(annotation_jobs.c.target_id, annotation_jobs.c.input_hash)
-                            .where(annotation_jobs.c.target_type == "comment", annotation_jobs.c.subject_code == code,
-                                   annotation_jobs.c.task == "comment_product", annotation_jobs.c.status == "done",
-                                   annotation_jobs.c.target_id.in_([row.comment_id for row in chunk]))).all())
-                    for row in chunk:
-                        job = annotate.job_row_for_comment(cfg, prompt, version, row)
-                        if (row.comment_id, job["input_hash"]) in existing:
-                            stats["alreadyDone"] += 1
-                            continue
-                        payloads.append(annotate._build_payload("comment_product", job, {
-                            "text": row.content, "title": row.title, "parent": row.parent_content,
-                            "post_content": row.post_content}))
-                batches, oversized = pack_items(payloads, key_of=lambda row: (code, day), payload_of=lambda row: row,
-                    system=prompt.SYSTEM, render=prompt.user_message, schema=schemas.batch_json_schema("comment_product", version),
-                    policy=policy)
-                stats["newOrPending"] += len(payloads)
-                stats["oversizedItems"] += len(oversized)
-                stats["plannedCommentBatches"] += len(batches)
-                stats["singletonBatches"] += sum(len(batch) == 1 for batch in batches)
-                for batch in batches:
-                    stats["inputTokensEstimate"] += measure(batch, prompt.SYSTEM, prompt.user_message,
-                        schemas.batch_json_schema("comment_product", version))["inputTokensEstimate"]
+            # A comment can be discovered from more than one anchor.  Preview
+            # follows extraction and counts the routed comment/product unit once.
+            kept = list({(row.comment_id, row.code): row for row in kept}.values())
+            reps, members = neardup.fold(
+                kept,
+                key_of=lambda row: (row.code, utc_naive_to_hkt(row.posted_at).date()),
+                id_of=lambda row: row.comment_id, text_of=lambda row: row.content,
+            )
+            stats["nearDuplicateMembers"] += len(members)
+            payloads = []
+            for offset in range(0, len(reps), 200):
+                chunk = reps[offset:offset + 200]
+                ids = [row.comment_id for row in chunk]
+                subjects = [row.code for row in chunk]
+                with engine.connect() as conn:
+                    existing = set(conn.execute(
+                        select(
+                            annotation_jobs.c.target_id,
+                            annotation_jobs.c.subject_code,
+                            annotation_jobs.c.input_hash,
+                        ).where(
+                            annotation_jobs.c.target_type == "comment",
+                            annotation_jobs.c.subject_code.in_(subjects),
+                            annotation_jobs.c.task == "comment_product",
+                            annotation_jobs.c.status == "done",
+                            annotation_jobs.c.target_id.in_(ids),
+                        )
+                    ).all())
+                for row in chunk:
+                    job = annotate.job_row_for_comment(cfg, prompt, version, row)
+                    if (row.comment_id, row.code, job["input_hash"]) in existing:
+                        stats["alreadyDone"] += 1
+                        continue
+                    parents = [value for value in (
+                        getattr(row, "parent_content", None),
+                        getattr(row, "grandparent_content", None),
+                        getattr(row, "great_grandparent_content", None),
+                    ) if value]
+                    payloads.append((row, annotate._build_payload("comment_product", job, {
+                        "text": row.content,
+                        "title": row.title,
+                        "parent": parents[0] if parents else None,
+                        "parents": parents,
+                        "post_content": row.post_content,
+                    })))
+            batches, oversized = pack_items(
+                payloads,
+                key_of=lambda item: (item[0].code, day),
+                payload_of=lambda item: item[1],
+                system=prompt.SYSTEM,
+                render=prompt.user_message,
+                schema=schemas.batch_json_schema("comment_product", version),
+                policy=policy,
+            )
+            stats["newOrPending"] += len(payloads)
+            stats["oversizedItems"] += len(oversized)
+            stats["plannedCommentBatches"] += len(batches)
+            stats["singletonBatches"] += sum(len(batch) == 1 for batch in batches)
+            for batch in batches:
+                stats["inputTokensEstimate"] += measure(
+                    [item[1] for item in batch], prompt.SYSTEM, prompt.user_message,
+                    schemas.batch_json_schema("comment_product", version),
+                )["inputTokensEstimate"]
     return {**plan, "commentPlan": stats, "note": "Comment estimates only; post/KOL, summary and retry calls also consume the run budget"}
 
 
@@ -187,13 +274,45 @@ def check_calibration(cfg, report_source, *, require_singleton=False):
     if isinstance(report_source, Mapping):
         report = dict(report_source)
     else:
-        report = json.loads(Path(report_source).read_text(encoding="utf-8"))
+        try:
+            report = json.loads(Path(report_source).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Cannot read calibration report: {exc}") from None
     expected = {"model": cfg.model, "promptVersion": cfg.prompt_version, "schemaVersion": cfg.schema_version,
                 "taxonomyVersion": cfg.taxonomy_version, "batchSize": cfg.micro_batch_size,
                 "maxInputTokens": cfg.max_input_tokens, "maxPayloadBytes": cfg.max_payload_bytes}
     expected["maxOutputTokens"] = cfg.max_output_tokens
-    if report.get("policy") != expected or report.get("batchGatePassed") is not True:
+    expected["commentRouteVersion"] = COMMENT_ROUTE_VERSION
+    expected["productPoolDigest"] = product_pool_digest()
+    actual = report.get("policy")
+    if (not isinstance(actual, Mapping)
+            or any(actual.get(key) != value for key, value in expected.items())
+            or report.get("batchGatePassed") is not True):
         raise ValueError("Calibration did not pass or does not match this model/prompt/batch policy")
+
+
+def check_quality(cfg, report_source):
+    """Require a v3, policy-matched 400-row human-gold release report."""
+    if report_source is None:
+        raise ValueError("Production analysis requires --quality-report from scripts.evaluate_gold; no paid requests sent")
+    if isinstance(report_source, Mapping):
+        report = dict(report_source)
+    else:
+        try:
+            report = json.loads(Path(report_source).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Cannot read quality report: {exc}") from None
+    from scripts.evaluate_gold import validate_release_report
+
+    expected = {
+        "requestedModel": cfg.model,
+        "promptVersion": cfg.prompt_version,
+        "schemaVersion": cfg.schema_version,
+        "taxonomyVersion": cfg.taxonomy_version,
+        "commentRouteVersion": COMMENT_ROUTE_VERSION,
+        "productPoolDigest": product_pool_digest(),
+    }
+    validate_release_report(report, expected_policy=expected)
 
 
 def main(argv=None):
@@ -223,7 +342,9 @@ def main(argv=None):
         if args.command == "plan":
             print(json.dumps(preview(engine, cfg, plan, args.page_size), ensure_ascii=False, indent=2))
             return 0
-        check_calibration(cfg, args.calibration_report)
+        require_comment_routes_ready(engine)
+        check_calibration(cfg, args.calibration_report, require_singleton=True)
+        check_quality(cfg, args.quality_report)
         scopes = None
         if args.command == "resume":
             if not args.scope:

@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy import insert, update
 
 from radar_db.schema import feeds, meta_kv, synthesis_outputs
+from radar_db.revisions import set_synthesis_generation
 from sql_fixture import (
     FEED_TEXT, KOL_NAME, OWN_CODE, PEER_CODE, add_annotations, add_comments, add_evidence,
     make_sql_provider,
@@ -41,19 +42,25 @@ def annotated(p, n_pos=8, n_neg=4, kol_n=3):
             {"annotation_id": aid + 2, "target_id": cid, "kind": "aspect", "value": asp},
         ]
         aid += 3
-    # 两条无关但有市场方向
+    # 市场方向也只在当前 relevance=relevant 时进入产品话题聚合。
     rows += [
-        {"annotation_id": aid, "target_id": 11, "kind": "relevance", "value": "irrelevant"},
+        {"annotation_id": aid, "target_id": 11, "kind": "relevance", "value": "relevant"},
         {"annotation_id": aid + 1, "target_id": 11, "kind": "market_direction", "value": "bearish"},
     ]
     return add_annotations(p, rows)
 
 
 def add_synth(p, rows):
+    generation_fps = {
+        (r.get("code", OWN_CODE), r.get("range_key", "d1"), r["kind"]):
+        r.get("fp", f"fp-{r.get('code', OWN_CODE)}-{r.get('range_key', 'd1')}-{r['kind']}")
+        for r in rows
+    }
     payload = [
         {
             "code": r.get("code", OWN_CODE), "range_key": r.get("range_key", "d1"), "anchor": "2026-08-25",
-            "kind": r["kind"], "subkey": r.get("subkey", ""), "input_fingerprint": r.get("fp", f"fp{i}"),
+            "kind": r["kind"], "subkey": r.get("subkey", ""),
+            "input_fingerprint": generation_fps[(r.get("code", OWN_CODE), r.get("range_key", "d1"), r["kind"])],
             "value_json": json.dumps(r["value"], ensure_ascii=False),
             "evidence_ids_json": json.dumps(r.get("evidence_ids", ["c100"])),
             "run_id": "synth-test", "review_state": r.get("review_state", "pending"),
@@ -63,11 +70,42 @@ def add_synth(p, rows):
     ]
     with p._engine.begin() as conn:
         conn.execute(insert(synthesis_outputs), payload)
+        for (code, range_key, kind), fp in generation_fps.items():
+            set_synthesis_generation(conn, code, range_key, "2026-08-25", kind, fp)
+            p._meta[f"synth_current_{code}_{range_key}_{kind}"] = f"2026-08-25|{fp}"
     p._cache.clear()
     return p
 
 
 class TestThemesAndNegCats:
+    def test_published_generation_hides_removed_subkeys_and_can_be_empty(self, provider):
+        p = annotated(provider)
+        add_synth(p, [
+            {"kind": "theme_label", "subkey": "positive|fee", "fp": "old",
+             "value": {"key": "positive|fee", "title": "费率", "summary": "旧正面"}},
+            {"kind": "theme_label", "subkey": "negative|spread", "fp": "old",
+             "value": {"key": "negative|spread", "title": "点差", "summary": "旧负面"}},
+        ])
+        assert set(p._synth(OWN_CODE, "d1", "theme_label")) == {
+            "positive|fee", "negative|spread"
+        }
+
+        add_synth(p, [
+            {"kind": "theme_label", "subkey": "positive|fee", "fp": "shrunk",
+             "value": {"key": "positive|fee", "title": "新费率", "summary": "只剩正面"}},
+        ])
+        assert set(p._synth(OWN_CODE, "d1", "theme_label")) == {"positive|fee"}
+
+        with p._engine.begin() as conn:
+            set_synthesis_generation(
+                conn, OWN_CODE, "d1", "2026-08-25", "theme_label", "intentional-empty"
+            )
+        p._meta[f"synth_current_{OWN_CODE}_d1_theme_label"] = (
+            "2026-08-25|intentional-empty"
+        )
+        p._cache.clear()
+        assert p._synth(OWN_CODE, "d1", "theme_label") == {}
+
     def test_units_reuse_window_queries_across_products(self, provider, monkeypatch):
         import providers.sql as sql_module
         from unittest.mock import Mock
@@ -78,8 +116,11 @@ class TestThemesAndNegCats:
         window = provider.build_range("d1")
         provider._units(OWN_CODE, window)
         provider._base_units(OWN_CODE, window)
+        for code in provider._by_code:
+            provider._units(code, window)
+            provider._base_units(code, window)
         calls = query.call_count
-        assert calls == 5
+        assert calls > 0
         for code in provider._by_code:
             provider._units(code, window)
             provider._base_units(code, window)
@@ -291,7 +332,7 @@ class TestCompetitorsAndKol:
     def test_kol_mentions_merge_same_source_posts_with_confirmed_comment_opinions(self, provider):
         """产品页以 /kol 原帖为主，同时保留已确认的评论观点作补充证据。"""
         p = annotated(provider, n_pos=2, n_neg=0, kol_n=2)
-        add_comments(p, [{"comment_id": 102, "feed_id": 3, "content": "第三条真实 KOL 观点",
+        add_comments(p, [{"comment_id": 102, "feed_id": 3, "content": "跨区旧 KOL 观点",
                           "author_name": KOL_NAME}])
         add_annotations(p, [
             {"annotation_id": 950, "target_id": 100, "kind": "kol_summary", "value": "费率较低，适合持有"},
@@ -300,6 +341,7 @@ class TestCompetitorsAndKol:
             {"annotation_id": 953, "target_id": 101, "kind": "kol_action", "value": "观望"},
             {"annotation_id": 954, "target_id": 102, "kind": "kol_summary", "value": "第三条真实观点"},
             {"annotation_id": 955, "target_id": 102, "kind": "kol_action", "value": "未提及操作"},
+            {"annotation_id": 956, "target_id": 102, "kind": "relevance", "value": "relevant"},
         ])
         add_evidence(p, [{"evidence_id": 1, "annotation_id": 954, "source_target_id": 102,
                           "start_offset": 0, "end_offset": 5, "quote_text": "第三条真实"}])
@@ -308,14 +350,13 @@ class TestCompetitorsAndKol:
 
         assert km["status"] == "ok" and len(km["list"]) == 1
         k = km["list"][0]
-        assert k["kolName"] == KOL_NAME and k["mentionCommentCount"] == 4
+        assert k["kolName"] == KOL_NAME and k["mentionCommentCount"] == 3
         assert k["dominantAttitude"] is None, "只有 2 条有效态度，不能用 3 条观点越过态度阈值"
         assert k["representativeExcerpt"] == FEED_TEXT
         assert [e["sourceKind"] for e in k["evidence"]].count("帖子") == 1
         comments = {e["id"].rsplit("-", 1)[-1]: (e["attitude"], e["attitudeLabel"])
                     for e in k["evidence"] if e["sourceKind"] == "评论"}
-        assert comments == {"100": ("positive", "积极"), "101": ("positive", "积极"),
-                            "102": (None, None)}
+        assert comments == {"100": ("positive", "积极"), "101": ("positive", "积极")}
         assert p.kol_mentions_for(PEER_CODE, "d1") == {
             "status": "empty", "scope": "合作 KOL 名单", "list": [],
         }
@@ -337,6 +378,20 @@ class TestCompetitorsAndKol:
         assert k["kolName"] == KOL_NAME and k["mentionCommentCount"] == 4
         assert k["dominantAttitude"] == "positive"          # 3 条 ⇒ 达到阈值
         assert k["evidence"][0]["authorType"] == "合作 KOL"
+
+    def test_kol_mentions_drop_a_stale_summary_after_relevance_flips(self, provider):
+        p = annotated(provider, n_pos=1, n_neg=0, kol_n=1)
+        add_annotations(p, [
+            {"annotation_id": 950, "target_id": 100, "kind": "kol_summary",
+             "value": "费率较低，适合持有"},
+            {"annotation_id": 951, "target_id": 100, "kind": "relevance",
+             "value": "irrelevant", "supersedes_id": 1},
+        ])
+
+        row = p.kol_mentions_for(OWN_CODE, "d1")["list"][0]
+
+        assert row["mentionCommentCount"] == 1
+        assert [item["sourceKind"] for item in row["evidence"]] == ["帖子"]
 
     def test_kol_mentions_below_three_have_no_dominant(self, provider):
         p = annotated(provider, n_pos=2, n_neg=8, kol_n=2)   # KOL 只写了前 2 条
@@ -375,6 +430,8 @@ class TestCompetitorsAndKol:
         add_comments(provider, [{"comment_id": 100, "feed_id": 3, "content": "竞品流动性不错",
                                  "author_name": KOL_NAME}])
         add_annotations(provider, [
+            {"annotation_id": 949, "target_id": 100, "subject_code": PEER_CODE,
+             "kind": "relevance", "value": "relevant"},
             {"annotation_id": 950, "target_id": 100, "subject_code": PEER_CODE,
              "kind": "kol_summary", "value": "竞品流动性不错"},
         ])

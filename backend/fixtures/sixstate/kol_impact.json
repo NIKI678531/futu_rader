@@ -3,18 +3,18 @@
   "kolActive": 1,
   "leaders": [
    {
-    "both": 0,
+    "both": 1,
     "comments": null,
     "engagement": null,
     "kol": "一颗财丸",
     "n": 6,
-    "own": 6,
+    "own": 5,
     "ownAny": 6,
     "peer": 0,
-    "peerAny": 0,
+    "peerAny": 1,
     "posts": [
      {
-      "camp": "own",
+      "camp": "both",
       "campPrimary": "own",
       "code": "2802",
       "comments": 0,
@@ -45,6 +45,12 @@
         "issuer": "CSOP 南方东英",
         "name": "國指備兌認購期權主動型ETF",
         "ownership": "own"
+       },
+       {
+        "code": "2800",
+        "issuer": "恒生投资",
+        "name": "盈富基金",
+        "ownership": "peer"
        }
       ],
       "name": "國指備兌認購期權主動型ETF",
@@ -278,11 +284,7 @@
       "directionPending": null,
       "engagement": 12,
       "evidenceIdx": null,
-      "fullText": [
-       "昨日低开后一度冲高，午后回落，收在支持位附近。",
-       "25400 这个位置守了几次，短线还是震荡看待。",
-       "$國指備兌認購期權主動型ETF（2802.HK）$ 持有人不用急着加，等方向出来。"
-      ],
+      "fullText": null,
       "hasDir": null,
       "hasSummary": null,
       "hour": 11,
@@ -316,7 +318,7 @@
     ],
     "styleTag": null,
     "top": {
-     "camp": "own",
+     "camp": "both",
      "campPrimary": "own",
      "code": "2802",
      "comments": 0,
@@ -347,6 +349,12 @@
        "issuer": "CSOP 南方东英",
        "name": "國指備兌認購期權主動型ETF",
        "ownership": "own"
+      },
+      {
+       "code": "2800",
+       "issuer": "恒生投资",
+       "name": "盈富基金",
+       "ownership": "peer"
       }
      ],
      "name": "國指備兌認購期權主動型ETF",
@@ -372,7 +380,7 @@
   ],
   "posts": [
    {
-    "camp": "own",
+    "camp": "both",
     "campPrimary": "own",
     "code": "2802",
     "comments": 0,
@@ -403,6 +411,12 @@
       "issuer": "CSOP 南方东英",
       "name": "國指備兌認購期權主動型ETF",
       "ownership": "own"
+     },
+     {
+      "code": "2800",
+      "issuer": "恒生投资",
+      "name": "盈富基金",
+      "ownership": "peer"
      }
     ],
     "name": "國指備兌認購期權主動型ETF",
@@ -636,11 +650,7 @@
     "directionPending": null,
     "engagement": 12,
     "evidenceIdx": null,
-    "fullText": [
-     "昨日低开后一度冲高，午后回落，收在支持位附近。",
-     "25400 这个位置守了几次，短线还是震荡看待。",
-     "$國指備兌認購期權主動型ETF（2802.HK）$ 持有人不用急着加，等方向出来。"
-    ],
+    "fullText": null,
     "hasDir": null,
     "hasSummary": null,
     "hour": 11,

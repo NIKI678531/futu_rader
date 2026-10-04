@@ -22,10 +22,10 @@ export default function Heatmap({ v }) {
           ))}
         </div>
       </div>
-      <div style={s('flex:none;display:flex;align-items:center;gap:14px;height:28px;padding:0 14px;font:400 12px/1.4 var(--font-cjk);color:var(--ink-500);white-space:nowrap;overflow:hidden')}>
-        <span style={s('flex:none;display:flex;align-items:center;gap:6px')}><span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.06em;color:var(--ink-400)')}>面积</span>热度＝评论量＋0.3×点赞＋转发</span>
+      <div style={s('flex:none;display:flex;align-items:center;gap:14px;height:28px;padding:0 14px;font:600 12px/1.4 var(--font-cjk);color:var(--ink-900);white-space:nowrap;overflow:hidden')}>
+        <span style={s('flex:none;display:flex;align-items:center;gap:6px')}><span style={s('font:700 11px/1.4 var(--font-cjk);letter-spacing:0.06em;color:var(--ink-900)')}>面积</span>热度＝筛后评论量＋0.3×点赞＋转发</span>
         <span style={s('flex:none;width:1px;height:12px;background:var(--border-2)')}></span>
-        <span style={s('flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:6px;overflow:hidden')}><span style={s('flex:none;font:600 11px/1.4 var(--font-cjk);letter-spacing:0.06em;color:var(--ink-400)')}>颜色</span><span style={s('min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{v.heatMetricNote}</span></span>
+        <span style={s('flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:6px;overflow:hidden')}><span style={s('flex:none;font:700 11px/1.4 var(--font-cjk);letter-spacing:0.06em;color:var(--ink-900)')}>颜色</span><span style={s('min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{v.heatMetricNote}</span></span>
       </div>
       <div style={s('flex:none;padding:4px 14px 14px')}>
         <div ref={v.heatRef} style={s('position:relative;width:100%;height:440px')}>

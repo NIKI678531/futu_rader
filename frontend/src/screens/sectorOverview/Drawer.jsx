@@ -123,6 +123,7 @@ export default function Drawer({ v }) {
               {/* 各块顶层 `stale === true` 才渲染的小徽章（标注已更新、汇总待重新生成）；demo 下没有这个键。 */}
               <div style={s('display:flex;align-items:center;gap:8px;margin-bottom:10px')}>
                 <span style={s('font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)')}>积极 ／ 消极观点</span>
+                {sel.partialData && <span style={s('padding:1px 7px;border-radius:9999px;background:var(--warning-100);font:600 11px/1.6 var(--font-cjk);color:var(--warning-700);letter-spacing:0;white-space:nowrap')}>{sel.coverageLabel}</span>}
                 {sel.themesStale && <StaleChip title={sel.staleTitle} />}
               </div>
               <div style={s('display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px')}>
@@ -167,11 +168,11 @@ export default function Drawer({ v }) {
                     <span title={sel.heatWhy} style={s('font:600 24px/1 var(--font-mono);color:var(--ink-900)')}>{sel.heat}</span>
                     <span title={sel.heatDeltaTitle} style={s(`font:500 13px/1.4 var(--font-mono);color:${sel.heatDfg}`)}>{sel.heatDelta}</span>
                   </div>
-                  <div style={s('margin-top:8px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-500)')}>评论 {sel.comments} · 点赞 {sel.likes} · 转发 {sel.shares}<br />全市场评论量排名 第 {sel.rank} ／ {sel.rankTotal}</div>
+                  <div style={s('margin-top:8px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-500)')}>筛后评论 {sel.comments} · 相关评论 {sel.relatedComments}<br />点赞 {sel.likes} · 转发 {sel.shares}<br />全市场筛后评论量排名 第 {sel.rank} ／ {sel.rankTotal}</div>
                 </div>
                 <div style={s('border:1px solid var(--border-1);border-radius:6px;padding:13px 14px')}>
                   <div style={s('display:flex;align-items:center;justify-content:space-between;margin-bottom:8px')}>
-                    <span style={s('font:500 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>整体态度</span>
+                    <span style={s('display:flex;align-items:center;gap:6px;font:500 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>整体态度{sel.partialData && <span style={s('padding:1px 6px;border-radius:9999px;background:var(--warning-100);font:600 10px/1.5 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>{sel.coverageLabel}</span>}</span>
                     <span style={s(`font:500 12px/1.4 var(--font-cjk);color:${sel.netFg}`)}>{sel.net}</span>
                   </div>
                   <div style={s('display:flex;height:22px;border-radius:4px;overflow:hidden;background:var(--ink-100);margin-bottom:8px')}>
@@ -179,8 +180,8 @@ export default function Drawer({ v }) {
                     <div style={s(`width:${sel.negPct}%;background:var(--negative-600)`)}></div>
                   </div>
                   <div style={s('display:flex;align-items:center;gap:12px;font:600 13px/1.4 var(--font-mono)')}>
-                    <span style={s('color:var(--positive-700)')}>赞 {sel.posTotal}</span>
-                    <span style={s('color:var(--negative-700)')}>踩 {sel.negTotal}</span>
+                    <span style={s('color:var(--positive-700)')}>积极 {sel.posTotal}</span>
+                    <span style={s('color:var(--negative-700)')}>消极 {sel.negTotal}</span>
                     <span style={s('color:var(--ink-500);font-weight:500')}>中性 {sel.neuTotal}（{sel.neuShare}）</span>
                   </div>
                 </div>
@@ -276,7 +277,7 @@ export default function Drawer({ v }) {
                       </div>
                       <div style={s('display:flex;align-items:center;gap:12px;margin-bottom:8px;font:500 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>
                         <span>{c.issuer}</span>
-                        <span>评论量 <span style={s('font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{c.mentions}</span></span>
+                        <span>筛后评论量 <span style={s('font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{c.mentions}</span></span>
                         <span style={s(`font:500 12px/1.4 var(--font-mono);color:${c.dfg}`)}>{c.delta}</span>
                       </div>
                       <div style={s('display:grid;grid-template-columns:1fr 1fr;gap:9px')}>

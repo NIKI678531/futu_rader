@@ -65,7 +65,7 @@ services:
       dockerfile: worker/Dockerfile
     environment:
       TZ: Asia/Hong_Kong
-      COLLECT_INTERVAL_SECONDS: 60
+      WORKER_HEARTBEAT_INTERVAL_SECONDS: 60
       LOOKBACK_DAYS: 60
       RADAR_DB_URL: mysql+pymysql://radar:radar@mysql:3306/futu_radar?charset=utf8mb4
     depends_on:

@@ -23,6 +23,7 @@ COPY radar_db/ /app/radar_db
 # 口径只有那一份实现（铁律 1），worker 不重写公式；产品主数据也在 backend 下。
 COPY backend/core/ /app/backend/core
 COPY backend/fixtures/demo/master.json /app/backend/fixtures/demo/master.json
+COPY backend/fixtures/product_catalog_additions.json /app/backend/fixtures/product_catalog_additions.json
 RUN chown -R appuser:appuser /app
 
 USER appuser

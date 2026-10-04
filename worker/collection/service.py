@@ -1,4 +1,4 @@
-"""The deep collection module: source paging, idempotency and publication state."""
+"""Database synchronization: source paging, idempotency and publication state."""
 
 from __future__ import annotations
 
@@ -7,16 +7,29 @@ import json
 import time as time_module
 import uuid
 from contextlib import nullcontext
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta, timezone
 
 from sqlalchemy import and_, delete, func, insert, select, update
 
+from radar_db.comment_filter import (
+    extract_feed_mentions,
+    load_comment_filter_config,
+    normalize_source_ticker,
+)
+from radar_db.comment_job_invalidation import supersede_comment_analysis_jobs
+from radar_db.comment_routes import (
+    delete_comment_routes,
+    replace_comment_routes,
+    route_rows,
+)
 from radar_db.leases import WorkerLease
 from radar_db.revisions import bump_revision, ensure_ai_revision, mark_synthesis
 from radar_db.schema import (
     collector_checkpoints,
     comments,
     feed_counter_observations,
+    feed_mentions,
     feeds,
     ingestion_runs,
     mentions,
@@ -28,8 +41,10 @@ from .models import AiRequest, AiResult, Cursor, FeedObservation, SyncRequest, S
 from .source import STREAMS, SourceAdapter
 
 
-NORMALIZER_VERSION = "market-insight-v1"
-SEMANTIC_FEED_FIELDS = ("code", "posted_at", "feed_type", "title", "content")
+NORMALIZER_VERSION = "market-insight-v4-comment-routes"
+SEMANTIC_FEED_FIELDS = (
+    "code", "source_ticker", "posted_at", "feed_type", "title", "content"
+)
 SEMANTIC_COMMENT_FIELDS = ("feed_id", "posted_at", "author_uid", "content", "reply_to_comment_id")
 COUNTER_FIELDS = ("like_count", "comment_count", "image_count", "share_count", "browse_count")
 
@@ -73,6 +88,7 @@ class FutuRefresh:
         self.target = target_engine
         self.source = source
         self.now = now
+        self.filter_config = load_comment_filter_config()
         if source is None:
             self.config_hash = None
             return
@@ -80,6 +96,7 @@ class FutuRefresh:
         self.config_hash = hashlib.sha256(_json({
             "normalizer": NORMALIZER_VERSION,
             "pool": pool,
+            "commentFilter": self.filter_config.digest,
         }).encode()).hexdigest()
 
     def sync(self, request: SyncRequest) -> SyncResult:
@@ -88,7 +105,10 @@ class FutuRefresh:
         source_run_id = request.through_source_run_id
         idempotency_key = source_run_id or request.run_id
         if idempotency_key:
-            digest = hashlib.sha256(f"{self.source.source_id}:{idempotency_key}".encode()).hexdigest()[:40]
+            target_key = ",".join(str(feed_id) for feed_id in request.feed_ids)
+            digest = hashlib.sha256(
+                f"{self.source.source_id}:{idempotency_key}:{target_key}".encode()
+            ).hexdigest()[:40]
             run_id = f"sync-{digest}"
         else:
             run_id = "sync-" + self.now().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
@@ -97,17 +117,24 @@ class FutuRefresh:
         if prior and prior["status"] == "succeeded":
             return self._result_from_run(prior, status="noop")
 
-        partition = "live" if request.mode == "incremental" else f"{request.mode}:{run_id[-32:]}"
-        cursors = {stream: self._load_cursor(stream, partition) for stream in STREAMS}
+        targeted = bool(request.feed_ids)
+        streams = ("feeds",) if targeted else STREAMS
+        partition = (
+            f"targeted:{run_id[-32:]}" if targeted
+            else ("live" if request.mode == "incremental" else f"{request.mode}:{run_id[-32:]}")
+        )
+        cursors = {stream: self._load_cursor(stream, partition) for stream in streams}
         # Capture the upstream completion declaration before fixing stream
         # high-watermarks. A producer that finishes while we are scanning must
         # be published by the next run, never ahead of rows this run could see.
-        declared_complete = prior.get("complete_through") if prior else None
-        if declared_complete is None and prior is None and source_run_id:
+        declared_complete = None if targeted else (prior.get("complete_through") if prior else None)
+        if declared_complete is None and prior is None and source_run_id and not targeted:
             declared_complete = self.source.complete_through(source_run_id)
-        highwaters = self._load_highwaters(prior) if prior else {
-            stream: self.source.high_watermark(stream, source_run_id) for stream in STREAMS
-        }
+        highwaters = ({"feeds": None} if targeted else (
+            self._load_highwaters(prior) if prior else {
+                stream: self.source.high_watermark(stream, source_run_id) for stream in streams
+            }
+        ))
         result = SyncResult(run_id=run_id, status="dry_run" if request.dry_run else "succeeded")
         result.cursors = {stream: _cursor_payload(cursor) for stream, cursor in cursors.items()}
         prior_counts = json.loads(prior.get("counts_json") or "{}") if prior else {}
@@ -118,8 +145,10 @@ class FutuRefresh:
         last_revision = prior.get("data_revision") if prior else self._current_data_revision()
         anchor_changed = False
 
-        source_kind = "all" if declared_complete is not None else (
-            "backfill" if request.mode == "backfill" else "partial"
+        source_kind = "targeted" if targeted else (
+            "all" if declared_complete is not None else (
+                "backfill" if request.mode == "backfill" else "partial"
+            )
         )
         lease = nullcontext() if request.dry_run else WorkerLease(self.target, "futu-refresh", seconds=600)
         # A dry-run executes normal writes inside one connection-wide
@@ -135,18 +164,23 @@ class FutuRefresh:
                     self._open_run(run_id, source_run_id, source_kind, cursors, highwaters,
                                    declared_complete, prior)
                     run_opened = True
-                for stream in STREAMS:
+                for stream in streams:
                     after = cursors[stream]
                     through = highwaters[stream]
                     while True:
-                        page = self.source.pull_page(stream, after, through, request.page_size)
+                        page = (
+                            self.source.pull_feeds_by_id(request.feed_ids)
+                            if targeted
+                            else self.source.pull_page(stream, after, through, request.page_size)
+                        )
+                        page_items = page.items
                         if not request.dry_run and lease.lost:
                             raise RuntimeError("Lost the futu-refresh lease while reading a source page")
                         if request.dry_run:
-                            counts["rows_read"] += len(page.items) + page.ignored
+                            counts["rows_read"] += len(page_items) + page.ignored
                             counts["ignored"] += page.ignored
                             page_counts, page_codes, page_coverage, _revision = self._apply_page(
-                                stream, page.items, run_id, repair_counters=False,
+                                stream, page_items, run_id, repair_counters=False,
                                 conn=simulation_conn, dry_run=False,
                             )
                         else:
@@ -159,13 +193,13 @@ class FutuRefresh:
                             }
                             with self.target.begin() as conn:
                                 page_counts, page_codes, page_coverage, page_revision = self._apply_page(
-                                    stream, page.items, run_id,
+                                    stream, page_items, run_id,
                                     repair_counters=request.mode == "repair", conn=conn
                                 )
                                 next_revision = page_revision or last_revision
                                 if page.next_cursor is not None:
                                     self._save_cursor(conn, stream, partition, page.next_cursor, run_id)
-                                next_counts["rows_read"] += len(page.items) + page.ignored
+                                next_counts["rows_read"] += len(page_items) + page.ignored
                                 next_counts["ignored"] += page.ignored
                                 for key, value in page_counts.items():
                                     next_counts[key] += value
@@ -199,8 +233,8 @@ class FutuRefresh:
                         complete, anchor_changed = self._advance_complete_through(conn, complete)
                         if anchor_changed:
                             last_revision = bump_revision(conn, "data")
-                        if request.mode == "backfill":
-                            for stream in STREAMS:
+                        if request.mode == "backfill" and not targeted:
+                            for stream in streams:
                                 self._promote_live_cursor(
                                     conn, stream, Cursor.from_json(result.cursors[stream]), run_id
                                 )
@@ -253,10 +287,18 @@ class FutuRefresh:
         cfg = replace(cfg, micro_batch_size=request.batch_size, concurrency=request.concurrency,
                       grouped_batches=True)
         analysis_job.check_calibration(cfg, request.calibration_report, require_singleton=True)
+        analysis_job.check_quality(cfg, request.quality_report)
+        # Check release artifacts first, then the active route generation. All
+        # gates still run before provider construction or budget reservation.
+        from radar_db.comment_routes import require_ready as require_comment_routes_ready
+
+        require_comment_routes_ready(self.target)
         if request.wait_for_ready:
-            self._wait_for_ready(request.budget_date, request.wait_timeout_seconds)
+            self._wait_for_ready(request.anchor or request.budget_date, request.wait_timeout_seconds)
         args = type("Args", (), {
-            "codes": None, "sector": None, "struct": None, "ownership": "all", "anchor": None,
+            "codes": ",".join(request.codes) or None,
+            "sector": None, "struct": None, "ownership": "all",
+            "anchor": request.anchor.isoformat() if request.anchor else None,
             "anchor_mode": "latest-complete", "ranges": ",".join(request.ranges),
         })()
         plan = analysis_job.make_plan(self.target, args)
@@ -567,10 +609,33 @@ class FutuRefresh:
         # A missing field in an upstream snapshot is not an instruction to
         # erase a previously observed value. This is especially important for
         # partial comment pages and payloads whose raw JSON was truncated.
+        retained_text_fields = set()
         if existing:
+            incoming_anchor_code = values.get("code")
+            # ``feed_id`` identifies one original discussion-section post.
+            # A later duplicate source row may be observed under another stock,
+            # but it must never remount the already-established parent feed.
+            values["code"] = existing["code"]
+            if existing.get("source_ticker") is not None:
+                values["source_ticker"] = existing["source_ticker"]
+            elif incoming_anchor_code != existing["code"]:
+                values["source_ticker"] = None
+            authoritative_detail = stream == "feed_details" and not values["raw_json_broken"]
             for field, value in tuple(values.items()):
-                if value is None and existing.get(field) is not None:
+                if (
+                    value is None
+                    and existing.get(field) is not None
+                    and not (authoritative_detail and field in {"title", "content"})
+                ):
                     values[field] = existing[field]
+                    if field in {"title", "content"}:
+                        retained_text_fields.add(field)
+
+        parent_input_changed = bool(
+            existing
+            and stream != "feed_details"
+            and _different(existing, values, ("source_ticker", "title", "content"))
+        )
 
         if stream == "feed_details" and existing is None:
             # A detail record can race the initial feed stream. Let the feed stream create the canonical row.
@@ -578,20 +643,78 @@ class FutuRefresh:
 
         if existing and stream == "feed_details":
             update_values = {}
-            if values.get("content") and len(values["content"]) > len(existing.get("content") or ""):
-                update_values["content"] = values["content"]
+            if not values["raw_json_broken"]:
+                for field in ("title", "content"):
+                    if values.get(field) != existing.get(field):
+                        update_values[field] = values.get(field)
+            if values.get("source_ticker") != existing.get("source_ticker"):
+                update_values["source_ticker"] = values.get("source_ticker")
             if values["source_observed_at"] and (
                 existing.get("source_observed_at") is None
                 or values["source_observed_at"] > existing["source_observed_at"]
             ):
                 update_values["source_observed_at"] = values["source_observed_at"]
-            semantic = "content" in update_values
+            semantic = bool({"title", "content", "source_ticker"} & set(update_values))
+            parent_input_changed = semantic
+            mention_changed = False
+            mention_affected = set()
+            # A parser upgrade can change the derived body-mention set even
+            # when the source text is byte-for-byte unchanged.  A valid detail
+            # snapshot is therefore authoritative for body mentions on every
+            # re-fetch, not only when the longer-body rule replaces content.
+            if not values["raw_json_broken"]:
+                mention_changed, mention_affected = self._replace_body_mentions(
+                    conn, observation, dry_run
+                )
+            filter_changed = self._replace_feed_mentions(
+                conn,
+                values["feed_id"],
+                update_values.get("title", existing.get("title")),
+                update_values.get("content", existing.get("content")),
+                dry_run,
+            )
+            if not dry_run and (parent_input_changed or filter_changed):
+                supersede_comment_analysis_jobs(
+                    conn,
+                    feed_ids=(values["feed_id"],),
+                    reason="Parent feed input changed",
+                )
             if update_values and not dry_run:
                 conn.execute(update(feeds).where(feeds.c.feed_id == values["feed_id"]).values(**update_values))
             affected = self._feed_product_codes(
                 conn, values["feed_id"], existing.get("code"), values.get("code")
             ) if semantic else set()
-            return ("updated" if semantic else "unchanged"), affected
+            affected.update(mention_affected)
+            if filter_changed:
+                affected.update(code for code in (existing.get("code"), values.get("code")) if code)
+            if not dry_run and (parent_input_changed or filter_changed):
+                route_now = self.now()
+                pool_codes = getattr(self.source, "pool_codes", None)
+                parent_title = update_values.get("title", existing.get("title"))
+                parent_content = update_values.get("content", existing.get("content"))
+                for comment_id, comment_content in conn.execute(
+                    select(comments.c.comment_id, comments.c.content).where(
+                        comments.c.feed_id == values["feed_id"]
+                    )
+                ):
+                    route_change = replace_comment_routes(
+                        conn,
+                        comment_id,
+                        route_rows(
+                            comment_id,
+                            values["feed_id"],
+                            parent_title,
+                            parent_content,
+                            comment_content,
+                            now=route_now,
+                            pool_codes=pool_codes,
+                        ),
+                    )
+                    affected.update(route_change["added"])
+                    affected.update(route_change["removed"])
+            return (
+                "updated" if semantic or mention_changed or filter_changed else "unchanged"
+            ), affected
 
         semantic = existing is None or _different(existing, values, SEMANTIC_FEED_FIELDS)
         if existing and values["raw_json_broken"]:
@@ -635,7 +758,10 @@ class FutuRefresh:
 
         comments_fact_changed = False
         comments_semantic_changed = False
+        changed_comment_ids = set()
+        removed_comment_ids = set()
         semantic_affected = set()
+        filter_changed = False
         if stream == "feeds":
             existing_comments = {
                 row["comment_id"]: row
@@ -662,10 +788,15 @@ class FutuRefresh:
                         conn.execute(insert(comments).values(**comment_values))
                     comments_fact_changed = True
                     comments_semantic_changed = True
+                    changed_comment_ids.add(comment_values["comment_id"])
                 else:
                     for field, value in tuple(comment_values.items()):
                         if value is None and prior.get(field) is not None:
                             comment_values[field] = prior[field]
+                comment_changed = bool(
+                    prior is not None
+                    and _different(prior, comment_values, SEMANTIC_COMMENT_FIELDS)
+                )
                 if prior is not None and _different(prior, comment_values, comment_values.keys()):
                     if not dry_run:
                         conn.execute(update(comments).where(
@@ -674,14 +805,17 @@ class FutuRefresh:
                     comments_fact_changed = True
                     comments_semantic_changed = (
                         comments_semantic_changed
-                        or _different(prior, comment_values, SEMANTIC_COMMENT_FIELDS)
+                        or comment_changed
                     )
+                    if comment_changed:
+                        changed_comment_ids.add(comment_values["comment_id"])
 
             # A complete snapshot is authoritative. Partial/unknown snapshots
             # are additive only and must never erase comments obtained before.
             if observation.coverage == "complete" and not values["raw_json_broken"]:
                 stale_comment_ids = set(existing_comments) - desired_comment_ids
                 if stale_comment_ids:
+                    removed_comment_ids.update(stale_comment_ids)
                     if not dry_run:
                         conn.execute(delete(comments).where(
                             comments.c.comment_id.in_(stale_comment_ids)
@@ -689,12 +823,22 @@ class FutuRefresh:
                     comments_fact_changed = True
                     comments_semantic_changed = True
 
+            canonical_mentions = [
+                mention for mention in observation.mentions
+                if mention["source"] != "anchor"
+            ]
+            canonical_mentions.append({
+                "feed_id": values["feed_id"],
+                "code": values["code"],
+                "source": "anchor",
+                "in_pool": True,
+            })
             desired_mentions = {
                 (mention["code"], mention["source"]): {
                     **mention,
                     "in_pool": self._code_is_in_pool(mention["code"]),
                 }
-                for mention in observation.mentions
+                for mention in canonical_mentions
             }
             existing_mentions = {
                 (row["code"], row["source"]): row
@@ -702,8 +846,7 @@ class FutuRefresh:
                     mentions.c.feed_id == values["feed_id"]
                 )).mappings()
             }
-            for mention in observation.mentions:
-                mention_values = desired_mentions[(mention["code"], mention["source"])]
+            for mention_values in desired_mentions.values():
                 match = and_(
                     mentions.c.feed_id == mention_values["feed_id"],
                     mentions.c.code == mention_values["code"],
@@ -733,6 +876,13 @@ class FutuRefresh:
             if not values["raw_json_broken"]:
                 stale_mentions = set(existing_mentions) - set(desired_mentions)
                 for code, source in stale_mentions:
+                    # The normalized mention set only describes text present
+                    # in this source row. If a sparse observation omitted
+                    # title/content and we retained the prior text above, its
+                    # body mentions remain valid and cannot be deleted from an
+                    # observation that never saw that text.
+                    if source == "body" and retained_text_fields:
+                        continue
                     if self._code_is_in_pool(code):
                         semantic_affected.add(code)
                     if not dry_run:
@@ -743,6 +893,89 @@ class FutuRefresh:
                         ))
                     semantic = True
                     comments_fact_changed = True
+
+            filter_changed = self._replace_feed_mentions(
+                conn,
+                values["feed_id"],
+                values.get("title"),
+                values.get("content"),
+                dry_run,
+            )
+            if filter_changed:
+                semantic = True
+                comments_fact_changed = True
+                semantic_affected.update(
+                    code for code in (
+                        existing.get("code") if existing else None,
+                        values.get("code"),
+                    ) if code
+                )
+
+            if not dry_run and (
+                parent_input_changed
+                or filter_changed
+                or changed_comment_ids
+                or removed_comment_ids
+            ):
+                supersede_comment_analysis_jobs(
+                    conn,
+                    feed_ids=(values["feed_id"],)
+                    if parent_input_changed or filter_changed
+                    else (),
+                    comment_ids=changed_comment_ids | removed_comment_ids,
+                    reason=(
+                        "Parent feed input changed"
+                        if parent_input_changed or filter_changed
+                        else "Comment input changed"
+                    ),
+                )
+
+            # AI eligibility is a different contract from platform parent
+            # qualification.  Rebuild every child when parent title/body
+            # changes; otherwise touch only comments whose own input changed.
+            if not dry_run and removed_comment_ids:
+                semantic_affected.update(delete_comment_routes(conn, removed_comment_ids))
+            route_comment_ids = set(changed_comment_ids)
+            if not dry_run and (parent_input_changed or filter_changed or existing is None):
+                route_comment_ids.update(
+                    conn.execute(
+                        select(comments.c.comment_id).where(
+                            comments.c.feed_id == values["feed_id"]
+                        )
+                    ).scalars()
+                )
+            if not dry_run and route_comment_ids:
+                parent_text = conn.execute(
+                    select(feeds.c.title, feeds.c.content).where(
+                        feeds.c.feed_id == values["feed_id"]
+                    )
+                ).one()
+                comment_texts = dict(
+                    conn.execute(
+                        select(comments.c.comment_id, comments.c.content).where(
+                            comments.c.comment_id.in_(route_comment_ids)
+                        )
+                    ).all()
+                )
+                route_now = self.now()
+                pool_codes = getattr(self.source, "pool_codes", None)
+                for comment_id in route_comment_ids:
+                    desired_routes = route_rows(
+                        comment_id,
+                        values["feed_id"],
+                        parent_text.title,
+                        parent_text.content,
+                        comment_texts.get(comment_id),
+                        now=route_now,
+                        pool_codes=pool_codes,
+                    )
+                    changed_routes = replace_comment_routes(
+                        conn,
+                        comment_id,
+                        desired_routes,
+                    )
+                    semantic_affected.update(changed_routes["added"])
+                    semantic_affected.update(changed_routes["removed"])
 
             if not dry_run:
                 parsed = conn.execute(select(func.count()).select_from(comments).where(
@@ -773,15 +1006,127 @@ class FutuRefresh:
         pool = getattr(self.source, "pool_codes", None)
         return bool(code) and (pool is None or code in pool)
 
-    def _feed_product_codes(self, conn, feed_id, *anchor_codes):
-        """Return every in-scope product whose AI inputs a feed can affect."""
+    def _replace_body_mentions(self, conn, observation, dry_run):
+        """Replace one feed's derived body mentions inside the page transaction."""
 
-        result = {code for code in anchor_codes if self._code_is_in_pool(code)}
-        result.update(conn.execute(select(mentions.c.code).where(
-            mentions.c.feed_id == feed_id,
-            mentions.c.in_pool.is_(True),
-        )).scalars())
-        return result
+        feed_id = observation.feed["feed_id"]
+        desired = {
+            mention["code"]: {
+                **mention,
+                "in_pool": self._code_is_in_pool(mention["code"]),
+            }
+            for mention in observation.mentions
+            if mention["source"] == "body"
+        }
+        existing = {
+            row["code"]: row
+            for row in conn.execute(
+                select(mentions).where(
+                    mentions.c.feed_id == feed_id,
+                    mentions.c.source == "body",
+                )
+            ).mappings()
+        }
+        changed = False
+        affected = set()
+        for code, values in desired.items():
+            prior = existing.get(code)
+            item_changed = False
+            if prior is None:
+                if not dry_run:
+                    conn.execute(insert(mentions).values(**values))
+                item_changed = True
+            elif prior["in_pool"] != values["in_pool"]:
+                if not dry_run:
+                    conn.execute(
+                        update(mentions)
+                        .where(
+                            mentions.c.feed_id == feed_id,
+                            mentions.c.code == code,
+                            mentions.c.source == "body",
+                        )
+                        .values(in_pool=values["in_pool"])
+                    )
+                item_changed = True
+            changed = changed or item_changed
+            if item_changed and (values["in_pool"] or (prior and prior["in_pool"])):
+                affected.add(code)
+
+        for code in set(existing) - set(desired):
+            if existing[code]["in_pool"]:
+                affected.add(code)
+            if not dry_run:
+                conn.execute(
+                    delete(mentions).where(
+                        mentions.c.feed_id == feed_id,
+                        mentions.c.code == code,
+                        mentions.c.source == "body",
+                    )
+                )
+            changed = True
+        return changed, affected
+
+    @staticmethod
+    def _replace_feed_mentions(conn, feed_id, title, content, dry_run):
+        """Replace the strict parent-text cashtag snapshot transactionally."""
+
+        desired = {
+            normalize_source_ticker(mention.raw_ticker): {
+                "feed_id": feed_id,
+                "raw_ticker": mention.raw_ticker,
+                "market": mention.market.upper() if mention.market else None,
+                "occurrences": mention.occurrences,
+            }
+            for mention in extract_feed_mentions(title, content)
+        }
+        existing = {
+            normalize_source_ticker(row["raw_ticker"]): row
+            for row in conn.execute(
+                select(feed_mentions).where(feed_mentions.c.feed_id == feed_id)
+            ).mappings()
+        }
+        changed = False
+        for ticker, values in desired.items():
+            prior = existing.get(ticker)
+            if prior is None:
+                if not dry_run:
+                    conn.execute(insert(feed_mentions).values(**values))
+                changed = True
+            elif any(
+                prior.get(field) != values[field]
+                for field in ("raw_ticker", "market", "occurrences")
+            ):
+                if not dry_run:
+                    conn.execute(
+                        update(feed_mentions)
+                        .where(
+                            feed_mentions.c.feed_id == feed_id,
+                            feed_mentions.c.raw_ticker == prior["raw_ticker"],
+                        )
+                        .values(
+                            raw_ticker=values["raw_ticker"],
+                            market=values["market"],
+                            occurrences=values["occurrences"],
+                        )
+                    )
+                changed = True
+        stale = set(existing) - set(desired)
+        if stale:
+            if not dry_run:
+                conn.execute(delete(feed_mentions).where(
+                    feed_mentions.c.feed_id == feed_id,
+                    feed_mentions.c.raw_ticker.in_([
+                        existing[ticker]["raw_ticker"] for ticker in stale
+                    ]),
+                ))
+            changed = True
+        return changed
+
+    def _feed_product_codes(self, conn, feed_id, *anchor_codes):
+        """Return the section anchor whose inputs a feed can affect."""
+
+        del conn, feed_id
+        return {code for code in anchor_codes if self._code_is_in_pool(code)}
 
     def _record_counter_observation(
         self, conn, feed_id, posted_at, observed_at, values, run_id, dry_run, *, repair=False

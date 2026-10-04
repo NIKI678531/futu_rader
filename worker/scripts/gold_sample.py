@@ -55,6 +55,11 @@ from jobs.import_dump import pool_codes  # noqa: E402
 from jobs.synthesize import detect_language, load_master  # noqa: E402
 from models import registry  # noqa: E402
 from radar_db import default_data_dir, make_engine  # noqa: E402
+from radar_db.comment_routes import (  # noqa: E402
+    readiness_on_connection as comment_routes_ready_on_connection,
+    report_policy_fields,
+    require_ready as require_comment_routes_ready,
+)
 from radar_db.schema import annotation_runs, annotations  # noqa: E402
 
 log = logging.getLogger("worker.gold_sample")
@@ -68,7 +73,9 @@ LABEL_SHEET = "标注"
 GUIDE_SHEET = "说明"
 COLUMNS = ("编号", "产品代码", "产品名", "帖子标题", "父评论", "评论正文", "相关性", "态度", "备注")
 LABEL_COLUMNS = ("编号", "comment_id", "产品代码", "层", "学生相关性", "学生相关性概率", "学生态度", "学生态度概率",
-                 "Luna相关性", "Luna态度", "学生模型", "抽样来源")
+                 "Luna相关性", "Luna态度", "学生模型", "抽样来源",
+                 "LLM模型", "LLM请求模型", "LLM Prompt", "LLM Schema", "LLM Taxonomy",
+                 "评论路由版本", "产品池摘要", "回归案例ID")
 # 不算 Luna 结论的写入方（ADR-0021 §8），与 evaluate_gold.NON_LLM_PROVIDERS 同一份含义。
 NON_LLM_PROVIDERS = ("rule", "local_model", "propagated")
 
@@ -82,7 +89,7 @@ GUIDE_LINES = (
     "",
     "相关 ＝ 评论在评价这只 ETF 本身，或在说买卖／持有它，或用它的成分股解释它的涨跌。",
     "无关 ＝ 只聊个股、大盘、宏观、闲聊、表情、复读；提到 ETF 代码但没有针对它的内容也算无关。",
-    "需上下文 ＝ 看完帖子标题和父评论仍判不出它在说什么、说的是不是这只产品。",
+    "需上下文 ＝ 看完帖子标题和最多三层父评论仍判不出它在说什么、说的是不是这只产品。",
     "",
     "积极／消极 ＝ 对产品的评价或买卖意向（好／差、买／卖、加／减）。中性 ＝ 相关但没有表态（问价、问规则、转述）。",
     "大盘看跌 ≠ 产品消极：「恒指要崩」是市场方向，不是对 ETF 的态度；只有说到这只产品才算。",
@@ -92,6 +99,17 @@ GUIDE_LINES = (
     "400 条的 95% 置信区间约 ±5 个百分点：这是量尺，不是发布门槛（ADR-0019 不变）。",
     "完整规则见 docs/gold-labeling-guide.md。",
 )
+
+
+def format_parent_comments(values):
+    """Render nearest-first reply context exactly as a human annotator sees it."""
+
+    parents = [str(value).strip() for value in (values or ()) if str(value or "").strip()][:3]
+    lines = []
+    for index, value in enumerate(parents, 1):
+        label = "第1层（直接父评论）" if index == 1 else f"第{index}层"
+        lines.append(f"{label}：{value}")
+    return "\n".join(lines)
 
 
 def band_of(p):
@@ -165,24 +183,82 @@ def collect_units(engine, *, ownership=None, source="student", llm_only=False):
         raise ValueError(f"未知抽样来源：{source}")
     llm_only = llm_only or source == "llm"
     ownership = ownership or pool_codes()
-    s_rel = {} if llm_only else _latest_by_provider(engine, "relevance", ("local_model",))
-    s_att = {} if llm_only else _latest_by_provider(engine, "attitude", ("local_model",))
-    from radar_db.annotations_read import current_annotations
+    from ai.prompts.comment_product_v3 import VERSION as comment_prompt_version
+    from radar_db.annotations_read import released_annotations
+    from radar_db.comment_filter import load_comment_filter_config, require_filter_ready
+
+    filter_config = load_comment_filter_config()
     with engine.connect() as conn:
-        provider_of = dict(conn.execute(select(annotation_runs.c.run_id, annotation_runs.c.provider)).all())
-    cur_rel = current_annotations(engine, "relevance", "comment")
-    cur_att = current_annotations(engine, "attitude", "comment")
+        route_active = comment_routes_ready_on_connection(conn)
+    if not route_active:
+        require_filter_ready(engine, filter_config)
+    with engine.connect() as conn:
+        run_meta = {
+            row.run_id: {
+                "provider": row.provider,
+                "model": row.model_id,
+                "promptVersion": row.prompt_version,
+                "schemaVersion": row.schema_version,
+                "taxonomyVersion": row.taxonomy_version,
+            }
+            for row in conn.execute(select(
+                annotation_runs.c.run_id,
+                annotation_runs.c.provider,
+                annotation_runs.c.model_id,
+                annotation_runs.c.prompt_version,
+                annotation_runs.c.schema_version,
+                annotation_runs.c.taxonomy_version,
+            ))
+        }
+    routing_policy = report_policy_fields(engine) if route_active else {}
+    annotation_scope = {
+        "task": "comment_product",
+        "prompt_version": comment_prompt_version,
+        "parent_filter_config": filter_config,
+    }
+    cur_rel = released_annotations(engine, "relevance", "comment", **annotation_scope)
+    cur_att = released_annotations(engine, "attitude", "comment", **annotation_scope)
+    # 学生行需要保留 provider 自己的历史预测（即使后来由 Luna 接管），但它的
+    # 判定单元必须仍出现在共享的现行、合格父帖集合中。这样不会另写一份父帖 SQL。
+    s_rel = {} if llm_only else {
+        unit: row
+        for unit, row in _latest_by_provider(engine, "relevance", ("local_model",)).items()
+        if unit in cur_rel
+    }
+    s_att = {} if llm_only else {
+        unit: row
+        for unit, row in _latest_by_provider(engine, "attitude", ("local_model",)).items()
+        if unit in cur_rel
+    }
 
     def luna(cur, unit):
         r = cur.get(unit)
-        if r is None or provider_of.get(r["run_id"], "llm") in NON_LLM_PROVIDERS:
+        if r is None or run_meta.get(r["run_id"], {}).get("provider", "llm") in NON_LLM_PROVIDERS:
             return None
         return r["value"]
+
+    def luna_policy(unit):
+        row = cur_rel.get(unit)
+        if row is None:
+            return None
+        meta = run_meta.get(row["run_id"])
+        if meta is None or meta["provider"] in NON_LLM_PROVIDERS:
+            return None
+        return {
+            "model": meta["model"],
+            # Historical annotation_runs only persisted the provider-returned
+            # model.  Such exports are valid only when that snapshot is also
+            # the configured request identifier; calibration exports preserve
+            # both values explicitly.
+            "requestedModel": meta["model"],
+            **{key: meta[key] for key in ("promptVersion", "schemaVersion", "taxonomyVersion")},
+            **routing_policy,
+        }
 
     if llm_only:
         keys = sorted(unit for unit in cur_rel if unit[1] in ownership and luna(cur_rel, unit) in REL_ZH)
     else:
-        keys = sorted(s_rel)
+        keys = sorted(unit for unit in s_rel if unit[1] in ownership)
     ids = sorted({unit[0] for unit in keys})
     sources = {}
     for i in range(0, len(ids), 900):
@@ -198,14 +274,17 @@ def collect_units(engine, *, ownership=None, source="student", llm_only=False):
         att, att_conf, _ = s_att.get((cid, code), (None, None, None))
         confs = [c for c in (rel_conf, att_conf if rel == "relevant" else None) if c is not None]
         l_rel = luna(cur_rel, (cid, code))
+        parents = list(src.get("parents") or ())[:3]
         units.append({
             "sample_source": source,
             "comment_id": cid, "code": code, "ownership": ownership.get(code, "peer"),
-            "text": src["text"], "title": src.get("title"), "parent": src.get("parent"),
+            "text": src["text"], "title": src.get("title"),
+            "parent": format_parent_comments(parents), "parents": parents,
             "student_relevance": rel, "student_attitude": att if rel == "relevant" else None,
             "student_relevance_p": rel_conf, "student_attitude_p": att_conf if rel == "relevant" else None,
             "student_confidence": min(confs) if confs else None,
             "llm_relevance": l_rel, "llm_attitude": luna(cur_att, (cid, code)) if l_rel == "relevant" else None,
+            "llm_policy": luna_policy((cid, code)),
             "language": detect_language([src["text"]]),
             "llm_only": llm_only,
         })
@@ -290,10 +369,14 @@ def write_workbooks(picked, out_dir, *, names=None, source="student", llm_only=F
     ws2.append(list(LABEL_COLUMNS))
     student_model = None if llm_only else registry.model_id_string()
     for u in picked:
+        policy = u.get("llm_policy") or {}
         ws2.append([u["id"], u["comment_id"], u["code"], u["stratum"], u["student_relevance"], u["student_relevance_p"],
                     u["student_attitude"], u["student_attitude_p"], u["llm_relevance"], u["llm_attitude"],
-                    student_model])
-        ws2.cell(row=ws2.max_row, column=len(LABEL_COLUMNS), value=source if source == "llm" or not llm_only else None)
+                    student_model, source if source == "llm" or not llm_only else None,
+                    policy.get("model"), policy.get("requestedModel"),
+                    policy.get("promptVersion"), policy.get("schemaVersion"),
+                    policy.get("taxonomyVersion"), policy.get("commentRouteVersion"),
+                    policy.get("productPoolDigest"), u.get("regression_case_id")])
     for i in range(1, len(LABEL_COLUMNS) + 1):
         ws2.column_dimensions[get_column_letter(i)].width = 16
     labels_path = out_dir / f"{stem}-model-labels.xlsx"
@@ -313,6 +396,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s")
     engine = make_engine()
+    require_comment_routes_ready(engine)
     units = collect_units(engine, source=args.source, llm_only=args.llm_only)
     if not units:
         message = ("没有学生行：原方案需先准备学生模型并运行 python -m jobs.classify；"

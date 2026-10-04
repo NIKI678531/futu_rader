@@ -1,10 +1,7 @@
-"""采集调度入口。
+"""Worker 容器存活入口。
 
-当前只注册一个 heartbeat 任务：证明调度器起得来、间隔取自环境变量、Ctrl-C 能干净退出。
-真正的采集任务见 jobs/collect.py（占位）。
-
-worker 的职责边界（plan.md Q2，CLAUDE.md 铁律 1）：**只落原始数据**。
-热度、去重、基准区间、环比这些口径一律归 backend/core/，这里不算、也不缓存算好的值。
+生产同步和分析均由 Airflow 显式调用 ``jobs.refresh``；本进程只发出 heartbeat，
+不采集社区数据、不轮询 MarketInsight，也不自动启动 AI。
 """
 
 import logging
@@ -32,12 +29,12 @@ log = logging.getLogger("worker")
 
 
 def heartbeat():
-    log.info("heartbeat —— 采集任务尚未实现，见 jobs/collect.py")
+    log.info("heartbeat —— 等待 Airflow 显式触发数据库同步或分析")
 
 
 def build_scheduler(interval_seconds=None):
-    """装配调度器但不启动，好让测试能在不跑真任务的前提下断言注册结果。"""
-    interval = interval_seconds or int(os.getenv("COLLECT_INTERVAL_SECONDS", "60"))
+    """装配存活心跳但不启动；它不承载采集或分析任务。"""
+    interval = interval_seconds or int(os.getenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", "60"))
     scheduler = BlockingScheduler(timezone=os.getenv("TZ", "Asia/Hong_Kong"))
     scheduler.add_job(heartbeat, "interval", seconds=interval, id="heartbeat")
     return scheduler
@@ -48,7 +45,7 @@ def main():
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: sys.exit(0))
     log.info(
-        "调度器启动：%s", [(j.id, str(j.trigger)) for j in scheduler.get_jobs()]
+        "Worker 存活进程启动：%s", [(j.id, str(j.trigger)) for j in scheduler.get_jobs()]
     )
     heartbeat()  # 先跑一次，免得启动后要等满一个间隔才看得到反馈
     try:
