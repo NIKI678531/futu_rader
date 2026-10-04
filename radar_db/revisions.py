@@ -7,6 +7,7 @@ from .schema import meta_kv
 
 
 _RANGE_DAYS = (("d1", 1), ("d2", 2), ("d7", 7), ("d14", 14), ("d30", 30))
+SYNTHESIS_GENERATION_PREFIX = "synth_current"
 
 
 def ranges_touching(anchor, changed_from, changed_to):
@@ -85,6 +86,13 @@ def ai_source_version(values):
         result["data_revision"] = semantic
     if values.get("etl_generation"):
         result["etl_generation"] = values["etl_generation"]
+    # Comment routing changes the model input universe without changing the
+    # collected facts.  Carry the activated generation in scopes/progress so
+    # an old completion cannot be reused after a route-rule or pool change.
+    if values.get("comment_route_version"):
+        result["comment_route_version"] = values["comment_route_version"]
+    if values.get("comment_route_pool_digest"):
+        result["comment_route_pool_digest"] = values["comment_route_pool_digest"]
     return result
 
 
@@ -97,3 +105,23 @@ def mark_synthesis(conn, codes, dirty, ranges=("d1", "d2", "d7", "d14", "d30", "
             value = "1" if dirty else "0"
             if not conn.execute(update(meta_kv).where(meta_kv.c.k == key).values(v=value)).rowcount:
                 conn.execute(insert(meta_kv).values(k=key, v=value))
+
+
+def synthesis_generation_key(code, range_key, kind):
+    """Stable metadata key selecting one published Layer-B generation."""
+
+    return f"{SYNTHESIS_GENERATION_PREFIX}_{code}_{range_key}_{kind}"
+
+
+def synthesis_generation_value(anchor, fingerprint):
+    return f"{str(anchor)[:10]}|{fingerprint}"
+
+
+def set_synthesis_generation(conn, code, range_key, anchor, kind, fingerprint):
+    """Publish exactly one input fingerprint for a synthesis kind."""
+
+    key = synthesis_generation_key(code, range_key, kind)
+    value = synthesis_generation_value(anchor, fingerprint)
+    if not conn.execute(update(meta_kv).where(meta_kv.c.k == key).values(v=value)).rowcount:
+        conn.execute(insert(meta_kv).values(k=key, v=value))
+    return value

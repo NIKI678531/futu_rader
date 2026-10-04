@@ -64,6 +64,7 @@ None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲�
 import json
 import re
 import sys
+import unicodedata
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -77,7 +78,7 @@ REPO_ROOT = BACKEND_ROOT.parent
 if (REPO_ROOT / "radar_db").is_dir() and str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from sqlalchemy import func, select  # noqa: E402
+from sqlalchemy import and_, func, or_, select  # noqa: E402
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
 from core import stages as core_stages, themes as core_themes, topics as core_topics  # noqa: E402
@@ -86,13 +87,34 @@ from core.calendar import PRESETS, build, parse_anchor  # noqa: E402
 from core.delta import delta  # noqa: E402
 from core.heat import heat_of  # noqa: E402
 from radar_db import make_engine  # noqa: E402
-from radar_db.annotations_read import current_annotations  # noqa: E402
-from radar_db.revisions import ai_source_version  # noqa: E402
+from radar_db.annotations_read import (  # noqa: E402
+    COMMENT_PRODUCT_PROMPT_VERSIONS,
+    current_annotations,
+    released_annotations,
+)
+from radar_db.comment_filter import (  # noqa: E402
+    is_filter_ready,
+    load_comment_filter_config,
+    qualifying_feed_predicate,
+    source_ticker_valid_predicate,
+)
+from radar_db.comment_routes import (  # noqa: E402
+    COMMENT_ROUTE_VERSION,
+    is_ready as comment_routes_ready,
+    route_exists_predicate,
+)
+from radar_db.product_catalog import load_accounts, load_products  # noqa: E402
+from radar_db.product_identity import maximal_name_codes  # noqa: E402
+from radar_db.revisions import ai_source_version, synthesis_generation_key  # noqa: E402
 from radar_db.schema import (  # noqa: E402
     NO_SUBJECT,
     annotation_evidence,
+    annotation_jobs,
+    annotation_runs,
     annotations,
     comments,
+    comment_product_routes,
+    feed_mentions,
     feeds,
     ingestion_runs,
     mentions,
@@ -101,9 +123,7 @@ from radar_db.schema import (  # noqa: E402
 )
 from radar_db.time_windows import hkt_range_utc_naive, utc_naive_to_hkt  # noqa: E402
 
-# 产品池／官号／KOL 名单是**客户维护的主数据**，当前仓库里唯一一份在这里。
-# worker/jobs/import_dump.py 用的是同一个文件（导入按它过滤），换成正式名单时两处一起换。
-MASTER = BACKEND_ROOT / "fixtures" / "demo" / "master.json"
+KOL_OPINION_PROMPT_VERSION = "kol-opinion-v2"
 
 
 class SqlProvider:
@@ -111,11 +131,11 @@ class SqlProvider:
 
     def __init__(self, url=None):
         self._engine = make_engine(url)
-        master = json.loads(MASTER.read_text(encoding="utf-8"))
-        self._products = master["products"]
+        self._products = load_products()
         self._by_code = {p["code"]: p for p in self._products}
-        self._officials = master["officials"]
-        self._kols = master["kols"]
+        accounts = load_accounts()
+        self._officials = accounts["officials"]
+        self._kols = accounts["kols"]
         # 证据卡上的作者身份靠名单认（模块头第 1 点：uid 对不上）。官号两个写法都收，
         # 因为帖子作者名在真实数据里用全称，而契约里的 `account` 是简称。
         self._official_names = {o["full"] for o in self._officials} | {
@@ -124,6 +144,9 @@ class SqlProvider:
         self._kol_names = {k["name"] for k in self._kols}
         self._meta = self._read_meta()
         self._anchor = parse_anchor(self._meta.get("anchor"))
+        # The config loader is deliberately strict: an invalid deployment must
+        # fail at startup instead of silently widening the public data set.
+        self._comment_filter_config = load_comment_filter_config()
         self._cache = {}
 
     # ── 底层：库 ──────────────────────────────────────────────────────
@@ -190,7 +213,7 @@ class SqlProvider:
         # 取不到时这个键**不出现**（`updated_at` 返回 None ⇒ 下面不并入），
         # 前端据此渲染「数据暂不可用」；绝不退回常量。
         out = {
-            "products": self._products,
+            "products": [self._product_contract(product) for product in self._products],
             "officials": self._officials,
             "kols": self._kols,
         }
@@ -316,6 +339,91 @@ class SqlProvider:
             return None
         return build(key, self._anchor)
 
+    def _filtered_range(self, key):
+        """Build a range only after the parent-feed backfill is publishable.
+
+        The readiness marker is bound to both the active config version and
+        its semantic digest.  A pre-migration database or a partially
+        completed backfill therefore produces the normal unavailable contract
+        instead of an authoritative-looking zero.
+        """
+        rng = self.build_range(key)
+        if rng is None or not self._filter_window_ready(
+            rng.get("benchFrom", rng["from"]), rng["to"]
+        ):
+            return None
+        return rng
+
+    def _filter_window_ready(self, frm, to):
+        """The marker is necessary, and every in-window source ticker must resolve."""
+        if not is_filter_ready(self._meta, self._comment_filter_config):
+            return False
+        key = ("filter_window_ready", str(frm), str(to))
+        if key in self._cache:
+            return self._cache[key]
+        lo, hi = hkt_range_utc_naive(frm, to)
+        try:
+            with self._engine.connect() as conn:
+                unresolved = conn.execute(
+                    select(feeds.c.feed_id)
+                    .where(
+                        feeds.c.code.in_(self._by_code),
+                        feeds.c.posted_at >= lo,
+                        feeds.c.posted_at < hi,
+                        ~source_ticker_valid_predicate(feeds),
+                    )
+                    .limit(1)
+                ).first()
+        except SQLAlchemyError:
+            # Rolling deployments may briefly expose readiness metadata before
+            # the schema migration.  Treat that state as unavailable too.
+            unresolved = True
+        ready = unresolved is None
+        self._cache[key] = ready
+        return ready
+
+    def _qualifying_feed_condition(self, feed=feeds, *, code=None):
+        """One section-scoped SQL boundary for every product read path.
+
+        Policies with identical behavior are grouped before building the OR.
+        With the current config this emits one guarded exact branch for the
+        default pool and one exclude branch for 3037, rather than 135 copies of
+        the same correlated EXISTS predicate.
+        """
+        codes = [code] if code is not None else list(self._by_code)
+        by_policy = defaultdict(list)
+        for product_code in codes:
+            if product_code in self._by_code:
+                by_policy[self._comment_filter_config.policy_for(product_code)].append(
+                    product_code
+                )
+        branches = [
+            and_(
+                feed.c.code.in_(product_codes),
+                qualifying_feed_predicate(feed, policy, mention_table=feed_mentions),
+            )
+            for policy, product_codes in by_policy.items()
+        ]
+        return or_(*branches)
+
+    def _qualified_feed_ids(self, lo, hi):
+        """Qualifying parent ids grouped by their original discussion section."""
+        key = ("qualified_feed_ids", lo, hi)
+        if key in self._cache:
+            return self._cache[key]
+        grouped = defaultdict(set)
+        with self._engine.connect() as conn:
+            q = select(feeds.c.code, feeds.c.feed_id).where(
+                feeds.c.posted_at >= lo,
+                feeds.c.posted_at < hi,
+                self._qualifying_feed_condition(),
+            )
+            for product_code, feed_id in conn.execute(q):
+                grouped[product_code].add(feed_id)
+        out = dict(grouped)
+        self._cache[key] = out
+        return out
+
     # ── 市场域：计数 ─────────────────────────────────────────────────
 
     # 产品主数据里要随观测一起下发的那几个键。`ownCode`（对位自家产品）**只有竞品有**，
@@ -325,6 +433,13 @@ class SqlProvider:
         "code", "name", "sector", "sectorName", "struct",
         "issuer", "ownership", "listingDate", "isNew", "south",
     )
+    _MASTER_PRODUCT_KEYS = _PRODUCT_KEYS + ("w", "power")
+
+    def _product_contract(self, product):
+        out = {key: product.get(key) for key in self._MASTER_PRODUCT_KEYS}
+        if "ownCode" in product:
+            out["ownCode"] = product["ownCode"]
+        return out
 
     def _observation(self, p, s, rng):
         """一只产品在某个区间上的**完整观测**。
@@ -336,7 +451,7 @@ class SqlProvider:
         屏幕今天只读它的 `buckets`，所以没炸；改天读别的就会拿到 undefined，
         而 undefined 在渲染层**不会**触发「暂不可用」，它会直接显示成空白。
         """
-        out = {k: p[k] for k in self._PRODUCT_KEYS}
+        out = {key: p[key] for key in self._PRODUCT_KEYS}
         if "ownCode" in p:
             out["ownCode"] = p["ownCode"]
         out.update(
@@ -344,6 +459,7 @@ class SqlProvider:
                 "buckets": self._obs_buckets(rng, s),
                 "mentions": s["mentions"],
                 "comments": s["comments"],
+                "commentFunnel": s["commentFunnel"],
                 "interactions": s["interactions"],
                 "likes": s["likes"],
                 "shares": s["shares"],
@@ -397,7 +513,7 @@ class SqlProvider:
         ]
 
     def pool(self, range_key):
-        rng = self.build_range(range_key)
+        rng = self._filtered_range(range_key)
         if rng is None:
             return None
         cur = self._scan(rng["from"], rng["to"], rng)
@@ -448,10 +564,10 @@ class SqlProvider:
     def ranks(self, range_key):
         """全市场评论量排名（PRD §3.8、铁律 3）。
 
-        底是**完整活跃 ETF 池**（120 只全在内），板块筛选不重算 —— 所以这里不接受任何
+        底是**完整活跃 ETF 池**（生产产品池全在内），板块筛选不重算 —— 所以这里不接受任何
         筛选参数，前端只过滤显示。排序与设计源一致：评论量降序，同分按 code 升序。
         """
-        rng = self.build_range(range_key)
+        rng = self._filtered_range(range_key)
         if rng is None:
             return None
         cur = self._scan(rng["from"], rng["to"])
@@ -463,7 +579,7 @@ class SqlProvider:
         # 两者都写成 `return None` 的话，打错一个代码看起来就跟数据源挂了一样。
         if code not in self._by_code:
             return MISSING
-        rng = self.build_range(range_key)
+        rng = self._filtered_range(range_key)
         if rng is None:
             return None
         cur = self._scan(rng["from"], rng["to"], rng)[code]
@@ -505,7 +621,7 @@ class SqlProvider:
     def heat_series_for(self, code, range_key):
         if code not in self._by_code:
             return MISSING
-        rng = self.build_range(range_key)
+        rng = self._filtered_range(range_key)
         if rng is None:
             return None
         s = self._scan(rng["from"], rng["to"], rng)[code]
@@ -536,6 +652,8 @@ class SqlProvider:
         if self._anchor is None:
             return None
         frm = self._anchor - timedelta(days=41)
+        if not self._filter_window_ready(frm, self._anchor):
+            return None
         per_day = self._by_day(code, frm, self._anchor)
         from radar_db.schema import price_bars
         with self._engine.connect() as conn:
@@ -571,7 +689,7 @@ class SqlProvider:
         by_name = {o["full"]: o for o in self._officials}
         ai = self._post_ai(rng)
         out = []
-        for row, codes in self._posts(rng, list(by_name)):
+        for row, codes, attribution_status in self._attributed_official_posts(rng, by_name):
             o = by_name[row.author_name]
             is_issuer = bool(o.get("comps"))
             common = self._post_common(rng, row, codes)
@@ -588,6 +706,12 @@ class SqlProvider:
                     # 有竞品映射的是发行商官号，其余是平台运营（设计源 `o[4] > 0` 同义）。
                     "accountType": "发行商官号" if is_issuer else "平台运营",
                     "isIssuer": is_issuer,
+                    # 挂载标的只留作来源审计，绝不参与官号产品归属。旧版卡片字段也统一
+                    # 复用 attributedProducts，避免 code / mentioned 从旁路漏回 anchor。
+                    "sourceAnchorCode": row.code,
+                    "attributedProducts": common["mentioned"],
+                    "attributionStatus": attribution_status,
+                    "attributedCamp": common["camp"],
                     # 标注过的帖子给真值，没标注过的仍是整块缺失态（ADR-0019 §1）。
                     **ai.get(row.feed_id, _UNANNOTATED),
                 }
@@ -600,7 +724,10 @@ class SqlProvider:
 
         注意这**不是**市场域的评论去重口径（PRD §3.2），两者语义相反，别混用。
 
-        `count`（提及次数）当前必然等于 `posts`（帖子数）：`mentions` 表的主键是
+        `count`（提及次数）当前必然等于 `posts`（帖子数）：官号归属先按正文结构化
+        ticker/cashtag/唯一产品名，再按发行商与唯一资产类别推断；同一篇帖子对同一产品
+        只产生一个归属结果。挂载标的只作来源审计，绝不在这里补一次提及。
+        `mentions` 表的主键是
         (feed_id, code)，同一篇帖子正文里把同一只 ETF 提三次，在事实层已经并成一行。
         要还原「按出现次数累加」得回到 `raw_json.summary.rich_text` 逐段数——那是 ETL
         的活，不是这里的。两列都发出去，是为了将来 ETL 补上时前端不用改。
@@ -627,7 +754,7 @@ class SqlProvider:
             return MISSING
         rows = defaultdict(lambda: {"count": 0, "posts": 0})
         post_ids = set()
-        for row, codes in self._posts(rng, [o["full"]]):
+        for row, codes, _status in self._attributed_official_posts(rng, {o["full"]: o}):
             for c in codes:
                 rows[c]["count"] += 1
                 rows[c]["posts"] += 1
@@ -657,6 +784,46 @@ class SqlProvider:
             "total": sum(x["count"] for x in items),
             "postCount": len(post_ids),
         }
+
+    def _attributed_official_posts(self, rng, by_name):
+        """官号帖子及正文归属；挂载标的只作为 ``sourceAnchorCode`` 留给调用方。
+
+        归属顺序固定为：正文结构化 ticker/cashtag 或唯一产品名，其次才允许用
+        「发行商官号 + 明确资产类别 + 该发行商下唯一产品」推断。无法唯一落到产品时
+        返回空代码与 ``unattributed``，绝不拿 anchor 补位。
+        """
+        names = list(by_name)
+        posts = self._posts(rng, names)
+        if not posts:
+            return []
+        lo, hi = _window(rng)
+        body_codes = defaultdict(set)
+        with self._engine.connect() as conn:
+            q = (
+                select(mentions.c.feed_id, mentions.c.code)
+                .select_from(mentions.join(feeds, feeds.c.feed_id == mentions.c.feed_id))
+                .where(
+                    feeds.c.author_name.in_(names),
+                    feeds.c.posted_at >= lo,
+                    feeds.c.posted_at < hi,
+                    mentions.c.source == "body",
+                    mentions.c.in_pool.is_(True),
+                )
+            )
+            for feed_id, code in conn.execute(q):
+                if code in self._by_code:
+                    body_codes[feed_id].add(code)
+
+        out = []
+        for row, _all_codes in posts:
+            codes, status = _attribute_official_products(
+                self._products,
+                by_name[row.author_name],
+                " ".join(part for part in (row.title, row.content) if part),
+                body_codes.get(row.feed_id, set()),
+            )
+            out.append((row, codes, status))
+        return out
 
     # ── 账号域：KOL ──────────────────────────────────────────────────
 
@@ -735,27 +902,37 @@ class SqlProvider:
     # 数（计数、分桶、环比、生命周期、阶段合并）全部在 `backend/core/`；`synthesis_outputs`
     # 里只有模型写的**字**（名字、句子）与它引用的证据 id。这里把两者拼起来，并且严格分三态：
     #
-    # - 这只产品这个区间**一条态度标注都没有** ⇒ 整块 None（暂不可用）；
+    # - 这只产品这个区间**一条态度标注都没有** ⇒ AI 叙述整块 None（暂不可用）；
+    #   阶段端点例外：仍返回数据库原始热度序列，但 stages=[]、status=unavailable；
     # - 标注过但模型还没生成文字 ⇒ 数照给，文字位 None／固定名，`labelStatus='unavailable'`；
     # - 生成过 ⇒ 真值。
     #
     # 「标注过」的判据与 `_scan` 同源（`att is None` 即没标过），不另写一套。
 
     def _synth(self, code, range_key, kind):
-        """现行生成物：`{subkey: {value, evidenceIds, reviewState}}`。链末、非 rejected；同链末取最新。"""
+        """Return only the explicitly published immutable Layer-B generation.
+
+        A generation marker selects one input fingerprint for the whole kind.
+        This makes an intentional empty result authoritative and prevents old
+        subkeys from resurfacing when the newly qualified material shrinks.
+        """
         if self._anchor is None:
             return {}
         if self._meta.get(f"synth_dirty_{code}_{range_key}") == "1":
             return {}
-        key = ("synth", code, range_key, kind, self._anchor)
+        generation = self._meta.get(synthesis_generation_key(code, range_key, kind))
+        if not generation:
+            return {}
+        published_anchor, separator, published_fp = generation.partition("|")
+        if (
+            separator != "|"
+            or published_anchor != self._anchor.isoformat()
+            or not published_fp
+        ):
+            return {}
+        key = ("synth", code, range_key, kind, self._anchor, generation)
         if key in self._cache:
             return self._cache[key]
-        newer = synthesis_outputs.alias("newer")
-        chain_end = ~(
-            select(newer.c.synthesis_id)
-            .where(newer.c.supersedes_id == synthesis_outputs.c.synthesis_id)
-            .exists()
-        )
         out = {}
         try:
             with self._engine.connect() as conn:
@@ -766,8 +943,8 @@ class SqlProvider:
                         synthesis_outputs.c.range_key == range_key,
                         synthesis_outputs.c.anchor == self._anchor.isoformat(),
                         synthesis_outputs.c.kind == kind,
+                        synthesis_outputs.c.input_fingerprint == published_fp,
                         synthesis_outputs.c.review_state != "rejected",
-                        chain_end,
                     )
                     .order_by(synthesis_outputs.c.created_at, synthesis_outputs.c.synthesis_id)
                 )
@@ -798,18 +975,166 @@ class SqlProvider:
         key = ("window_annotations", kind, lo, hi)
         if key not in self._cache:
             grouped = defaultdict(dict)
+            route_active = comment_routes_ready(self._meta)
+            qualified = {} if route_active else self._qualified_feed_ids(lo, hi)
             for unit, annotation in current_annotations(
                 self._engine, kind, "comment", window=(lo, hi),
             ).items():
-                grouped[unit[1]][unit] = annotation
+                code = unit[1]
+                # Active generations are already constrained by the persisted
+                # comment/content-tag route.  The parent-section lookup remains
+                # only as a pre-activation compatibility boundary.
+                if route_active or annotation.get("feed_id") in qualified.get(code, ()):
+                    grouped[code][unit] = annotation
             self._cache[key] = dict(grouped)
         return self._cache[key]
 
+    def _window_comment_product_jobs(self, lo, hi):
+        """Latest comment-product job for each unit in a feed-time window.
+
+        A prompt upgrade creates a new job for the same ``(comment, product)``
+        unit.  Only the latest job describes the input currently waiting to be
+        published; an older completed job must not make its annotations look
+        current while the replacement is still pending.
+        """
+        key = ("window_comment_product_jobs", lo, hi)
+        if key in self._cache:
+            return self._cache[key]
+        grouped = defaultdict(dict)
+        try:
+            route_active = comment_routes_ready(self._meta)
+            qualified = {} if route_active else self._qualified_feed_ids(lo, hi)
+            with self._engine.connect() as conn:
+                q = (
+                    select(
+                        annotation_jobs.c.target_id,
+                        annotation_jobs.c.subject_code,
+                        comments.c.feed_id,
+                        annotation_jobs.c.job_id,
+                        annotation_jobs.c.input_hash,
+                        annotation_jobs.c.status,
+                    )
+                    .select_from(
+                        annotation_jobs.join(
+                            comments,
+                            comments.c.comment_id == annotation_jobs.c.target_id,
+                        ).join(feeds, feeds.c.feed_id == comments.c.feed_id)
+                    )
+                    .where(
+                        annotation_jobs.c.target_type == "comment",
+                        annotation_jobs.c.task == "comment_product",
+                        annotation_jobs.c.subject_code.in_(self._by_code),
+                        feeds.c.posted_at >= lo,
+                        feeds.c.posted_at < hi,
+                    )
+                )
+                if route_active:
+                    q = q.where(route_exists_predicate(
+                        annotation_jobs.c.target_id,
+                        annotation_jobs.c.subject_code,
+                    ))
+                for comment_id, code, feed_id, job_id, input_hash, status in conn.execute(q):
+                    if not route_active and feed_id not in qualified.get(code, ()):
+                        continue
+                    unit = (comment_id, code)
+                    previous = grouped[code].get(unit)
+                    if previous is None or job_id > previous["job_id"]:
+                        grouped[code][unit] = {
+                            "feed_id": feed_id,
+                            "job_id": job_id,
+                            "input_hash": input_hash,
+                            "status": status,
+                        }
+        except SQLAlchemyError:
+            # Databases from before the annotation queue was introduced still
+            # expose their auditable run rows.  They are handled by the
+            # no-job compatibility branch in ``_released_window_annotations``.
+            grouped = defaultdict(dict)
+        out = dict(grouped)
+        self._cache[key] = out
+        return out
+
+    def _annotation_run_policies(self, run_ids):
+        """Return the release-relevant policy fields for annotation runs."""
+        run_ids = {run_id for run_id in run_ids if run_id}
+        if not run_ids:
+            return {}
+        cache = self._cache.setdefault(("annotation_run_policies",), {})
+        missing = run_ids.difference(cache)
+        if missing:
+            try:
+                with self._engine.connect() as conn:
+                    for run_id, task, provider, prompt_version in conn.execute(
+                        select(
+                            annotation_runs.c.run_id,
+                            annotation_runs.c.task,
+                            annotation_runs.c.provider,
+                            annotation_runs.c.prompt_version,
+                        ).where(annotation_runs.c.run_id.in_(missing))
+                    ):
+                        cache[run_id] = {
+                            "task": task,
+                            "provider": provider,
+                            "prompt_version": prompt_version,
+                        }
+            except SQLAlchemyError:
+                pass
+            # Remember missing/corrupt run references as invalid instead of
+            # querying them again and, more importantly, publishing an
+            # untraceable annotation.
+            for run_id in missing:
+                cache.setdefault(run_id, None)
+        return {run_id: cache.get(run_id) for run_id in run_ids}
+
+    def _released_window_annotations(self, kind, lo, hi):
+        """Auditable comment-product rows safe for downstream publication.
+
+        ``current_annotations`` answers which chain end wins, but it does not
+        answer whether that row belongs to a supported prompt and current
+        source input. Every attitude-derived read path uses this same seam.
+
+        Historical databases can contain propagated rows after their original
+        queue history was compacted.  A row without any job is accepted only
+        when its run is still auditable as v2 or v3. A job for the annotation's
+        exact input must be ``done``; an unrelated newer-prompt job does not
+        hide the existing conclusion.
+        """
+        key = ("released_window_annotations", kind, lo, hi)
+        if key in self._cache:
+            return self._cache[key]
+
+        out = defaultdict(dict)
+        for unit, row in released_annotations(
+            self._engine,
+            kind,
+            "comment",
+            task="comment_product",
+            prompt_version=COMMENT_PRODUCT_PROMPT_VERSIONS,
+            window=(lo, hi),
+            parent_filter_config=self._comment_filter_config,
+        ).items():
+            out[unit[1]][unit] = row
+        out = dict(out)
+        self._cache[key] = out
+        return out
+
     def _kol_candidate_units(self, lo, hi, *, code=None, kol=None):
-        """与 worker 的 KOL 任务使用同一候选口径，返回评论 × 所在产品的判定单元。"""
+        """与 worker 的 KOL 任务使用同一候选口径，返回评论 × 产品判定单元。"""
+        route_active = comment_routes_ready(self._meta)
+        if route_active:
+            source = comments.join(
+                feeds, feeds.c.feed_id == comments.c.feed_id,
+            ).join(
+                comment_product_routes,
+                comment_product_routes.c.comment_id == comments.c.comment_id,
+            )
+            code_column = comment_product_routes.c.subject_code
+        else:
+            source = comments.join(feeds, feeds.c.feed_id == comments.c.feed_id)
+            code_column = feeds.c.code
         q = (
-            select(comments.c.comment_id, feeds.c.code)
-            .select_from(comments.join(feeds, feeds.c.feed_id == comments.c.feed_id))
+            select(comments.c.comment_id, code_column.label("code"))
+            .select_from(source)
             .where(
                 comments.c.content.isnot(None),
                 comments.c.content != "",
@@ -818,8 +1143,15 @@ class SqlProvider:
                 feeds.c.posted_at < hi,
             )
         )
+        if route_active:
+            q = q.where(
+                comment_product_routes.c.rule_version == COMMENT_ROUTE_VERSION,
+                comment_product_routes.c.subject_code.in_(self._by_code),
+            )
+        else:
+            q = q.where(self._qualifying_feed_condition(code=code))
         if code is not None:
-            q = q.where(feeds.c.code == code)
+            q = q.where(code_column == code)
         if kol is not None:
             q = q.where(comments.c.author_name == kol)
         try:
@@ -834,13 +1166,13 @@ class SqlProvider:
         if key in self._cache:
             return self._cache[key]
         lo, hi = _window(rng)
-        att = self._window_annotations("attitude", lo, hi).get(code, {})
-        if not att and code not in self._completed_codes(rng["from"], rng["to"]):
+        att = self._released_window_annotations("attitude", lo, hi).get(code, {})
+        rel = self._released_window_annotations("relevance", lo, hi).get(code, {})
+        if not att and not rel and self._scan(rng["from"], rng["to"], rng)[code]["att"] is None:
             self._cache[key] = None
             return None
-        rel = self._window_annotations("relevance", lo, hi).get(code, {})
-        asp = self._window_annotations("aspect", lo, hi).get(code, {})
-        mkt = self._window_annotations("market_direction", lo, hi).get(code, {})
+        asp = self._released_window_annotations("aspect", lo, hi).get(code, {})
+        mkt = self._released_window_annotations("market_direction", lo, hi).get(code, {})
         units = []
         for unit, a in att.items():
             if (rel.get(unit) or {}).get("value") != "relevant":
@@ -854,7 +1186,9 @@ class SqlProvider:
         market = [
             {"comment_id": unit[0], "market_direction": m["value"],
              "posted_at": utc_naive_to_hkt(m["posted_at"])}
-            for unit, m in mkt.items() if m["value"] in ("bullish", "bearish", "neutral")
+            for unit, m in mkt.items()
+            if (rel.get(unit) or {}).get("value") == "relevant"
+            and m["value"] in ("bullish", "bearish", "neutral")
         ]
         out = {"units": units, "market": market}
         self._cache[key] = out
@@ -863,11 +1197,11 @@ class SqlProvider:
     def _base_units(self, code, rng):
         """基准期的判定单元；基准期一条态度标注都没有 ⇒ None（环比与生命周期暂不可用）。"""
         blo, bhi = hkt_range_utc_naive(rng["benchFrom"], rng["benchTo"])
-        att = self._window_annotations("attitude", blo, bhi).get(code, {})
-        if not att and code not in self._completed_codes(rng["benchFrom"], rng["benchTo"]):
+        att = self._released_window_annotations("attitude", blo, bhi).get(code, {})
+        rel = self._released_window_annotations("relevance", blo, bhi).get(code, {})
+        if not att and not rel and self._scan(rng["benchFrom"], rng["benchTo"])[code]["att"] is None:
             return None
-        rel = self._window_annotations("relevance", blo, bhi).get(code, {})
-        asp = self._window_annotations("aspect", blo, bhi).get(code, {})
+        asp = self._released_window_annotations("aspect", blo, bhi).get(code, {})
         return [
             {"attitude": a["value"], "aspects": (asp.get(unit) or {}).get("value") or [],
              "posted_at": utc_naive_to_hkt(a["posted_at"])}
@@ -896,7 +1230,7 @@ class SqlProvider:
         return out
 
     def hot_summaries(self, range_key):
-        rng = self.build_range(range_key)
+        rng = self._filtered_range(range_key)
         if rng is None:
             return None
         scan = self._scan(rng["from"], rng["to"], rng)
@@ -929,7 +1263,7 @@ class SqlProvider:
         """`{text, sample, low}`。计数句由后端按事实拼，观点句来自模型要点（Layer B）。"""
         if code not in self._by_code:
             return MISSING
-        rng = self.build_range(range_key)
+        rng = self._filtered_range(range_key)
         if rng is None:
             return None
         s = self._scan(rng["from"], rng["to"], rng)[code]
@@ -974,7 +1308,7 @@ class SqlProvider:
     def themes_for(self, code, range_key):
         if code not in self._by_code:
             return MISSING
-        rng = self.build_range(range_key)
+        rng = self._filtered_range(range_key)
         if rng is None:
             return None
         u = self._units(code, rng)
@@ -992,7 +1326,7 @@ class SqlProvider:
     def neg_cats_for(self, code, range_key):
         if code not in self._by_code:
             return MISSING
-        rng = self.build_range(range_key)
+        rng = self._filtered_range(range_key)
         if rng is None:
             return None
         u = self._units(code, rng)
@@ -1009,18 +1343,29 @@ class SqlProvider:
     def topics_for(self, code, range_key):
         if code not in self._by_code:
             return MISSING
-        rng = self.build_range(range_key)
+        rng = self._filtered_range(range_key)
         if rng is None:
             return None
         u = self._units(code, rng)
         if u is None:
             return None
         label = self._labels(code, range_key, "topic_label").get(core_topics.MARKET_SUBKEY)
-        baseline = current_annotations(
-            self._engine, "market_direction", "comment", subject_code=code,
-            window=_window({"from": rng["benchFrom"], "to": rng["benchTo"]}),
+        base_window = _window({"from": rng["benchFrom"], "to": rng["benchTo"]})
+        baseline = self._released_window_annotations(
+            "market_direction", *base_window
+        ).get(code, {})
+        base_rel = self._released_window_annotations(
+            "relevance", *base_window
+        ).get(code, {})
+        base_units = (
+            [
+                {"market_direction": row["value"]}
+                for unit, row in baseline.items()
+                if (base_rel.get(unit) or {}).get("value") == "relevant"
+            ]
+            if baseline or base_rel
+            else None
         )
-        base_units = [{"market_direction": row["value"]} for row in baseline.values()] if baseline else None
         return core_topics.market_topic(
             code, u["market"], rng["buckets"], self._bucket_index(rng), label, base_units,
         )
@@ -1028,12 +1373,28 @@ class SqlProvider:
     def stages_for(self, code, range_key):
         if code not in self._by_code:
             return MISSING
-        rng = self.build_range(range_key)
+        rng = self._filtered_range(range_key)
         if rng is None:
             return None
-        if self._scan(rng["from"], rng["to"], rng)[code]["att"] is None:
-            return None
         series = self.heat_series_for(code, range_key)
+        if self._scan(rng["from"], rng["to"], rng)[code]["att"] is None:
+            # Heat is a source fact (platform comments/likes/shares), whereas
+            # stages and sentiment are released AI conclusions. Pending work
+            # for the same input must therefore hide the latter without
+            # swallowing the former or falling back to stale counts.
+            return {
+                "code": code,
+                "granularity": "half_day" if rng["gran"] == "hour" else "day",
+                "granLabel": (
+                    "按上午／下午／盘后归纳"
+                    if rng["gran"] == "hour"
+                    else "按自然日归纳，相近观点合并为阶段"
+                ),
+                "series": series,
+                "stages": [],
+                "rule": core_stages.STAGE_RULE,
+                "status": "unavailable",
+            }
         units_rows = self._synth(code, range_key, "stage_unit")
         stage_rows = self._synth(code, range_key, "stage_summary")
 
@@ -1053,7 +1414,7 @@ class SqlProvider:
         p = self._by_code.get(code)
         if p is None:
             return MISSING
-        rng = self.build_range(range_key)
+        rng = self._filtered_range(range_key)
         if rng is None:
             return None
         if self._units(code, rng) is None:
@@ -1106,7 +1467,7 @@ class SqlProvider:
         """
         if code not in self._by_code:
             return MISSING
-        rng = self.build_range(range_key)
+        rng = self._filtered_range(range_key)
         if rng is None:
             return None
         lo, hi = _window(rng)
@@ -1158,8 +1519,15 @@ class SqlProvider:
         candidates = self._kol_candidate_units(lo, hi, code=code)
         summaries = {}
         if candidates:
-            current = current_annotations(
-                self._engine, "kol_summary", "comment", window=(lo, hi), subject_code=code,
+            current = released_annotations(
+                self._engine,
+                "kol_summary",
+                "comment",
+                task="kol_comment_opinion",
+                prompt_version=KOL_OPINION_PROMPT_VERSION,
+                window=(lo, hi),
+                subject_code=code,
+                parent_filter_config=self._comment_filter_config,
             )
             summaries = {
                 unit: current[unit]
@@ -1170,12 +1538,17 @@ class SqlProvider:
             }
 
         comment_sources = self._sources("comment", [unit[0] for unit in summaries])
-        attitudes = self._window_annotations("attitude", lo, hi).get(code, {}) if summaries else {}
+        attitudes = self._released_window_annotations("attitude", lo, hi).get(code, {}) if summaries else {}
+        relevance = self._released_window_annotations("relevance", lo, hi).get(code, {}) if summaries else {}
         attitude_labels = {"positive": "积极", "negative": "消极", "neutral": "中性"}
         quotes = self._evidence_rows([summary["annotation_id"] for summary in summaries.values()])
         for unit, summary in summaries.items():
             source = comment_sources.get(unit[0])
-            if source is None or source["authorName"] not in active_kols:
+            if (
+                source is None
+                or source["authorName"] not in active_kols
+                or (relevance.get(unit) or {}).get("value") != "relevant"
+            ):
                 continue
             attitude = (attitudes.get(unit) or {}).get("value")
             if attitude not in attitude_labels:
@@ -1235,7 +1608,7 @@ class SqlProvider:
         """该 KOL 在评论里对其他产品的观点与操作（PRD §4.4 M7）。原料是 `kol_comment_opinion` 任务。"""
         if not any(k["name"] == kol for k in self._kols):
             return MISSING
-        rng = self.build_range(range_key)
+        rng = self._filtered_range(range_key)
         if rng is None:
             return None
         lo, hi = _window(rng)
@@ -1244,9 +1617,21 @@ class SqlProvider:
             return None
         if not candidates:
             return []
-        all_summaries = current_annotations(self._engine, "kol_summary", "comment", window=(lo, hi))
-        actions = current_annotations(self._engine, "kol_action", "comment", window=(lo, hi))
-        types = current_annotations(self._engine, "post_type", "comment", window=(lo, hi))
+        release_args = {
+            "task": "kol_comment_opinion",
+            "prompt_version": KOL_OPINION_PROMPT_VERSION,
+            "window": (lo, hi),
+            "parent_filter_config": self._comment_filter_config,
+        }
+        all_summaries = released_annotations(
+            self._engine, "kol_summary", "comment", **release_args
+        )
+        actions = released_annotations(
+            self._engine, "kol_action", "comment", **release_args
+        )
+        types = released_annotations(
+            self._engine, "post_type", "comment", **release_args
+        )
         # 三项都是 v2 的必填输出。只要这个 KOL 有一个候选单元没写齐，整块就是尚未覆盖，
         # 不能借用同区间其他 KOL 的结果误报成「暂无相关内容」。
         if not (candidates.issubset(all_summaries)
@@ -1315,24 +1700,39 @@ class SqlProvider:
         这只产品的该极性原文，不是错配，只是比演示态粗。**不能**为了制造差异随机挑几条
         （`core/evidence.py` 模块头说的「不报错、数量对、格式对，只是配错了对象」）。
 
-        整块 None ＝ 这只产品在这个区间内一条态度标注都没有（「暂不可用」）；
-        空列表 ＝ 标过了，这个极性一条都没有（「暂无相关内容」）。两者不可互换。
+        整块 None ＝ 这只产品在这个区间内尚无 relevance 结论且未完成分析
+        （「暂不可用」）；空列表 ＝ 已判过相关性，但当前相关评论里这个极性一条都没有
+        （「暂无相关内容」）。两者不可互换。
         """
         if code not in self._by_code:
             return MISSING
-        rng = self.build_range(str(ctx_key).split("|")[0])
+        rng = self._filtered_range(str(ctx_key).split("|")[0])
         if rng is None:
             return None
-        att = self._current_annotations("attitude", "comment", window=_window(rng))
+        window = _window(rng)
+        lo, hi = window
+        att_by_code = self._released_window_annotations("attitude", lo, hi)
+        rel_by_code = self._released_window_annotations("relevance", lo, hi)
+        att = {
+            unit: row for by_unit in att_by_code.values() for unit, row in by_unit.items()
+        }
+        rel = {
+            unit: row for by_unit in rel_by_code.values() for unit, row in by_unit.items()
+        }
         by_comment = defaultdict(list)
-        for (cid, subject), a in att.items():
+        for unit, a in att.items():
+            cid, subject = unit
+            if (rel.get(unit) or {}).get("value") != "relevant":
+                continue
             by_comment[cid].append((subject, a))
         hits = [
             cid
             for cid, pairs in by_comment.items()
             if any(s == code and a["value"] == polarity for s, a in pairs)
         ]
-        if not any(s == code for pairs in by_comment.values() for s, _a in pairs):
+        has_relevance_result = bool(rel_by_code.get(code))
+        has_completed_scope = self._scan(rng["from"], rng["to"], rng)[code]["att"] is not None
+        if not has_relevance_result and not has_completed_scope:
             return None
         src = self._sources("comment", hits)
         items = []
@@ -1371,7 +1771,7 @@ class SqlProvider:
         p = self._by_code.get(code)
         if p is None:
             return MISSING
-        rng = self.build_range(range_key)
+        rng = self._filtered_range(range_key)
         if rng is None:
             return None
         if p["ownership"] != "own":
@@ -1410,9 +1810,25 @@ class SqlProvider:
             return self._cache[key]
 
         window = _window(rng)
+        lo, hi = window
+        qualified = self._qualified_feed_ids(lo, hi)
+        feed_rows = self._current_annotations("compliance", "feed", window=window)
         rows = {
-            tt: self._current_annotations("compliance", tt, window=window)
-            for tt in ("comment", "feed")
+            "comment": {
+                unit: row
+                for by_unit in self._released_window_annotations("compliance", lo, hi).values()
+                for unit, row in by_unit.items()
+            },
+            "feed": {
+                unit: row
+                for unit, row in feed_rows.items()
+                if row.get("feed_id") in qualified.get(unit[1], ())
+            },
+        }
+        comment_relevance = {
+            unit: row
+            for by_unit in self._released_window_annotations("relevance", lo, hi).values()
+            for unit, row in by_unit.items()
         }
         scanned_codes = self._completed_codes(rng["from"], rng["to"])
         ev = self._evidence_rows(
@@ -1425,10 +1841,15 @@ class SqlProvider:
                 r = src.get(target_id)
                 if r is None or code not in self._by_code:
                     continue
+                relevance = comment_relevance.get((target_id, code)) if target_type == "comment" else None
+                if target_type == "comment" and relevance is None:
+                    continue
                 value = a["value"]
                 if not isinstance(value, dict) or not isinstance(value.get("tags", value.get("risk_tags")), list):
                     continue
                 scanned_codes.add(code)
+                if target_type == "comment" and relevance["value"] != "relevant":
+                    continue
                 tags = list(value.get("tags", value.get("risk_tags")) or [])
                 if not tags:
                     continue
@@ -1485,7 +1906,7 @@ class SqlProvider:
     def _scan(self, frm, to, rng=None):
         """`[frm, to]`（含两端，自然日）内按产品聚合。`rng` 给出时同时切桶。
 
-        返回的 dict **含产品池全部 120 只**，一条帖子都没有的也在里面（全 0）。
+        返回的 dict **含生产产品池全部产品**，一条帖子都没有的也在里面（全 0）。
         缺席和零在这里必须分得开：窗口内的底库是全的，所以「没人发」是查出来的结论，
         那个 0 是真的 0；而 `KeyError` 意味着代码不在池里，是另一回事。
         """
@@ -1498,8 +1919,20 @@ class SqlProvider:
         origin = date.fromisoformat(frm)
         lo, hi = hkt_range_utc_naive(frm, to)
 
+        # A product observation is section-scoped and parent-qualified.  Body
+        # mentions remain available to the account attribution surfaces, but
+        # they can no longer move a post or any of its replies into another
+        # product's market totals.
+        qualified_by_code = self._qualified_feed_ids(lo, hi)
+        qualified_feed_ids = {
+            feed_id for ids in qualified_by_code.values() for feed_id in ids
+        }
+
         # 帖子级：评论获赞与评论作者。评论挂在帖子上，所以按帖子的 posted_at 取窗口。
-        c_likes, c_authors = defaultdict(int), defaultdict(set)
+        c_likes, c_authors, c_counts = defaultdict(int), defaultdict(set), defaultdict(int)
+        feed_ids_by_code = defaultdict(set)
+        feed_coverage_by_code = defaultdict(dict)
+        out = {c: _blank(nb) for c in self._by_code}
         with self._engine.connect() as conn:
             q = (
                 select(comments.c.feed_id, comments.c.author_uid, comments.c.like_count)
@@ -1507,59 +1940,180 @@ class SqlProvider:
                 .where(feeds.c.posted_at >= lo, feeds.c.posted_at < hi)
             )
             for feed_id, author, like in conn.execute(q):
+                if feed_id not in qualified_feed_ids:
+                    continue
+                c_counts[feed_id] += 1
                 if like:
                     c_likes[feed_id] += like
                 if author:
                     c_authors[feed_id].add(author)
 
-            out = {c: _blank(nb) for c in self._by_code}
             q = (
                 select(
-                    mentions.c.code,
+                    feeds.c.code,
                     feeds.c.feed_id,
                     feeds.c.posted_at,
                     feeds.c.author_uid,
                     feeds.c.like_count,
                     feeds.c.comment_count,
                     feeds.c.share_count,
+                    feeds.c.comment_coverage_status,
                 )
-                .select_from(mentions.join(feeds, feeds.c.feed_id == mentions.c.feed_id))
                 .where(
-                    mentions.c.in_pool.is_(True),
+                    feeds.c.code.in_(self._by_code),
                     feeds.c.posted_at >= lo,
                     feeds.c.posted_at < hi,
                 )
             )
-            for code, feed_id, posted, author, likes, n_comments, shares in conn.execute(q):
+            for (
+                code,
+                feed_id,
+                posted,
+                author,
+                likes,
+                n_comments,
+                shares,
+                coverage_status,
+            ) in conn.execute(q):
                 s = out.get(code)
-                if s is None:  # in_pool 与产品池名单不同步 —— 跳过，不要凭空造一只产品。
+                if s is None:
                     continue
+                s["rawPlatformCount"] += n_comments or 0
+                if feed_id not in qualified_by_code.get(code, ()):
+                    continue
+                feed_ids_by_code[code].add(feed_id)
+                feed_coverage_by_code[code][feed_id] = coverage_status
                 bi = _bucket(gran, origin, utc_naive_to_hkt(posted)) if nb else None
                 # 帖子获赞 ＋ 已采集评论获赞（HEAT_NOTE 逐字：「点赞含帖子获赞与评论获赞」）。
                 like_total = (likes or 0) + c_likes.get(feed_id, 0)
                 who = c_authors.get(feed_id, ())
                 _bump(s, bi, 1, n_comments or 0, like_total, shares, author, who)
 
+        relevance = self._window_annotations("relevance", lo, hi)
+        released_relevance = self._released_window_annotations("relevance", lo, hi)
+        duplicate_clusters = self._window_annotations("duplicate_cluster", lo, hi)
+        candidate_units_by_code = defaultdict(
+            dict, self._window_comment_product_jobs(lo, hi)
+        )
+
+        run_ids = {
+            row["run_id"]
+            for by_unit in relevance.values()
+            for row in by_unit.values()
+            if row.get("run_id")
+        }
+        run_policies = {}
+        if run_ids:
+            with self._engine.connect() as conn:
+                run_policies = {
+                    run_id: {"provider": provider, "prompt_version": prompt_version}
+                    for run_id, provider, prompt_version in conn.execute(
+                        select(
+                            annotation_runs.c.run_id,
+                            annotation_runs.c.provider,
+                            annotation_runs.c.prompt_version,
+                        ).where(annotation_runs.c.run_id.in_(run_ids))
+                    )
+                }
+
+        for code, s in out.items():
+            associated_feed_ids = feed_ids_by_code[code]
+            decisions_by_unit = relevance.get(code, {})
+            decisions = list(decisions_by_unit.values())
+            source_parsed = sum(c_counts[feed_id] for feed_id in associated_feed_ids)
+            parsed = source_parsed
+            rule_excluded = sum(
+                1
+                for row in decisions
+                if (run_policies.get(row.get("run_id")) or {}).get("provider") == "rule"
+                and row.get("value") == "irrelevant"
+            )
+            ai_decisions_by_unit = released_relevance.get(code, {})
+            ai_decisions = list(ai_decisions_by_unit.values())
+            rule_excluded_units = {
+                unit
+                for unit, row in decisions_by_unit.items()
+                if (run_policies.get(row.get("run_id")) or {}).get("provider") == "rule"
+                and row.get("value") == "irrelevant"
+            }
+            # A stored comment is not evidence that exact routing has run.  A
+            # live comment-product job is the durable positive hand-off from
+            # the rule stage; a current auditable/propagated decision is equivalent
+            # evidence for already-completed units whose job history is not
+            # available.  Superseded jobs were explicitly made ineligible by
+            # a later rule pass and therefore cannot keep the unit eligible.
+            rule_eligible_units = {
+                unit
+                for unit, candidate in candidate_units_by_code[code].items()
+                if candidate["status"] != "superseded"
+            }
+            rule_eligible_units.update(
+                ai_decisions_by_unit
+            )
+            rule_eligible_units.update(duplicate_clusters.get(code, {}))
+            rule_eligible_units.difference_update(rule_excluded_units)
+            source_statuses = list(feed_coverage_by_code[code].values())
+            s["commentFunnel"] = _comment_funnel(
+                raw_platform_count=s["rawPlatformCount"],
+                platform_count=s["comments"],
+                qualifying_feed_count=s["mentions"],
+                filter_excluded_platform_count=max(
+                    0, s["rawPlatformCount"] - s["comments"]
+                ),
+                parsed_count=parsed,
+                source_parsed_count=parsed,
+                # Empty is vacuously complete inside a source window whose
+                # upper bound is the verified collection anchor.  This keeps
+                # an exact-filtered product with no comments from looking like
+                # an unfinished crawl.
+                source_complete=all(
+                    status == "complete" for status in source_statuses
+                ),
+                rule_excluded_count=rule_excluded,
+                rule_eligible_count=len(rule_eligible_units),
+                ai_completed_count=len(ai_decisions),
+                relevant_count=sum(row.get("value") == "relevant" for row in ai_decisions),
+                needs_context_count=sum(
+                    row.get("value") == "needs_context" for row in ai_decisions
+                ),
+                # The public contract has no separate rule-pending field.
+                # Keep every parsed, non-excluded, unfinished unit visible in
+                # pendingCount, whether it is waiting for exact routing or AI.
+                pending_count=max(0, parsed - rule_excluded - len(ai_decisions)),
+            )
+
         # 态度：按判定单元（评论 × 产品）数正／负／中（ADR-0019 §1 的现行结论规则）。
         #
-        # 归属看 `annotations.subject_code`，**不按 `mentions` 摊开**。模型判的是「这条
-        # 评论对 3033 是负面的」；同一条评论正文里顺带提到的另一只产品它没判过，摊过去
-        # 就是替它表过一次没表过的态。于是会出现「这只产品有 40 条评论、态度却是
-        # 暂不可用」——那正是当前的实情，不是漏算。
+        # `_window_annotations` 已把判定单元限制为评论的合格父帖产品；正文顺带提到的
+        # 其他代码、以及旧版 comment-level 路由留下的跨产品行都不会进入这里。
         #
         # 分母也不是评论总数：只有被标注过的评论进这三个计数。「有效态度提及」本来
         # 就是标注出来的子集（PRD §3.5），这个口径在 fixture 与真库下同名同义。
-        for (_comment_id, code), a in self._current_annotations(
-            "attitude", "comment", window=(lo, hi)
-        ).items():
+        # relevance 是所有下游判断的总闸门。只要该产品已有现行 relevance
+        # 结论，就能诚实地返回“已分析、但当前没有相关态度”的全零结果；历史 attitude
+        # 不能在 relevance 被翻成 irrelevant / needs_context 后继续泄漏到聚合里。
+        for code, by_unit in released_relevance.items():
+            if code in out and by_unit:
+                out[code]["attSeen"] = True
+
+        for code, by_unit in self._released_window_annotations("attitude", lo, hi).items():
             s = out.get(code)
             if s is None:  # 标注里的产品不在当前池 —— 同 in_pool 那条，跳过。
                 continue
-            posted_hkt = utc_naive_to_hkt(a["posted_at"])
-            _bump_att(s, _bucket(gran, origin, posted_hkt) if nb else None, a["value"])
+            for unit, a in by_unit.items():
+                if (released_relevance.get(code, {}).get(unit) or {}).get("value") != "relevant":
+                    continue
+                posted_hkt = utc_naive_to_hkt(a["posted_at"])
+                _bump_att(s, _bucket(gran, origin, posted_hkt) if nb else None, a["value"])
 
         for code in self._completed_codes(frm, to):
-            if code in out:
+            jobs = candidate_units_by_code[code]
+            released = released_relevance.get(code, {})
+            unresolved = any(
+                job["status"] != "superseded" and unit not in released
+                for unit, job in jobs.items()
+            )
+            if code in out and not unresolved:
                 out[code]["attSeen"] = True
         for s in out.values():
             _finish(s)
@@ -1569,7 +2123,7 @@ class SqlProvider:
     def _by_day(self, code, frm, to):
         """`daily_for` 用：某产品的逐日（评论量, 活跃账号数）。
 
-        两条查询都在 SQL 里 join 到 `mentions`，**不往 `IN (...)` 里塞 feed_id 列表**：
+        两条查询都直接复用父帖资格谓词，**不往 `IN (...)` 里塞 feed_id 列表**：
         SQLite 的绑定变量上限是 999，60 天的帖子随手就破。
 
         和 `_scan` 一样按结果缓存（约 1 秒／次，热门产品）：锚点冻结、底库只读且静态，
@@ -1580,30 +2134,37 @@ class SqlProvider:
             return self._cache[key]
 
         lo, hi = hkt_range_utc_naive(frm, to)
-        window = (mentions.c.code == code, feeds.c.posted_at >= lo, feeds.c.posted_at < hi)
+        window = (
+            feeds.c.code == code,
+            feeds.c.posted_at >= lo,
+            feeds.c.posted_at < hi,
+            self._qualifying_feed_condition(code=code),
+        )
         per = {}
         with self._engine.connect() as conn:
             q = (
-                select(feeds.c.posted_at, feeds.c.author_uid, feeds.c.comment_count)
-                .select_from(mentions.join(feeds, feeds.c.feed_id == mentions.c.feed_id))
+                select(
+                    feeds.c.feed_id,
+                    feeds.c.posted_at,
+                    feeds.c.author_uid,
+                    feeds.c.comment_count,
+                )
                 .where(*window)
             )
-            for posted, author, n in conn.execute(q):
+            for _feed_id, posted, author, n in conn.execute(q):
                 cell = per.setdefault(utc_naive_to_hkt(posted).date(), [0, set()])
                 cell[0] += n or 0
                 if author:
                     cell[1].add(author)
 
             q = (
-                select(feeds.c.posted_at, comments.c.author_uid)
+                select(comments.c.comment_id, feeds.c.posted_at, comments.c.author_uid)
                 .select_from(
-                    mentions.join(feeds, feeds.c.feed_id == mentions.c.feed_id).join(
-                        comments, comments.c.feed_id == feeds.c.feed_id
-                    )
+                    comments.join(feeds, feeds.c.feed_id == comments.c.feed_id)
                 )
                 .where(*window)
             )
-            for posted, author in conn.execute(q):
+            for _comment_id, posted, author in conn.execute(q):
                 if author:
                     per.setdefault(utc_naive_to_hkt(posted).date(), [0, set()])[1].add(author)
         out = {d: (v[0], len(v[1])) for d, v in per.items()}
@@ -1621,7 +2182,23 @@ class SqlProvider:
         with self._engine.connect() as conn:
             rows = list(
                 conn.execute(
-                    select(feeds).where(
+                    # Keep the account-domain read independent from the
+                    # parent-filter rollout.  ``select(feeds)`` would project
+                    # the newly added ``source_ticker`` column and make raw
+                    # official/KOL pages fail against a pre-migration database,
+                    # even though these surfaces do not consume that fact.
+                    select(
+                        feeds.c.feed_id,
+                        feeds.c.code,
+                        feeds.c.posted_at,
+                        feeds.c.author_name,
+                        feeds.c.title,
+                        feeds.c.content,
+                        feeds.c.like_count,
+                        feeds.c.comment_count,
+                        feeds.c.share_count,
+                        feeds.c.browse_count,
+                    ).where(
                         feeds.c.author_name.in_(names),
                         feeds.c.posted_at >= lo,
                         feeds.c.posted_at < hi,
@@ -1647,7 +2224,9 @@ class SqlProvider:
                 by_feed[feed_id].append((0 if source == "anchor" else 1, code))
         out = []
         for r in rows:
-            codes = [c for _, c in sorted(by_feed.get(r.feed_id, []))]
+            # 同一代码可同时有 anchor/body 两行。保留 anchor 的排序优先级，但产品列表
+            # 本身按帖子去重，否则下游会把一篇帖子当成两次提及。
+            codes = list(dict.fromkeys(c for _, c in sorted(by_feed.get(r.feed_id, []))))
             out.append((r, codes))
         return out
 
@@ -1924,8 +2503,73 @@ def _zero_att():
     return {"positive": 0, "negative": 0, "neutral": 0}
 
 
+def _coverage_ratio(numerator, denominator):
+    if denominator <= 0:
+        return None
+    return round(min(1.0, numerator / denominator), 4)
+
+
+def _comment_funnel(
+    *,
+    raw_platform_count,
+    platform_count,
+    qualifying_feed_count,
+    filter_excluded_platform_count,
+    parsed_count,
+    source_parsed_count=None,
+    source_complete=None,
+    rule_eligible_count=None,
+    rule_excluded_count=0,
+    ai_completed_count=0,
+    relevant_count=0,
+    needs_context_count=0,
+    pending_count=None,
+):
+    """Build the product-level source → parent filter → rule → AI funnel."""
+    if rule_eligible_count is None:
+        rule_eligible_count = max(0, parsed_count - rule_excluded_count)
+    if pending_count is None:
+        pending_count = max(0, rule_eligible_count - ai_completed_count)
+    source_numerator = parsed_count if source_parsed_count is None else source_parsed_count
+    source_coverage = (
+        1.0
+        if platform_count == 0 and source_numerator == 0 and source_complete is True
+        else _coverage_ratio(source_numerator, platform_count)
+    )
+    # ``has_more``/partial is stronger evidence than an accidentally equal
+    # counter.  With no extra status field in the public contract, None
+    # is the honest representation of "coverage cannot be asserted as 100%".
+    if source_complete is False and source_coverage == 1.0:
+        source_coverage = None
+    return {
+        "rawPlatformCount": raw_platform_count,
+        "platformCount": platform_count,
+        "qualifyingFeedCount": qualifying_feed_count,
+        "filterExcludedPlatformCount": filter_excluded_platform_count,
+        "parsedCount": parsed_count,
+        "ruleEligibleCount": rule_eligible_count,
+        "ruleExcludedCount": rule_excluded_count,
+        "aiCompletedCount": ai_completed_count,
+        "relevantCount": relevant_count,
+        "needsContextCount": needs_context_count,
+        "pendingCount": pending_count,
+        "sourceCoverage": source_coverage,
+        # ``pendingCount`` also carries parsed units that have not reached a
+        # durable analysis job. Coverage therefore measures end-to-end progress
+        # over completed plus pending work, not a guessed eligible denominator.
+        "analysisCoverage": (
+            1.0
+            if ai_completed_count + pending_count == 0
+            else _coverage_ratio(ai_completed_count, ai_completed_count + pending_count)
+        ),
+    }
+
+
 def _blank(nb):
     return {
+        # Raw source counter is retained for the public audit funnel only;
+        # every visible metric below is derived from qualifying parents.
+        "rawPlatformCount": 0,
         "mentions": 0,
         "comments": 0,
         "likes": 0,
@@ -2217,6 +2861,125 @@ def _sentence_index(spans, offset):
         if start <= offset:
             best = i
     return best
+
+
+# Product master data and Futu posts mix traditional and simplified Chinese.
+# Keep this finite product-name character map aligned with the worker lexicon;
+# NFKC alone does not convert forms such as 貨/货 or 場/场, and a missed
+# conversion would silently turn an otherwise unique product name into an
+# unattributed official post.
+_ATTRIBUTION_PAIRS = (
+    "數数 產产 槓杠 桿杆 備备 兌兑 認认 購购 權权 動动 紅红 時时 東东 選选 韓韩 現现 國国 業业 "
+    "華华 滬沪 證证 創创 標标 經经 銀银 題题 陽阳 納纳 達达 頭头 偉伟 電电 亞亚 貨货 幣币 場场 "
+    "債债 黃黄 億亿 與与 兩两 幾几 隻只 個个 對对 於于 機机 為为 變变 體体 邊边 積积 極极 "
+    "價价 週周 藥药 織织 續续 買买 賣卖 錢钱 開开 關关 長长 節节 號号 點点 齊齐"
+).split()
+_ATTRIBUTION_TRANSLATION = str.maketrans(
+    "".join(pair[0] for pair in _ATTRIBUTION_PAIRS),
+    "".join(pair[1] for pair in _ATTRIBUTION_PAIRS),
+)
+_TICKER = re.compile(
+    r"\$(?:0*(\d{4,5})\.HK|[^$()\r\n]{1,100}\(\s*0*(\d{4,5})\.HK\s*\))\$",
+    re.IGNORECASE,
+)
+_ASSET_HINTS = {
+    "bitcoin": re.compile(r"比特币|bitcoin|(?<![a-z])btc(?![a-z])", re.IGNORECASE),
+    "ethereum": re.compile(r"以太币|ethereum|(?<![a-z])eth(?![a-z])", re.IGNORECASE),
+}
+
+
+def _attribution_text(text):
+    return unicodedata.normalize("NFKC", str(text or "")).lower().translate(
+        _ATTRIBUTION_TRANSLATION
+    )
+
+
+def _ordered_product_codes(products, codes):
+    wanted = set(codes)
+    return [p["code"] for p in products if p["code"] in wanted]
+
+
+def _explicit_product_codes(products, text, body_codes):
+    """正文里的结构化代码／cashtag／唯一全名；不接受裸数字或发行商简称。"""
+    by_code = {p["code"]: p for p in products}
+    found = {code for code in body_codes if code in by_code}
+    normalized = _attribution_text(text)
+    for match in _TICKER.finditer(normalized):
+        raw = match.group(1) or match.group(2)
+        code = raw.lstrip("0") or "0"
+        if code in by_code:
+            found.add(code)
+
+    # 全名只有在主数据中唯一时才可作为产品身份。多只产品共享的别名、单独的
+    # “比特币/以太币”等家族词都不在这里，避免把消歧线索当作归属证据。
+    names = defaultdict(set)
+    for product in products:
+        name = re.sub(r"\s+", "", _attribution_text(product.get("name")))
+        if name:
+            names[name].add(product["code"])
+    compact_text = re.sub(r"\s+", "", normalized)
+    unique_names = {
+        name: next(iter(codes)) for name, codes in names.items() if len(codes) == 1
+    }
+    found.update(maximal_name_codes(compact_text, unique_names))
+    return _ordered_product_codes(products, found)
+
+
+def _issuer_products(products, official):
+    if not official.get("comps"):
+        return []
+    issuer_key = re.sub(r"\s+", "", _attribution_text(official.get("short")))
+    if not issuer_key:
+        return []
+    return [
+        product
+        for product in products
+        if issuer_key in re.sub(r"\s+", "", _attribution_text(product.get("issuer")))
+    ]
+
+
+def _inferred_product_codes(products, official, text):
+    """只在发行商名下的明确类别能唯一落到产品时推断。"""
+    candidates = _issuer_products(products, official)
+    if not candidates:
+        return []
+    normalized = _attribution_text(text)
+    found = set()
+
+    asset_hints = [name for name, pattern in _ASSET_HINTS.items() if pattern.search(normalized)]
+    for asset in asset_hints:
+        matching = []
+        for product in candidates:
+            name = _attribution_text(product.get("name"))
+            if asset == "bitcoin" and ("比特币" in name or "bitcoin" in name):
+                matching.append(product["code"])
+            elif asset == "ethereum" and ("以太币" in name or "ethereum" in name):
+                matching.append(product["code"])
+        if len(matching) == 1:
+            found.add(matching[0])
+    if found:
+        return _ordered_product_codes(products, found)
+
+    # 其余资产类别沿用主数据 sectorName，但仍须满足发行商名下该类别只有一只。
+    by_sector = defaultdict(list)
+    for product in candidates:
+        sector_name = _attribution_text(product.get("sectorName"))
+        if sector_name:
+            by_sector[sector_name].append(product["code"])
+    for sector_name, codes in by_sector.items():
+        if sector_name in normalized and len(codes) == 1:
+            found.add(codes[0])
+    return _ordered_product_codes(products, found)
+
+
+def _attribute_official_products(products, official, text, body_codes):
+    explicit = _explicit_product_codes(products, text, body_codes)
+    if explicit:
+        return explicit, "explicit"
+    inferred = _inferred_product_codes(products, official, text)
+    if inferred:
+        return inferred, "inferred"
+    return [], "unattributed"
 
 
 def _camp(by_code, codes):

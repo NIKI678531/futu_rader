@@ -167,6 +167,14 @@ class CommentAnnotationV2(BaseModel):
             raise ValueError(
                 f"{self.item_id}: 判不出是否相关就判不出态度，attitude 必须为 null，收到 {self.attitude!r}"
             )
+        if self.relevance != "relevant" and self.aspects:
+            raise ValueError(
+                f"{self.item_id}: relevance={self.relevance} 时 aspects 必须为空数组"
+            )
+        if self.relevance != "relevant" and self.evidence is not None:
+            raise ValueError(
+                f"{self.item_id}: relevance={self.relevance} 时 evidence 必须为 null"
+            )
         if self.relevance == "relevant" and self.attitude is None:
             raise ValueError(f"{self.item_id}: relevance=relevant 但没有给出 attitude")
         if self.compliance_tags:

@@ -17,8 +17,10 @@
        保持可见并变淡。构造函数里把本屏已知端点一次性预取（radar.js `urlsFor`）。 */
 import React from 'react'
 import R, { prefetchScreen } from '../../data/radar'
-import { shortName, navGroups, num, numRaw, stamp, naBox, aiValidationNote, heatLowerBoundNote, staleSuffix, rowsStale, STALE_TITLE } from '../../lib/view'
+import { shortName, navGroups, num, numRaw, stamp, naBox, aiValidationNote, heatLowerBoundNote, staleSuffix, rowsStale, STALE_TITLE, kolDisplayLabel } from '../../lib/view'
+import { commentFunnelView } from '../../lib/commentFunnel'
 import { s } from '../../lib/dc'
+import DataUnavailable from '../../components/DataUnavailable'
 import Shell from '../../components/Shell'
 import withTransition, { split } from '../../components/withTransition'
 import FilterBar from './FilterBar'
@@ -84,19 +86,21 @@ class SectorOverview extends React.Component {
       if (t && t.code === o.code && t.i === -1) return;
       var r = e.currentTarget.getBoundingClientRect();
       var rc = R.pool(this.state.rangeKey).complianceCount[o.code];
+      var funnel = commentFunnelView(o.commentFunnel);
       this.setState({
         tip: {
           code: o.code, i: -1,
           x: atMouse ? e.clientX : r.left + r.width / 2,
           y: r.top - 8, title: o.code + ' · ' + o.name,
           rows: [
-            { k: '评论量', v: num(o.comments), fg: '#fff' },
+            { k: '筛后评论量', v: num(o.comments), fg: '#fff' },
+            { k: '相关评论数', v: funnel.relevantText, fg: '#fff' },
             /* `heatUnknownPosts > 0` 时热度是下限，悬浮卡里说出来；demo 下没有这个键，一个字不多。 */
             { k: '讨论热度', v: num(o.discussionHeat) + ' · 全市场第 ' + hr + ' ／ ' + poolN + ' 名' + heatLowerBoundNote(o.heatUnknownPosts), fg: '#fff' },
             { k: '点赞 ／ 转发', v: num(o.likes) + ' ／ ' + num(o.shares), fg: 'rgba(255,255,255,0.88)' },
             /* attitude 整块可能为 null（AI 标注未建，ADR-0017）。三态同出一块标注，
                要缺一起缺，所以整行一句长文案，不写三遍。 */
-            { k: '积极 ／ 消极 ／ 中性', v: o.attitude == null ? '数据暂不可用' : o.attitude.positive + ' / ' + o.attitude.negative + ' / ' + o.attitude.neutral, fg: 'rgba(255,255,255,0.88)' },
+            { k: '积极 ／ 消极 ／ 中性', v: o.attitude == null ? '数据暂不可用' : o.attitude.positive + ' / ' + o.attitude.negative + ' / ' + o.attitude.neutral + (funnel.partial ? ' · ' + (funnel.available ? '部分数据' : '数据暂不可用') : ''), fg: 'rgba(255,255,255,0.88)' },
             { k: '情绪净值', v: this.netText(o), fg: 'rgba(255,255,255,0.88)' }
           ].concat(rc > 0 ? [{ k: '需合规关注', v: rc + ' 条 · AI 识别待确认', fg: '#F3A6A6' }] : [])
         }
@@ -228,7 +232,7 @@ class SectorOverview extends React.Component {
                接真库之后悬浮卡上会写着 `null / null / null`。
              三态同出一块标注，要缺一起缺，所以合并成一句，不写三遍长文案。 */
           rows: [
-            { k: '评论数', v: numRaw(b.comments), fg: '#fff' },
+            { k: '筛后评论数', v: numRaw(b.comments), fg: '#fff' },
             { k: '点赞 ／ 转发', v: numRaw(b.likes) + ' ／ ' + numRaw(b.shares), fg: 'rgba(255,255,255,0.88)' },
             {
               k: '积极 ／ 消极 ／ 中性',
@@ -300,8 +304,8 @@ class SectorOverview extends React.Component {
       return b >= 5 ? (o.comments - b) / b * 100 : null;
     };
     var SORTS = {
-      comments: { label: '评论量', note: '按区间评论量降序', get: function (o) { return o.comments; } },
-      growth: { label: '环比', note: '按' + range.benchLabel + '评论量增速降序 · 基准期不足 5 条不参与', get: function (o) { var g = growthPct(o); return g == null ? -1e9 : g; } },
+      comments: { label: '筛后评论量', note: '按区间筛后评论量降序', get: function (o) { return o.comments; } },
+      growth: { label: '环比', note: '按' + range.benchLabel + '筛后评论量增速降序 · 基准期不足 5 条不参与', get: function (o) { var g = growthPct(o); return g == null ? -1e9 : g; } },
       heat: { label: '讨论热度', note: '按区间讨论热度降序', get: function (o) { return o.discussionHeat; } },
       /* null 用与态度列同一个哨兵排到最末：`null - 5` 在 JS 里是 -5，不挡就会把「没标过」
          混进「0 条」那一段里排。 */
@@ -346,9 +350,13 @@ class SectorOverview extends React.Component {
       var hs = R.hotSummaryFor(o.code, s.rangeKey);
       var hsOk = hs != null && hs.ok;
       var hsText = hs == null ? '数据暂不可用' : hs.text;
+      var commentFunnel = commentFunnelView(o.commentFunnel);
       return {
         idx: String(i + 1), code: o.code, name: o.name,
         comments: num(o.comments),
+        relatedComments: commentFunnel.relevantText,
+        partialData: commentFunnel.partial,
+        coverageLabel: commentFunnel.available ? '部分数据' : '数据暂不可用',
         growth: g == null ? '—' : (g > 0 ? '+' : '') + g.toFixed(0) + '%',
         gfg: g == null ? 'var(--ink-300)' : (g > 2 ? 'var(--positive-700)' : (g < -2 ? 'var(--negative-600)' : 'var(--ink-500)')),
         heat: (o.heatUnknownPosts > 0 ? '≥ ' : '') + num(o.discussionHeat),
@@ -467,7 +475,7 @@ class SectorOverview extends React.Component {
     });
     var heatColorText = heatMode === 'net'
       ? '情绪净值＝(积极−消极)÷(积极＋消极)×100，绿色为积极多、红色为消极多，样本不足不着色'
-      : '评论量' + range.benchLabel + '的变化百分比';
+      : '筛后评论量' + range.benchLabel + '的变化百分比';
 
     /* 顶部 4 卡（第三轮）：CSOP产品讨论热度 → 舆情管理 → 近期热议飙升的CSOP产品 → 近期热议提升的其他产品；
        前两卡口径收窄至 CSOP 自家（ownership = own），不随榜单筛选变化；基准期为顶部日期预设的前一等长区间 */
@@ -477,18 +485,20 @@ class SectorOverview extends React.Component {
        环比同理 —— delta 是 PRD 第 3 章的全局口径，只在后端实现一份（铁律 1）。 */
     var own = P.own;
     var dOH = own.dHeat, dON = own.dNeg, dOP = own.dPos;
-    /* 自家合计里有几帖转发数未知（`own.heatUnknownPosts > 0`）⇒ 合计是下限，备注里追加一句；demo 下没有这个键。 */
-    var k1 = { value: (own.heatUnknownPosts > 0 ? '≥ ' : '') + num(own.heat), delta: dOH.short, dfg: self.dfg(dOH), sub: '仅统计 CSOP 自家 ' + own.count + ' 只 · ' + range.benchLabel + ' · ' + R.HEAT_FORMULA.replace('讨论热度 ＝ ', '热度＝').split(' ').join('') + heatLowerBoundNote(own.heatUnknownPosts) + (own.baseHeatUnknownPosts > 0 ? ' · 基准期' + heatLowerBoundNote(own.baseHeatUnknownPosts) : '') };
+    /* 自家合计里有几帖转发数未知（`own.heatUnknownPosts > 0`）⇒ 数值显示为下限；demo 下没有这个键。 */
+    var k1 = { value: (own.heatUnknownPosts > 0 ? '≥ ' : '') + num(own.heat), delta: dOH.short, dfg: self.dfg(dOH) };
     var pnTot = own.neg == null || own.pos == null ? null : own.neg + own.pos;
+    var ownFunnelViews = P.list.filter(function (o) { return o.ownership === 'own'; })
+      .map(function (o) { return commentFunnelView(o.commentFunnel); });
+    var ownPartial = ownFunnelViews.some(function (funnel) { return funnel.partial; });
+    var ownCoverageUnavailable = ownFunnelViews.some(function (funnel) { return !funnel.available; });
     var k2 = {
       neg: num(own.neg), negDelta: dON.short, negDfg: dON.dir > 0 ? 'var(--negative-600)' : (dON.dir < 0 ? 'var(--positive-700)' : 'var(--ink-400)'),
       pos: num(own.pos), posDelta: dOP.short, posDfg: self.dfg(dOP),
+      partialData: ownPartial,
+      coverageLabel: ownCoverageUnavailable ? '数据暂不可用' : '部分数据',
       negW: pnTot ? (own.neg / pnTot * 100).toFixed(1) : '0', posW: pnTot ? (own.pos / pnTot * 100).toFixed(1) : '0',
-      barTitle: '负面 ' + num(own.neg) + ' ： 正面 ' + num(own.pos) + (pnTot ? ' · 负面占 ' + (own.neg / pnTot * 100).toFixed(0) + '%' : ''),
-      /* 「N 条」整体替换成长文案，而不是「需合规关注 数据暂不可用 条」—— 量词得跟着数字走。
-         演示数据里 3153 的合规扫描是 unavailable，所以这里真会走到 null 分支：设计源那句
-         `|| 0` 把「没扫过」读成「零条」，于是这张卡少数了一只还显得言之凿凿。 */
-      sub: '正面＝AI 判定积极态度；负面＝可归类为需关注问题 · 其中需合规关注 ' + (own.risk == null ? '数据暂不可用' : own.risk + ' 条') + ' · ' + range.benchLabel
+      barTitle: '负面 ' + num(own.neg) + ' ： 正面 ' + num(own.pos) + (pnTot ? ' · 负面占 ' + (own.neg / pnTot * 100).toFixed(0) + '%' : '')
     };
     /* 两张 Top3 卡：按评论量环比增长率降序，只取正增长；基准期不足 5 条不参与（与榜单环比同口径）；点行打开右侧快速详情抽屉 */
     var topOf = function (own) {
@@ -499,9 +509,10 @@ class SectorOverview extends React.Component {
         .slice(0, 3)
         .map(function (x, i) {
           var o = x.o;
+          var commentFunnel = commentFunnelView(o.commentFunnel);
           return {
-            rank: String(i + 1), code: o.code, name: shortName(o.name), growth: '+' + x.g.toFixed(0) + '%', comments: o.comments.toLocaleString('en-US'),
-            title: o.name + '（' + o.code + '.HK）· 评论量 ' + o.comments + '，' + range.benchLabel + ' ' + '+' + x.g.toFixed(0) + '%（基准期 ' + P.baseComments[o.code] + ' 条）· 点击打开快速详情',
+            rank: String(i + 1), code: o.code, name: shortName(o.name), growth: '+' + x.g.toFixed(0) + '%', comments: o.comments.toLocaleString('en-US'), relatedComments: commentFunnel.relevantText,
+            title: o.name + '（' + o.code + '.HK）· 筛后评论量 ' + o.comments + '，相关评论数 ' + commentFunnel.relevantText + '，' + range.benchLabel + ' ' + '+' + x.g.toFixed(0) + '%（基准期 ' + P.baseComments[o.code] + ' 条）· 点击打开快速详情',
             go: () => self.go({ sel: o.code, tip: null })
           };
         });
@@ -516,7 +527,6 @@ class SectorOverview extends React.Component {
       loading: !!self.props.isPending, bodyOpacity: self.props.isPending ? '0.45' : '1',
       visibleCount: String(visible.length),
       k1: k1, k2: k2, topOwn: topOwn, topPeer: topPeer, topOwnEmpty: topOwn.length === 0, topPeerEmpty: topPeer.length === 0,
-      topNote: '评论量' + range.benchLabel + ' · 前 3',
       hotRule: R.HOT_RULE,
       rows: rows, rowsEmpty: sorted.length === 0,
       rowsEmptyText: (s.scope === 'peer' && s.onlyRisk) ? '暂无相关内容 — 同业产品不纳入需合规关注识别，请切换范围或关闭该筛选。'
@@ -545,12 +555,12 @@ class SectorOverview extends React.Component {
       tiles: tiles,
       heatModes: [
         self.seg(heatMode === 'net', '情绪净值', { heatMode: 'net', tip: null }),
-        self.seg(heatMode === 'growth', '评论量环比', { heatMode: 'growth', tip: null })
+        self.seg(heatMode === 'growth', '筛后评论量环比', { heatMode: 'growth', tip: null })
       ],
       heatLegend: heatLegend, heatColorText: heatColorText, heatLegendTitle: subLabel,
-      heatMetricName: heatMode === 'growth' ? '评论量环比' : '情绪净值',
+      heatMetricName: heatMode === 'growth' ? '筛后评论量环比' : '情绪净值',
       heatMetricNote: heatMode === 'growth'
-        ? '环比＝评论量较上期增减 %'
+        ? '环比＝筛后评论量较上期增减 %'
         : '净值＝积极占比 − 消极占比',
       benchText: range.benchText, benchLabel: range.benchLabel,
       q: s.q, hasQ: hasQ, qBc: hasQ ? 'var(--csop-blue-600)' : 'var(--border-2)',
@@ -589,10 +599,10 @@ class SectorOverview extends React.Component {
       notesFg: s.notes ? 'var(--csop-blue-700)' : 'var(--ink-700)',
       statusLegend: R.STATUS_LEGEND,
       notesBlocks: [
-        { title: '评论量与讨论热度', body: '评论量为区间内被识别为讨论该 ETF 的评论条数，同一账号同一条评论只计一次，一条评论可分别计入多只 ETF。' + R.HEAT_FORMULA + '；' + R.HEAT_NOTE + ' 热度只用于排序与快速扫描，不作为绝对水平解读。' },
-        { title: '积极、消极与中性', body: '「正面／负面」为 AI 对内容中产品态度的分类，不是 Futu 平台的点赞／点踩行为。只判断针对产品本身的态度（费用、流动性、跟踪表现、机制、分红、使用体验）；单纯预测指数或价格涨跌归入产品话题情绪。正负面比分母为正面＋负面，中性单独计数。有效态度评论少于 ' + R.LOW_SAMPLE + ' 条时显示样本不足。「舆情」列为可归类为需关注问题的内容条数。' },
+        { title: '筛后评论量与讨论热度', body: '筛后评论量为合格父帖的平台回复总数，用于热度和排名；筛选前平台总量只在评论漏斗中用于审计。它不等于经现有评论规则与 AI 确认的产品相关评论数。' + R.HEAT_FORMULA + '；' + R.HEAT_NOTE + ' 热度只用于排序与快速扫描，不作为绝对水平解读。' },
+        { title: '积极、消极与中性', body: '「积极／消极」为 AI 对内容中产品态度的分类，不是 Futu 平台的互动行为。只判断针对产品本身的态度（费用、流动性、跟踪表现、机制、分红、使用体验）；仅预测指数、资产或价格涨跌且未明确关联产品的评论不进入产品情绪统计。积极／消极占比的分母为积极＋消极，中性单独计数。有效态度评论少于 ' + R.LOW_SAMPLE + ' 条时显示样本不足。「舆情」列为可归类为需关注问题的内容条数。' },
         { title: '热议总结（AI 生成）', body: R.HOT_RULE + ' 总结为「现象 + 主流观点／动作倾向」一句话，与产品监控页的舆情总结出自同一次生成；字段缺失显示「数据暂不可用」。' },
-        { title: '排名、基准与热力粒度', body: '卡片名次为全市场评论量排名，基于完整活跃 ETF 池计算，板块筛选不重算。基准区间为 ' + range.benchText + '（' + range.benchLabel + '）。热力粒度随日期筛选自适应：1–2 天按小时、3–14 天按自然日、15 天及以上按自然周；当前为' + range.granLabel + '。' },
+        { title: '排名、基准与热力粒度', body: '卡片名次为全市场筛后评论量排名，基于完整活跃 ETF 池与同一父帖筛选口径计算，板块筛选不重算。基准区间为 ' + range.benchText + '（' + range.benchLabel + '）。热力粒度随日期筛选自适应：1–2 天按小时、3–14 天按自然日、15 天及以上按自然周；当前为' + range.granLabel + '。' },
         /* AI 结论的验证程度（ADR-0019 §4）。放进这个面板而不是某个角标，是因为它管的
            不是某一格而是整页：上面几块每一块都写着「AI 判定」「AI 生成」，读的人默认
            这些结论上线前被人看过。本期没有人看过，这句得自己说出来。
@@ -612,6 +622,7 @@ class SectorOverview extends React.Component {
     if (s.sel && R.MASTER[s.sel]) {
       var code = s.sel;
       var o = R.observe(code, s.rangeKey), m = R.MASTER[code];
+      var commentFunnel = commentFunnelView(o.commentFunnel);
       var b = R.benchmark(code, s.rangeKey);
       /* 抽屉里的这几块全要 AI（摘要／主题／负面归类），接真库时整块 null。
          设计源直接 `.text`／`.slice(0,3)`，第一次开抽屉就 TypeError。null 与空数组
@@ -752,6 +763,9 @@ class SectorOverview extends React.Component {
           ? '环比按下限计算：当期 ' + num(b.heatUnknownPosts.current) + ' 帖、基准期 ' + num(b.heatUnknownPosts.base) + ' 帖转发数未知'
           : undefined,
         comments: num(o.comments),
+        relatedComments: commentFunnel.relevantText,
+        partialData: commentFunnel.partial,
+        coverageLabel: commentFunnel.available ? '部分数据' : '数据暂不可用',
         likes: num(o.likes),
         shares: num(o.shares) + heatLowerBoundNote(o.heatUnknownPosts),
         interactions: num(o.interactions) + heatLowerBoundNote(o.heatUnknownPosts),
@@ -791,7 +805,7 @@ class SectorOverview extends React.Component {
             id: r.id,
             tags: r.riskLabels.map(function (l) { return { label: l }; }),
             time: r.publishedAt, excerpt: r.excerpt, why: r.detectionRationale,
-            author: r.authorName, type: r.authorType, source: r.sourceKind,
+            author: r.authorName, type: kolDisplayLabel(r.authorType), source: r.sourceKind,
             tbg: r.isKnownKol ? 'var(--csop-blue-50)' : 'var(--canvas-alt)',
             tfg: r.isKnownKol ? 'var(--csop-blue-700)' : 'var(--ink-700)',
             href: link('&risk=' + r.id)
@@ -803,6 +817,11 @@ class SectorOverview extends React.Component {
   }
 
   render() {
+    /* `/pool` 的 200/null 是父帖筛选 fail-closed 状态，不是渲染异常。先在任何
+       `.list` 解引用之前截住它，避免 ScreenBoundary 把数据未就绪误报成页面崩溃。 */
+    if (R.pool(this.state.rangeKey) == null) {
+      return <DataUnavailable screenLabel="板块总览" />
+    }
     const v = this.renderVals()
 
     return (

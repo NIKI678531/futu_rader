@@ -7,7 +7,9 @@
  * Math.round 的 half-up（Python 是 banker's rounding）、Array.sort 的稳定性——任何一处
  * 对不齐，逐字比对就红，而且极难定位。
  *
- * 这里没有第二份口径实现：数值**逐字**来自设计源，本文件只负责枚举参数、序列化。
+ * 除下文列明的契约迁移外，数值**逐字**来自设计源，本文件只负责枚举参数、序列化。
+ * 官号归属是其中一项迁移：旧设计源的 mentioned 含讨论区 anchor，生成时改由正文严格
+ * cashtag 固化显式归属，避免 demo 继续示范已经废弃的口径。
  * 真实数据的口径实现在 backend/core/（SQL），与本文件无关（铁律 1 不受影响）。
  *
  * 用法：node backend/fixtures/generate.mjs
@@ -79,7 +81,7 @@ dump('ranges', RANGE_KEYS.map((k) => {
  * 阈值不在这里写死：它在 meta.json 的 thresholds.lowConfidence，前端从 /meta 拿的
  * 也是那一个（铁律 1 的同一个理由 —— 一个数只有一个来源）。
  *
- * 这是本文件对设计源返回值的第四处**有意不一致**（前三处见下面 pool/ranks 那段）。 */
+ * 这是本文件对设计源返回值的一处**有意不一致**（其余见下面各段）。 */
 const LOW_CONF = JSON.parse(readFileSync(join(here, 'meta.json'), 'utf8')).thresholds.lowConfidence
 /** 就地补键，**不复制对象**：`kolImpact` 的 `leaders[].posts` / `leaders[].top` 与
  *  `posts` 是同一批对象引用，换成 `{...post}` 会让同一篇帖子在两处序列化成两个值。 */
@@ -93,13 +95,128 @@ function stampReview(posts) {
 }
 
 /* ── officialPosts(range) ── 官号帖子级内容流。 */
-dump('official_posts', RANGE_KEYS.map((k) => [k, stampReview(R.officialPosts(k))]))
+
+/* 设计源的旧 `mentioned` 是「挂载标的 ∪ 正文提及」，不能再当产品归属。演示
+ * fixture 在生成时从正文的严格 cashtag 固化 v3 归属；运行时 provider 只消费下面
+ * 这些显式字段，绝不回读旧 mentioned/camp。图片帖没有正文证据，保持 unattributed。 */
+const OFFICIAL_CASHTAG = /\$(?:[^$]*?[（(]\s*)?(0*\d{4,5})\.HK\s*[）)]?\$/gi
+
+function normaliseHkCode(raw) {
+  const stripped = String(raw).replace(/^0+(?=\d)/, '') || '0'
+  return stripped.length < 4 ? stripped.padStart(4, '0') : stripped
+}
+
+function officialCashtagCounts(post) {
+  const counts = new Map()
+  const text = (post.fullText || []).join('\n')
+  for (const match of text.matchAll(OFFICIAL_CASHTAG)) {
+    const code = normaliseHkCode(match[1])
+    counts.set(code, (counts.get(code) || 0) + 1)
+  }
+  return counts
+}
+
+function officialCamp(products) {
+  let own = false
+  let peer = false
+  for (const product of products) {
+    if (product.ownership === 'own') own = true
+    else peer = true
+  }
+  return own && peer ? 'both' : own ? 'own' : peer ? 'competitor' : 'none'
+}
+
+function stampOfficialAttribution(posts) {
+  for (const post of posts) {
+    const sourceAnchorCode = post.code || null
+    const counts = officialCashtagCounts(post)
+    const attributedProducts = Array.from(counts.keys())
+      .filter((code) => R.MASTER[code])
+      .map((code) => {
+        const product = R.MASTER[code]
+        return {
+          code,
+          name: product.name,
+          issuer: product.issuer,
+          ownership: product.ownership,
+        }
+      })
+    const attributedCamp = officialCamp(attributedProducts)
+    const primary = attributedProducts[0] || null
+    Object.assign(post, {
+      sourceAnchorCode,
+      attributedProducts,
+      attributionStatus: attributedProducts.length ? 'explicit' : 'unattributed',
+      attributedCamp,
+      // 旧卡片字段只作为新归属结果的兼容投影，不再保留原先的 anchor 语义。
+      code: primary ? primary.code : null,
+      name: primary ? primary.name : null,
+      sector: primary ? R.MASTER[primary.code].sector : null,
+      ownership: primary ? primary.ownership : null,
+      issuer: primary ? primary.issuer : null,
+      mentioned: attributedProducts,
+      camp: attributedCamp,
+      campPrimary: officialCamp(attributedProducts.slice(0, 1)),
+    })
+  }
+  return posts
+}
+
+const OFFICIAL_FIXTURES = new Map()
+function officialFixture(rangeKey) {
+  if (!OFFICIAL_FIXTURES.has(rangeKey)) {
+    OFFICIAL_FIXTURES.set(
+      rangeKey,
+      stampOfficialAttribution(stampReview(R.officialPosts(rangeKey))),
+    )
+  }
+  return OFFICIAL_FIXTURES.get(rangeKey)
+}
+
+dump('official_posts', RANGE_KEYS.map((k) => [k, officialFixture(k)]))
 
 /* ── etfMentionsFor(account, range) ── 官号 × ETF 提及统计。
    参数键 "<account>|<range>"；账号全集来自 OFFICIAL 主数据，20 × 5 = 100 条。 */
+function explicitEtfMentionsFor(account, rangeKey) {
+  const rows = new Map()
+  const postIds = new Set()
+  for (const post of officialFixture(rangeKey)) {
+    if (post.account !== account) continue
+    const counts = officialCashtagCounts(post)
+    for (const product of post.attributedProducts) {
+      let row = rows.get(product.code)
+      if (!row) {
+        row = {
+          ...product,
+          short: R.shortName(product.name),
+          count: 0,
+          posts: 0,
+        }
+        rows.set(product.code, row)
+      }
+      row.count += Math.max(1, counts.get(product.code) || 0)
+      row.posts++
+      postIds.add(post.id)
+    }
+  }
+  const list = Array.from(rows.values()).sort((a, b) => {
+    const ao = a.ownership === 'own' ? 0 : 1
+    const bo = b.ownership === 'own' ? 0 : 1
+    return ao - bo || b.count - a.count || (a.code < b.code ? -1 : 1)
+  })
+  return {
+    list,
+    own: list.filter((item) => item.ownership === 'own'),
+    peer: list.filter((item) => item.ownership !== 'own'),
+    etfCount: list.length,
+    total: list.reduce((sum, item) => sum + item.count, 0),
+    postCount: postIds.size,
+  }
+}
+
 dump(
   'etf_mentions',
-  R.OFFICIAL.flatMap((o) => RANGE_KEYS.map((k) => [o[0] + '|' + k, R.etfMentionsFor(o[0], k)])),
+  R.OFFICIAL.flatMap((o) => RANGE_KEYS.map((k) => [o[0] + '|' + k, explicitEtfMentionsFor(o[0], k)])),
 )
 
 /* ── kolImpact(range) ── 全部合作 KOL 的帖子全集（含 AI 标注）＋后端算好的画像榜。

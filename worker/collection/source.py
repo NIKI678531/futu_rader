@@ -1,7 +1,9 @@
-"""Source adapters for the internal collection seam."""
+"""Read-only source adapters for the MarketInsight database seam."""
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Iterable
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Protocol
@@ -9,6 +11,8 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import MetaData, Table, and_, func, or_, select
 from sqlalchemy.exc import NoSuchTableError
+
+from radar_db.comment_filter import normalize_source_ticker, source_ticker_to_code
 
 from .models import Cursor, FeedObservation, SourcePage, UserObservation
 from .normalization import normalize_feed
@@ -27,6 +31,22 @@ class SourceSchemaError(RuntimeError):
     pass
 
 
+def configured_symbols_fingerprint(codes: Iterable[str]) -> str:
+    """Return the collector/Radar fingerprint for a configured symbol set.
+
+    Both sides hash unique product codes sorted lexicographically and joined by
+    ``\n`` without a trailing newline.  The algorithm prefix makes any future
+    receipt-format migration explicit.
+    """
+    normalized = sorted({str(code).strip() for code in codes})
+    if not normalized or any(
+        not code or "\n" in code or "\r" in code for code in normalized
+    ):
+        raise ValueError("Configured symbol codes must be non-empty single-line strings")
+    payload = "\n".join(normalized).encode("utf-8")
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
 class SourceAdapter(Protocol):
     source_id: str
 
@@ -38,19 +58,15 @@ class SourceAdapter(Protocol):
         self, stream: str, after: Cursor | None, through: Cursor | None, limit: int
     ) -> SourcePage: ...
 
+    def pull_feeds_by_id(self, feed_ids: tuple[int, ...]) -> SourcePage: ...
+
     def complete_through(self, through_source_run_id: str | None = None) -> date | None: ...
 
     def closing_run(self, hkt_day: date) -> dict | None: ...
 
 
 def _code_from_ticker(ticker: str) -> str:
-    value = ticker.strip()
-    if value.upper().startswith("HK."):
-        value = value.split(".", 1)[1]
-    elif value.upper().endswith(".HK"):
-        value = value.rsplit(".", 1)[0]
-    head = value.split(".", 1)[0]
-    return head.lstrip("0") or "0"
+    return source_ticker_to_code(ticker) or ""
 
 
 class MarketInsightMySqlAdapter:
@@ -98,13 +114,28 @@ class MarketInsightMySqlAdapter:
         with engine.connect() as conn:
             stock_rows = conn.execute(select(self.stocks.c.stock_id, self.stocks.c.ticker)).all()
         self.stock_codes = {row.stock_id: _code_from_ticker(row.ticker) for row in stock_rows}
+        self.stock_tickers = {
+            row.stock_id: normalize_source_ticker(row.ticker)
+            for row in stock_rows
+        }
         self.pool_codes = set(pool_codes)
+        self.pool_symbols_fingerprint = configured_symbols_fingerprint(self.pool_codes)
         self.pool_stock_ids = tuple(
             stock_id for stock_id, code in self.stock_codes.items() if code in self.pool_codes
         )
         missing_codes = self.pool_codes - set(self.stock_codes.values())
         if missing_codes:
             raise SourceSchemaError(f"Product pool codes missing from source: {sorted(missing_codes)}")
+        invalid_tickers = [
+            stock_id for stock_id in self.pool_stock_ids
+            if source_ticker_to_code(self.stock_tickers.get(stock_id))
+            != self.stock_codes.get(stock_id)
+        ]
+        if invalid_tickers:
+            raise SourceSchemaError(
+                "Product pool rows contain invalid source tickers for stock_ids: "
+                f"{invalid_tickers[:20]}"
+            )
 
     def _stream(self, stream):
         if stream == "feeds":
@@ -165,13 +196,62 @@ class MarketInsightMySqlAdapter:
                 if code not in self.pool_codes:
                     ignored += 1
                     continue
-                observation = normalize_feed(row, code, observed_at)
+                observation = normalize_feed(
+                    row,
+                    code,
+                    observed_at,
+                    source_ticker=self.stock_tickers[row["stock_id"]],
+                )
                 if stream == "feed_details":
-                    # Detail runs are allowed to improve text only. Counter/comment snapshots belong to feeds.
-                    observation = replace(observation, comments=(), mentions=())
+                    # Detail runs authoritatively refresh parent text and its
+                    # derived body mentions. Counter/comment snapshots still
+                    # belong to feeds.
+                    observation = replace(observation, comments=())
                 items.append(observation)
         cursor = Cursor(rows[-1][timestamp_col.name], rows[-1][id_col.name]) if rows else after
         return SourcePage(tuple(items), cursor, len(rows) < limit, ignored=ignored)
+
+    def pull_feeds_by_id(self, feed_ids):
+        """Read the latest feed rows for an explicit repair list.
+
+        This path intentionally normalizes the row as the ``feeds`` stream (and
+        therefore includes its comment snapshot), not as ``feed_details`` which
+        only refreshes parent text/body mentions. The source database exposes
+        no direct reply-page interface, so a truncated embedded snapshot stays
+        partial; this method never claims that re-reading the row fetched the
+        missing pages.
+        """
+        requested = tuple(dict.fromkeys(int(feed_id) for feed_id in feed_ids))
+        if not requested:
+            return SourcePage((), None, True)
+        with self.engine.connect() as conn:
+            rows = [dict(row) for row in conn.execute(
+                select(self.feeds)
+                .where(self.feeds.c.feed_id.in_(requested))
+                .order_by(self.feeds.c.feed_id)
+            ).mappings()]
+        items = []
+        accepted = set()
+        for row in rows:
+            code = self.stock_codes[row["stock_id"]]
+            if code not in self.pool_codes:
+                continue
+            observed_at = row.get("scraped_at") or row.get("detail_updated_at")
+            if observed_at is None:
+                continue
+            items.append(normalize_feed(
+                row,
+                code,
+                observed_at,
+                source_ticker=self.stock_tickers[row["stock_id"]],
+            ))
+            accepted.add(int(row["feed_id"]))
+        return SourcePage(
+            tuple(items),
+            None,
+            True,
+            ignored=len(set(requested) - accepted),
+        )
 
     def _verified_completion_conditions(self, conn, table, claim_conditions):
         """Return proof predicates, or fail closed for an unverifiable legacy claim.
@@ -196,8 +276,10 @@ class MarketInsightMySqlAdapter:
         fingerprint = table.c.configured_symbols_fingerprint
         return (
             configured > 0,
+            configured == len(self.pool_codes),
             fingerprint.isnot(None),
             func.length(func.trim(fingerprint)) > 0,
+            fingerprint == self.pool_symbols_fingerprint,
             table.c.attempted_symbol_count == configured,
             table.c.succeeded_symbol_count == configured,
         )
@@ -281,7 +363,8 @@ class MemorySourceAdapter:
 
     source_id = "memory"
 
-    def __init__(self, streams=None, complete_through=None, fail_after_pages=None, closing_runs=None):
+    def __init__(self, streams=None, complete_through=None, fail_after_pages=None,
+                 closing_runs=None):
         self._streams = {name: list(values) for name, values in (streams or {}).items()}
         self._complete = complete_through
         self._calls = {name: 0 for name in STREAMS}
@@ -321,6 +404,19 @@ class MemorySourceAdapter:
             for item in values
         )
         return SourcePage(tuple(selected), cursor, not remaining)
+
+    def pull_feeds_by_id(self, feed_ids):
+        requested = set(feed_ids)
+        latest = {}
+        for item in self._streams.get("feeds", []):
+            feed_id = int(item.feed["feed_id"])
+            if feed_id not in requested:
+                continue
+            prior = latest.get(feed_id)
+            if prior is None or item.observed_at > prior.observed_at:
+                latest[feed_id] = item
+        items = tuple(latest[feed_id] for feed_id in feed_ids if feed_id in latest)
+        return SourcePage(items, None, True, ignored=len(requested - set(latest)))
 
     def complete_through(self, through_source_run_id=None):
         return self._complete

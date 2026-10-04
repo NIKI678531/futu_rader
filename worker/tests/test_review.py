@@ -18,7 +18,7 @@ import sys
 from datetime import datetime
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(
@@ -27,10 +27,14 @@ sys.path.insert(
 
 from jobs import review  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
+from radar_db.annotations_read import released_annotations  # noqa: E402
 from radar_db.schema import (  # noqa: E402
     NO_SUBJECT,
     annotation_evidence,
+    annotation_runs,
     annotations,
+    comments,
+    feeds,
     review_decisions,
 )
 
@@ -67,6 +71,55 @@ def engine(tmp_path):
 def _rows(engine, table):
     with engine.connect() as conn:
         return conn.execute(select(table)).mappings().all()
+
+
+def _auditable_comment(engine, *, prompt_version="comment-product-v2"):
+    """Create the source and model-run lineage required by the release seam."""
+    with engine.begin() as conn:
+        conn.execute(insert(feeds).values(
+            feed_id=1,
+            code=CODE,
+            source_ticker="03033.HK",
+            posted_at=datetime(2026, 8, 20, 8, 0),
+            feed_type=1,
+            title="$03033.HK$",
+            content=None,
+            like_count=0,
+            comment_count=1,
+            image_count=0,
+            raw_json_broken=False,
+        ))
+        conn.execute(insert(comments).values(
+            comment_id=11,
+            feed_id=1,
+            content="点差太大",
+        ))
+        conn.execute(insert(annotation_runs).values(
+            run_id="run-a",
+            task="comment_product",
+            provider="openai_compatible",
+            model_id="test-model",
+            prompt_version=prompt_version,
+            taxonomy_version="v2",
+            schema_version="v2",
+            started_at=datetime(2026, 8, 20, 8, 30),
+            finished_at=datetime(2026, 8, 20, 8, 31),
+            status="done",
+            input_count=1,
+            success_count=1,
+            error_count=0,
+        ))
+
+
+def _released_attitude(engine):
+    return released_annotations(
+        engine,
+        "attitude",
+        "comment",
+        task="comment_product",
+        prompt_version=("comment-product-v2", "comment-product-v3"),
+        subject_code=CODE,
+    )
 
 
 # ── 队列 ───────────────────────────────────────────────────────────────
@@ -271,6 +324,39 @@ def test_correction_records_the_new_value_in_the_decision_row(engine):
     d = _rows(engine, review_decisions)[0]
     assert d["decision"] == "correct"
     assert json.loads(d["corrected_value_json"]) == ["fee", "spread"]
+
+
+def test_correction_is_released_through_its_auditable_review_chain(engine):
+    _auditable_comment(engine)
+    old = _ann(engine)
+    new = review.decide(engine, old, "correct", "alice", value="positive")
+
+    released = _released_attitude(engine)
+
+    assert released[(11, CODE)]["annotation_id"] == new
+    assert released[(11, CODE)]["value"] == "positive"
+    assert released[(11, CODE)]["run_id"].startswith("review:")
+
+
+def test_correction_with_tampered_review_evidence_is_not_released(engine):
+    _auditable_comment(engine)
+    old = _ann(engine)
+    review.decide(engine, old, "correct", "alice", value="positive")
+    with engine.begin() as conn:
+        conn.execute(
+            update(review_decisions)
+            .values(corrected_value_json=json.dumps("neutral"))
+        )
+
+    assert _released_attitude(engine) == {}
+
+
+def test_correction_cannot_launder_an_unsupported_model_run(engine):
+    _auditable_comment(engine, prompt_version="comment-product-v1")
+    old = _ann(engine)
+    review.decide(engine, old, "correct", "alice", value="positive")
+
+    assert _released_attitude(engine) == {}
 
 
 def test_correct_without_a_value_is_refused(engine):

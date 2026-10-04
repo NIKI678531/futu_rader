@@ -39,7 +39,7 @@ Gate 0–2 之后管线通了、ADR-0019 之后读路径通了，页面上却只
 
 `CommentAnnotationV2`（`schema_version=v2`）在 v1 的相关性／态度／aspect／证据之外加：`market_direction`（对大盘的方向，与产品态度独立，喂 P13）、`compliance_tags[]`／`compliance_rationale`／`compliance_evidence`（runbook §20 五类，空数组必须落库）。写库拆五个 kind：`relevance` / `attitude` / `aspect` / `market_direction` / `compliance`；合规证据挂在合规行上。
 
-依据：arXiv 2604.03684（2026，8 个生产模型、96 万次分类）—— 每批 25–100 条、每条同时判 ≤10 个维度，精度损失 <2pp。同文指出 OpenAI 推理模型在 ≥250 条/批时崩溃，Luna 是推理模型，**30 条/批保留**，放量前用 `scripts/calibrate.py` 做 b=1 vs b=30 一致率实验。
+依据：arXiv 2604.03684（2026，8 个生产模型、96 万次分类）—— 每批 25–100 条、每条同时判 ≤10 个维度，精度损失 <2pp。这里最初保留的 30 条方案已被 [ADR-0028](0028-exact-comment-eligibility-and-official-attribution.md) 取代：只比较 b=1 与 b=5，达到质量门槛且实测吞吐至少 3 倍才启用 b=5；System One 固定单条，batch=30 不启用。
 
 `compliance_signal` 不再是独立任务；runbook §20.3 的词表退为召回审计（`audit.py --lexicon-recall`）。
 
@@ -92,7 +92,7 @@ Prompt 与 schema 都按版本注册（`ai/prompts/get(task, version)`、`schema
 - **规则层直接丢掉个股评论不落库**：「没标过」与「被剔了」在库里分不开，页面上它们相反。
 - **`synthesis_outputs` 塞进 `annotations`**：`target_id`（BigInteger）与 `subject_code` 都要挪用，两列失去原义。
 - **让 synthesize 走 backend HTTP API 取事实**：多一层服务依赖，且 API 是按页面契约裁剪过的，缺 Layer B 要的桶级明细。
-- **批大小加到 100**：文献说安全，但同文里 OpenAI 推理模型是例外；先做 b=1 vs b=30 实验再说。
+- **批大小加到 30 或 100**：不启用。当前仅允许经 b=1 vs b=5 门禁验证后的 5 条批量；见 ADR-0028 与操作单。
 
 ## 实施清单（本 ADR 随代码一并提交，逐项已完成 ✓／需本机资源 ○）
 

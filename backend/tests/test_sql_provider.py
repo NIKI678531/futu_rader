@@ -91,20 +91,16 @@ class TestPool:
         assert item["likes"] == 13
         assert item["activeAccounts"] == 3
 
-    def test_body_mentions_count_the_same_as_anchor_ones(self, provider):
-        """f1 挂在 3033 讨论区，正文里提到 3032 —— 两只产品都要计入。
+    def test_product_totals_stay_in_the_original_discussion_section(self, provider):
+        """f1 挂在 3033 讨论区、正文提到 3032；市场计数仍只属于 3033。
 
-        这是 ADR-0009 修正的那件事：正文提及只能从 `raw_json.summary.rich_text` 拿到，
-        `mentions.source='body'` 就是它的落点。漏掉它，竞品的声量会系统性偏低。
+        正文提及继续服务账号归属，但产品评论量严格继承父帖讨论区，不能跨产品摊开。
         """
         peer = next(x for x in provider.pool("d1")["list"] if x["code"] == PEER_CODE)
-        # f1（正文提及）+ f3（挂载）= 2 篇；评论量 4 + 2 = 6
-        assert peer["mentions"] == 2
-        assert peer["comments"] == 6
-        # 点赞 = f1 的 13 ＋ f3 的 (5 帖赞 + 1 评论赞) = 19；转发 2 + 0 = 2
-        # 热度 = 6 + 0.3×19 + 2 = 13.7 → 14
-        assert peer["discussionHeat"] == 14
-        assert peer["interactions"] == 21
+        assert peer["mentions"] == 1
+        assert peer["comments"] == 2
+        assert peer["discussionHeat"] == 4
+        assert peer["interactions"] == 6
 
     def test_out_of_pool_mentions_are_dropped(self, provider):
         """`in_pool=False` 的标的（腾讯 0700）不该出现在任何地方。"""
@@ -189,9 +185,9 @@ class TestRanks:
         r = provider.ranks("d1")
         assert r["total"] == len(MASTER["products"])
         assert sorted(r["map"].values()) == list(range(1, len(MASTER["products"]) + 1))
-        # 评论量：3032 有 6，3033 有 5，其余 0
-        assert r["map"][PEER_CODE] == 1
-        assert r["map"][OWN_CODE] == 2
+        # 评论量：3033 有 5，3032 有 2，其余 0
+        assert r["map"][OWN_CODE] == 1
+        assert r["map"][PEER_CODE] == 2
 
     def test_ties_break_by_code_so_the_order_is_stable(self, provider):
         """并列 0 的那 118 只必须有确定顺序，否则同一只产品的名次会在两次请求间跳。"""
@@ -293,13 +289,16 @@ class TestOfficialPosts:
         assert p["isIssuer"] is True
         assert p["accountType"] == "发行商官号"
 
-    def test_anchor_mention_wins_the_primary_slot(self, provider):
-        """一篇帖子挂在 3033 讨论区、正文提到 3032：主产品是挂载标的。"""
+    def test_body_mention_wins_and_anchor_is_only_source_metadata(self, provider):
+        """一篇帖子挂在 3033 讨论区、正文提到 3032：归属只认正文，anchor 仅审计。"""
         p = provider.official_posts("d1")[0]
-        assert p["code"] == OWN_CODE
-        assert [m["code"] for m in p["mentioned"]] == [OWN_CODE, PEER_CODE]
-        assert p["campPrimary"] == "own"
-        assert p["camp"] == "both"  # 自家 ＋ 竞品都提到了
+        assert p["sourceAnchorCode"] == OWN_CODE
+        assert p["code"] == PEER_CODE
+        assert [m["code"] for m in p["mentioned"]] == [PEER_CODE]
+        assert p["attributedProducts"] == p["mentioned"]
+        assert p["attributionStatus"] == "explicit"
+        assert p["campPrimary"] == "competitor"
+        assert p["camp"] == p["attributedCamp"] == "competitor"
 
     def test_countable_fields_are_real(self, provider):
         p = provider.official_posts("d1")[0]
@@ -317,7 +316,7 @@ class TestOfficialPosts:
     def test_etf_mentions_use_the_account_domain_caliber(self, provider):
         """账号域「提及 ETF」按出现次数累加 —— 和市场域的评论去重口径语义相反。"""
         m = provider.etf_mentions_for("恒生投资", "d1")
-        assert m["etfCount"] == 2
+        assert m["etfCount"] == 1
         assert all(x["count"] == x["posts"] for x in m["list"])
 
     def test_etf_mentions_sorts_own_products_first(self, provider):
@@ -327,8 +326,8 @@ class TestOfficialPosts:
         （它比的是 demo），只有接了真库才看得见 —— 那时候没人会想到去查排序。
         """
         m = provider.etf_mentions_for("恒生投资", "d1")
-        # 两只都只被提 1 次，差别只在自家／竞品：3033 是自家，3032 是竞品。
-        assert [x["code"] for x in m["list"]] == [OWN_CODE, PEER_CODE]
+        # 挂载的 3033 不再混入账号归属；正文明确提到的 3032 才进入清单。
+        assert [x["code"] for x in m["list"]] == [PEER_CODE]
 
     def test_etf_mentions_returns_all_six_contract_keys(self, provider):
         """`own`／`peer` 是**两个子列表**，不是两个计数。
@@ -338,7 +337,7 @@ class TestOfficialPosts:
         """
         m = provider.etf_mentions_for("恒生投资", "d1")
         assert set(m) == {"list", "own", "peer", "etfCount", "total", "postCount"}
-        assert [x["code"] for x in m["own"]] == [OWN_CODE]
+        assert [x["code"] for x in m["own"]] == []
         assert [x["code"] for x in m["peer"]] == [PEER_CODE]
         assert m["total"] == sum(x["count"] for x in m["list"])
         assert m["postCount"] == 1  # 两只 ETF 都来自同一篇帖子
@@ -346,14 +345,14 @@ class TestOfficialPosts:
     def test_etf_mentions_short_name_matches_the_frontend_rule(self, provider):
         """`short` 要按 shortName 的两条正则来，不是只截长度。
 
-        自家产品叫「恒生科技指數ETF」，去掉 ETF 后缀就是「恒生科技」。只截长度的话
+        归属产品叫「恒生科技ETF」，去掉 ETF 后缀就是「恒生科技」。只截长度的话
         sql 下是另一个值，而页面上那一栏的宽度是按前者设计的。
         """
         m = provider.etf_mentions_for("恒生投资", "d1")
-        assert next(x for x in m["list"] if x["code"] == OWN_CODE)["short"] == "恒生科技"
+        assert next(x for x in m["list"] if x["code"] == PEER_CODE)["short"] == "恒生科技"
 
     def test_etf_mentions_accepts_either_name_form(self, provider):
-        assert provider.etf_mentions_for(OFFICIAL_FULL, "d1")["etfCount"] == 2
+        assert provider.etf_mentions_for(OFFICIAL_FULL, "d1")["etfCount"] == 1
 
     def test_unknown_account_is_missing_not_none(self, provider):
         """名单里没有这个官号 = 没这个资源 → 404，不是「这个官号暂不可用」。"""
@@ -611,12 +610,24 @@ class TestAiAndPriceSurfacesAreNone:
         assert all(v == {"status": "unavailable", "text": "数据暂不可用", "sample": None, "ok": False}
                    for v in hs.values())
 
-    @pytest.mark.parametrize(
-        "fn,args", [("candles_for", (OWN_CODE, "d1")), ("stages_for", (OWN_CODE, "d1"))]
-    )
-    def test_price_surfaces_have_no_source_at_all(self, provider, fn, args):
-        """K 线与阶段观点要行情数据，瘦库里没有这张表，标注跑成什么样都不会让它们有值。"""
-        assert getattr(provider, fn)(*args) is None
+    def test_price_surface_has_no_source_at_all(self, provider):
+        """瘦库里没有行情表时，K 线保持不可用。"""
+        assert provider.candles_for(OWN_CODE, "d1") is None
+
+    def test_pending_ai_keeps_raw_heat_but_hides_stages(self, provider):
+        """热度是数据库事实；v3 尚未完成时只隐藏 AI 情绪和阶段结论。"""
+        data = provider.stages_for(OWN_CODE, "d1")
+
+        assert data["status"] == "unavailable"
+        assert data["stages"] == []
+        assert len(data["series"]) == 24
+        assert sum(point["heat"] for point in data["series"]) > 0
+        assert all(
+            point[field] is None
+            for point in data["series"]
+            for field in ("positive", "negative", "neutral")
+        )
+        assert "threshold" not in data and "unitCount" not in data
 
     def test_the_annotation_driven_two_start_out_missing(self, provider):
         """证据与合规：**没标注时**仍是缺失态，各自的形状不同。
@@ -642,11 +653,20 @@ class TestAttitudeAggregation:
         p = add_annotations(
             provider,
             [
-                {"annotation_id": 1, "target_id": 11, "value": "negative"},
-                {"annotation_id": 2, "target_id": 12, "value": "positive"},
+                {"annotation_id": 1, "target_id": 11, "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 2, "target_id": 11, "value": "negative"},
+                {"annotation_id": 3, "target_id": 12, "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 4, "target_id": 12, "value": "positive"},
                 # c13 在 f3（竞品讨论区），标的是竞品
                 {
-                    "annotation_id": 3,
+                    "annotation_id": 5,
+                    "target_id": 13,
+                    "subject_code": PEER_CODE,
+                    "kind": "relevance",
+                    "value": "relevant",
+                },
+                {
+                    "annotation_id": 6,
                     "target_id": 13,
                     "subject_code": PEER_CODE,
                     "value": "neutral",
@@ -671,7 +691,11 @@ class TestAttitudeAggregation:
         那条负面结论会带着完整的证据链，看不出是我们自己加的。
         """
         p = add_annotations(
-            provider, [{"annotation_id": 1, "target_id": 11, "value": "negative"}]
+            provider,
+            [
+                {"annotation_id": 1, "target_id": 11, "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 2, "target_id": 11, "value": "negative"},
+            ],
         )
         by_code = {x["code"]: x for x in p.pool("d1")["list"]}
         assert by_code[OWN_CODE]["attitude"]["negative"] == 1
@@ -685,7 +709,11 @@ class TestAttitudeAggregation:
         95% 的桶显示「暂不可用」，那条线根本画不出来。
         """
         p = add_annotations(
-            provider, [{"annotation_id": 1, "target_id": 11, "value": "negative"}]
+            provider,
+            [
+                {"annotation_id": 1, "target_id": 11, "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 2, "target_id": 11, "value": "negative"},
+            ],
         )
         pool = p.pool("d1")
         own = next(x for x in pool["list"] if x["code"] == OWN_CODE)
@@ -705,8 +733,17 @@ class TestAttitudeAggregation:
         p = add_annotations(
             provider,
             [
-                {"annotation_id": i + 1, "target_id": 100 + i, "value": "positive"}
+                row
                 for i in range(10)
+                for row in (
+                    {
+                        "annotation_id": i * 2 + 1,
+                        "target_id": 100 + i,
+                        "kind": "relevance",
+                        "value": "relevant",
+                    },
+                    {"annotation_id": i * 2 + 2, "target_id": 100 + i, "value": "positive"},
+                )
             ],
         )
         own = next(x for x in p.pool("d1")["list"] if x["code"] == OWN_CODE)
@@ -714,7 +751,11 @@ class TestAttitudeAggregation:
         assert own["attitude"]["sampleSufficient"] is True
 
         few = add_annotations(
-            make_sql_provider(), [{"annotation_id": 1, "target_id": 11, "value": "positive"}]
+            make_sql_provider(),
+            [
+                {"annotation_id": 1, "target_id": 11, "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 2, "target_id": 11, "value": "positive"},
+            ],
         )
         own = next(x for x in few.pool("d1")["list"] if x["code"] == OWN_CODE)
         assert own["attitude"]["sampleSufficient"] is False, "一条 ≠ 够，也 ≠ 不知道"
@@ -728,9 +769,12 @@ class TestAttitudeAggregation:
         p = add_annotations(
             provider,
             [
-                {"annotation_id": 1, "target_id": 11, "value": "positive"},
-                {"annotation_id": 2, "target_id": 12, "value": "positive"},
-                {"annotation_id": 3, "target_id": 14, "value": "positive"},
+                {"annotation_id": 1, "target_id": 11, "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 2, "target_id": 11, "value": "positive"},
+                {"annotation_id": 3, "target_id": 12, "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 4, "target_id": 12, "value": "positive"},
+                {"annotation_id": 5, "target_id": 14, "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 6, "target_id": 14, "value": "positive"},
             ],
         )
         b = p.benchmark(OWN_CODE, "d1")
@@ -744,7 +788,11 @@ class TestAttitudeAggregation:
         而它系统性偏低，低多少取决于标注覆盖率，页面上没有任何迹象。
         """
         p = add_annotations(
-            provider, [{"annotation_id": 1, "target_id": 11, "value": "positive"}]
+            provider,
+            [
+                {"annotation_id": 1, "target_id": 11, "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 2, "target_id": 11, "value": "positive"},
+            ],
         )
         assert p.pool("d1")["own"]["pos"] is None
         assert p.pool("d1")["own"]["dPos"]["text"] == "数据暂不可用"
@@ -880,8 +928,10 @@ class TestEvidenceLocatesTheOriginalText:
         p = add_annotations(
             provider,
             [
-                {"annotation_id": 1, "target_id": 11, "value": "negative"},
-                {"annotation_id": 2, "target_id": 12, "value": "positive"},
+                {"annotation_id": 1, "target_id": 11, "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 2, "target_id": 11, "value": "negative"},
+                {"annotation_id": 3, "target_id": 12, "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 4, "target_id": 12, "value": "positive"},
             ],
         )
         items = p.evidence_for(OWN_CODE, "d1|sum", "negative", 5)
@@ -897,23 +947,30 @@ class TestEvidenceLocatesTheOriginalText:
         与整块 `None`（「暂不可用」）不可互换：前者是查过的结论，后者是没查过。
         """
         p = add_annotations(
-            provider, [{"annotation_id": 1, "target_id": 11, "value": "negative"}]
+            provider,
+            [
+                {"annotation_id": 1, "target_id": 11, "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 2, "target_id": 11, "value": "negative"},
+            ],
         )
         assert p.evidence_for(OWN_CODE, "d1|sum", "positive", 5) == []
         assert p.evidence_for(PEER_CODE, "d1|sum", "negative", 5) is None
 
-    def test_a_comment_judged_on_two_products_carries_both_codes(self, provider):
-        """同一条评论可以同时评价两只 ETF（runbook §10.1），证据卡要把它们都带上。"""
+    def test_old_cross_product_verdict_is_not_exposed_on_evidence_cards(self, provider):
+        """历史跨产品判定留在审计表，但读取只认评论的合格父帖产品。"""
         p = add_annotations(
             provider,
             [
-                {"annotation_id": 1, "target_id": 11, "value": "negative"},
-                {"annotation_id": 2, "target_id": 11, "subject_code": PEER_CODE,
+                {"annotation_id": 1, "target_id": 11, "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 2, "target_id": 11, "value": "negative"},
+                {"annotation_id": 3, "target_id": 11, "subject_code": PEER_CODE,
+                 "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 4, "target_id": 11, "subject_code": PEER_CODE,
                  "value": "negative"},
             ],
         )
         items = p.evidence_for(OWN_CODE, "d1|sum", "negative", 5)
-        assert items[0]["productCodes"] == [OWN_CODE, PEER_CODE]
+        assert items[0]["productCodes"] == [OWN_CODE]
 
 
 class TestComplianceFourStates:
@@ -926,9 +983,16 @@ class TestComplianceFourStates:
         "value": {"risk_tags": ["regulatory_complaint"], "rationale": "评论里提到要去投诉。"},
     }
 
+    @classmethod
+    def comment_rows(cls, hit=None):
+        return [
+            {"annotation_id": 90, "target_id": 11, "kind": "relevance", "value": "relevant"},
+            hit or cls.HIT,
+        ]
+
     def test_a_peer_product_is_na_not_empty(self, provider):
         """同业产品不纳入识别 —— 字段**不适用**，不是「查了没查到」。"""
-        p = add_annotations(provider, [self.HIT])
+        p = add_annotations(provider, self.comment_rows())
         assert p.compliance_for(PEER_CODE, "d1") == {"status": "na", "list": []}
 
     def test_nothing_scanned_in_the_window_is_unavailable(self, provider):
@@ -940,23 +1004,28 @@ class TestComplianceFourStates:
         assert provider.compliance_for(OWN_CODE, "d1")["status"] == "unavailable"
 
     def test_other_products_annotations_do_not_imply_this_product_was_scanned(self, provider):
-        p = add_annotations(provider, [self.HIT])
+        p = add_annotations(provider, self.comment_rows())
         assert p.compliance_for(OTHER_OWN_CODE, "d1") == {"status": "unavailable", "list": []}
 
     def test_v2_empty_tags_are_not_risk_items(self, provider):
-        p = add_annotations(provider, [{**self.HIT, "value": {"tags": [], "rationale": None}}])
+        p = add_annotations(
+            provider,
+            self.comment_rows({**self.HIT, "value": {"tags": [], "rationale": None}}),
+        )
         assert p.compliance_for(OWN_CODE, "d1") == {"status": "empty", "list": []}
         assert p.pool("d1")["complianceCount"][OWN_CODE] == 0
 
     def test_v2_tags_keep_the_actual_risk_label(self, provider):
-        p = add_annotations(provider, [{**self.HIT, "value": {"tags": ["regulatory_complaint"],
-                                                           "rationale": "明确投诉意图"}}])
+        p = add_annotations(provider, self.comment_rows({
+            **self.HIT,
+            "value": {"tags": ["regulatory_complaint"], "rationale": "明确投诉意图"},
+        }))
         hit = p.compliance_for(OWN_CODE, "d1")["list"][0]
         assert hit["riskTags"] == ["regulatory_complaint"]
         assert hit["riskLabels"] == ["监管举报"]
 
     def test_a_hit_comes_back_with_its_rationale_and_a_locatable_quote(self, provider):
-        p = add_annotations(provider, [self.HIT])
+        p = add_annotations(provider, self.comment_rows())
         start = COMMENT_TEXT[11].index("不太划算")
         add_evidence(
             p,
@@ -982,7 +1051,7 @@ class TestComplianceFourStates:
         合规是唯一一类结论，不论模型多有把握都要人再看一眼 —— 所以这枚徽章不随
         `review_state` 变。被 `approved` 过的那一条也照样写「待人工确认」。
         """
-        p = add_annotations(provider, [{**self.HIT, "review_state": "approved"}])
+        p = add_annotations(provider, self.comment_rows({**self.HIT, "review_state": "approved"}))
         hit = p.compliance_for(OWN_CODE, "d1")["list"][0]
         assert (hit["reviewState"], hit["reviewLabel"]) == ("ai_pending", "AI 识别 · 待人工确认")
 
@@ -1000,11 +1069,41 @@ class TestComplianceFourStates:
         assert hit["sourceKind"] == "帖子"
         assert hit["riskLabels"] == ["煽动扩散"]
 
+    def test_comment_hits_require_current_relevance_but_feed_hits_remain(self, provider):
+        p = add_annotations(provider, [
+            {"annotation_id": 10, "target_id": 11, "kind": "relevance", "value": "relevant"},
+            {"annotation_id": 11, "target_id": 11, "kind": "compliance",
+             "value": {"tags": ["regulatory_complaint"], "rationale": "明确投诉意图"}},
+            {"annotation_id": 12, "target_id": 13, "kind": "relevance", "value": "relevant"},
+            {"annotation_id": 13, "target_id": 13, "kind": "relevance", "value": "irrelevant",
+             "supersedes_id": 12},
+            {"annotation_id": 14, "target_id": 13, "kind": "compliance",
+             "value": {"tags": ["mobilization"], "rationale": "旧的风险结论"}},
+            {"annotation_id": 15, "target_id": 1, "target_type": "feed", "kind": "compliance",
+             "value": {"tags": ["mobilization"], "rationale": "帖子级结论"}},
+        ])
+
+        result = p.compliance_for(OWN_CODE, "d1")
+
+        assert result["status"] == "ok"
+        assert {item["id"] for item in result["list"]} == {"cr-11", "cr-15"}
+        assert {item["sourceKind"] for item in result["list"]} == {"评论", "帖子"}
+
+    def test_irrelevant_comment_is_scanned_but_its_risk_hit_is_hidden(self, provider):
+        p = add_annotations(provider, [
+            {"annotation_id": 10, "target_id": 11, "kind": "relevance", "value": "irrelevant"},
+            {"annotation_id": 11, "target_id": 11, "kind": "compliance",
+             "value": {"tags": ["mobilization"], "rationale": "与产品无关"}},
+        ])
+
+        assert p.compliance_for(OWN_CODE, "d1") == {"status": "empty", "list": []}
+        assert p.pool("d1")["complianceCount"][OWN_CODE] == 0
+
     def test_the_pool_counts_hits_per_product(self, provider):
         """`pool().complianceCount`：`ok` 给条数、`empty` 给 0、`na` 与 `unavailable`
         给 **None**。设计源那句 `|| 0` 把「没扫过」读成「零条」，板块总览顶部就会多
         报一个它并不知道的数。"""
-        p = add_annotations(provider, [self.HIT])
+        p = add_annotations(provider, self.comment_rows())
         pool = p.pool("d1")
         assert pool["complianceCount"][OWN_CODE] == 1
         assert pool["complianceCount"][OTHER_OWN_CODE] is None
@@ -1025,7 +1124,7 @@ def test_master_is_served_even_with_an_empty_database():
     """产品池是客户维护的主数据，不依赖有没有帖子。"""
     p = make_sql_provider(anchor=None)
     m = p.master()
-    assert len(m["products"]) == 120
+    assert len(m["products"]) == len(MASTER["products"]) == 135
     assert len(m["officials"]) == 20
     assert len(m["kols"]) == 32
 

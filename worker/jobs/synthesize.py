@@ -63,8 +63,21 @@ from core import stages as core_stages, themes as core_themes, topics as core_to
 from core.attitude import LOW_SAMPLE  # noqa: E402
 from core.calendar import PRESETS, build as build_range  # noqa: E402
 from radar_db import make_engine  # noqa: E402
-from radar_db.annotations_read import current_annotations  # noqa: E402
+from radar_db.annotations_read import (  # noqa: E402
+    COMMENT_PRODUCT_PROMPT_VERSIONS,
+    released_annotations,
+)
+from radar_db.comment_filter import (  # noqa: E402
+    load_comment_filter_config,
+    require_filter_ready,
+)
+from radar_db.comment_routes import (  # noqa: E402
+    readiness_on_connection as comment_routes_ready_on_connection,
+    report_policy_fields as comment_route_policy_fields,
+)
 from radar_db.events import emit  # noqa: E402
+from radar_db.product_catalog import load_products  # noqa: E402
+from radar_db.revisions import set_synthesis_generation  # noqa: E402
 from radar_db.schema import (  # noqa: E402
     NO_SUBJECT,
     analysis_scopes,
@@ -75,12 +88,7 @@ from radar_db.schema import (  # noqa: E402
     synthesis_outputs,
 )
 from radar_db.time_windows import hkt_range_utc_naive, utc_naive_to_hkt  # noqa: E402
-
 log = logging.getLogger("worker.synthesize")
-
-MASTER = REPO_ROOT / "backend" / "fixtures" / "demo" / "master.json"
-if not MASTER.exists():
-    MASTER = Path(__file__).resolve().parents[1] / "backend" / "fixtures" / "demo" / "master.json"
 
 KINDS = synth.KINDS
 DEFAULT_RANGES = tuple(PRESETS)
@@ -99,9 +107,11 @@ def new_run_id():
     return "synth-" + clock.now().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
 
 
-def load_master(path=MASTER):
-    with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
+def load_master(path=None):
+    if path is not None:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    return {"products": load_products()}
 
 
 def read_anchor(engine):
@@ -148,11 +158,20 @@ def detect_language(texts):
     return "zh-Hant" if trad > simp else "zh-Hans"
 
 
-def fingerprint(kind, ann_ids, facts, cfg=None):
+def fingerprint(
+    kind,
+    ann_ids,
+    facts,
+    cfg=None,
+    parent_filter_digest=None,
+    comment_route_policy=None,
+):
     material = json.dumps(
         {"kind": kind, "ann_ids": sorted(ann_ids), "facts": facts, "prompt": synth.VERSION,
          "model": cfg.model if cfg else None, "provider": cfg.provider if cfg else None,
-         "taxonomy": cfg.taxonomy_version if cfg else None, "schema": "synth-v1"},
+         "taxonomy": cfg.taxonomy_version if cfg else None, "schema": "synth-v1",
+         "parent_filter_digest": parent_filter_digest,
+         "comment_route_policy": comment_route_policy},
         sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str,
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
@@ -164,15 +183,30 @@ def fingerprint(kind, ann_ids, facts, cfg=None):
 class Material:
     """一只产品一个区间的全部原料：判定单元、证据、基准期计数。"""
 
-    def __init__(self, engine, code, rng, plex):
+    def __init__(self, engine, code, rng, plex, filter_config):
         self.code, self.rng, self.plex = code, rng, plex
         lo, hi = _window(rng)
         self.window = (lo, hi)
-        rel = current_annotations(engine, "relevance", "comment", window=(lo, hi), subject_code=code)
-        att = current_annotations(engine, "attitude", "comment", window=(lo, hi), subject_code=code)
-        asp = current_annotations(engine, "aspect", "comment", window=(lo, hi), subject_code=code)
-        mkt = current_annotations(engine, "market_direction", "comment", window=(lo, hi), subject_code=code)
-        comp = current_annotations(engine, "compliance", "comment", window=(lo, hi), subject_code=code)
+        read_args = {
+            "window": (lo, hi),
+            "subject_code": code,
+            "parent_filter_config": filter_config,
+        }
+        def released(kind, args):
+            return released_annotations(
+                engine,
+                kind,
+                "comment",
+                task="comment_product",
+                prompt_version=COMMENT_PRODUCT_PROMPT_VERSIONS,
+                **args,
+            )
+
+        rel = released("relevance", read_args)
+        att = released("attitude", read_args)
+        asp = released("aspect", read_args)
+        mkt = released("market_direction", read_args)
+        comp = released("compliance", read_args)
 
         self.ann_ids = set()
         self.units = []   # 相关且有态度
@@ -192,6 +226,8 @@ class Material:
             })
         self.market_units = []
         for unit, m in mkt.items():
+            if (rel.get(unit) or {}).get("value") != "relevant":
+                continue
             if m["value"] in ("bullish", "bearish", "neutral"):
                 self.ann_ids.add(m["annotation_id"])
                 self.market_units.append({"comment_id": unit[0], "market_direction": m["value"],
@@ -199,6 +235,8 @@ class Material:
                                           "annotation_id": m["annotation_id"]})
         self.compliance_hits = []
         for unit, c in comp.items():
+            if (rel.get(unit) or {}).get("value") != "relevant":
+                continue
             tags = (c["value"] or {}).get("tags") or []
             if tags:
                 self.ann_ids.add(c["annotation_id"])
@@ -211,9 +249,14 @@ class Material:
 
         # 基准期只要计数
         blo, bhi = _bench_window(rng)
-        b_att = current_annotations(engine, "attitude", "comment", window=(blo, bhi), subject_code=code)
-        b_rel = current_annotations(engine, "relevance", "comment", window=(blo, bhi), subject_code=code)
-        b_asp = current_annotations(engine, "aspect", "comment", window=(blo, bhi), subject_code=code)
+        base_args = {
+            "window": (blo, bhi),
+            "subject_code": code,
+            "parent_filter_config": filter_config,
+        }
+        b_att = released("attitude", base_args)
+        b_rel = released("relevance", base_args)
+        b_asp = released("aspect", base_args)
         self.base_units = None
         if b_att:
             self.base_units = [
@@ -463,9 +506,26 @@ def build_competitor_payload(mat, master, plex):
 
 
 class Synthesizer:
-    def __init__(self, engine, cfg, provider, master, *, dry_run=False, force=False):
+    def __init__(
+        self,
+        engine,
+        cfg,
+        provider,
+        master,
+        *,
+        filter_config,
+        dry_run=False,
+        force=False,
+    ):
         self.engine, self.cfg, self.provider = engine, cfg, provider
         self.master = master
+        self.filter_config = filter_config
+        with engine.connect() as conn:
+            route_active = comment_routes_ready_on_connection(conn)
+        self.comment_route_policy = (
+            comment_route_policy_fields(engine) if route_active else None
+        )
+        self.parent_filter_digest = None if route_active else filter_config.digest
         self.plex = product_aliases.ProductLexicon(master["products"])
         self.dry_run, self.force = dry_run, force
         self.run_id = new_run_id()
@@ -490,9 +550,11 @@ class Synthesizer:
         if self.stop.is_set():
             return self._tls.counts
         rng = build_range(range_key, anchor)
-        mat = Material(self.engine, code, rng, self.plex)
+        mat = Material(self.engine, code, rng, self.plex, self.filter_config)
         if not mat.units and not mat.market_units:
             self._inc("no_material")
+            for kind in kinds:
+                self._publish_empty(code, range_key, anchor, kind, "no_material")
             return self._tls.counts
         product = {"code": code, "name": self._names.get(code, code)}
         rng_info = {"key": range_key, "from": rng["from"], "to": rng["to"], "label": rng["label"]}
@@ -521,6 +583,8 @@ class Synthesizer:
                 self._generate(code, range_key, anchor, "topic_label", core_topics.MARKET_SUBKEY,
                                {u["annotation_id"] for u in mat.market_units}, facts, evidence, allowed,
                                product, rng_info, lambda obj: obj.model_dump())
+            else:
+                self._publish_empty(code, range_key, anchor, "topic_label", "no_topic_bucket")
 
         if "stage_unit" in kinds or "stage_summary" in kinds:
             self._stages(mat, product, rng_info, anchor, kinds)
@@ -531,11 +595,14 @@ class Synthesizer:
                 facts, evidence, allowed, keys = cp
                 self._generate_batch(code, range_key, anchor, "competitor_reason", mat.ann_ids, facts, evidence,
                                      allowed, keys, product, rng_info, key_attr="code")
+            else:
+                self._publish_empty(code, range_key, anchor, "competitor_reason", "no_competitor_bucket")
         return self._tls.counts
 
     def _bucket_kind(self, mat, kind, product, rng_info, anchor):
         facts, evidence, allowed, keys = build_theme_payload(mat, kind)
         if not keys:
+            self._publish_empty(mat.code, rng_info["key"], anchor, kind, "no_bucket")
             return {}
         rows = self._generate_batch(mat.code, rng_info["key"], anchor, kind, mat.ann_ids, facts, evidence,
                                     allowed, keys, product, rng_info)
@@ -556,6 +623,8 @@ class Synthesizer:
                                             {m["annotation_id"] for u in units for m in u["members"]},
                                             facts, evidence, allowed, keys, product, rng_info) or []
                 cats = {r["key"]: r for r in rows}
+            else:
+                self._publish_empty(mat.code, rng_info["key"], anchor, "stage_unit", "no_stage_unit")
         if "stage_summary" in kinds and cats:
             for u in units:
                 u["cat"] = (cats.get(core_stages.unit_key(u)) or {}).get("category")
@@ -583,6 +652,10 @@ class Synthesizer:
                                      {m["annotation_id"] for u in units for m in u["members"]},
                                      {"stages": facts_st}, evidence, {e["id"] for e in evidence}, keys,
                                      product, rng_info)
+            else:
+                self._publish_empty(mat.code, rng_info["key"], anchor, "stage_summary", "no_stage_summary")
+        elif "stage_summary" in kinds and not cats:
+            self._publish_empty(mat.code, rng_info["key"], anchor, "stage_summary", "no_stage_unit_labels")
 
     # ── 调用与落库 ──
 
@@ -609,9 +682,17 @@ class Synthesizer:
 
     def _generate(self, code, range_key, anchor, kind, subkey, ann_ids, facts, evidence, allowed,
                   product, rng_info, to_value):
-        fp = fingerprint(kind, ann_ids, facts, self.cfg)
+        fp = fingerprint(
+            kind,
+            ann_ids,
+            facts,
+            self.cfg,
+            self.parent_filter_digest,
+            self.comment_route_policy,
+        )
         if not self.force and self._exists(code, range_key, anchor, kind, subkey, fp):
             self._inc("skipped_same")
+            self._publish(code, range_key, anchor, kind, fp)
             return None
         if self.dry_run:
             log.info("[dry-run] %s %s %s subkey=%s 证据 %d 条", code, range_key, kind, subkey, len(evidence))
@@ -628,15 +709,24 @@ class Synthesizer:
         if ids is None and hasattr(obj, "points"):
             ids = sorted({i for p in obj.points for i in p.evidence_ids})
         self._write(code, range_key, anchor, kind, subkey, fp, value, ids, review)
+        self._publish(code, range_key, anchor, kind, fp)
         return value
 
     def _generate_batch(self, code, range_key, anchor, kind, ann_ids, facts, evidence, allowed, keys,
                         product, rng_info, key_attr="key"):
         """批式 kind：一次调用给全部桶／时段／竞品，每个键落一行。指纹按整批算。"""
-        fp = fingerprint(kind, ann_ids, facts, self.cfg)
+        fp = fingerprint(
+            kind,
+            ann_ids,
+            facts,
+            self.cfg,
+            self.parent_filter_digest,
+            self.comment_route_policy,
+        )
         existing = self._existing_rows(code, range_key, anchor, kind, fp)
         if not self.force and {row[key_attr] for row in existing} == set(keys):
             self._inc("skipped_same")
+            self._publish(code, range_key, anchor, kind, fp)
             return existing
         if self.dry_run:
             log.info("[dry-run] %s %s %s ×%d 证据 %d 条", code, range_key, kind, len(keys), len(evidence))
@@ -654,17 +744,48 @@ class Synthesizer:
                 review = "needs_review" if value.get("needs_review") else "pending"
                 self._write(code, range_key, anchor, kind, getattr(r, key_attr), fp, value, r.evidence_ids, review, conn)
                 rows.append(value)
+            set_synthesis_generation(conn, code, range_key, anchor, kind, fp)
         return rows
 
     def _write_low_sample(self, code, range_key, anchor, kind, mat):
-        fp = fingerprint(kind, mat.ann_ids, {"status": "low_sample", "pos": mat.pos, "neg": mat.neg}, self.cfg)
+        fp = fingerprint(
+            kind,
+            mat.ann_ids,
+            {"status": "low_sample", "pos": mat.pos, "neg": mat.neg},
+            self.cfg,
+            self.parent_filter_digest,
+            self.comment_route_policy,
+        )
         if self._exists(code, range_key, anchor, kind, NO_SUBJECT, fp):
             self._inc("skipped_same")
+            self._publish(code, range_key, anchor, kind, fp)
             return
         self._inc("low_sample")
         if not self.dry_run:
             self._write(code, range_key, anchor, kind, NO_SUBJECT, fp,
                         {"status": "low_sample", "sample": mat.pos + mat.neg}, [], "pending")
+            self._publish(code, range_key, anchor, kind, fp)
+
+    def _publish(self, code, range_key, anchor, kind, fp):
+        """Atomically select one complete immutable generation for readers."""
+
+        if self.dry_run:
+            return
+        with self.engine.begin() as conn:
+            set_synthesis_generation(conn, code, range_key, anchor, kind, fp)
+
+    def _publish_empty(self, code, range_key, anchor, kind, reason):
+        """Publish an intentional empty generation so old rows cannot reappear."""
+
+        fp = fingerprint(
+            kind,
+            [],
+            {"status": "empty", "reason": reason},
+            self.cfg,
+            self.parent_filter_digest,
+            self.comment_route_policy,
+        )
+        self._publish(code, range_key, anchor, kind, fp)
 
     def _exists(self, code, range_key, anchor, kind, subkey, fp):
         with self.engine.connect() as conn:
@@ -748,6 +869,11 @@ class Synthesizer:
 def run(engine, cfg, *, codes=None, ranges=DEFAULT_RANGES, kinds=KINDS, provider=None, dry_run=False, force=False,
         master=None, pairs=None, workers=WORKERS, scope_id=None, anchor_override=None):
     """Run Layer B concurrently by ``(code, range)`` and clear only clean pairs."""
+    filter_config = load_comment_filter_config()
+    with engine.connect() as conn:
+        route_active = comment_routes_ready_on_connection(conn)
+    if not dry_run and not route_active:
+        require_filter_ready(engine, filter_config)
     master = master or load_master()
     anchor = anchor_override or read_anchor(engine)
     if anchor is None:
@@ -758,7 +884,15 @@ def run(engine, cfg, *, codes=None, ranges=DEFAULT_RANGES, kinds=KINDS, provider
         pairs = [(code, range_key) for code in codes for range_key in ranges]
     pairs = list(pairs)
     provider = provider or (None if dry_run else build_provider(cfg))
-    s = Synthesizer(engine, cfg, provider, master, dry_run=dry_run, force=force)
+    s = Synthesizer(
+        engine,
+        cfg,
+        provider,
+        master,
+        filter_config=filter_config,
+        dry_run=dry_run,
+        force=force,
+    )
     s.open_run()
     clean = []
     permanent = None

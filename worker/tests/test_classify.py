@@ -18,8 +18,17 @@ from ai import config  # noqa: E402
 from ai import neardup  # noqa: E402
 from jobs import annotate, classify  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
+from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config  # noqa: E402
 from radar_db.events import recent  # noqa: E402
-from radar_db.schema import annotation_jobs, annotation_runs, annotations, comments, feeds  # noqa: E402
+from radar_db.schema import (  # noqa: E402
+    annotation_jobs,
+    annotation_runs,
+    annotations,
+    comments,
+    feed_mentions,
+    feeds,
+    meta_kv,
+)
 
 CODE = "3033"
 # 每条文本对应一条固定预测（见 FakeStudent.TABLE）。
@@ -79,9 +88,17 @@ def engine(tmp_path):
     create_all(eng)
     with eng.begin() as conn:
         conn.execute(insert(feeds).values(
-            feed_id=1, code=CODE, posted_at=datetime(2026, 8, 20, 10, 0), feed_type=1,
+            feed_id=1, code=CODE, source_ticker=f"0{CODE}.HK",
+            posted_at=datetime(2026, 8, 20, 10, 0), feed_type=1,
             title="恒科今日走势", content="今日恒科低开高走", like_count=0, comment_count=7, image_count=0,
             raw_json_broken=False))
+        conn.execute(insert(feed_mentions).values(
+            feed_id=1, raw_ticker=f"0{CODE}.HK", market="HK", occurrences=1,
+        ))
+        conn.execute(insert(meta_kv), [
+            {"k": key, "v": value}
+            for key, value in filter_readiness_values(load_comment_filter_config()).items()
+        ])
         conn.execute(insert(comments), [
             {"comment_id": 11, "feed_id": 1, "content": T_CONFIDENT, "author_uid": "u1"},
             {"comment_id": 12, "feed_id": 1, "content": T_LOWCONF, "author_uid": "u2"},
@@ -232,6 +249,52 @@ def test_no_student_model_routes_everything_to_llm(engine, cfg, tmp_path):
     assert evs and evs[-1]["level"] == "warn" and "放行主模型" in evs[-1]["message"]
     with pytest.raises(Exception):
         classify.run(engine, cfg, model_dir=tmp_path / "nope", require_model=True)
+
+
+def test_classify_fails_closed_when_filter_readiness_is_revoked(engine, cfg):
+    annotate.enqueue_comments(engine, cfg, codes=[CODE])
+    with engine.begin() as conn:
+        conn.execute(meta_kv.delete())
+
+    student = FakeStudent()
+    with pytest.raises(RuntimeError, match="not ready"):
+        classify.run(engine, cfg, student=student)
+
+    assert student.calls == []
+    assert all(job.status == "pending" for job in _jobs(engine).values())
+
+
+def test_direct_llm_reroute_rechecks_readiness_in_its_write_transaction(engine, cfg):
+    annotate.enqueue_comments(engine, cfg, codes=[CODE])
+    with engine.begin() as conn:
+        conn.execute(meta_kv.delete())
+
+    with pytest.raises(RuntimeError, match="not ready"):
+        classify.route_all_to_llm(engine, None, None, "student unavailable")
+
+    assert all((job.stage, job.status) == ("student", "pending") for job in _jobs(engine).values())
+
+
+def test_v3_never_uses_the_unvalidated_student_for_final_results(engine, cfg):
+    annotate.enqueue_comments(engine, cfg, codes=[CODE])
+    v3 = config.load(
+        model="test-model",
+        micro_batch_size=5,
+        max_retries=3,
+        prompt_version="comment-product-v3",
+        schema_version="v2",
+        taxonomy_version="v2",
+    )
+    student = FakeStudent()
+
+    stats = classify.run(engine, v3, student=student)
+
+    jobs = _jobs(engine)
+    assert student.calls == []
+    assert stats["routed"] == len(jobs)
+    assert all((job.stage, job.status) == ("llm", "pending") for job in jobs.values())
+    evs = recent(engine)
+    assert evs and evs[-1]["data"]["reason"] == "v3_direct_llm"
 
 
 def test_dry_run_and_limit(engine, cfg):

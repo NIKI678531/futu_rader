@@ -72,7 +72,7 @@ class KolActivity extends React.Component {
     var self = this;
     var esc = function (v) { v = v == null ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.split('"').join('""') + '"' : v; };
     var campLabel = function (p) { var c = self.camp(p); return c === 'both' ? '自家+竞品' : (CAMP[c] || CAMP.none).label; };
-    var head = ['合作KOL', 'KOL标签', '发帖时间', 'ETF代码', 'ETF名称', '发行商', '内容形式', '操作方向', '类型置信度', '是否待确认', 'AI摘要', '阵营', '提及产品(全部代码)', '赞', '评论数', '转发', '原帖链接'];
+    var head = ['重点KOL', 'KOL标签', '发帖时间', 'ETF代码', 'ETF名称', '发行商', '内容形式', '操作方向', '类型置信度', '是否待确认', 'AI摘要', '阵营', '提及产品(全部代码)', '赞', '评论数', '转发', '原帖链接'];
     /* 导出的缺失格写「数据暂不可用」，不写空。CSV 里的空单元格在 Excel 里与
        「这里确实没有」长得一模一样，而这份文件会被拿去做判断、甚至再统计一遍。
        页面上分得开的两件事，落到文件里也得分得开。 */
@@ -138,8 +138,6 @@ class KolActivity extends React.Component {
     var issuerShort = function (x) { return x === 'CSOP 南方东英' ? '南方东英' : x; };
     var pct = function (n, d) { return d ? Math.round(n / d * 100) + '%' : '—'; };
     out.clamp = String(clamp); out.clampH = String(clamp * 22);
-    out.lcText = this.LC.toFixed(2);
-    out.typeRule = R.TYPE_RULE;
 
     /* ① ETF 菜单：发帖提及的全部产品（自家 + 竞品） */
     var byCode = {};
@@ -179,9 +177,9 @@ class KolActivity extends React.Component {
     out.kolToggle = function () { self.setState({ kolMenu: !s.kolMenu, etfMenu: false, postMenu: false, typeMenu: false }); };
     out.kolClose = function () { self.setState({ kolMenu: false }); };
     out.kolMenuNote = s.etf === 'ALL'
-      ? kolNames.length + ' 位合作 KOL 在区间内发过帖'
+      ? kolNames.length + ' 位重点KOL在区间内发过帖'
       : '只列提及 ' + s.etf + ' 的 ' + kolNames.length + ' 位';
-    out.kolMenu = [{ k: 'ALL', name: '全部合作 KOL', n: etfPosts.length }].concat(
+    out.kolMenu = [{ k: 'ALL', name: '全部重点KOL', n: etfPosts.length }].concat(
       kolNames.map(function (k) { return { k: k, name: k, n: byKolN[k] }; })).map(function (o) {
         var on = o.k === s.kol;
         return {
@@ -327,7 +325,7 @@ class KolActivity extends React.Component {
     if (sp.length && !annOk) typeSub = '内容形式与操作方向标注尚未生成 · ' + sp.length + ' 篇待标注';
     else if (annNa) typeSub += ' · 另有 ' + annNa + ' 篇标注尚未生成';
     out.kpis = [
-      { label: '发帖数', value: String(sp.length), unit: '篇', pct: '', pfg: 'transparent', sub: '涉及 ' + Object.keys(spKols).length + ' 位合作 KOL · 最近 ' + M.range.days + ' 天', vfg: 'var(--ink-900)' },
+      { label: '发帖数', value: String(sp.length), unit: '篇', pct: '', pfg: 'transparent', sub: '涉及 ' + Object.keys(spKols).length + ' 位重点KOL · 最近 ' + M.range.days + ' 天', vfg: 'var(--ink-900)' },
       { label: '提及自家产品', value: String(ownAny), unit: '篇', pct: pct(ownAny, sp.length), pfg: 'var(--csop-blue-700)', sub: '其中 ' + both + ' 篇同时提及竞品 · 按产品池规则匹配', vfg: 'var(--csop-blue-700)' },
       { label: '提及竞品', value: String(peerAny), unit: '篇', pct: pct(peerAny, sp.length), pfg: 'var(--ink-600)', sub: '仅提竞品、未提自家的有 ' + (peerAny - both) + ' 篇', vfg: 'var(--ink-800)' },
       { label: '类型已识别（内容形式 × 操作方向）', value: String(annOk), unit: '篇', pct: '', pfg: 'transparent', sub: typeSub, vfg: 'var(--ink-900)' }
@@ -731,7 +729,7 @@ class KolActivity extends React.Component {
               <table>
                 <thead>
                   <tr style={s('background:var(--canvas-alt)')}>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 16px;width:150px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>合作 KOL</th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 16px;width:150px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>重点KOL</th>
                     <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:96px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>发帖时间</th>
                     <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:88px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>ETF</th>
                     <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:118px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>类型</th>
@@ -795,7 +793,6 @@ class KolActivity extends React.Component {
                 </tbody>
               </table>
             </div>
-            <div style={s('padding:14px 20px;border-top:1px solid var(--border-1);font:400 13px/1.7 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>「阵营」按帖子挂载的标的 ∪ 正文出现的产品代码 / 名称，对照客户维护的产品池（61 自家 + 59 竞品）规则匹配，不经模型判断；同时提及双方的帖子两个标签都挂。「类型」由 AI 判定，置信度低于 {v.lcText} 标「待确认」。{v.typeRule} 赞 / 评 / 转为平台计数字段，取发布后约 24 小时的值。「导出 CSV」只导出当前日期范围与筛选条件下的记录，首行为筛选摘要。</div>
           </div>
 
           <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06)')}>
@@ -886,7 +883,6 @@ class KolActivity extends React.Component {
                 </div>
               ))}
             </div>
-            <div style={s('padding:14px 20px;border-top:1px solid var(--border-1);font:400 13px/1.7 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>「自家 / 竞品」是该 KOL 区间内提及自家产品与提及竞品的篇数，深蓝＝只提自家、浅蓝＝双方都提、灰＝只提竞品；同时提及双方的帖子两边都计入，所以两数之和可以大于篇数。「主要类型」取该 KOL 区间内最多的一类。</div>
           </div>
         </div>
 

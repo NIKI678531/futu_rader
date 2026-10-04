@@ -4,7 +4,8 @@ Examples::
 
     python -m jobs.refresh sync --run-id "$AIRFLOW_CTX_DAG_RUN_ID"
     python -m jobs.refresh analyze --mode daily --budget-date 2026-09-25 \
-        --calibration-report /config/calibration.json
+        --calibration-report /config/calibration.json \
+        --quality-report /config/gold-eval-v3.json
 
 Database credentials are environment-only so they cannot leak through Airflow's
 rendered Bash command or process listing.
@@ -16,7 +17,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -27,7 +28,13 @@ for folder in (ROOT, ROOT / "worker", ROOT / "backend"):
     if str(folder) not in sys.path:
         sys.path.insert(0, str(folder))
 
-from collection import AiRequest, FutuRefresh, MarketInsightMySqlAdapter, SyncRequest
+import clock
+from collection import (
+    AiRequest,
+    FutuRefresh,
+    MarketInsightMySqlAdapter,
+    SyncRequest,
+)
 from jobs.import_dump import pool_codes
 from radar_db import make_engine
 from radar_db.schema import ai_daily_budget, ingestion_runs
@@ -42,7 +49,10 @@ def _source_engine():
 
 def _refresh(with_source=True):
     target = make_engine()
-    source = MarketInsightMySqlAdapter(_source_engine(), set(pool_codes())) if with_source else None
+    source = (
+        MarketInsightMySqlAdapter(_source_engine(), set(pool_codes()))
+        if with_source else None
+    )
     return FutuRefresh(target, source)
 
 
@@ -66,6 +76,21 @@ def _calibration_report(explicit: Path | None):
     return Path(configured)
 
 
+def _quality_report(explicit: Path | None):
+    """Load the human-gold release gate from a CLI path or runtime Secret."""
+    if explicit is not None:
+        return explicit
+    configured = os.getenv("AI_QUALITY_REPORT", "").strip()
+    if not configured:
+        return None
+    if configured.startswith("{"):
+        report = json.loads(configured)
+        if not isinstance(report, dict):
+            raise ValueError("AI_QUALITY_REPORT inline JSON must be an object")
+        return report
+    return Path(configured)
+
+
 def _data_governance_approved() -> bool:
     """Strictly parse the automatic-analysis governance approval Secret."""
     configured = os.getenv("AI_DATA_GOVERNANCE_APPROVED", "").strip().lower()
@@ -81,6 +106,10 @@ def _data_governance_approved() -> bool:
     )
 
 
+def _optional_date(value: str) -> date | None:
+    return date.fromisoformat(value) if value.strip() else None
+
+
 def _parser():
     parser = argparse.ArgumentParser(description="Futu Radar automatic source refresh")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -93,19 +122,44 @@ def _parser():
         help="repair recomputes settled 24-hour counters from observation history",
     )
     sync.add_argument("--page-size", type=int, default=1000)
+    sync.add_argument(
+        "--feed-id",
+        type=int,
+        action="append",
+        default=[],
+        help="re-read one current MarketInsight feed row; repeat for a bounded database repair",
+    )
     sync.add_argument("--dry-run", action="store_true")
 
     analyze = sub.add_parser("analyze", help="run calibrated AI with a persistent HKT-day budget")
     analyze.add_argument("--mode", choices=("auto", "daily", "weekly"), default="auto")
     analyze.add_argument("--budget-date", type=date.fromisoformat)
     analyze.add_argument(
+        "--anchor",
+        type=_optional_date,
+        help="analyze this already-complete anchor; empty means latest complete",
+    )
+    analyze.add_argument(
         "--calibration-report",
         type=Path,
         help="validated report path; defaults to AI_CALIBRATION_REPORT (inline JSON or path)",
     )
+    analyze.add_argument(
+        "--quality-report",
+        type=Path,
+        help="validated 400-row human-gold report; defaults to AI_QUALITY_REPORT (inline JSON or path)",
+    )
     analyze.add_argument("--max-http-attempts", type=int, default=500)
     analyze.add_argument("--batch-size", type=int, default=5)
     analyze.add_argument("--concurrency", type=int, default=2)
+    analyze.add_argument(
+        "--codes",
+        help="optional comma-separated product subset for staged backfill",
+    )
+    analyze.add_argument(
+        "--ranges",
+        help="optional comma-separated ranges (d1,d2,d7,d14,d30,mtd)",
+    )
     analyze.add_argument("--wait-for-ready", action="store_true")
     analyze.add_argument("--wait-timeout-seconds", type=int, default=28800)
 
@@ -124,6 +178,7 @@ def main(argv=None):
                 through_source_run_id=args.through_source_run_id,
                 page_size=args.page_size,
                 dry_run=args.dry_run,
+                feed_ids=tuple(args.feed_id),
             ))
             print(json.dumps(result.as_dict(), ensure_ascii=False, default=str))
             return 0
@@ -136,21 +191,28 @@ def main(argv=None):
                     "AI_DATA_GOVERNANCE_APPROVED=true only after the ADR-0017/ADR-0019 "
                     "data-governance prerequisites are approved"
                 )
-            budget_date = args.budget_date or datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
+            budget_date = args.budget_date or clock.now(ZoneInfo("Asia/Hong_Kong")).date()
             calibration_report = _calibration_report(args.calibration_report)
+            quality_report = _quality_report(args.quality_report)
             mode = args.mode
             if mode == "auto":
                 mode = "weekly" if budget_date.weekday() == 0 else "daily"
             result = _refresh(with_source=args.wait_for_ready).analyze(AiRequest(
                 budget_date=budget_date,
+                anchor=args.anchor,
                 mode=mode,
                 data_governance_approved=data_governance_approved,
                 calibration_report=calibration_report,
+                quality_report=quality_report,
                 max_http_attempts=args.max_http_attempts,
                 batch_size=args.batch_size,
                 concurrency=args.concurrency,
                 wait_for_ready=args.wait_for_ready,
                 wait_timeout_seconds=args.wait_timeout_seconds,
+                codes=tuple(value.strip() for value in (args.codes or "").split(",") if value.strip()),
+                range_keys=tuple(
+                    value.strip() for value in (args.ranges or "").split(",") if value.strip()
+                ),
             ))
             print(json.dumps(result.as_dict(), ensure_ascii=False, default=str))
             return 0 if result.status == "complete" else 2

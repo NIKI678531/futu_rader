@@ -7,7 +7,7 @@
    （见 out.stats 上方，与 lib/profile.js 同一处偏差）。 */
 import React from 'react'
 import R, { prefetchScreen } from '../data/radar'
-import { num, conf2, typeStyle, md, shell, rgba, CAMP, POST_TYPES, reviewBadge, needsReview } from '../lib/view'
+import { num, conf2, typeStyle, md, shell, rgba, CAMP, POST_TYPES, reviewBadge, needsReview, kolDisplayLabel } from '../lib/view'
 import { kolProfile } from '../lib/profile'
 import { s, hover } from '../lib/dc'
 import Shell from '../components/Shell'
@@ -116,7 +116,9 @@ class KolDetail extends React.Component {
 
     /* /meta 下发的是 {name, tags, active}，不是设计源那个三元组（radar.js 的 KOLS）。 */
     var meta = R.KOLS.filter(function (k) { return k.name === kol; })[0];
-    out.tags = (meta ? String(meta.tags).split(',') : ['合作 KOL']).map(function (t) { return { label: t }; });
+    out.tags = (meta ? String(meta.tags).split(',') : ['重点KOL']).map(function (t) {
+      return { label: kolDisplayLabel(t) };
+    });
 
     /* 上一位 / 下一位：沿声量排名顺序翻页 */
     var order = M.leaders.map(function (l) { return l.kol; });
@@ -228,6 +230,17 @@ class KolDetail extends React.Component {
       { label: '双方都提', value: String(prof.both), fg: '#3674C2' },
       { label: '只提竞品', value: String(prof.peer), fg: 'var(--ink-600)' }
     ];
+    /* 跟随当前高亮帖子展示竞品主数据；柱图改用「仅挂载标的」口径时，
+       详情也只看第一个（挂载）产品，避免图与说明两套口径。 */
+    var chartMentions = p0 ? (this.primaryOnly() ? p0.mentioned.slice(0, 1) : p0.mentioned) : [];
+    var seenPeers = {};
+    out.chartCompetitors = chartMentions.filter(function (m) {
+      if (m.ownership === 'own' || seenPeers[m.code]) return false;
+      seenPeers[m.code] = 1;
+      return true;
+    }).map(function (m) {
+      return { code: m.code + '.HK', name: m.name, issuer: issuerShort(m.issuer) };
+    });
 
     /* 右下：8 类构成 */
     var tot = ps.length || 1;
@@ -323,7 +336,7 @@ class KolDetail extends React.Component {
           <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:20px')}>
             <div style={s('display:flex;align-items:flex-start;justify-content:space-between;gap:24px;padding:20px 22px 18px')}>
               <div style={s('min-width:0')}>
-                <div style={s('font:600 12px/1.2 var(--font-cjk);letter-spacing:0.18em;color:var(--csop-blue-600);margin-bottom:10px')}>合作 KOL</div>
+                <div style={s('font:600 12px/1.2 var(--font-cjk);letter-spacing:0.18em;color:var(--csop-blue-600);margin-bottom:10px')}>重点KOL</div>
                 <div style={s('display:flex;align-items:center;gap:12px;flex-wrap:wrap')}>
                   <div style={s('font:600 28px/1.2 var(--font-cjk);letter-spacing:-0.015em')}>{v.kolName}</div>
                   {v.hasStyle && (
@@ -334,7 +347,7 @@ class KolDetail extends React.Component {
                   {v.tags.map((t) => (
                     <span key={t.label} style={s('padding:3px 10px;border-radius:9999px;background:var(--csop-blue-50);font:500 13px/1.5 var(--font-cjk);color:var(--csop-blue-700)')}>{t.label}</span>
                   ))}
-                  <span style={s('font:400 12px/1.5 var(--font-cjk);color:var(--ink-400);margin-left:4px')}>标签来自合作名单 · 画像由区间内类型分布自动生成</span>
+                  <span style={s('font:400 12px/1.5 var(--font-cjk);color:var(--ink-400);margin-left:4px')}>标签来自重点KOL名单 · 画像由区间内类型分布自动生成</span>
                 </div>
               </div>
               <div style={s('flex:none;display:flex;align-items:center;gap:10px')}>
@@ -468,6 +481,16 @@ class KolDetail extends React.Component {
                       </div>
                     ))}
                   </div>
+                  {v.chartCompetitors.length > 0 && (
+                    <div data-testid="kol-chart-competitor-details" style={s('margin-top:10px;padding:9px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);display:flex;align-items:flex-start;gap:10px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>
+                      <span style={s('flex:none;font-weight:600;color:var(--ink-700)')}>竞品详细信息</span>
+                      <span style={s('min-width:0;display:flex;gap:6px 14px;flex-wrap:wrap')}>
+                        {v.chartCompetitors.map((p) => (
+                          <span key={p.code}>{p.name}（{p.code}） · 发行商：{p.issuer}</span>
+                        ))}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
 

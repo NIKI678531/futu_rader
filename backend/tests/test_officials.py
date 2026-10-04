@@ -1,6 +1,10 @@
 """官号域端点 —— PRD §5 `officialPosts(range)` / `etfMentionsFor(account, range)`。"""
 
+import json
+
 import pytest
+
+from providers.demo import FIXTURE_DIR, DemoProvider
 
 
 def test_posts_envelope_and_status(client):
@@ -26,10 +30,164 @@ def test_posts_default_range_is_d7(client):
     ["id", "account", "accountFull", "accountType", "isIssuer", "t", "day", "time",
      "code", "name", "sector", "ownership", "issuer", "likes", "comments", "shares",
      "engagement", "url", "postType", "typeLabel", "confidence", "hasSummary",
-     "summary", "fullText", "evidenceIdx", "mentioned", "camp", "campPrimary"],
+     "summary", "fullText", "evidenceIdx", "mentioned", "camp", "campPrimary",
+     "sourceAnchorCode", "attributedProducts", "attributionStatus", "attributedCamp"],
 )
 def test_post_carries_every_field_the_feed_card_needs(client, field):
     assert field in client.get("/api/v1/officials/posts?range=d7").get_json()["data"][0]
+
+
+def test_demo_post_uses_the_explicit_attribution_fixture(client):
+    posts = client.get("/api/v1/officials/posts?range=d7").get_json()["data"]
+    post = next(item for item in posts if item["id"] == "华夏@13|d7")
+
+    assert post["sourceAnchorCode"] == "7261"
+    assert [item["code"] for item in post["attributedProducts"]] == ["7261", "7266"]
+    assert post["attributionStatus"] == "explicit"
+    assert post["attributedCamp"] == "both"
+    # The compatibility fields are projections of the explicit attribution,
+    # not independent legacy inputs.
+    assert post["mentioned"] == post["attributedProducts"]
+    assert post["camp"] == post["attributedCamp"]
+
+
+def test_generated_demo_fixture_persists_the_explicit_attribution_contract():
+    fixtures = json.loads((FIXTURE_DIR / "official_posts.json").read_text(encoding="utf-8"))
+
+    for posts in fixtures.values():
+        for post in posts:
+            assert {
+                "sourceAnchorCode",
+                "attributedProducts",
+                "attributionStatus",
+                "attributedCamp",
+            } <= post.keys()
+            assert post["mentioned"] == post["attributedProducts"]
+            assert post["camp"] == post["attributedCamp"]
+
+
+def test_demo_attribution_never_promotes_legacy_fields(tmp_path):
+    """旧 mentioned/camp 即使有值，也不得偷偷升级成新归属。"""
+    (tmp_path / "official_posts.json").write_text(
+        json.dumps(
+            {
+                "d1": [
+                    {
+                        "id": "anchor-only",
+                        "code": "3068",
+                        "mentioned": [
+                            {
+                                "code": "3042",
+                                "name": "华夏比特币ETF",
+                                "issuer": "AMC 华夏",
+                                "ownership": "peer",
+                            }
+                        ],
+                        # These stale values may have been derived from the
+                        # anchor; only attributedProducts/status are evidence.
+                        "camp": "own",
+                        "campPrimary": "own",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    post = DemoProvider(fixture_dir=tmp_path).official_posts("d1")[0]
+
+    assert post["sourceAnchorCode"] == "3068"
+    assert post["attributedProducts"] == []
+    assert post["attributionStatus"] == "unattributed"
+    assert post["attributedCamp"] == "none"
+    assert post["mentioned"] == []
+    assert post["camp"] == "none"
+    assert post["campPrimary"] == "none"
+
+
+def test_demo_compatibility_fields_follow_explicit_attribution(tmp_path):
+    explicit = {
+        "code": "3042",
+        "name": "华夏比特币ETF",
+        "issuer": "AMC 华夏",
+        "ownership": "peer",
+    }
+    stale = {
+        "code": "3068",
+        "name": "旧挂载产品",
+        "issuer": "CSOP 南方东英",
+        "ownership": "own",
+    }
+    (tmp_path / "official_posts.json").write_text(
+        json.dumps(
+            {
+                "d1": [
+                    {
+                        "id": "explicit",
+                        "code": "3068",
+                        "mentioned": [stale],
+                        "camp": "own",
+                        "campPrimary": "own",
+                        "sourceAnchorCode": "3068",
+                        "attributedProducts": [explicit],
+                        "attributionStatus": "explicit",
+                        "attributedCamp": "competitor",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    post = DemoProvider(fixture_dir=tmp_path).official_posts("d1")[0]
+
+    assert post["sourceAnchorCode"] == "3068"
+    assert post["code"] == "3042"
+    assert post["mentioned"] == [explicit]
+    assert post["camp"] == "competitor"
+    assert post["campPrimary"] == "competitor"
+
+
+def test_demo_etf_mentions_are_aggregated_from_explicit_post_attribution(tmp_path):
+    product = {
+        "code": "3042",
+        "name": "华夏比特币ETF",
+        "issuer": "AMC 华夏",
+        "ownership": "peer",
+    }
+    (tmp_path / "master.json").write_text(
+        json.dumps({"officials": [{"short": "华夏", "full": "华夏"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "official_posts.json").write_text(
+        json.dumps(
+            {
+                "d1": [
+                    {
+                        "id": "explicit",
+                        "account": "华夏",
+                        "fullText": ["$03042.HK$ 与 $华夏比特币ETF（3042.HK）$"],
+                        "sourceAnchorCode": "3068",
+                        "attributedProducts": [product],
+                        "attributionStatus": "explicit",
+                        "attributedCamp": "competitor",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Deliberately contradictory legacy aggregate: it must never be read.
+    (tmp_path / "etf_mentions.json").write_text(
+        json.dumps({"华夏|d1": {"list": [{"code": "3068", "count": 99}]}}),
+        encoding="utf-8",
+    )
+
+    data = DemoProvider(fixture_dir=tmp_path).etf_mentions_for("华夏", "d1")
+
+    assert [item["code"] for item in data["list"]] == ["3042"]
+    assert data["list"][0]["count"] == 2
+    assert data["postCount"] == 1
 
 
 def test_camp_is_three_way_exclusive(client):
@@ -63,7 +221,7 @@ def test_etf_mentions_shape(client):
 
 
 def test_etf_mentions_counts_occurrences_not_deduplicated_comments(client):
-    """`ETF_MENTION_RULE` 逐字：「一帖内出现 3 次计 3，挂载标的至少计 1」。
+    """`ETF_MENTION_RULE` 逐字：「一帖内出现 3 次计 3」；挂载标的不参与归属。
 
     这与市场域的评论去重（PRD §3.2，同一条评论对同一产品只计一次）**语义相反**。
     两者都叫「提及」，不是一回事 —— total ≥ postCount 就是这条口径的可观测后果。

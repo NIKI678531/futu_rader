@@ -40,3 +40,4 @@ from . import narrative  # noqa: E402,F401
 from . import evidence  # noqa: E402,F401
 from . import prices  # noqa: E402,F401
 from . import progress  # noqa: E402,F401
+from . import admin  # noqa: E402,F401

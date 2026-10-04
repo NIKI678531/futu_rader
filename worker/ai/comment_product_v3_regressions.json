@@ -1,0 +1,57 @@
+{
+  "manifestVersion": "comment-product-v3-feedback-2026-09-29.1",
+  "commentCases": [
+    {
+      "caseId": "feedback-3037-underlying-hsi-only",
+      "commentId": -3037001,
+      "targetCode": "3037",
+      "postTitle": "$恒生指数ETF (03037.HK)$ 讨论区",
+      "postContent": "讨论恒生指数ETF 3037 的走势和交易。",
+      "parentComments": [],
+      "commentText": "恒指今日走弱，HSI 可能继续跌。",
+      "expectedRelevance": "irrelevant"
+    },
+    {
+      "caseId": "feedback-3037-other-etf-only",
+      "commentId": -3037002,
+      "targetCode": "3037",
+      "postTitle": "$恒生指数ETF (03037.HK)$ 讨论区",
+      "postContent": "讨论恒生指数ETF 3037 的走势和交易。",
+      "parentComments": [],
+      "commentText": "$盈富基金 (02800.HK)$ 费率更低，我只买 2800。",
+      "expectedRelevance": "irrelevant"
+    },
+    {
+      "caseId": "feedback-3037-explicit-self",
+      "commentId": -3037003,
+      "targetCode": "3037",
+      "postTitle": "$恒生指数ETF (03037.HK)$ 讨论区",
+      "postContent": "讨论恒生指数ETF 3037 的走势和交易。",
+      "parentComments": [],
+      "commentText": "$恒生指数ETF (03037.HK)$ 的点差太大。",
+      "expectedRelevance": "relevant"
+    }
+  ],
+  "officialAttributionCases": [
+    {
+      "caseId": "feedback-official-117149481304068",
+      "feedId": 117149481304068,
+      "officialShort": "华夏",
+      "sourceAnchorCode": "3068",
+      "text": "比特币和以太币近期成交活跃，市场关注度上升。",
+      "bodyCodes": [],
+      "expectedStatus": "inferred",
+      "expectedCodes": ["3042", "3046"]
+    },
+    {
+      "caseId": "feedback-official-117125636685828",
+      "feedId": 117125636685828,
+      "officialShort": "华夏",
+      "sourceAnchorCode": "3068",
+      "text": "华夏比特币ETF及华夏以太币ETF为投资者提供虚拟资产配置工具。",
+      "bodyCodes": [],
+      "expectedStatus": "explicit",
+      "expectedCodes": ["3042", "3046"]
+    }
+  ]
+}

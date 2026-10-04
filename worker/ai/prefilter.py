@@ -28,7 +28,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 
 VERSION = "prefilter-v1"
 
@@ -114,10 +114,22 @@ class Prefilter:
 # ── 落库 ─────────────────────────────────────────────────────────────
 
 
-def rule_input_hash(text, rule):
-    """规则结论的输入指纹：正文＋规则名＋规则版本。同一条正文在同一版规则下只写一次。"""
-    material = json.dumps({"text": text or "", "rule": rule, "version": VERSION},
-                          ensure_ascii=False, sort_keys=True)
+def rule_input_hash(text, rule, version=VERSION, detail=None):
+    """规则输入指纹，包含会改变 exact 结论的上下文事实。
+
+    ``decided_at`` 是审计时间而不是判定输入，不能让每次重跑都生成新 hash。父帖资格、
+    命中 ticker 与 reason 则必须进入指纹，否则正文相同但父帖被编辑后无法区分。
+    """
+    context = {
+        key: value
+        for key, value in (detail or {}).items()
+        if key != "decided_at"
+    }
+    material = json.dumps(
+        {"text": text or "", "rule": rule, "version": version, "context": context},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -145,25 +157,58 @@ def write_rule_annotations(engine, run_id, decisions, now):
     """把一批规则剔除写成 `relevance=irrelevant` ＋ `text_quality` 两行。
 
     `decisions`：`[(target_id, subject_code, text, Decision), ...]`。
-    幂等：同一 `(comment, code, relevance, input_hash)` 已有行就跳过 —— 重复运行 extract
-    不会堆出第二份结论。返回实际写入的判定单元数。
+    幂等：同一 `(comment, code, relevance, input_hash)` **仍是现行链末**才跳过。
+    历史同 hash 若已被模型 supersede，规则再次成立时必须写回新的链末结论。
+    返回实际写入的判定单元数。
     """
-    from radar_db.schema import annotations
+    from radar_db.schema import annotation_jobs, annotations
 
     written = 0
+    touched_codes = set()
     with engine.begin() as conn:
         for target_id, code, text, d in decisions:
-            h = rule_input_hash(text, d.rule)
-            exists = conn.execute(
+            detail = dict(d.detail)
+            detail.setdefault("reason", d.rule)
+            detail.setdefault("matched_tickers", [])
+            detail.setdefault("rule_version", VERSION)
+            detail.setdefault("decided_at", now.isoformat(timespec="seconds"))
+            h = rule_input_hash(text, d.rule, detail["rule_version"], detail)
+            # A deterministic exclusion is terminal for any older model job
+            # for the same comment/product unit.  Keep the job row as audit
+            # history, but make it unclaimable.  Do this even when the rule
+            # annotation already exists: a stale job may have been enqueued
+            # after an earlier extraction run.
+            conn.execute(
+                update(annotation_jobs)
+                .where(
+                    annotation_jobs.c.target_type == "comment",
+                    annotation_jobs.c.target_id == target_id,
+                    annotation_jobs.c.subject_code == code,
+                    annotation_jobs.c.task == "comment_product",
+                    annotation_jobs.c.status.in_(("pending", "claimed", "failed", "done")),
+                )
+                .values(
+                    status="superseded",
+                    lease_until=None,
+                    last_error=f"Excluded by {detail['rule_version']}:{d.rule}",
+                    updated_at=now,
+                )
+            )
+            newer = annotations.alias("newer_rule_annotation")
+            current_match = conn.execute(
                 select(annotations.c.annotation_id).where(
                     annotations.c.target_type == "comment",
                     annotations.c.target_id == target_id,
                     annotations.c.subject_code == code,
                     annotations.c.kind == "relevance",
                     annotations.c.input_hash == h,
+                    annotations.c.review_state != "rejected",
+                    ~select(newer.c.annotation_id).where(
+                        newer.c.supersedes_id == annotations.c.annotation_id
+                    ).exists(),
                 ).limit(1)
             ).first()
-            if exists:
+            if current_match:
                 continue
             prev = conn.execute(
                 select(annotations.c.annotation_id, annotations.c.review_state)
@@ -184,7 +229,7 @@ def write_rule_annotations(engine, run_id, decisions, now):
             )
             for kind, value in (
                 ("relevance", "irrelevant"),
-                ("text_quality", {"rule": d.rule, **d.detail}),
+                ("text_quality", {"rule": d.rule, **detail}),
             ):
                 conn.execute(
                     insert(annotations).values(
@@ -196,4 +241,96 @@ def write_rule_annotations(engine, run_id, decisions, now):
                     )
                 )
             written += 1
+            touched_codes.add(code)
+        if written:
+            # Rule-only flips may have no later LLM run to invalidate caches or
+            # Layer-B synthesis, so the deterministic writer owns this signal.
+            from radar_db.revisions import bump_revision, mark_synthesis
+
+            bump_revision(conn, "annotation")
+            mark_synthesis(conn, touched_codes, True)
+    return written
+
+
+def withdraw_rule_exclusions(engine, run_id, eligible_units, now):
+    """Invalidate a current machine-rule exclusion when a unit becomes eligible.
+
+    A rejected chain-end is an explicit tombstone: the old exclusion remains in
+    audit history, but readers correctly see no relevance verdict while the new
+    v3 job is pending.  Human-approved/corrected conclusions are never touched.
+    ``eligible_units`` contains ``(target_id, subject_code, text)`` tuples.
+    """
+    from radar_db.revisions import bump_revision, mark_synthesis
+    from radar_db.schema import annotation_runs, annotations
+
+    written = 0
+    touched_codes = set()
+    with engine.begin() as conn:
+        newer = annotations.alias("newer_rule_exclusion")
+        for target_id, code, text in dict.fromkeys(eligible_units):
+            previous = conn.execute(
+                select(annotations.c.annotation_id, annotations.c.review_state)
+                .select_from(
+                    annotations.join(
+                        annotation_runs,
+                        annotation_runs.c.run_id == annotations.c.run_id,
+                    )
+                )
+                .where(
+                    annotations.c.target_type == "comment",
+                    annotations.c.target_id == target_id,
+                    annotations.c.subject_code == code,
+                    annotations.c.kind == "relevance",
+                    annotations.c.value_json == json.dumps("irrelevant"),
+                    annotations.c.review_state.notin_(("approved", "corrected", "rejected")),
+                    annotation_runs.c.provider == "rule",
+                    ~select(newer.c.annotation_id).where(
+                        newer.c.supersedes_id == annotations.c.annotation_id
+                    ).exists(),
+                )
+                .order_by(annotations.c.annotation_id.desc())
+                .limit(1)
+            ).first()
+            if previous is None:
+                continue
+            detail = {
+                "rule": "rule_exclusion_withdrawn",
+                "reason": "eligible_for_ai",
+                "matched_tickers": [],
+                "rule_version": VERSION,
+                "decided_at": now.isoformat(timespec="seconds"),
+            }
+            h = rule_input_hash(text, detail["rule"], VERSION, detail)
+            conn.execute(insert(annotations).values(
+                target_type="comment",
+                target_id=target_id,
+                subject_code=code,
+                kind="relevance",
+                value_json=json.dumps("irrelevant"),
+                calibrated_confidence=None,
+                run_id=run_id,
+                input_hash=h,
+                # A rejected chain-end deliberately means “no current verdict”.
+                review_state="rejected",
+                created_at=now,
+                supersedes_id=previous.annotation_id,
+            ))
+            conn.execute(insert(annotations).values(
+                target_type="comment",
+                target_id=target_id,
+                subject_code=code,
+                kind="text_quality",
+                value_json=json.dumps(detail, ensure_ascii=False),
+                calibrated_confidence=None,
+                run_id=run_id,
+                input_hash=h,
+                review_state="pending",
+                created_at=now,
+                supersedes_id=None,
+            ))
+            written += 1
+            touched_codes.add(code)
+        if written:
+            bump_revision(conn, "annotation")
+            mark_synthesis(conn, touched_codes, True)
     return written

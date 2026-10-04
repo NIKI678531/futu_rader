@@ -13,6 +13,7 @@ Prompt 对不上时，`annotation_runs.prompt_version` 记的就是一个假版�
 from . import (
     comment_product_v1,
     comment_product_v2,
+    comment_product_v3,
     kol_opinion_v1,
     kol_opinion_v2,
     post_annotation_v1,
@@ -22,6 +23,7 @@ from . import (
 # 任务 → {VERSION: 模块}。每个任务的第一个键是默认（最新）版本。
 _REGISTRY = {
     "comment_product": {
+        comment_product_v3.VERSION: comment_product_v3,
         comment_product_v2.VERSION: comment_product_v2,
         comment_product_v1.VERSION: comment_product_v1,
     },
@@ -40,6 +42,9 @@ _REGISTRY = {
 SCHEMA_OF = {
     comment_product_v1.VERSION: "v1",
     comment_product_v2.VERSION: "v2",
+    # v3 tightens product/context semantics without changing the seven-field
+    # output shape, so it intentionally reuses the proven strict v2 schema.
+    comment_product_v3.VERSION: "v2",
     post_annotation_v1.VERSION: "v1",
     post_annotation_v2.VERSION: "v2",
     kol_opinion_v1.VERSION: "v1",
@@ -82,6 +87,17 @@ def get(task, version=None, schema_version=None):
 
 def schema_version_for(prompt_module):
     return SCHEMA_OF[prompt_module.VERSION]
+
+
+def requires_full_reannotation(task, version=None, schema_version=None):
+    """Whether a Prompt revision must replace complete historical conclusions.
+
+    This policy is kept beside the version registry so enqueue code does not
+    hard-code one release name. The write path's existing ``supersedes_id``
+    rules remain the source of truth for preserving human-settled rows.
+    """
+    prompt_module = get(task, version, schema_version=schema_version)
+    return bool(getattr(prompt_module, "REQUIRES_FULL_REANNOTATION", False))
 
 
 def tasks():

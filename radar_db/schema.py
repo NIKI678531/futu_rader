@@ -113,6 +113,9 @@ feeds = Table(
     # 挂载标的：帖子被采集时所属的个股讨论区（CONTEXT.md「挂载标的」）。
     # code 是产品池里的代码（'3033'），由 ticker '03033.HK' 去前导零得到。
     Column("code", String(10), nullable=False, index=True),
+    # 上游讨论区的完整 ticker（例如 '03037.HK'）。历史行在回填完成前允许 NULL；
+    # 父帖筛选遇到 NULL 必须 fail closed，不能由 code 反推后静默放行。
+    Column("source_ticker", String(32)),
     Column("posted_at", DATETIME, nullable=False, index=True),
     Column("feed_type", Integer, nullable=False),
     Column("author_uid", String(40), index=True),
@@ -151,6 +154,20 @@ feeds = Table(
     ),
 )
 
+# 父帖标题＋正文中的严格 FUTU cashtag 快照。它与 mentions 的语义不同：mentions
+# 服务既有账号／产品归属，feed_mentions 只记录原始 ticker，并作为父帖筛选的事实输入。
+# 同一 ticker 在一条父帖里只存一行，occurrences 保留出现次数。
+feed_mentions = Table(
+    "feed_mentions",
+    metadata,
+    Column("feed_id", BigInteger, primary_key=True, autoincrement=False),
+    Column("raw_ticker", String(32), primary_key=True),
+    Column("market", String(8)),
+    Column("occurrences", Integer, nullable=False),
+    Index("ix_feed_mentions_ticker_feed", "raw_ticker", "feed_id"),
+    CheckConstraint("occurrences > 0", name="ck_feed_mentions_occurrences_positive"),
+)
+
 comments = Table(
     "comments",
     metadata,
@@ -162,6 +179,27 @@ comments = Table(
     Column("content", MEDIUMTEXT),
     Column("like_count", Integer),
     Column("reply_to_comment_id", BigInteger),  # 0 在源里表示「不是回复」→ ETL 写 NULL
+)
+
+# 评论送模资格的确定性路由。讨论区挂载标的不构成资格；每一行都必须来自父帖
+# title/content 或该条评论 content 中的严格 FUTU cashtag。平台评论量仍使用父帖筛选，
+# 这张表只约束评论级 AI 输入与 AI 派生结论。
+comment_product_routes = Table(
+    "comment_product_routes",
+    metadata,
+    Column("comment_id", BigInteger, primary_key=True, autoincrement=False),
+    Column("subject_code", String(10), primary_key=True),
+    Column("feed_id", BigInteger, nullable=False),
+    Column("matched_parent", Boolean, nullable=False, default=False),
+    Column("matched_comment", Boolean, nullable=False, default=False),
+    Column("rule_version", String(40), nullable=False),
+    Column("updated_at", DATETIME, nullable=False),
+    Index("ix_comment_product_routes_subject_feed", "subject_code", "feed_id"),
+    Index("ix_comment_product_routes_feed", "feed_id"),
+    CheckConstraint(
+        "matched_parent = 1 OR matched_comment = 1",
+        name="ck_comment_product_routes_has_match",
+    ),
 )
 
 mentions = Table(

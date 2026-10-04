@@ -18,9 +18,11 @@ from ai import config  # noqa: E402
 from ai.providers.base import Completion, TransientError, Usage  # noqa: E402
 from jobs import full_own, pipeline, synthesize  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
+from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config  # noqa: E402
 from radar_db.events import recent  # noqa: E402
 from radar_db.schema import (  # noqa: E402
-    analysis_scope_jobs, analysis_scopes, annotation_jobs, annotations, comments, feeds, meta_kv, synthesis_outputs,
+    analysis_scope_jobs, analysis_scopes, annotation_jobs, annotation_runs, annotations, comments,
+    feed_mentions, feeds, meta_kv, synthesis_outputs,
 )
 
 A, B = "3033", "7226"
@@ -36,14 +38,37 @@ def _engine(tmp_path):
     eng = make_engine("sqlite:///" + (tmp_path / "s.db").as_posix())
     create_all(eng)
     with eng.begin() as conn:
-        conn.execute(insert(meta_kv).values(k="anchor", v=ANCHOR.isoformat()))
+        conn.execute(insert(meta_kv), [
+            {"k": "anchor", "v": ANCHOR.isoformat()},
+            *(
+                {"k": key, "v": value}
+                for key, value in filter_readiness_values(
+                    load_comment_filter_config()
+                ).items()
+            ),
+        ])
+        conn.execute(insert(annotation_runs).values(
+            run_id="r1", task="comment_product", provider="openai_compatible",
+            model_id="m", prompt_version="comment-product-v3",
+            taxonomy_version="v2", schema_version="v2",
+            started_at=datetime(2026, 8, 26), status="done",
+            input_count=0, success_count=0, error_count=0,
+        ))
     return eng
 
 
 def _seed_units(conn, code, feed_id, first_cid, day, n_pos=8, n_neg=4):
+    ticker = f"{code.zfill(5)}.HK"
     conn.execute(insert(feeds).values(
-        feed_id=feed_id, code=code, posted_at=datetime.combine(day, datetime.min.time()).replace(hour=10),
+        feed_id=feed_id, code=code, source_ticker=ticker,
+        posted_at=datetime.combine(day, datetime.min.time()).replace(hour=10),
         feed_type=1, title="t", content="c", like_count=0, comment_count=0, image_count=0, raw_json_broken=False))
+    conn.execute(insert(feed_mentions).values(
+        feed_id=feed_id,
+        raw_ticker=ticker,
+        market="HK",
+        occurrences=1,
+    ))
     rows, anns = [], []
     for i in range(n_pos + n_neg):
         cid = first_cid + i
@@ -134,6 +159,11 @@ def test_ready_pairs_blocks_only_ranges_covering_pending_days(tmp_path):
     # 判完了 ⇒ 全部就绪
     with eng.begin() as conn:
         conn.execute(annotation_jobs.update().values(status="done"))
+    assert len(pipeline.ready_pairs(eng, "s1", [A], ranges, ANCHOR)) == 6
+
+    # 被新规则/新输入替代的任务也是终态，不得永久卡住 Layer B。
+    with eng.begin() as conn:
+        conn.execute(annotation_jobs.update().values(status="superseded"))
     assert len(pipeline.ready_pairs(eng, "s1", [A], ranges, ANCHOR)) == 6
 
     # claimed 也算没判完

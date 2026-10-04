@@ -1,10 +1,13 @@
-"""Pure Futu source payload normalization shared by dump and live adapters."""
+"""Pure source-payload normalization shared by dump and MarketInsight DB input."""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 
+from radar_db.comment_filter import extract_feed_mentions, normalize_source_ticker
+
+from .exact import extract_futu_cashtags, normalize_futu_ticker
 from .models import FeedObservation
 
 
@@ -49,14 +52,85 @@ def timestamp_from_epoch(value):
         return None
 
 
+def timestamp_from_source(value):
+    """Normalize epoch or ISO timestamps supplied by Futu input adapters."""
+    if isinstance(value, datetime):
+        return (
+            value.astimezone(timezone.utc).replace(tzinfo=None)
+            if value.tzinfo is not None else value
+        )
+    epoch = timestamp_from_epoch(value)
+    if epoch is not None:
+        return epoch
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (
+        parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        if parsed.tzinfo is not None else parsed
+    )
+
+
+def normalize_comment(item: dict, feed_id: int) -> dict | None:
+    """Normalize one embedded or reply-endpoint comment without inference."""
+    raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+    value = {**raw, **item}
+    raw_id = first_not_none(
+        value.get("comment_id"), value.get("reply_id"), value.get("id")
+    )
+    if raw_id in (None, "") or isinstance(raw_id, bool):
+        return None
+    try:
+        comment_id = int(raw_id)
+    except (TypeError, ValueError):
+        return None
+
+    author = value.get("author") or value.get("user_info") or {}
+    reply_to = first_not_none(
+        value.get("reply_to_comment_id"), value.get("reply_to_reply_id")
+    )
+    try:
+        reply_to = int(reply_to) if reply_to not in (None, "", "0", 0) else None
+    except (TypeError, ValueError):
+        reply_to = None
+    like = value.get("like") or {}
+    like_count = first_not_none(like.get("liked_num"), value.get("like_count"))
+    try:
+        like_count = int(like_count) if like_count is not None else None
+    except (TypeError, ValueError):
+        like_count = None
+
+    return {
+        "comment_id": comment_id,
+        "feed_id": int(feed_id),
+        "posted_at": timestamp_from_source(first_not_none(
+            value.get("timestamp"), value.get("posted_at"), value.get("create_time")
+        )),
+        "author_uid": first_not_none(
+            author.get("user_id"), value.get("author_uid"),
+            value.get("author_id"), value.get("user_id"),
+        ),
+        "author_name": first_not_none(
+            author.get("nick_name"), value.get("author_name"), value.get("user_name")
+        ),
+        "content": first_not_none(
+            rich_text(value.get("rich_text_items")),
+            value.get("content"), value.get("content_text"),
+        ),
+        "like_count": like_count,
+        "reply_to_comment_id": reply_to,
+    }
+
+
 def mention_code(stock):
     code = stock.get("stock_code")
     if not code:
         return None
-    market = (stock.get("market_type_label") or "").lower()
-    if market == "hk":
-        return code.lstrip("0") or "0"
-    return f"{market}:{code}" if market else code
+    market = stock.get("market_type_label")
+    return normalize_futu_ticker(f"{code}.{market}") if market else str(code).strip()
 
 
 def _raw_json(value):
@@ -69,7 +143,13 @@ def _raw_json(value):
         return None, True
 
 
-def normalize_feed(row: dict, code: str, observed_at: datetime) -> FeedObservation:
+def normalize_feed(
+    row: dict,
+    code: str,
+    observed_at: datetime,
+    *,
+    source_ticker: str | None = None,
+) -> FeedObservation:
     """Turn one MarketInsight feed row into target facts without calculating metrics."""
 
     payload, broken = _raw_json(row.get("raw_json"))
@@ -84,34 +164,14 @@ def normalize_feed(row: dict, code: str, observed_at: datetime) -> FeedObservati
     normalized_comments = []
     seen = set()
     for item in items:
-        raw_id = item.get("comment_id")
-        if raw_id in (None, ""):
+        normalized = normalize_comment(item, int(row["feed_id"]))
+        if normalized is None:
             continue
-        try:
-            comment_id = int(raw_id)
-        except (TypeError, ValueError):
-            continue
+        comment_id = normalized["comment_id"]
         if comment_id in seen:
             continue
         seen.add(comment_id)
-        author = item.get("author") or {}
-        reply_to = item.get("reply_to_comment_id")
-        try:
-            reply_to = int(reply_to) if reply_to not in (None, "", "0", 0) else None
-        except (TypeError, ValueError):
-            reply_to = None
-        normalized_comments.append(
-            {
-                "comment_id": comment_id,
-                "feed_id": int(row["feed_id"]),
-                "posted_at": timestamp_from_epoch(item.get("timestamp")),
-                "author_uid": author.get("user_id"),
-                "author_name": author.get("nick_name"),
-                "content": rich_text(item.get("rich_text_items")) or item.get("content"),
-                "like_count": (item.get("like") or {}).get("liked_num"),
-                "reply_to_comment_id": reply_to,
-            }
-        )
+        normalized_comments.append(normalized)
 
     mentions = [{"feed_id": int(row["feed_id"]), "code": code, "source": "anchor", "in_pool": True}]
     body_codes = set()
@@ -119,8 +179,11 @@ def normalize_feed(row: dict, code: str, observed_at: datetime) -> FeedObservati
         stock = segment.get("stock")
         if stock:
             value = mention_code(stock)
-            if value and value != code:
+            if value:
                 body_codes.add(value)
+    body_codes.update(
+        extract_futu_cashtags(f"{row.get('feed_title') or ''} {row.get('content_text') or ''}")
+    )
     mentions.extend(
         {"feed_id": int(row["feed_id"]), "code": value, "source": "body", "in_pool": False}
         for value in sorted(body_codes)
@@ -154,6 +217,9 @@ def normalize_feed(row: dict, code: str, observed_at: datetime) -> FeedObservati
     feed = {
         "feed_id": int(row["feed_id"]),
         "code": code,
+        "source_ticker": (
+            normalize_source_ticker(source_ticker or row.get("source_ticker") or row.get("ticker"))
+        ),
         "posted_at": row["posted_at"],
         "feed_type": int(row["feed_type"]),
         "author_uid": row.get("author_uid") or user_info.get("user_id"),
@@ -174,4 +240,21 @@ def normalize_feed(row: dict, code: str, observed_at: datetime) -> FeedObservati
         "source_observed_at": observed_at,
         "comment_coverage_status": coverage,
     }
-    return FeedObservation(feed, tuple(normalized_comments), tuple(mentions), observed_at, coverage)
+    raw_mentions = extract_feed_mentions(feed.get("title"), feed.get("content"))
+    feed_mentions = tuple(
+        {
+            "feed_id": feed["feed_id"],
+            "raw_ticker": mention.raw_ticker,
+            "market": mention.market,
+            "occurrences": mention.occurrences,
+        }
+        for mention in raw_mentions
+    )
+    return FeedObservation(
+        feed,
+        tuple(normalized_comments),
+        tuple(mentions),
+        feed_mentions,
+        observed_at,
+        coverage,
+    )

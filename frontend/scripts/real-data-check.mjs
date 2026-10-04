@@ -36,7 +36,7 @@ const PAGES = [
   ['/official', '官号动态', null],
   ['/kol', 'KOL 影响力', null],
   ['/kol/detail', 'KOL 详情', null],
-  ['/sector', '板块总览', { label: '产品抽屉', find: (page) => page.locator('[style*="cursor:pointer"],[style*="cursor: pointer"]').filter({ hasText: /评论\s*[\d,]+/ }).first() }],
+  ['/sector', '板块总览', { label: '产品抽屉', find: (page) => page.locator('[data-product-code]').first() }],
   ['/product', '产品监控', null],
 ]
 

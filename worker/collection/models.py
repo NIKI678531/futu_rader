@@ -37,12 +37,24 @@ class SyncRequest:
     through_source_run_id: str | None = None
     page_size: int = 1000
     dry_run: bool = False
+    # A bounded repair may re-read specific parent rows after the third-party
+    # collector has updated MarketInsight. Keep IDs at the synchronization seam
+    # rather than teaching the normal keyset cursor another addressing mode.
+    feed_ids: tuple[int, ...] = ()
 
     def __post_init__(self):
         if self.page_size < 1:
             raise ValueError("page_size must be positive")
         if self.mode == "repair" and self.dry_run:
             raise ValueError("repair mode cannot be combined with dry_run")
+        normalized = tuple(dict.fromkeys(int(value) for value in self.feed_ids))
+        if any(value <= 0 for value in normalized):
+            raise ValueError("feed_ids must contain positive integers")
+        if len(normalized) > 500:
+            raise ValueError("feed_ids is limited to 500 items per targeted sync")
+        if normalized and self.through_source_run_id:
+            raise ValueError("feed_ids cannot be combined with through_source_run_id")
+        object.__setattr__(self, "feed_ids", normalized)
 
 
 @dataclass
@@ -70,14 +82,18 @@ class SyncResult:
 @dataclass(frozen=True)
 class AiRequest:
     budget_date: date
+    anchor: date | None = None
     mode: AiMode = "daily"
     calibration_report: Path | Mapping[str, object] | None = None
+    quality_report: Path | Mapping[str, object] | None = None
     max_http_attempts: int = 500
     batch_size: int = 5
     concurrency: int = 2
     wait_for_ready: bool = False
     wait_timeout_seconds: int = 28800
     data_governance_approved: bool = False
+    codes: tuple[str, ...] = ()
+    range_keys: tuple[str, ...] = ()
 
     def __post_init__(self):
         if type(self.data_governance_approved) is not bool:
@@ -90,9 +106,20 @@ class AiRequest:
             raise ValueError("concurrency must be between 1 and 4")
         if self.wait_timeout_seconds < 0:
             raise ValueError("wait_timeout_seconds cannot be negative")
+        codes = tuple(dict.fromkeys(str(value).strip() for value in self.codes if str(value).strip()))
+        if any(not value.isdigit() for value in codes):
+            raise ValueError("codes must contain numeric product codes")
+        ranges = tuple(dict.fromkeys(str(value).strip() for value in self.range_keys if str(value).strip()))
+        supported = {"d1", "d2", "d7", "d14", "d30", "mtd"}
+        if set(ranges) - supported:
+            raise ValueError("range_keys contains an unsupported range")
+        object.__setattr__(self, "codes", codes)
+        object.__setattr__(self, "range_keys", ranges)
 
     @property
     def ranges(self) -> tuple[str, ...]:
+        if self.range_keys:
+            return self.range_keys
         return ("d1", "d2", "d7", "d14", "d30", "mtd") if self.mode == "weekly" else ("d1", "d2")
 
 
@@ -116,6 +143,7 @@ class FeedObservation:
     feed: dict
     comments: tuple[dict, ...]
     mentions: tuple[dict, ...]
+    feed_mentions: tuple[dict, ...]
     observed_at: datetime
     coverage: Coverage
 

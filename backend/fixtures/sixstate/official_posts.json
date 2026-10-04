@@ -4,6 +4,22 @@
    "account": "华夏",
    "accountFull": "华夏",
    "accountType": "发行商官号",
+   "attributedCamp": "both",
+   "attributedProducts": [
+    {
+     "code": "7261",
+     "issuer": "AMC 华夏",
+     "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+     "ownership": "peer"
+    },
+    {
+     "code": "7266",
+     "issuer": "CSOP 南方东英",
+     "name": "納斯達克100指數每日槓桿(2x)產品",
+     "ownership": "own"
+    }
+   ],
+   "attributionStatus": "explicit",
    "camp": "both",
    "campPrimary": "competitor",
    "code": "7261",
@@ -16,9 +32,11 @@
    "directionLabel": "",
    "directionPending": false,
    "engagement": 0,
-   "evidenceIdx": -1,
+   "evidenceIdx": 0,
    "fullText": [
-    "（图片帖：仅含图片或截图，无文字正文；第一期摘要不覆盖图片内容）"
+    "$华夏纳斯达克100指数每日杠杆(2x)产品（7261.HK）$ 与 $納斯達克100指數每日槓桿(2x)產品（7266.HK）$ 跟踪同一指数，结构与费率不同，适用场景见图。",
+    "请根据自身风险承受能力选择。",
+    "投资涉及风险。"
    ],
    "hasDir": false,
    "hasSummary": true,
@@ -42,21 +60,38 @@
    ],
    "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
    "ownership": "peer",
-   "postType": "other",
+   "postType": "promo",
    "reviewState": "pending",
    "sector": "us",
    "shares": 0,
+   "sourceAnchorCode": "7261",
    "summary": "互动为零的帖子：赞、评、转都确实是 0，不是缺数据。",
    "t": 164,
-   "time": "09-01 20:47",
-   "typeEvidence": "",
-   "typeLabel": "其他",
-   "url": "https://www.futunn.com/post/9337588"
+   "time": "09-01 20:11",
+   "typeEvidence": "$华夏纳斯达克100指数每日杠杆(2x)产品（7261.HK）$ 与 $納斯達克100指數每日槓桿(2x)產品（7266.HK）$ 跟踪同一指数，结构与费率不同，适用场景见图。",
+   "typeLabel": "产品推介",
+   "url": "https://www.futunn.com/post/9681884"
   },
   {
    "account": "华夏",
    "accountFull": "华夏",
    "accountType": "发行商官号",
+   "attributedCamp": "both",
+   "attributedProducts": [
+    {
+     "code": "7261",
+     "issuer": "AMC 华夏",
+     "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+     "ownership": "peer"
+    },
+    {
+     "code": "7266",
+     "issuer": "CSOP 南方东英",
+     "name": "納斯達克100指數每日槓桿(2x)產品",
+     "ownership": "own"
+    }
+   ],
+   "attributionStatus": "explicit",
    "camp": "both",
    "campPrimary": "competitor",
    "code": "7261",
@@ -69,9 +104,11 @@
    "directionLabel": "",
    "directionPending": false,
    "engagement": null,
-   "evidenceIdx": -1,
+   "evidenceIdx": 0,
    "fullText": [
-    "（图片帖：仅含图片或截图，无文字正文；第一期摘要不覆盖图片内容）"
+    "$华夏纳斯达克100指数每日杠杆(2x)产品（7261.HK）$ 与 $納斯達克100指數每日槓桿(2x)產品（7266.HK）$ 跟踪同一指数，结构与费率不同，适用场景见图。",
+    "请根据自身风险承受能力选择。",
+    "投资涉及风险。"
    ],
    "hasDir": false,
    "hasSummary": true,
@@ -95,21 +132,38 @@
    ],
    "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
    "ownership": "peer",
-   "postType": "other",
+   "postType": "promo",
    "reviewState": "pending",
    "sector": "us",
    "shares": null,
+   "sourceAnchorCode": "7261",
    "summary": "平台计数字段未回传：三个数都应该有值，但当前取不到。",
    "t": 164,
-   "time": "09-01 20:47",
-   "typeEvidence": "",
-   "typeLabel": "其他",
-   "url": "https://www.futunn.com/post/9337588"
+   "time": "09-01 20:11",
+   "typeEvidence": "$华夏纳斯达克100指数每日杠杆(2x)产品（7261.HK）$ 与 $納斯達克100指數每日槓桿(2x)產品（7266.HK）$ 跟踪同一指数，结构与费率不同，适用场景见图。",
+   "typeLabel": "产品推介",
+   "url": "https://www.futunn.com/post/9681884"
   },
   {
    "account": "华夏",
    "accountFull": "华夏",
    "accountType": "发行商官号",
+   "attributedCamp": "both",
+   "attributedProducts": [
+    {
+     "code": "7261",
+     "issuer": "AMC 华夏",
+     "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+     "ownership": "peer"
+    },
+    {
+     "code": "7266",
+     "issuer": "CSOP 南方东英",
+     "name": "納斯達克100指數每日槓桿(2x)產品",
+     "ownership": "own"
+    }
+   ],
+   "attributionStatus": "explicit",
    "camp": "both",
    "campPrimary": "competitor",
    "code": "7261",
@@ -122,9 +176,11 @@
    "directionLabel": "",
    "directionPending": false,
    "engagement": 16,
-   "evidenceIdx": -1,
+   "evidenceIdx": 0,
    "fullText": [
-    "（图片帖：仅含图片或截图，无文字正文；第一期摘要不覆盖图片内容）"
+    "$华夏纳斯达克100指数每日杠杆(2x)产品（7261.HK）$ 与 $納斯達克100指數每日槓桿(2x)產品（7266.HK）$ 跟踪同一指数，结构与费率不同，适用场景见图。",
+    "请根据自身风险承受能力选择。",
+    "投资涉及风险。"
    ],
    "hasDir": false,
    "hasSummary": true,
@@ -148,21 +204,38 @@
    ],
    "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
    "ownership": "peer",
-   "postType": "other",
+   "postType": "promo",
    "reviewState": "needs_review",
    "sector": "us",
    "shares": 1,
+   "sourceAnchorCode": "7261",
    "summary": "模型自报存疑：标签照挂，但要标出来它没把握。",
    "t": 164,
-   "time": "09-01 20:47",
-   "typeEvidence": "",
-   "typeLabel": "其他",
-   "url": "https://www.futunn.com/post/9337588"
+   "time": "09-01 20:11",
+   "typeEvidence": "$华夏纳斯达克100指数每日杠杆(2x)产品（7261.HK）$ 与 $納斯達克100指數每日槓桿(2x)產品（7266.HK）$ 跟踪同一指数，结构与费率不同，适用场景见图。",
+   "typeLabel": "产品推介",
+   "url": "https://www.futunn.com/post/9681884"
   },
   {
    "account": "华夏",
    "accountFull": "华夏",
    "accountType": "发行商官号",
+   "attributedCamp": "both",
+   "attributedProducts": [
+    {
+     "code": "7261",
+     "issuer": "AMC 华夏",
+     "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+     "ownership": "peer"
+    },
+    {
+     "code": "7266",
+     "issuer": "CSOP 南方东英",
+     "name": "納斯達克100指數每日槓桿(2x)產品",
+     "ownership": "own"
+    }
+   ],
+   "attributionStatus": "explicit",
    "camp": "both",
    "campPrimary": "competitor",
    "code": "7261",
@@ -175,9 +248,11 @@
    "directionLabel": "",
    "directionPending": false,
    "engagement": 101,
-   "evidenceIdx": -1,
+   "evidenceIdx": 0,
    "fullText": [
-    "（图片帖：仅含图片或截图，无文字正文；第一期摘要不覆盖图片内容）"
+    "$华夏纳斯达克100指数每日杠杆(2x)产品（7261.HK）$ 与 $納斯達克100指數每日槓桿(2x)產品（7266.HK）$ 跟踪同一指数，结构与费率不同，适用场景见图。",
+    "请根据自身风险承受能力选择。",
+    "投资涉及风险。"
    ],
    "hasDir": false,
    "hasSummary": true,
@@ -201,21 +276,38 @@
    ],
    "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
    "ownership": "peer",
-   "postType": "other",
+   "postType": "promo",
    "reviewState": "pending",
    "sector": "us",
    "shares": 4,
+   "sourceAnchorCode": "7261",
    "summary": "模型没有自报存疑：这一篇不该挂那一枚存疑徽章。",
    "t": 164,
-   "time": "09-01 20:47",
-   "typeEvidence": "",
-   "typeLabel": "其他",
-   "url": "https://www.futunn.com/post/9337588"
+   "time": "09-01 20:11",
+   "typeEvidence": "$华夏纳斯达克100指数每日杠杆(2x)产品（7261.HK）$ 与 $納斯達克100指數每日槓桿(2x)產品（7266.HK）$ 跟踪同一指数，结构与费率不同，适用场景见图。",
+   "typeLabel": "产品推介",
+   "url": "https://www.futunn.com/post/9681884"
   },
   {
    "account": "华夏",
    "accountFull": "华夏",
    "accountType": "发行商官号",
+   "attributedCamp": "both",
+   "attributedProducts": [
+    {
+     "code": "7261",
+     "issuer": "AMC 华夏",
+     "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
+     "ownership": "peer"
+    },
+    {
+     "code": "7266",
+     "issuer": "CSOP 南方东英",
+     "name": "納斯達克100指數每日槓桿(2x)產品",
+     "ownership": "own"
+    }
+   ],
+   "attributionStatus": "explicit",
    "camp": "both",
    "campPrimary": "competitor",
    "code": "7261",
@@ -228,9 +320,11 @@
    "directionLabel": "",
    "directionPending": false,
    "engagement": 5,
-   "evidenceIdx": -1,
+   "evidenceIdx": 0,
    "fullText": [
-    "（图片帖：仅含图片或截图，无文字正文；第一期摘要不覆盖图片内容）"
+    "$华夏纳斯达克100指数每日杠杆(2x)产品（7261.HK）$ 与 $納斯達克100指數每日槓桿(2x)產品（7266.HK）$ 跟踪同一指数，结构与费率不同，适用场景见图。",
+    "请根据自身风险承受能力选择。",
+    "投资涉及风险。"
    ],
    "hasDir": false,
    "hasSummary": false,
@@ -254,24 +348,28 @@
    ],
    "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
    "ownership": "peer",
-   "postType": "other",
+   "postType": "promo",
    "reviewState": "pending",
    "sector": "us",
    "shares": 0,
+   "sourceAnchorCode": "7261",
    "summary": "",
    "t": 164,
-   "time": "09-01 20:47",
-   "typeEvidence": "",
-   "typeLabel": "其他",
-   "url": "https://www.futunn.com/post/9337588"
+   "time": "09-01 20:11",
+   "typeEvidence": "$华夏纳斯达克100指数每日杠杆(2x)产品（7261.HK）$ 与 $納斯達克100指數每日槓桿(2x)產品（7266.HK）$ 跟踪同一指数，结构与费率不同，适用场景见图。",
+   "typeLabel": "产品推介",
+   "url": "https://www.futunn.com/post/9681884"
   },
   {
    "account": "易方达",
    "accountFull": "易方达",
    "accountType": "发行商官号",
+   "attributedCamp": "none",
+   "attributedProducts": [],
+   "attributionStatus": "unattributed",
    "camp": "none",
    "campPrimary": "none",
-   "code": "7261",
+   "code": null,
    "comments": 1,
    "confidence": 0.9,
    "dateText": "09-01",
@@ -281,29 +379,32 @@
    "directionLabel": "",
    "directionPending": false,
    "engagement": 4,
-   "evidenceIdx": -1,
+   "evidenceIdx": 0,
    "fullText": [
-    "（图片帖：仅含图片或截图，无文字正文；第一期摘要不覆盖图片内容）"
+    "$华夏纳斯达克100指数每日杠杆(2x)产品（7261.HK）$ 与 $納斯達克100指數每日槓桿(2x)產品（7266.HK）$ 跟踪同一指数，结构与费率不同，适用场景见图。",
+    "请根据自身风险承受能力选择。",
+    "投资涉及风险。"
    ],
    "hasDir": false,
    "hasSummary": true,
    "id": "sixstate-nomention",
    "isIssuer": true,
-   "issuer": "AMC 华夏",
+   "issuer": null,
    "likes": 3,
    "mentioned": [],
-   "name": "华夏纳斯达克100指数每日杠杆(2x)产品",
-   "ownership": "peer",
-   "postType": "other",
+   "name": null,
+   "ownership": null,
+   "postType": "promo",
    "reviewState": "pending",
-   "sector": "us",
+   "sector": null,
    "shares": 0,
+   "sourceAnchorCode": "7261",
    "summary": "这条没提任何 ETF：字段不适用，不是数值为零。",
    "t": 164,
-   "time": "09-01 20:47",
-   "typeEvidence": "",
-   "typeLabel": "其他",
-   "url": "https://www.futunn.com/post/9337588"
+   "time": "09-01 20:11",
+   "typeEvidence": "$华夏纳斯达克100指数每日杠杆(2x)产品（7261.HK）$ 与 $納斯達克100指數每日槓桿(2x)產品（7266.HK）$ 跟踪同一指数，结构与费率不同，适用场景见图。",
+   "typeLabel": "产品推介",
+   "url": "https://www.futunn.com/post/9681884"
   }
  ]
 }

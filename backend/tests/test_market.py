@@ -183,6 +183,27 @@ def test_benchmark_carries_the_baseline_observation(client, a_code):
     )
 
 
+def test_demo_benchmark_base_carries_the_complete_comment_funnel(client):
+    """benchmark.base 与 pool.list 元素共享同一 observation 契约。"""
+    base = bench(client, "3033", "?range=d7")["data"]["base"]
+
+    assert base["commentFunnel"] == {
+        "rawPlatformCount": 4195,
+        "platformCount": 4195,
+        "qualifyingFeedCount": 1812,
+        "filterExcludedPlatformCount": 0,
+        "parsedCount": 4195,
+        "ruleEligibleCount": 4195,
+        "ruleExcludedCount": 0,
+        "aiCompletedCount": 4195,
+        "relevantCount": 4195,
+        "needsContextCount": 0,
+        "pendingCount": 0,
+        "sourceCoverage": 1.0,
+        "analysisCoverage": 1.0,
+    }
+
+
 def test_benchmark_has_per_bucket_deltas_aligned_with_the_buckets(client, a_code):
     """逐桶 delta 与 `base.buckets` 一一对齐，五条序列的键与图例键一致。
 
@@ -268,6 +289,40 @@ def test_observe_has_no_endpoint_because_it_is_an_element_of_the_pool(client, a_
     o = next(o for o in pool(client)["data"]["list"] if o["code"] == a_code)
     assert {"buckets", "comments", "discussionHeat", "attitude", "activeAccounts",
             "maxBucket"} <= set(o)
+
+
+def test_demo_pool_observation_carries_the_complete_comment_funnel(client):
+    """旧 demo 观测按“历史评论均已抓取、入围、完成且相关”迁移到新契约。"""
+    observation = next(
+        item for item in pool(client, "?range=d7")["data"]["list"]
+        if item["code"] == "3033"
+    )
+
+    assert observation["commentFunnel"] == {
+        "rawPlatformCount": 3628,
+        "platformCount": 3628,
+        "qualifyingFeedCount": 1522,
+        "filterExcludedPlatformCount": 0,
+        "parsedCount": 3628,
+        "ruleEligibleCount": 3628,
+        "ruleExcludedCount": 0,
+        "aiCompletedCount": 3628,
+        "relevantCount": 3628,
+        "needsContextCount": 0,
+        "pendingCount": 0,
+        "sourceCoverage": 1.0,
+        "analysisCoverage": 1.0,
+    }
+
+
+def test_demo_zero_comment_funnel_is_a_completed_empty_result(client):
+    observation = next(
+        item for item in pool(client, "?range=d1")["data"]["list"]
+        if item["code"] == "3442"
+    )
+
+    assert observation["commentFunnel"]["sourceCoverage"] == 1.0
+    assert observation["commentFunnel"]["analysisCoverage"] == 1.0
 
 
 @pytest.mark.parametrize(

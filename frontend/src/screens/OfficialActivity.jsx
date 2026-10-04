@@ -10,6 +10,7 @@
 import React from 'react'
 import R, { prefetchScreen } from '../data/radar'
 import { num, conf2, sumN, descN, typeStyle, shell, rgba, CAMP, POST_TYPES, TYPE_BY_KEY, reviewBadge, needsReview } from '../lib/view'
+import { attributedCampOf, attributedCodesOf } from '../lib/officialAttribution'
 import { s, hover, focus } from '../lib/dc'
 import Shell from '../components/Shell'
 import withTransition from '../components/withTransition'
@@ -20,7 +21,7 @@ class OfficialActivity extends React.Component {
   static defaultProps = {
     lowConfidence: 0.7,
     feedLayout: '双列',
-    campRule: '挂载标的 ∪ 正文提及',
+    campRule: '官号正文归属',
   }
 
   state = {
@@ -78,9 +79,8 @@ class OfficialActivity extends React.Component {
     if (this._stripDepth > 6) return;
     this.setState({ strip: next });
   }
-  primaryOnly() { return this.props.campRule === '仅挂载标的'; }
-  camp(p) { return this.primaryOnly() ? p.campPrimary : p.camp; }
-  codesOf(p) { return this.primaryOnly() ? [p.code] : p.mentioned.map(function (m) { return m.code; }); }
+  camp(p) { return attributedCampOf(p); }
+  codesOf(p) { return attributedCodesOf(p); }
 
   renderVals() {
     var s = this.state, self = this;
@@ -109,7 +109,12 @@ class OfficialActivity extends React.Component {
     var review = function (p) { return reviewBadge(p.reviewState, p.evidenceIdx != null && p.evidenceIdx >= 0); };
     /* AI 标注整块未生成（ADR-0017 §4） */
     var annNa = function (p) { return p.postType == null; };
-    var campsOf = function (p) { var c = self.camp(p); return c === 'both' ? [CAMP.own, CAMP.competitor] : [CAMP[c] || CAMP.none]; };
+    var campsOf = function (p) {
+      var c = self.camp(p);
+      if (c === 'both') return [CAMP.own, CAMP.competitor];
+      if (c === 'none') return [{ k: 'none', label: '未归属产品', bg: 'var(--ink-100)', fg: 'var(--ink-500)' }];
+      return [CAMP[c] || CAMP.none];
+    };
 
     /* 账号级汇总由帖子流聚合而来，随区间变化 */
     var acc = R.OFFICIAL.map(function (o) {
@@ -333,7 +338,7 @@ class OfficialActivity extends React.Component {
     var fqq = norm(s.fq);
     var fhay = function (p) {
       return norm([p.account, p.accountFull, p.summary]
-        .concat(p.mentioned.map(function (m) { return m.code + ' ' + m.name + ' ' + m.issuer; }), p.fullText || []).join(' '));
+        .concat((p.attributedProducts || []).map(function (m) { return m.code + ' ' + m.name + ' ' + m.issuer; }), p.fullText || []).join(' '));
     };
     var feed = prodPosts.filter(function (p) {
       return (!s.types.length || s.types.indexOf(p.postType) >= 0) && campOk(self.camp(p), s.camp) && (!fqq || fhay(p).indexOf(fqq) >= 0);
@@ -388,13 +393,17 @@ class OfficialActivity extends React.Component {
           var hit = i === p.evidenceIdx;
           return { text: t, bg: hit ? 'var(--warning-100)' : 'transparent', sh: hit ? 'inset 0 -2px 0 var(--warning-600)' : 'none' };
         }) : [],
-        mentioned: p.mentioned.map(function (m) {
+        mentioned: (p.attributedProducts || []).map(function (m) {
           var own = m.ownership === 'own';
           return {
             code: m.code, short: own ? '自家' : m.issuer, title: m.name + '（' + m.code + '.HK）· ' + (own ? '南方东英' : '竞品 · ' + m.issuer),
             bg: own ? 'var(--csop-blue-600)' : 'var(--csop-silver-200)', fg: own ? '#fff' : 'var(--ink-700)'
           };
         }),
+        attributionEmpty: self.codesOf(p).length === 0,
+        attributionTitle: p.sourceAnchorCode
+          ? '该帖来源讨论区为 ' + p.sourceAnchorCode + '，但讨论区不作为官号产品归属证据'
+          : '正文中没有足够的产品归属证据',
         likes: num(p.likes), comments: num(p.comments), shares: num(p.shares),
         url: p.url,
         openLabel: open ? '收起原文' : '原文',
@@ -464,7 +473,6 @@ class OfficialActivity extends React.Component {
               <div style={s('display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 20px;border-bottom:1px solid var(--border-1)')}>
                 <div style={s('display:flex;align-items:baseline;gap:10px;min-width:0')}>
                   <div style={s('font:600 18px/1.3 var(--font-cjk)')}>官号清单</div>
-                  <div style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>提及 ETF 按出现次数统计，只含 ETF，不含个股</div>
                 </div>
                 <div style={s('flex:none;display:flex;align-items:center;gap:8px')}>
                   <span style={s('font:600 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>排序</span>
@@ -724,6 +732,7 @@ class OfficialActivity extends React.Component {
                     {c.mentioned.map((m) => (
                       <span key={m.code} title={m.title} style={s(`display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:9999px;background:${m.bg};font:600 12px/1.5 var(--font-mono);color:${m.fg};white-space:nowrap`)}>{m.code}<span style={s('font:400 11px/1.4 var(--font-cjk);opacity:0.85')}>{m.short}</span></span>
                     ))}
+                    {c.attributionEmpty && <span title={c.attributionTitle} style={s('display:inline-flex;align-items:center;padding:2px 9px;border-radius:9999px;background:var(--ink-100);font:500 12px/1.5 var(--font-cjk);color:var(--ink-500)')}>未归属产品</span>}
                   </div>
                   <div style={s('display:flex;align-items:center;gap:10px;margin:12px 0 0;padding:10px 14px 12px;border-top:1px solid var(--ink-100)')}>
                     <span style={s('font:500 13px/1.4 var(--font-mono);color:var(--ink-600);white-space:nowrap')}>赞 {c.likes} · 评 {c.comments} · 转 {c.shares}</span>

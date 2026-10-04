@@ -67,6 +67,11 @@ export function pct1(v) { return v == null ? '数据暂不可用' : (Math.round(
    值在右），与 num()／pct1() 同类，不是状态图例（PRD §3.1、§3.6）。 */
 export function stamp(v) { return v == null ? '数据暂不可用' : String(v); }
 
+/* 后端的账号类型／范围值继续使用旧枚举作为数据契约；页面统一展示新口径。 */
+export function kolDisplayLabel(v) {
+  return v == null ? v : String(v).replace(/合作\s*KOL/g, '重点KOL');
+}
+
 /* 整块没取到 → 该契约形状的 `unavailable` 态。
 
    市场域有一串端点是 `{status, list}`（关联竞品、重点舆情、产品相关 KOL、阶段观点、

@@ -18,7 +18,16 @@ from ai.providers.base import Completion, PermanentError, Usage  # noqa: E402
 from ai.schemas import SchemaError  # noqa: E402
 from jobs import synthesize  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
-from radar_db.schema import annotation_runs, annotations, comments, feeds, meta_kv, synthesis_outputs  # noqa: E402
+from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config  # noqa: E402
+from radar_db.schema import (  # noqa: E402
+    annotation_runs,
+    annotations,
+    comments,
+    feed_mentions,
+    feeds,
+    meta_kv,
+    synthesis_outputs,
+)
 
 CODE = "3033"
 
@@ -86,14 +95,26 @@ def engine(tmp_path):
     create_all(eng)
     now = datetime(2026, 8, 26, 12)
     with eng.begin() as conn:
-        conn.execute(insert(meta_kv).values(k="anchor", v="2026-08-25"))
+        conn.execute(insert(meta_kv), [
+            {"k": "anchor", "v": "2026-08-25"},
+            *(
+                {"k": key, "v": value}
+                for key, value in filter_readiness_values(
+                    load_comment_filter_config()
+                ).items()
+            ),
+        ])
         conn.execute(insert(feeds).values(
             # UTC-naive 08-21 16:00 is HKT midnight at the start of 08-22.
-            feed_id=1, code=CODE, posted_at=datetime(2026, 8, 21, 16), feed_type=1, title="t", content="c",
+            feed_id=1, code=CODE, source_ticker="03033.HK",
+            posted_at=datetime(2026, 8, 21, 16), feed_type=1, title="t", content="c",
             like_count=0, comment_count=0, image_count=0, raw_json_broken=False))
+        conn.execute(insert(feed_mentions).values(
+            feed_id=1, raw_ticker="03033.HK", market="HK", occurrences=1,
+        ))
         rows, anns = [], []
         aid = 0
-        # 12 条相关：8 正（费率）、4 负（点差）；2 条无关但有市场方向；1 条合规命中
+        # 12 条相关：8 正（费率）、4 负（点差）；旧的市场／合规结论不得穿透当前相关性。
         for i in range(14):
             cid = 100 + i
             text = f"费率係同類最低第{i}條" if i < 8 else (f"點差太大第{i}條" if i < 12 else "恒指要崩了")
@@ -102,8 +123,9 @@ def engine(tmp_path):
             for kind, value in (("relevance", rel),
                                 ("attitude", "positive" if i < 8 else "negative" if i < 12 else None),
                                 ("aspect", ["fee"] if i < 8 else ["spread"] if i < 12 else None),
-                                ("market_direction", "bearish" if i >= 12 else None),
-                                ("compliance", {"tags": ["mobilization"], "rationale": "号召"} if i == 11 else {"tags": [], "rationale": None})):
+                                ("market_direction", "bearish" if i in (10, 12, 13) else None),
+                                ("compliance", {"tags": ["mobilization"], "rationale": "号召"}
+                                 if i in (11, 12) else {"tags": [], "rationale": None})):
                 if value is None:
                     continue
                 aid += 1
@@ -112,6 +134,13 @@ def engine(tmp_path):
                              "input_hash": f"h{cid}", "review_state": "pending", "created_at": now})
         conn.execute(insert(comments), rows)
         conn.execute(insert(annotations), anns)
+        conn.execute(insert(annotation_runs).values(
+            run_id="r1", task="comment_product", provider="openai_compatible",
+            model_id="test", prompt_version="comment-product-v3",
+            taxonomy_version="v2", schema_version="v2", started_at=now,
+            finished_at=now, status="done", input_count=14, success_count=14,
+            error_count=0,
+        ))
     return eng
 
 
@@ -173,10 +202,15 @@ def test_full_run_writes_each_kind_with_facts_only_from_core(engine, cfg):
     hot = [p for k, p in prov.calls if k == "hot_summary"][0]
     assert hot["facts"]["attitude"] == {"positive": 8, "negative": 4, "neutral": 0, "relevant": 12}
     assert hot["facts"]["compliance"]["hits"] == 1
+    topic = [p for k, p in prov.calls if k == "topic_label"][0]
+    assert topic["facts"]["topic"] == {
+        "bullish": 0, "bearish": 1, "neutral": 0, "mentions": 1,
+    }
+    assert [item["id"] for item in topic["evidence"]] == ["c110"]
     assert all(e["id"].startswith("c") for e in hot["evidence"])
     assert hot["language"] in ("zh-Hant", "yue")
     assert hot["facts"]["themes"]["positive"][0]["title"] == "費率同類最低"
-    run = rows(engine, annotation_runs)[0]
+    run = rows(engine, annotation_runs, annotation_runs.c.task == "synthesize")[0]
     assert run["task"] == "synthesize" and run["token_input"] == 100 * stats["calls"]
 
 
@@ -198,6 +232,44 @@ def test_rerun_with_same_annotations_costs_nothing(engine, cfg):
     prov2 = FakeSynthProvider()
     stats = synthesize.run(engine, cfg, codes=[CODE], ranges=["d7"], provider=prov2)
     assert prov2.calls == [] and stats["skipped_same"] >= 1 and n > 0
+
+
+def test_no_material_publishes_empty_generation_instead_of_reusing_old_output(engine, cfg):
+    synthesize.run(
+        engine, cfg, codes=[CODE], ranges=["d7"], kinds=["hot_summary"],
+        provider=FakeSynthProvider(),
+    )
+    with engine.connect() as conn:
+        before = conn.execute(select(meta_kv.c.v).where(
+            meta_kv.c.k == f"synth_current_{CODE}_d7_hot_summary"
+        )).scalar_one()
+    with engine.begin() as conn:
+        conn.execute(
+            annotations.update()
+            .where(annotations.c.kind == "relevance")
+            .values(review_state="rejected")
+        )
+
+    provider = FakeSynthProvider()
+    stats = synthesize.run(
+        engine, cfg, codes=[CODE], ranges=["d7"], kinds=["hot_summary"],
+        provider=provider,
+    )
+    with engine.connect() as conn:
+        after = conn.execute(select(meta_kv.c.v).where(
+            meta_kv.c.k == f"synth_current_{CODE}_d7_hot_summary"
+        )).scalar_one()
+        current_fp = after.split("|", 1)[1]
+        current_rows = conn.execute(select(synthesis_outputs.c.synthesis_id).where(
+            synthesis_outputs.c.code == CODE,
+            synthesis_outputs.c.range_key == "d7",
+            synthesis_outputs.c.kind == "hot_summary",
+            synthesis_outputs.c.input_fingerprint == current_fp,
+        )).all()
+    assert stats["no_material"] == 1
+    assert provider.calls == []
+    assert after != before
+    assert current_rows == []
 
 
 def test_changed_annotation_changes_fingerprint_and_supersedes(engine, cfg):
@@ -242,6 +314,68 @@ def test_no_annotations_means_no_material_no_calls(engine, cfg):
     prov = FakeSynthProvider()
     stats = synthesize.run(engine, cfg, codes=["7226"], ranges=["d7"], provider=prov)
     assert stats["no_material"] == 1 and prov.calls == []
+
+
+def test_synthesis_excludes_unqualified_and_cross_product_annotations(engine, cfg):
+    now = datetime(2026, 8, 26, 12)
+    with engine.begin() as conn:
+        conn.execute(insert(feeds).values(
+            feed_id=2,
+            code=CODE,
+            source_ticker="03033.HK",
+            posted_at=datetime(2026, 8, 21, 16),
+            feed_type=1,
+            title="t",
+            content="$800000.HK$",
+            like_count=0,
+            comment_count=1,
+            image_count=0,
+            raw_json_broken=False,
+        ))
+        conn.execute(insert(feed_mentions).values(
+            feed_id=2, raw_ticker="800000.HK", market="HK", occurrences=1,
+        ))
+        conn.execute(insert(comments).values(
+            comment_id=999, feed_id=2, content="must not reach synthesis", author_uid="u999",
+        ))
+        conn.execute(insert(annotations), [
+            {
+                "target_type": "comment",
+                "target_id": 999,
+                "subject_code": CODE,
+                "kind": kind,
+                "value_json": json.dumps(value),
+                "run_id": "legacy",
+                "input_hash": "legacy",
+                "review_state": "pending",
+                "created_at": now,
+            }
+            for kind, value in (("relevance", "relevant"), ("attitude", "positive"))
+        ])
+        conn.execute(insert(annotations), [
+            {
+                "target_type": "comment",
+                "target_id": 100,
+                "subject_code": "7226",
+                "kind": kind,
+                "value_json": json.dumps(value),
+                "run_id": "legacy-cross-route",
+                "input_hash": "legacy-cross-route",
+                "review_state": "pending",
+                "created_at": now,
+            }
+            for kind, value in (("relevance", "relevant"), ("attitude", "positive"))
+        ])
+
+    material = synthesize.Material(
+        engine,
+        CODE,
+        synthesize.build_range("d7", datetime(2026, 8, 25).date()),
+        synthesize.product_aliases.ProductLexicon(),
+        load_comment_filter_config(),
+    )
+    assert material.relevant_count == 12
+    assert len(material.units) == 12
 
 
 def test_permanent_error_aborts(engine, cfg):

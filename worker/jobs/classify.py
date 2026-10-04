@@ -55,12 +55,25 @@ if str(REPO_ROOT) not in sys.path:
 import clock  # noqa: E402
 from ai import config, neardup, prefilter, schemas  # noqa: E402
 from ai.lexicon import compliance_zh  # noqa: E402
+from ai.prompts import requires_full_reannotation  # noqa: E402
 from jobs import annotate  # noqa: E402
 from models import registry  # noqa: E402
 from models.dataset import payload_text  # noqa: E402
 from radar_db import make_engine  # noqa: E402
 from radar_db.events import emit  # noqa: E402
-from radar_db.schema import annotation_jobs, annotation_runs, annotations  # noqa: E402
+from radar_db.comment_filter import qualifying_feed_scope_predicate  # noqa: E402
+from radar_db.comment_routes import (  # noqa: E402
+    readiness_on_connection as comment_routes_ready_on_connection,
+    route_exists_predicate,
+    supersede_ineligible_jobs as supersede_ineligible_route_jobs,
+)
+from radar_db.schema import (  # noqa: E402
+    annotation_jobs,
+    annotation_runs,
+    annotations,
+    comments,
+    feeds,
+)
 
 log = logging.getLogger("worker.classify")
 
@@ -190,11 +203,17 @@ def _cluster_members(conn, jobs):
     return out
 
 
-def route_all_to_llm(engine, scope_id, limit, reason):
+def route_all_to_llm(engine, scope_id, limit, reason, parent_filter_config=None):
     """没有学生模型时的退化路径：把 student 任务整体放行给 Luna。返回改了多少条。"""
-    q = select(annotation_jobs.c.job_id).where(
+    source = (
+        annotation_jobs
+        .join(comments, comments.c.comment_id == annotation_jobs.c.target_id)
+        .join(feeds, feeds.c.feed_id == comments.c.feed_id)
+    )
+    q = select(annotation_jobs.c.job_id).select_from(source).where(
         annotation_jobs.c.task == TASK, annotation_jobs.c.stage == annotate.STAGE_STUDENT,
         annotation_jobs.c.status.in_(("pending", "claimed")),
+        annotation_jobs.c.target_type == "comment",
     )
     if scope_id is not None:
         from radar_db.scope_jobs import scope_condition
@@ -203,6 +222,21 @@ def route_all_to_llm(engine, scope_id, limit, reason):
         q = q.limit(limit)
     now = clock.now()
     with engine.begin() as conn:
+        if comment_routes_ready_on_connection(conn, lock=True):
+            q = q.where(route_exists_predicate(
+                annotation_jobs.c.target_id,
+                annotation_jobs.c.subject_code,
+            ))
+        else:
+            parent_filter_config = annotate.require_comment_task_filter_on_connection(
+                conn,
+                TASK,
+                parent_filter_config,
+            )
+            q = q.where(
+                annotation_jobs.c.subject_code == feeds.c.code,
+                qualifying_feed_scope_predicate(feeds, parent_filter_config),
+            )
         ids = [r[0] for r in conn.execute(q)]
         for i in range(0, len(ids), 500):
             conn.execute(update(annotation_jobs).where(annotation_jobs.c.job_id.in_(ids[i:i + 500])).values(
@@ -321,18 +355,61 @@ def _process_batch(engine, cfg, prompt, schema_version, student, jobs, run_id, r
 
 
 def run(engine, cfg=None, *, scope_id=None, limit=None, batch_size=BATCH_SIZE, student=None,
-        model_dir=None, dry_run=False, require_model=False):
+        model_dir=None, dry_run=False, require_model=False, parent_filter_config=None):
     """跑到队列空或 `limit` 用完。返回统计 dict。
 
     `student`：注入一个有 `predict(texts)` 与 `model_id` 的对象（测试用）；不给就从 `model_dir`
     加载 `models.infer.Student`。
     """
     cfg = cfg or config.load(_allow_missing_key=True)
+    if not dry_run:
+        from radar_db.comment_filter import require_filter_ready
+
+        parent_filter_config = annotate.comment_task_filter_config(
+            TASK,
+            parent_filter_config,
+        )
+        with engine.connect() as conn:
+            route_active = comment_routes_ready_on_connection(conn)
+        if not route_active:
+            require_filter_ready(engine, parent_filter_config)
     prompt, schema_version = annotate.resolve(TASK, cfg)
     stats = _fresh_stats()
     stats["pending_before"] = annotate.pending_count(engine, TASK, scope_id, stage=annotate.STAGE_STUDENT)
     if dry_run:
         stats["dry_run"] = True
+        return stats
+
+    # comment-product-v3 is calibrated and quality-gated against direct LLM
+    # output.  Older scopes can still contain student-stage v3 jobs, so migrate
+    # them here instead of allowing an unvalidated local classifier to become
+    # the final published result.
+    if requires_full_reannotation(
+        TASK,
+        getattr(cfg, "prompt_version", None),
+        schema_version=schema_version,
+    ):
+        n = route_all_to_llm(
+            engine,
+            scope_id,
+            limit,
+            f"{cfg.prompt_version} requires direct quality-gated LLM output",
+            parent_filter_config,
+        )
+        stats.update(
+            student_available=False,
+            routed=n,
+            input=n,
+            reason=f"{cfg.prompt_version} bypasses the local student model",
+        )
+        if n:
+            emit(
+                engine,
+                "L1",
+                f"{cfg.prompt_version}：{n:,} 条评论任务直接进入主模型",
+                scope_id=scope_id,
+                data={"routed": n, "reason": "v3_direct_llm"},
+            )
         return stats
 
     if student is None:
@@ -342,7 +419,13 @@ def run(engine, cfg=None, *, scope_id=None, limit=None, batch_size=BATCH_SIZE, s
         except Exception as exc:  # noqa: BLE001  StudentUnavailable 或依赖缺失都走同一条退化路径
             if require_model:
                 raise
-            n = route_all_to_llm(engine, scope_id, limit, str(exc))
+            n = route_all_to_llm(
+                engine,
+                scope_id,
+                limit,
+                str(exc),
+                parent_filter_config,
+            )
             stats.update(student_available=False, routed=n, input=n, reason=str(exc)[:300])
             emit(engine, "L1", f"学生模型不可用，{n:,} 条评论任务放行主模型：{str(exc)[:120]}",
                  level="warn", scope_id=scope_id, data={"routed": n})
@@ -356,7 +439,14 @@ def run(engine, cfg=None, *, scope_id=None, limit=None, batch_size=BATCH_SIZE, s
     try:
         while budget is None or budget > 0:
             n = batch_size if budget is None else min(batch_size, budget)
-            jobs = annotate.claim(engine, TASK, n, scope_id=scope_id, stage=annotate.STAGE_STUDENT)
+            jobs = annotate.claim(
+                engine,
+                TASK,
+                n,
+                scope_id=scope_id,
+                stage=annotate.STAGE_STUDENT,
+                parent_filter_config=parent_filter_config,
+            )
             if not jobs:
                 break
             if budget is not None:
@@ -391,8 +481,27 @@ def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s")
     engine = make_engine()
     cfg = config.load(_allow_missing_key=True)
+    parent_filter_config = None
+    if not args.dry_run:
+        try:
+            with engine.connect() as conn:
+                route_active = comment_routes_ready_on_connection(conn)
+            if route_active:
+                with engine.begin() as conn:
+                    supersede_ineligible_route_jobs(conn)
+            else:
+                from jobs.backfill_comment_filter import prepare_comment_task_execution
+
+                parent_filter_config, _retired = prepare_comment_task_execution(
+                    engine,
+                    supersede=True,
+                    tasks=(TASK,),
+                )
+        except RuntimeError as exc:
+            ap.error(str(exc))
     stats = run(engine, cfg, scope_id=args.scope, limit=args.limit, batch_size=args.batch,
-                model_dir=args.model_dir, dry_run=args.dry_run, require_model=args.require_model)
+                model_dir=args.model_dir, dry_run=args.dry_run, require_model=args.require_model,
+                parent_filter_config=parent_filter_config)
     print(json.dumps(stats, ensure_ascii=False, indent=1))
     return 0
 

@@ -1,8 +1,9 @@
 """`ai/prefilter.py` —— 五条规则各自的正例与**反例**（不许误杀）。"""
 
+import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import insert, select
@@ -15,7 +16,7 @@ sys.path.insert(
 from ai import prefilter  # noqa: E402
 from ai.lexicon import offpool_stocks, product_aliases  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
-from radar_db.schema import annotation_runs, annotations  # noqa: E402
+from radar_db.schema import annotation_runs, annotations, meta_kv  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -170,3 +171,92 @@ def test_rule_row_does_not_override_human_settled(engine, pf):
                                       annotations.c.kind == "relevance")
         ).mappings().one()
     assert new["supersedes_id"] is None  # 人看过的旧行不被顶掉
+
+
+def test_rule_can_become_current_again_after_an_llm_result(engine, pf):
+    """同一 exact 上下文来回出现时，历史 hash 不能挡住新的现行规则结论。"""
+
+    first_at = datetime(2026, 9, 1, 12, 0)
+    second_at = first_at + timedelta(seconds=1)
+    third_at = second_at + timedelta(seconds=1)
+    decision = prefilter.Decision(
+        "exact_parent_mismatch",
+        {
+            "reason": "parent_missing_target",
+            "matched_tickers": ["3032"],
+            "rule_version": "exact-v1",
+        },
+    )
+    prefilter.open_rule_run(
+        engine,
+        "run-rule-first",
+        "comment_product",
+        first_at,
+        taxonomy_version="v2",
+        schema_version="v2",
+    )
+    assert prefilter.write_rule_annotations(
+        engine, "run-rule-first", [(11, "3033", "手续费太高", decision)], first_at
+    ) == 1
+
+    with engine.begin() as conn:
+        first_rule_id = conn.execute(
+            select(annotations.c.annotation_id).where(
+                annotations.c.run_id == "run-rule-first",
+                annotations.c.kind == "relevance",
+            )
+        ).scalar_one()
+        conn.execute(insert(annotation_runs).values(
+            run_id="run-llm",
+            task="comment_product",
+            provider="openai_compatible",
+            model_id="m",
+            prompt_version="comment-product-v3",
+            taxonomy_version="v2",
+            schema_version="v2",
+            started_at=second_at,
+            status="done",
+        ))
+        result = conn.execute(insert(annotations).values(
+            target_type="comment",
+            target_id=11,
+            subject_code="3033",
+            kind="relevance",
+            value_json='"relevant"',
+            run_id="run-llm",
+            input_hash="llm-hash",
+            review_state="pending",
+            created_at=second_at,
+            supersedes_id=first_rule_id,
+        ))
+        llm_id = result.inserted_primary_key[0]
+
+    prefilter.open_rule_run(
+        engine,
+        "run-rule-third",
+        "comment_product",
+        third_at,
+        taxonomy_version="v2",
+        schema_version="v2",
+    )
+    assert prefilter.write_rule_annotations(
+        engine, "run-rule-third", [(11, "3033", "手续费太高", decision)], third_at
+    ) == 1
+
+    with engine.connect() as conn:
+        newest = conn.execute(
+            select(annotations)
+            .where(annotations.c.kind == "relevance")
+            .order_by(annotations.c.annotation_id.desc())
+        ).mappings().first()
+        revision = conn.execute(
+            select(meta_kv.c.v).where(meta_kv.c.k == "annotation_revision")
+        ).scalar_one()
+        dirty = conn.execute(
+            select(meta_kv.c.v).where(meta_kv.c.k == "synth_dirty_3033_d30")
+        ).scalar_one()
+    assert newest["run_id"] == "run-rule-third"
+    assert newest["supersedes_id"] == llm_id
+    assert json.loads(newest["value_json"]) == "irrelevant"
+    assert revision
+    assert dirty == "1"

@@ -15,8 +15,10 @@
        `style-hover` by `hover()`. */
 import React from 'react'
 import R from '../../data/radar'
-import { rgba, num, numRaw, navGroups, stamp, naBox, aiValidationNote, heatLowerBoundNote } from '../../lib/view'
+import { rgba, num, numRaw, navGroups, stamp, naBox, aiValidationNote, heatLowerBoundNote, kolDisplayLabel } from '../../lib/view'
+import { commentFunnelView } from '../../lib/commentFunnel'
 import { s } from '../../lib/dc'
+import DataUnavailable from '../../components/DataUnavailable'
 import Shell from '../../components/Shell'
 import FilterBar from './FilterBar'
 import ProductHeader from './ProductHeader'
@@ -166,7 +168,7 @@ export default class ProductMonitor extends React.Component {
       extra: [
         { k: '产品', v: code + ' ' + R.MASTER[code].name },
         { k: '时间范围', v: range.text + '（HKT）' },
-        { k: 'KOL', v: k.kolName + '（' + k.kolTypeLabel + ' · ' + String(k.kolTags || '').split(',').join(' · ') + '）' },
+        { k: 'KOL', v: k.kolName + '（' + kolDisplayLabel(k.kolTypeLabel) + ' · ' + String(k.kolTags || '').split(',').join(' · ') + '）' },
         { k: '统计口径', v: '只计该 KOL 在相关帖子评论区中实际提及该产品的评论，同一条评论只计一次；每条可跳转 Futu 原文' }
       ]
     };
@@ -339,6 +341,8 @@ export default class ProductMonitor extends React.Component {
     var range = R.buildRange(s.rangeKey);
     var P = R.pool(s.rangeKey);
     var o = R.observe(code, s.rangeKey);
+    var funnel = commentFunnelView(o.commentFunnel);
+    var partialData = funnel.partial;
     var bench = R.benchmark(code, s.rangeKey);
     var rk = R.ranks(s.rangeKey);
     /* `attitude` 整块可能为 null（三态要 AI 标注，ADR-0017）。设计源直接 `att.positive`，
@@ -533,7 +537,7 @@ export default class ProductMonitor extends React.Component {
       var st = k.dominantAttitude ? ATT_STYLE[k.dominantAttitude] : ['var(--canvas-alt)', 'var(--ink-500)'];
       var attitudeSampleCount = (k.evidence || []).filter(function (e) { return e.attitude != null; }).length;
       return {
-        name: k.kolName, type: k.kolTypeLabel, tags: String(k.kolTags || '').split(',').join(' · '),
+        name: k.kolName, type: kolDisplayLabel(k.kolTypeLabel), tags: String(k.kolTags || '').split(',').join(' · '),
         count: String(k.mentionCommentCount), last: k.lastMentionedAt,
         /* 证据里可以直接数出有效态度：不足 3 条是已知的低样本，不再误报成数据缺失。 */
         att: k.dominantLabel == null
@@ -553,7 +557,7 @@ export default class ProductMonitor extends React.Component {
         id: r.id,
         tags: r.riskLabels.map(function (l) { return { label: l }; }),
         time: r.publishedAt, excerpt: r.excerpt, rationale: r.detectionRationale,
-        author: r.authorName, type: r.authorType, source: r.sourceKind, code: code, status: r.reviewLabel,
+        author: r.authorName, type: kolDisplayLabel(r.authorType), source: r.sourceKind, code: code, status: r.reviewLabel,
         tbg: r.isKnownKol ? 'var(--csop-blue-50)' : 'var(--canvas-alt)',
         tfg: r.isKnownKol ? 'var(--csop-blue-700)' : 'var(--ink-700)',
         go: () => self.openPanel(self.riskPanel(cr, r, code, s.rangeKey))
@@ -608,7 +612,7 @@ export default class ProductMonitor extends React.Component {
       return acc;
     }, []);
     var trendLegend = [
-      { key: 'comments', label: '评论数', color: '#2361AD' },
+      { key: 'comments', label: '筛后评论数', color: '#2361AD' },
       { key: 'active', label: '活跃账号数', color: '#C9A961' },
       { key: 'inter', label: '互动数', color: '#4A4E8C' },
       { key: 'pos', label: '积极内容数', color: '#1F8A5B' },
@@ -677,14 +681,34 @@ export default class ProductMonitor extends React.Component {
       }),
 
       kpis: [
-        { label: '评论量', value: num(o.comments), d: bench.comments, note: '区间内被识别为讨论该 ETF 的评论条数，同一账号同一条只计一次' },
+        { label: '筛后评论量', value: num(o.comments), d: bench.comments, note: '合格父帖的平台回复总数，用于热度与排名；筛选前总量仅在漏斗中审计' },
+        { label: '相关评论数', value: funnel.relevantText, d: { short: partialData ? '部分数据' : '', dir: 0 }, note: '通过 exact 规则且 AI 确认 relevance=relevant 的评论' },
         { label: '讨论热度', value: (o.heatUnknownPosts > 0 ? '≥ ' : '') + num(o.discussionHeat), d: bench.heat,
           deltaTitle: bench.heatUnknownPosts && (bench.heatUnknownPosts.current > 0 || bench.heatUnknownPosts.base > 0)
             ? '环比按已知项计算：当期 ' + bench.heatUnknownPosts.current + ' 帖、基准期 ' + bench.heatUnknownPosts.base + ' 帖转发数未知' : undefined,
           note: R.HEAT_FORMULA + '　·　点赞 ' + num(o.likes) + ' ／ 转发 ' + num(o.shares) + heatLowerBoundNote(o.heatUnknownPosts) },
         { label: '活跃账号数', value: num(o.activeAccounts), d: bench.accounts, note: o.activeAccounts == null ? '该产品的账号口径尚未核验' : '区间内发布或评论过的独立账号' },
-        { label: '全市场评论量排名', value: '第 ' + rk.map[code], d: { short: '／ ' + rk.total + ' 只', dir: 0 }, note: '基于完整活跃 ETF 池计算，板块筛选不重算' }
+        { label: '全市场筛后评论量排名', value: '第 ' + rk.map[code], d: { short: '／ ' + rk.total + ' 只', dir: 0 }, note: '基于完整活跃 ETF 池与同一父帖筛选口径计算，板块筛选不重算' }
       ].map(function (k) { return { label: k.label, value: k.value, note: k.note, delta: k.d.short, deltaTitle: k.deltaTitle, dfg: self.dfg(k.d) }; }),
+
+      commentFunnelAvailable: funnel.available,
+      commentFunnelPartial: partialData,
+      commentFunnelDataLabel: funnel.dataLabel,
+      commentFunnelSteps: funnel.steps.map(function (step) {
+        return {
+          key: step.key,
+          label: step.label,
+          value: step.key === 'relevant' ? funnel.relevantText : numRaw(step.count)
+        };
+      }),
+      commentFunnelSourceCoverage: funnel.sourceCoverageText,
+      commentFunnelAnalysisCoverage: funnel.analysisCoverageText,
+      commentFunnelQualifyingFeeds: funnel.available ? numRaw(funnel.qualifyingFeedCount) : '数据暂不可用',
+      commentFunnelFilterExcluded: funnel.available ? numRaw(funnel.filterExcludedPlatformCount) : '数据暂不可用',
+      commentFunnelExcluded: funnel.available ? numRaw(o.commentFunnel.ruleExcludedCount) : '数据暂不可用',
+      commentFunnelNeedsContext: funnel.available ? numRaw(o.commentFunnel.needsContextCount) : '数据暂不可用',
+      commentFunnelPending: funnel.available ? numRaw(o.commentFunnel.pendingCount) : '数据暂不可用',
+      partialData: partialData,
 
       heatDisclosure: o.heatUnknownPosts > 0 || bench.base.heatUnknownPosts > 0
         ? '热度、互动与转发按已知项计算；当期' + (heatLowerBoundNote(o.heatUnknownPosts) || '转发数完整')
@@ -697,7 +721,7 @@ export default class ProductMonitor extends React.Component {
       /* P7 元信息末尾的如实声明（ADR-0019 §4）：徽章说的是这一条怎么来的，这句说的是
          整页的 AI 结论被验证到了什么程度。文案跟 /meta 的 `aiValidation` 走。 */
       aiValidationNote: aiValidationNote(R.AI_VALIDATION),
-      aiLabel: sumNa ? '暂不可用' : (sum.low ? '样本不足 · 不输出倾向结论' : 'AI 生成 · 可追溯原文'),
+      aiLabel: sumNa ? '暂不可用' : (partialData ? '部分数据 · AI 生成' : (sum.low ? '样本不足 · 不输出倾向结论' : 'AI 生成 · 可追溯原文')),
       aiBg: sumNa ? 'var(--ink-100)' : (sum.low ? 'var(--ink-100)' : 'var(--warning-100)'),
       aiFg: sumNa ? 'var(--ink-500)' : (sum.low ? 'var(--ink-700)' : 'var(--warning-700)'),
       hasSummaryEvidence: !sumNa && o.mentions > 0,
@@ -768,7 +792,7 @@ export default class ProductMonitor extends React.Component {
       pxCurrency: px.currency || '', pxKLabel: candleMode === 'redUp' ? '红涨绿跌' : (candleMode === 'neutral' ? '空心为涨、实心为跌' : '绿涨红跌'),
       pxMeta: px.status === 'ok' ? ('行情粒度 ' + px.granLabel + ' · ' + px.currency + (px.missing ? ' · ' + px.missing + ' 个时间桶无行情' : '')) : '价格数据暂不可用',
       pxNote: px.status === 'ok' ? ('行情粒度为' + px.granLabel + '、价格单位 ' + px.currency + '，非交易时段与休市日不补造 K 线') : '当前产品价格数据暂不可用，不以指数或其他产品价格替代',
-      kolScope: kolRes.scope, kolHas: kolRes.status === 'ok', kolEmpty: kolRes.status === 'empty', kolUnavailable: kolRes.status === 'unavailable',
+      kolScope: kolDisplayLabel(kolRes.scope), kolHas: kolRes.status === 'ok', kolEmpty: kolRes.status === 'empty', kolUnavailable: kolRes.status === 'unavailable',
       kolRows: kolRows, kolMoreVisible: kolAll.length > 5,
       kolActivityHref: 'kol-activity.dc.html?etf=' + encodeURIComponent(code) + '&range=' + encodeURIComponent(s.rangeKey),
       kolMoreLabel: s.kolMore ? '收起，只看前 5 位' : '展开全部 ' + kolAll.length + ' 位',
@@ -798,7 +822,7 @@ export default class ProductMonitor extends React.Component {
          那个减法（铁律 1）—— `series` 是后端的序列键，`key` 是图例开关的键，两者不同名。 */
       var cb = o.buckets[s.hover], bb = bench.base.buckets[s.hover], db = bench.buckets[s.hover];
       var rows = [
-        { key: 'comments', series: 'comments', label: '评论数', color: '#2361AD', c: cb.comments, b: bb.comments },
+        { key: 'comments', series: 'comments', label: '筛后评论数', color: '#2361AD', c: cb.comments, b: bb.comments },
         { key: 'active', series: 'active', label: '活跃账号数', color: '#C9A961', c: cb.active, b: bb.active },
         { key: 'inter', series: 'interactions', label: '互动数', color: '#4A4E8C', c: cb.interactions, b: bb.interactions },
         { key: 'pos', series: 'positive', label: '积极内容数', color: '#1F8A5B', c: cb.positive, b: bb.positive },
@@ -856,6 +880,8 @@ export default class ProductMonitor extends React.Component {
     var heatPath = hsr.map(function (p, i) { return (i ? 'L' : 'M') + hx(i).toFixed(1) + ' ' + hy(p.heat).toFixed(1); }).join(' ');
     var stageOf = function (i) { return SG.stages.filter(function (st) { return i >= st.idxFrom && i <= st.idxTo; })[0] || null; };
     var hh = (s.heatHover != null && hsr[s.heatHover]) ? hsr[s.heatHover] : null, hhStage = hh ? stageOf(hh.i) : null;
+    var stageOk = SG.status === 'ok' || SG.status === 'low_sample';
+    var stageUnavailable = SG.status === 'unavailable';
     var lowTone = ['var(--ink-100)', 'var(--ink-500)'];
     var heatDays = [];
     if (isHalf) {
@@ -865,27 +891,28 @@ export default class ProductMonitor extends React.Component {
     var every = isHalf ? 6 : (hsr.length > 14 ? 5 : (hsr.length > 7 ? 2 : 1));
     Object.assign(out, {
       trendW: String(HG.W), heatGridW: String(hpw), axRX: String(HG.W - 127), axPX: String(HG.W - 72), trendBoxRef: self.trendBoxRef,
-      stageOk: SG.status === 'ok' || SG.status === 'low_sample', stageUnavailable: SG.status === 'unavailable', stageEmpty: SG.status === 'empty',
+      stageOk: stageOk, stageUnavailable: stageUnavailable, stageEmpty: SG.status === 'empty',
+      heatChartVisible: hsr.length > 0 && (stageOk || stageUnavailable),
       stageGranLabel: SG.granLabel, heatGranLabel: isHalf ? '60 分钟' : '自然日', stageRule: SG.rule || R.STAGE_RULE, heatFormulaText: R.HEAT_FORMULA,
       heatPath: heatPath,
       heatArea: hsr.length ? heatPath + ' L' + hx(hsr.length - 1).toFixed(1) + ' ' + (HG.top + HG.ph).toFixed(1) + ' L' + hx(0).toFixed(1) + ' ' + (HG.top + HG.ph).toFixed(1) + ' Z' : '',
       heatGrid: [0, 1, 2, 3, 4].map(function (i) { var v = hmax / 4 * i; return { y: hy(v).toFixed(1), ly: (hy(v) - 4).toFixed(1), v: String(Math.round(v)) }; }),
       /* 样本不足的日子：折线下方灰点，不参与阶段合并（日粒度） */
-      heatLowDots: isHalf ? [] : hsr.filter(function (p) { return p.mentions > 0 && (p.positive + p.negative) < (SG.threshold || R.LOW_SAMPLE); }).map(function (p) { return { x: hx(p.i).toFixed(1), tip: p.tip + ' · 样本不足，不参与阶段合并' }; }),
+      heatLowDots: !stageOk || isHalf ? [] : hsr.filter(function (p) { return p.mentions > 0 && (p.positive + p.negative) < (SG.threshold || R.LOW_SAMPLE); }).map(function (p) { return { x: hx(p.i).toFixed(1), tip: p.tip + ' · 样本不足，不参与阶段合并' }; }),
       heatCols: hsr.map(function (p, i) { return { x: (HG.L + hstep * i).toFixed(1), w: hstep.toFixed(1), in: () => self.setState({ heatHover: i }), out: () => { if (self.state.heatHover === i) self.setState({ heatHover: null }); } }; }),
       heatHoverOn: !!hh, heatHoverX: hh ? hx(hh.i).toFixed(1) : '0', heatHoverY: hh ? hy(hh.heat).toFixed(1) : '0',
       heatTipX: hh ? (hx(hh.i) + 12 + 250 > HG.W - HG.Rr + 60 ? hx(hh.i) - 262 : hx(hh.i) + 12).toFixed(1) : '0',
       heatTipTitle: hh ? hh.tip + heatLowerBoundNote(hh.heatUnknownPosts) : '',
       heatTipRows: hh ? [
         { k: '讨论热度', v: hh.heat.toLocaleString('en-US') },
-        { k: '评论量', v: hh.comments.toLocaleString('en-US') },
-        { k: '积极 ／ 消极', v: hh.positive + ' ／ ' + hh.negative },
-        { k: '所属阶段', v: hhStage ? numOf(hhStage.n) + ' ' + hhStage.categoryLabel : '—' }
+        { k: '筛后评论量', v: hh.comments.toLocaleString('en-US') },
+        { k: '积极 ／ 消极', v: stageUnavailable ? 'AI 分析待完成' : hh.positive + ' ／ ' + hh.negative },
+        { k: '所属阶段', v: stageUnavailable ? 'AI 分析待完成' : (hhStage ? numOf(hhStage.n) + ' ' + hhStage.categoryLabel : '—') }
       ] : [],
       heatAxis: hsr.filter(function (p, i) { return isHalf ? !!p.label : (i % every === 0); }).map(function (p) { return { x: hx(p.i).toFixed(1), label: p.label }; }),
       hasHeatDays: heatDays.length > 0,
       heatDays: heatDays.map(function (d) { return { x: (HG.L + hstep * d.from).toFixed(1), w: (hstep * (d.to - d.from + 1)).toFixed(1), label: d.day.slice(5) }; }),
-      stageBands: SG.stages.map(function (st) {
+      stageBands: (stageOk ? SG.stages : []).map(function (st) {
         var on = s.stageOpen === st.n || s.stageHover === st.n;
         return {
           n: numOf(st.n), x: (HG.L + hstep * st.idxFrom).toFixed(1), w: Math.max(1, hstep * (st.idxTo - st.idxFrom + 1)).toFixed(1),
@@ -895,7 +922,7 @@ export default class ProductMonitor extends React.Component {
           in: () => self.setState({ stageHover: st.n }), out: () => { if (self.state.stageHover === st.n) self.setState({ stageHover: null }); }
         };
       }),
-      stageRows: SG.stages.map(function (st) {
+      stageRows: (stageOk ? SG.stages : []).map(function (st) {
         var open = s.stageOpen === st.n, hot = s.stageHover === st.n;
         var tone = ATT_STYLE[st.sentiment] || lowTone;
         return {
@@ -942,7 +969,7 @@ export default class ProductMonitor extends React.Component {
       var items = itemsNa ? [] : itemsRes;
       var typeStyle = {
         '普通散户': ['var(--canvas-alt)', 'var(--ink-700)'],
-        '合作 KOL': ['var(--csop-blue-50)', 'var(--csop-blue-700)'],
+        '重点KOL': ['var(--csop-blue-50)', 'var(--csop-blue-700)'],
         '官方账号': ['var(--warning-100)', 'var(--warning-700)']
       };
       out.panelTitle = p.title || '原文证据';
@@ -954,12 +981,13 @@ export default class ProductMonitor extends React.Component {
       out.panelExtra = p.extra || [];
       out.panelEmpty = !itemsNa && items.length === 0;
       out.evidence = items.map(function (e) {
-        var ts = typeStyle[e.authorType] || typeStyle['普通散户'];
+        var authorType = kolDisplayLabel(e.authorType);
+        var ts = typeStyle[authorType] || typeStyle['普通散户'];
         var open = s.post === e.id;
         return {
           id: e.id,
           time: e.publishedAt, author: e.authorName == null ? '数据暂不可用' : e.authorName,
-          type: e.authorType, tbg: ts[0], tfg: ts[1],
+          type: authorType, tbg: ts[0], tfg: ts[1],
           excerpt: e.excerpt,
           codes: e.productCodes.map(function (c) { return { code: c }; }),
           comments: e.comments == null ? '暂不可用' : e.comments.toLocaleString('en-US'),
@@ -977,7 +1005,7 @@ export default class ProductMonitor extends React.Component {
           bc: open ? 'var(--csop-blue-400)' : 'var(--border-1)',
           detail: [
             { k: '发布时间', v: e.publishedAt + ' HKT' },
-            { k: '账号类型', v: e.authorType },
+            { k: '账号类型', v: kolDisplayLabel(e.authorType) },
             { k: '相关 ETF', v: e.productCodes.join(' · ') },
             { k: '评论 ／ 互动', v: (e.comments == null ? '暂不可用' : e.comments) + ' ／ ' + (e.interactions == null ? '暂不可用' : e.interactions) }
           ].concat(e.riskLabels && e.riskLabels.length ? [
@@ -996,6 +1024,11 @@ export default class ProductMonitor extends React.Component {
   }
 
   render() {
+    /* readiness / source-ticker / config-version 校验失败时，筛选端点按契约返回
+       200/null。它是明确的数据状态；必须在 `observe().commentFunnel` 前处理。 */
+    if (R.pool(this.state.rangeKey) == null) {
+      return <DataUnavailable screenLabel="产品监控" />
+    }
     const v = this.renderVals()
 
     return (

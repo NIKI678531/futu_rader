@@ -5,7 +5,7 @@ from sqlalchemy import insert
 from core.calendar import build
 from providers.sql import SqlProvider
 from radar_db import create_all
-from radar_db.schema import feeds, mentions
+from radar_db.schema import feed_mentions, feeds, mentions
 from radar_db.time_windows import hkt_range_utc_naive, utc_naive_to_hkt
 
 
@@ -32,6 +32,7 @@ def test_sql_scan_uses_hkt_midnight_and_hkt_hour_buckets():
             {
                 "feed_id": i,
                 "code": "3033",
+                "source_ticker": "03033.HK",
                 "posted_at": posted_at,
                 "feed_type": 1,
                 "author_uid": f"u{i}",
@@ -45,6 +46,10 @@ def test_sql_scan_uses_hkt_midnight_and_hkt_hour_buckets():
         ])
         conn.execute(insert(mentions), [
             {"feed_id": i, "code": "3033", "source": "anchor", "in_pool": True}
+            for i in range(1, 5)
+        ])
+        conn.execute(insert(feed_mentions), [
+            {"feed_id": i, "raw_ticker": "03033.HK", "market": "HK", "occurrences": 1}
             for i in range(1, 5)
         ])
 

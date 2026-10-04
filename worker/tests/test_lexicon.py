@@ -2,6 +2,7 @@
 
 import os
 import sys
+import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(
@@ -11,6 +12,7 @@ sys.path.insert(
 import pytest  # noqa: E402
 
 from ai.lexicon import offpool_stocks, product_aliases  # noqa: E402
+from jobs.import_dump import pool_codes  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -24,7 +26,7 @@ def slex():
 
 
 def test_every_product_has_aliases_and_name_forms(plex):
-    assert len(plex.by_code) == 120
+    assert len(plex.by_code) == 135
     for code, p in plex.by_code.items():
         assert len(p["aliases"]) >= 3, code
         assert p["name_forms"], code
@@ -45,6 +47,15 @@ def test_nicknames_only_reference_pool_codes(plex):
     for fam, spec in product_aliases.family_specs().items():
         for code in spec["codes"]:
             assert code in plex.by_code, (fam, code)
+
+
+def test_collection_and_extraction_use_the_same_135_product_catalog(plex):
+    ownership = pool_codes()
+    assert set(ownership) == plex.pool_codes()
+    assert len(ownership) == 135
+    assert sum(value == "own" for value in ownership.values()) == 64
+    assert sum(value == "peer" for value in ownership.values()) == 71
+    assert {"3447", "3121", "3537", "3423", "3408", "3187"} <= set(ownership)
 
 
 def test_simplified_traditional_roundtrip_on_names(plex):
@@ -76,6 +87,35 @@ def test_references(plex, text, code, expected):
     assert plex.references(text, code) is expected
 
 
+@pytest.mark.parametrize(
+    "text,code",
+    [
+        ("南方亚太房托今日成交活跃", "3447"),
+        ("南方KOSPI 跟踪误差不错", "3121"),
+        ("A南方韩国备兑开始派息", "3537"),
+        ("招商恒生科技ETF", "3423"),
+        ("易方达A50-R", "3111"),
+        ("景顺QQQ-U", "3455"),
+        ("三星高息房托-U", "3187"),
+    ],
+)
+def test_excel_catalog_aliases_are_extractable(plex, text, code):
+    assert plex.references(text, code)
+
+
+def test_every_excel_addition_short_name_is_extractable(plex):
+    additions = {
+        product["code"]: product
+        for product in product_aliases.load_products()
+        if product.get("sourceRows")
+    }
+    assert len(additions) == 15
+    for code, product in additions.items():
+        assert product["shortNames"], code
+        for alias in product["shortNames"]:
+            assert plex.references(unicodedata.normalize("NFKC", alias), code), (code, alias)
+
+
 def test_deictic_and_product_talk(plex):
     assert plex.mentions_deictic("呢隻可以入")
     assert plex.mentions_deictic("點差太大")
@@ -91,10 +131,69 @@ def test_underlying_terms_only_for_single_stock_products(plex):
 
 def test_product_block_is_whitelist_shaped(plex):
     b = plex.product_block("3033")
-    assert set(b) == {"code", "name", "aliases"}
+    assert set(b) == {"code", "name", "aliases", "family_terms", "underlying_terms"}
     assert b["code"] == "3033"
     assert "南方恒科" in b["aliases"]
     assert len(b["aliases"]) <= 12
+
+
+def test_product_block_never_presents_shared_hsi_terms_as_3037_aliases(plex):
+    """共享指数词只能帮助理解语境，不能冒充 3037 的唯一标识。"""
+    block = plex.product_block("3037")
+    shared = {"恒指", "恒生指數", "恒生指数", "HSI", "大市", "盈富"}
+
+    assert shared.isdisjoint(block["aliases"])
+    assert {"恒指", "HSI"} <= set(block["family_terms"])
+    assert block["underlying_terms"] == []
+
+
+def test_every_product_block_keeps_direct_and_context_terms_disjoint(plex):
+    for code in plex.pool_codes():
+        block = plex.product_block(code)
+        aliases = {term.casefold() for term in block["aliases"]}
+        context = {
+            term.casefold()
+            for term in block["family_terms"] + block["underlying_terms"]
+        }
+        assert aliases.isdisjoint(context), code
+
+
+def test_reference_signals_distinguish_hsi_other_etf_and_own_3037(plex):
+    assert plex.reference_signals("恒指今日要跌", "3037") == {
+        "product": [],
+        "family": ["恒指"],
+        "underlying": [],
+    }
+    assert plex.reference_signals("$02800.HK$ 費率較低", "3037") == {
+        "product": [],
+        "family": [],
+        "underlying": [],
+    }
+    assert plex.reference_signals("盈富基金費率較低", "3037") == {
+        "product": [],
+        "family": [],
+        "underlying": [],
+    }
+    assert plex.reference_signals("$03037.HK$ 點差太大", "3037")["product"] == [
+        "$03037.HK$"
+    ]
+    assert plex.reference_signals("恒生指数今天要跌", "3037") == {
+        "product": [],
+        "family": ["恒生指数"],
+        "underlying": [],
+    }
+    assert plex.reference_signals("恒生指数ETF 手续费太高", "3037")["product"]
+
+
+def test_single_stock_underlying_terms_are_context_not_product_aliases(plex):
+    block = plex.product_block("7788")
+    assert "NVDA" in block["underlying_terms"]
+    assert "NVDA" not in block["aliases"]
+    assert plex.reference_signals("NVDA 業績好", "7788") == {
+        "product": [],
+        "family": [],
+        "underlying": ["NVDA"],
+    }
 
 
 # ── 个股词表 ───────────────────────────────────────────────────────

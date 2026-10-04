@@ -3,7 +3,8 @@
     python -m jobs.pipeline --scope <scope_id>                 # 评论 → KOL 评论 → 帖子 → Layer B → 报表
     python -m jobs.pipeline --scope <scope_id> --resume        # 中断后续跑：已 done 的任务不重发
     python -m jobs.pipeline --scope <scope_id> --dry-run       # 只打印每一步会做什么与用量估算
-    python -m jobs.pipeline --scope <scope_id> --budget-requests 500
+    python -m jobs.pipeline --scope <scope_id> --budget-requests 500 --max-http-requests 500 \
+      --calibration-report <calibration.json> --quality-report <gold-eval.json>
 
 ## 顺序为什么是这样
 
@@ -20,7 +21,8 @@
 ## 钱的开关
 
 `--budget-requests N` 是每个任务这一轮最多领取多少批（≈ 请求数）。价格未知时它是唯一能对着
-账单核的数字。到了上限就停，下次再跑接着领。
+账单核的数字。到了上限就停，下次再跑接着领。所有非 dry-run 调用都要同时提供通过的批量校准
+报告与 v3 人工金标报告；低层入口不能绕过发布门禁。
 """
 
 import argparse
@@ -43,7 +45,14 @@ if str(REPO_ROOT) not in sys.path:
 from ai import config  # noqa: E402
 from ai.providers import build as build_provider  # noqa: E402
 from jobs import annotate, audit, synthesize  # noqa: E402
+from jobs.backfill_comment_filter import prepare_comment_task_execution  # noqa: E402
+from jobs.scope_policy import require_current_exact_scope  # noqa: E402
 from radar_db import make_engine  # noqa: E402
+from radar_db.comment_filter import load_comment_filter_config  # noqa: E402
+from radar_db.comment_routes import (  # noqa: E402
+    readiness_on_connection as comment_routes_ready_on_connection,
+    supersede_ineligible_jobs as supersede_ineligible_route_jobs,
+)
 from radar_db.schema import analysis_scopes, annotation_jobs, comments, feeds  # noqa: E402
 from radar_db.scope_jobs import scope_condition
 from radar_db.time_windows import utc_naive_to_hkt  # noqa: E402
@@ -62,7 +71,8 @@ def pending_days(engine, scope_id):
                          .outerjoin(comments, comments.c.comment_id == annotation_jobs.c.target_id)
                          .outerjoin(feeds, feeds.c.feed_id == comments.c.feed_id))
             .where(scope_condition(scope_id), annotation_jobs.c.task == "comment_product",
-                   annotation_jobs.c.target_type == "comment", annotation_jobs.c.status != "done")
+                   annotation_jobs.c.target_type == "comment",
+                   annotation_jobs.c.status.notin_(("done", "superseded")))
             .distinct()
         )
         for code, posted_at in rows:
@@ -93,6 +103,21 @@ def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=
         scope = conn.execute(select(analysis_scopes).where(analysis_scopes.c.scope_id == scope_id)).mappings().first()
     if scope is None:
         raise SystemExit(f"没有这个 scope：{scope_id}。先跑 python -m jobs.extract")
+    if not dry_run:
+        require_current_exact_scope(scope)
+        with engine.connect() as conn:
+            route_active = comment_routes_ready_on_connection(conn)
+        if route_active:
+            parent_filter_config = None
+            with engine.begin() as conn:
+                supersede_ineligible_route_jobs(conn)
+        else:
+            parent_filter_config, _retired = prepare_comment_task_execution(
+                engine,
+                load_comment_filter_config(),
+            )
+    else:
+        parent_filter_config = None
     codes = json.loads(scope["codes_json"])
     summary = {"scope_id": scope_id, "codes": len(codes), "steps": []}
 
@@ -110,7 +135,10 @@ def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=
             })
             continue
         stats = annotate.run(engine, cfg, task=task, max_items=max_items or pending, provider=provider,
-                             scope_id=scope_id, budget_requests=budget_requests, stage=task_stage)
+                             scope_id=scope_id, budget_requests=budget_requests, stage=task_stage,
+                             parent_filter_config=(
+                                 parent_filter_config if task in annotate.COMMENT_TASKS else None
+                             ))
         summary["steps"].append({"task": task, **{k: stats[k] for k in ("run_id", "input", "success", "error",
                                                                           "requests", "tok_in", "tok_out", "aborted")}})
         if stats["aborted"]:
@@ -123,7 +151,7 @@ def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=
             unfinished = conn.execute(
                 select(annotation_jobs.c.job_id).where(
                     scope_condition(scope_id),
-                    annotation_jobs.c.status != "done",
+                    annotation_jobs.c.status.notin_(("done", "superseded")),
                 ).limit(1)
             ).first()
         summary["complete"] = unfinished is None
@@ -183,6 +211,10 @@ def main(argv=None):
     ap.add_argument("--budget-requests", type=int)
     ap.add_argument("--max-http-requests", type=int)
     ap.add_argument("--max-items", type=int)
+    ap.add_argument("--calibration-report", type=Path,
+                    help="scripts.calibrate 产生且通过的批量校准报告")
+    ap.add_argument("--quality-report", type=Path,
+                    help="scripts.evaluate_gold 产生且通过的 v3 人工金标报告")
     ap.add_argument("--skip-synth", action="store_true")
     ap.add_argument("--ranges", help="Layer B 只做这些区间，如 d7,d30")
     ap.add_argument("--synth-workers", type=int, help="Layer B (code, range) 并行线程数，默认 8")
@@ -192,6 +224,16 @@ def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s")
     engine = make_engine()
     cfg = config.load(_allow_missing_key=args.dry_run)
+    if not args.dry_run:
+        # Import lazily: analyze imports full_own -> pipeline at module load time.
+        from jobs import analyze as analysis_job
+        try:
+            analysis_job.check_calibration(
+                cfg, args.calibration_report, require_singleton=True,
+            )
+            analysis_job.check_quality(cfg, args.quality_report)
+        except (ValueError, RuntimeError) as exc:
+            ap.error(str(exc))
     from ai.providers.base import RunControl, RunStopped
     from radar_db.leases import WorkerLease
     control = None if args.dry_run else RunControl(args.max_http_requests)

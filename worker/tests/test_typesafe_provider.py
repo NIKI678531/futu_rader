@@ -170,6 +170,67 @@ def test_comment_v2_combines_relevance_and_attitude(cfg):
     assert row["compliance_tags"] == []
 
 
+def test_comment_product_identity_question_keeps_family_terms_context_only(cfg):
+    session = FakeSession(lambda body: _response(
+        body,
+        {
+            "relevance_attitude": "irrelevant",
+            "market_direction": "bearish",
+            "product_evidence": "none",
+            "compliance_evidence": "none",
+        },
+    ))
+    payload = {
+        "item_id": "comment:10|product:3037",
+        "product": {
+            "code": "3037",
+            "name": "恒生指數ETF",
+            "aliases": ["南方恒指", "$03037.HK$"],
+            "family_terms": ["恒指", "HSI"],
+            "underlying_terms": [],
+        },
+        "comment": "恒指今日要跌",
+    }
+
+    row = build(cfg, session=session).complete_annotations(
+        "comment_product", [payload], "v2"
+    ).data["results"][0]
+    question = session.calls[0]["body"]["questions"]["relevance_attitude"]
+
+    assert "product.code/name/aliases" in question["instructions"]
+    assert "family_terms" in question["instructions"]
+    assert "underlying_terms" in question["instructions"]
+    assert "不能单独" in question["instructions"]
+    assert row["relevance"] == "irrelevant"
+
+
+def test_comment_product_needs_context_always_requests_review(cfg):
+    session = FakeSession(lambda body: _response(
+        body,
+        {
+            "relevance_attitude": "needs_context",
+            "market_direction": "not_expressed",
+            "product_evidence": "none",
+            "compliance_evidence": "none",
+        },
+    ))
+    payload = {
+        "item_id": "comment:11|product:3037",
+        "product": {"code": "3037", "aliases": ["$03037.HK$"]},
+        "comment": "有",
+        "parent_comments": ["这个呢？", "指数今日点睇？", "大市讨论"],
+    }
+
+    row = build(cfg, session=session).complete_annotations(
+        "comment_product", [payload], "v2"
+    ).data["results"][0]
+
+    assert row["relevance"] == "needs_context"
+    assert row["attitude"] is None
+    assert row["needs_review"] is True
+    assert "三层父回复" in "".join(row["uncertainty_reasons"])
+
+
 def test_post_annotation_selects_exact_source_excerpt(cfg):
     def respond(body):
         excerpts = body["questions"]["summary_excerpt"]["criteria"]

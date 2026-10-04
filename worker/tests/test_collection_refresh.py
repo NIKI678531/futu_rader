@@ -17,20 +17,33 @@ from collection.models import AiRequest, AiResult, Cursor, SyncRequest, UserObse
 from collection.normalization import normalize_feed
 from collection.service import FutuRefresh
 from collection import source as source_module
-from collection.source import MarketInsightMySqlAdapter, MemorySourceAdapter, SourceSchemaError
+from collection.source import (
+    MarketInsightMySqlAdapter,
+    MemorySourceAdapter,
+    SourceSchemaError,
+    configured_symbols_fingerprint,
+)
 from radar_db import create_all, make_engine
 from radar_db.revisions import ai_source_version
 from radar_db.schema import (
     ai_daily_budget,
+    annotation_jobs,
     collector_checkpoints,
     comments,
+    comment_product_routes,
     feed_counter_observations,
+    feed_mentions,
     feeds,
     ingestion_runs,
     meta_kv,
     mentions,
     users,
 )
+
+
+@pytest.mark.parametrize("ticker", ["03037.US", "03037.SZ", "US.03037"])
+def test_market_insight_ticker_mapping_rejects_non_hk_discussion_sections(ticker):
+    assert source_module._code_from_ticker(ticker) == ""
 
 
 def engine(tmp_path):
@@ -40,7 +53,8 @@ def engine(tmp_path):
 
 
 def feed_observation(feed_id, observed_at, *, content="正文", comments_=None,
-                     comment_count=None, body_codes=None):
+                     comment_count=None, body_codes=None, raw_json_broken=False,
+                     code="3033", source_ticker="03033.HK"):
     comments_ = comments_ or []
     row = {
         "feed_id": feed_id,
@@ -54,7 +68,7 @@ def feed_observation(feed_id, observed_at, *, content="正文", comments_=None,
         "like_count": 4,
         "comment_count": len(comments_) if comment_count is None else comment_count,
         "image_count": 0,
-        "raw_json": json.dumps({
+        "raw_json": "{broken" if raw_json_broken else json.dumps({
             "common": {"share_count": 1},
             "comment": {"comment_items": comments_, "has_more": (comment_count or 0) > len(comments_)},
             "summary": {"rich_text": [
@@ -63,7 +77,7 @@ def feed_observation(feed_id, observed_at, *, content="正文", comments_=None,
             ]},
         }),
     }
-    return normalize_feed(row, "3033", observed_at)
+    return normalize_feed(row, code, observed_at, source_ticker=source_ticker)
 
 
 def comment(comment_id, text, *, likes=1):
@@ -74,6 +88,30 @@ def comment(comment_id, text, *, likes=1):
         "rich_text_items": [{"type": 0, "text": text}],
         "like": {"liked_num": likes},
     }
+
+
+def seed_comment_jobs(conn, comment_ids, now):
+    conn.execute(insert(annotation_jobs), [
+        {
+            "target_type": "comment",
+            "target_id": comment_id,
+            "subject_code": "3033",
+            "task": task,
+            "input_hash": f"{task}-{comment_id}",
+            "status": "claimed" if task == "kol_comment_opinion" else "done",
+            "stage": "llm",
+            "priority": 0,
+            "attempts": 0,
+            "claimed_at": now if task == "kol_comment_opinion" else None,
+            "lease_until": now + timedelta(minutes=5)
+            if task == "kol_comment_opinion"
+            else None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        for comment_id in comment_ids
+        for task in ("comment_product", "kol_comment_opinion")
+    ])
 
 
 def test_sync_is_idempotent_and_advances_only_declared_complete_day(tmp_path):
@@ -120,6 +158,54 @@ def test_sync_is_idempotent_and_advances_only_declared_complete_day(tmp_path):
         assert conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "data_revision")).scalar_one() == revision
 
 
+def test_duplicate_feed_observation_cannot_change_its_original_section(tmp_path):
+    target = engine(tmp_path)
+    first_at = datetime(2026, 9, 20, 3, 0)
+    original = feed_observation(
+        1,
+        first_at,
+        content="$03033.HK$ original",
+        code="3033",
+        source_ticker="03033.HK",
+    )
+    FutuRefresh(target, MemorySourceAdapter({"feeds": [original]})).sync(
+        SyncRequest(run_id="original-section")
+    )
+
+    duplicate = feed_observation(
+        1,
+        first_at + timedelta(hours=1),
+        content="$03032.HK$ refreshed",
+        code="3032",
+        source_ticker="03032.HK",
+    )
+    FutuRefresh(target, MemorySourceAdapter({"feeds": [duplicate]})).sync(
+        SyncRequest(run_id="duplicate-section")
+    )
+    detail = feed_observation(
+        1,
+        first_at + timedelta(hours=2),
+        content="$03032.HK$ detail",
+        code="3032",
+        source_ticker="03032.HK",
+    )
+    FutuRefresh(target, MemorySourceAdapter({"feed_details": [detail]})).sync(
+        SyncRequest(run_id="duplicate-detail")
+    )
+
+    with target.connect() as conn:
+        stored = conn.execute(select(
+            feeds.c.code,
+            feeds.c.source_ticker,
+            feeds.c.content,
+        )).one()
+        anchors = conn.execute(select(mentions.c.code).where(
+            mentions.c.source == "anchor"
+        )).scalars().all()
+    assert stored == ("3033", "03033.HK", "$03032.HK$ detail")
+    assert anchors == ["3033"]
+
+
 def test_partial_snapshot_never_deletes_previously_seen_comments(tmp_path):
     target = engine(tmp_path)
     first_at = datetime(2026, 9, 20, 3, 0)
@@ -140,6 +226,74 @@ def test_partial_snapshot_never_deletes_previously_seen_comments(tmp_path):
         row = conn.execute(select(feeds.c.comments_parsed, feeds.c.comment_count,
                                   feeds.c.comment_coverage_status)).one()
     assert row == (2, 5, "partial")
+
+
+def test_targeted_feed_ids_refetch_only_requested_comment_snapshots(tmp_path):
+    """截断帖子可按 feed_id 定点补抓，不扫描或改写同源的其他帖子。"""
+    target = engine(tmp_path)
+    first_at = datetime(2026, 9, 20, 3, 0)
+    FutuRefresh(target, MemorySourceAdapter({
+        "feeds": [
+            feed_observation(1, first_at, comments_=[comment(11, "甲")], comment_count=2),
+            feed_observation(2, first_at, comments_=[comment(21, "丙")], comment_count=2),
+        ]
+    })).sync(SyncRequest(run_id="initial-partial"))
+
+    repaired_at = first_at + timedelta(hours=1)
+    source = MemorySourceAdapter({
+        "feeds": [
+            feed_observation(
+                1, repaired_at,
+                comments_=[comment(11, "甲"), comment(12, "乙")],
+                comment_count=2,
+            ),
+            feed_observation(
+                2, repaired_at,
+                comments_=[comment(21, "丙"), comment(22, "丁")],
+                comment_count=2,
+            ),
+        ]
+    })
+    result = FutuRefresh(target, source).sync(
+        SyncRequest(run_id="repair-one", feed_ids=(1,))
+    )
+
+    assert result.rows_read == 1
+    with target.connect() as conn:
+        state = {
+            row.feed_id: (row.comments_parsed, row.comment_coverage_status)
+            for row in conn.execute(select(
+                feeds.c.feed_id,
+                feeds.c.comments_parsed,
+                feeds.c.comment_coverage_status,
+            ))
+        }
+        run = conn.execute(select(ingestion_runs).where(
+            ingestion_runs.c.run_id == result.run_id
+        )).mappings().one()
+    assert state == {1: (2, "complete"), 2: (1, "partial")}
+    assert run["source_kind"] == "targeted"
+
+
+def test_targeted_database_reread_preserves_upstream_partial_coverage(tmp_path):
+    target = engine(tmp_path)
+    observed = datetime(2026, 9, 20, 3, 0)
+    source = MemorySourceAdapter({
+        "feeds": [feed_observation(
+            1, observed, comments_=[comment(11, "甲")], comment_count=2
+        )]
+    })
+
+    result = FutuRefresh(target, source).sync(SyncRequest(
+        run_id="database-reread", feed_ids=(1,)
+    ))
+
+    assert result.comment_coverage == "partial"
+    with target.connect() as conn:
+        assert conn.execute(select(
+            feeds.c.comments_parsed,
+            feeds.c.comment_coverage_status,
+        )).one() == (1, "partial")
 
 
 def test_partial_subset_does_not_report_a_false_fact_update(tmp_path):
@@ -247,7 +401,17 @@ def test_missing_comment_block_is_not_marked_complete():
     assert observation.coverage == "retryable_incomplete"
 
 
-def test_detail_only_replaces_body_when_longer(tmp_path):
+def test_embedded_comment_epoch_is_preserved_by_normalization():
+    observed = datetime(2026, 9, 20, 3, 0)
+    item = comment(11, "正文")
+    item["timestamp"] = "1704067200"
+
+    observation = feed_observation(1, observed, comments_=[item])
+
+    assert observation.comments[0]["posted_at"] == datetime(2024, 1, 1)
+
+
+def test_detail_replaces_authoritative_body_even_when_shorter(tmp_path):
     target = engine(tmp_path)
     started = datetime(2026, 9, 21, 3, 0)
     FutuRefresh(target, MemorySourceAdapter({
@@ -258,13 +422,146 @@ def test_detail_only_replaces_body_when_longer(tmp_path):
         "feed_details": [feed_observation(1, started + timedelta(hours=1), content="短")]
     })).sync(SyncRequest(run_id="short"))
     with target.connect() as conn:
-        assert conn.execute(select(feeds.c.content)).scalar_one() == "一段较长的正文"
+        assert conn.execute(select(feeds.c.content)).scalar_one() == "短"
 
     FutuRefresh(target, MemorySourceAdapter({
         "feed_details": [feed_observation(1, started + timedelta(hours=2), content="这是一段明显更长的正文内容")]
     })).sync(SyncRequest(run_id="long"))
     with target.connect() as conn:
         assert conn.execute(select(feeds.c.content)).scalar_one() == "这是一段明显更长的正文内容"
+
+
+def test_shorter_detail_replaces_body_and_clears_old_mentions_atomically(tmp_path):
+    """有效详情是权威编辑，正文与正文提及必须切到同一版本。"""
+    target = engine(tmp_path)
+    started = datetime(2026, 9, 21, 3, 0)
+    FutuRefresh(target, MemorySourceAdapter({
+        "feeds": [feed_observation(
+            1,
+            started,
+            content="$03033.HK$ 一段较长的原正文",
+            body_codes=["03033"],
+        )]
+    })).sync(SyncRequest(run_id="detail-consistency-base"))
+
+    result = FutuRefresh(target, MemorySourceAdapter({
+        "feed_details": [feed_observation(
+            1,
+            started + timedelta(hours=1),
+            content="$07226.hk$ 短",
+            body_codes=["07226"],
+        )]
+    })).sync(SyncRequest(run_id="detail-consistency-short"))
+
+    with target.connect() as conn:
+        assert conn.execute(select(feeds.c.content)).scalar_one() == "$07226.hk$ 短"
+        body_mentions = conn.execute(
+            select(mentions.c.code).where(mentions.c.source == "body")
+        ).scalars().all()
+        filter_mentions = conn.execute(
+            select(feed_mentions.c.raw_ticker)
+        ).scalars().all()
+    assert result.updated == 1
+    assert body_mentions == ["7226"]
+    assert filter_mentions == ["07226.hk"]
+
+
+def test_broken_detail_preserves_prior_body_and_mentions(tmp_path):
+    target = engine(tmp_path)
+    started = datetime(2026, 9, 21, 3, 0)
+    FutuRefresh(target, MemorySourceAdapter({
+        "feeds": [feed_observation(
+            1,
+            started,
+            content="$03033.HK$ 一段较长的原正文",
+            body_codes=["03033"],
+        )]
+    })).sync(SyncRequest(run_id="broken-detail-base"))
+
+    result = FutuRefresh(target, MemorySourceAdapter({
+        "feed_details": [feed_observation(
+            1,
+            started + timedelta(hours=1),
+            content="$07226.HK$ 短",
+            raw_json_broken=True,
+        )]
+    })).sync(SyncRequest(run_id="broken-detail-update"))
+
+    with target.connect() as conn:
+        assert conn.execute(select(feeds.c.content)).scalar_one() == (
+            "$03033.HK$ 一段较长的原正文"
+        )
+        body_mentions = conn.execute(
+            select(mentions.c.code).where(mentions.c.source == "body")
+        ).scalars().all()
+        filter_mentions = conn.execute(
+            select(feed_mentions.c.raw_ticker)
+        ).scalars().all()
+    assert result.updated == 0
+    assert body_mentions == ["3033"]
+    assert filter_mentions == ["03033.HK"]
+
+
+def test_detail_refresh_replaces_body_mentions_with_the_longer_parent_text(tmp_path):
+    target = engine(tmp_path)
+    started = datetime(2026, 9, 21, 3, 0)
+    FutuRefresh(target, MemorySourceAdapter({
+        "feeds": [feed_observation(
+            1,
+            started,
+            content="$03033.HK$ 原文",
+            body_codes=["03033"],
+        )]
+    })).sync(SyncRequest(run_id="body-before-detail"))
+
+    FutuRefresh(target, MemorySourceAdapter({
+        "feed_details": [feed_observation(
+            1,
+            started + timedelta(hours=1),
+            content="$07226.HK$ 这是一段明显更长的详情正文",
+            body_codes=["07226"],
+        )]
+    })).sync(SyncRequest(run_id="body-after-detail"))
+
+    with target.connect() as conn:
+        stored = conn.execute(
+            select(mentions.c.code, mentions.c.source).order_by(
+                mentions.c.source, mentions.c.code
+            )
+        ).all()
+    assert stored == [("3033", "anchor"), ("7226", "body")]
+
+
+def test_detail_refresh_rebuilds_body_mentions_even_when_content_is_unchanged(tmp_path):
+    """A parser upgrade can change derived mentions without changing source text."""
+
+    target = engine(tmp_path)
+    started = datetime(2026, 9, 21, 3, 0)
+    content = "$03033.HK$ 原文"
+    FutuRefresh(target, MemorySourceAdapter({
+        # Simulate a row imported by the old parser, which discarded self body mentions.
+        "feeds": [feed_observation(1, started, content=content, body_codes=[])]
+    })).sync(SyncRequest(run_id="old-parser"))
+    with target.begin() as conn:
+        conn.execute(mentions.delete().where(mentions.c.source == "body"))
+
+    result = FutuRefresh(target, MemorySourceAdapter({
+        "feed_details": [feed_observation(
+            1,
+            started + timedelta(hours=1),
+            content=content,
+            body_codes=["03033"],
+        )]
+    })).sync(SyncRequest(run_id="new-parser-same-text"))
+
+    with target.connect() as conn:
+        stored = conn.execute(
+            select(mentions.c.code, mentions.c.source).order_by(
+                mentions.c.source, mentions.c.code
+            )
+        ).all()
+    assert result.updated == 1
+    assert stored == [("3033", "anchor"), ("3033", "body")]
 
 
 def test_main_feed_accepts_author_edit_to_shorter_body_and_invalidates_ai(tmp_path):
@@ -286,6 +583,142 @@ def test_main_feed_accepts_author_edit_to_shorter_body_and_invalidates_ai(tmp_pa
         assert conn.execute(select(meta_kv.c.v).where(
             meta_kv.c.k == "synth_dirty_3033_d1"
         )).scalar_one() == "1"
+
+
+def test_online_source_edits_supersede_comment_jobs_before_reextract(tmp_path):
+    target = engine(tmp_path)
+    started = datetime(2026, 9, 21, 3, 0)
+    original_comments = [comment(11, "评论甲"), comment(12, "评论乙")]
+    FutuRefresh(target, MemorySourceAdapter({
+        "feeds": [feed_observation(
+            1,
+            started,
+            content="$03033.HK$ 父帖原文",
+            comments_=original_comments,
+        )]
+    })).sync(SyncRequest(run_id="job-invalidation-base"))
+    with target.begin() as conn:
+        seed_comment_jobs(conn, (11, 12), started)
+
+    FutuRefresh(target, MemorySourceAdapter({
+        "feeds": [feed_observation(
+            1,
+            started + timedelta(hours=1),
+            content="$03033.HK$ 父帖原文",
+            comments_=[comment(11, "评论甲已编辑"), comment(12, "评论乙")],
+        )]
+    })).sync(SyncRequest(run_id="job-invalidation-comment-edit"))
+    with target.connect() as conn:
+        states = {
+            (row.target_id, row.task): (row.status, row.lease_until)
+            for row in conn.execute(select(
+                annotation_jobs.c.target_id,
+                annotation_jobs.c.task,
+                annotation_jobs.c.status,
+                annotation_jobs.c.lease_until,
+            ))
+        }
+    assert {states[(11, task)][0] for task in ("comment_product", "kol_comment_opinion")} == {
+        "superseded"
+    }
+    assert all(states[(11, task)][1] is None for task in ("comment_product", "kol_comment_opinion"))
+    assert {states[(12, task)][0] for task in ("comment_product", "kol_comment_opinion")} == {
+        "done",
+        "claimed",
+    }
+
+    with target.begin() as conn:
+        conn.execute(update(annotation_jobs).values(status="done", lease_until=None))
+    FutuRefresh(target, MemorySourceAdapter({
+        "feed_details": [feed_observation(
+            1,
+            started + timedelta(hours=2),
+            content="$03033.HK$ 父帖已编辑",
+        )]
+    })).sync(SyncRequest(run_id="job-invalidation-parent-edit"))
+    with target.connect() as conn:
+        rows = conn.execute(select(
+            annotation_jobs.c.status,
+            annotation_jobs.c.lease_until,
+        )).all()
+    assert rows and {row.status for row in rows} == {"superseded"}
+    assert all(row.lease_until is None for row in rows)
+
+
+def test_comment_routes_follow_partial_and_complete_comment_snapshots(tmp_path):
+    target = engine(tmp_path)
+    started = datetime(2026, 9, 21, 3, 0)
+    FutuRefresh(target, MemorySourceAdapter({
+        "feeds": [feed_observation(
+            1,
+            started,
+            content="$03033.HK$ 父帖",
+            comments_=[comment(11, "$02800.HK$ 评论"), comment(12, "沿用父帖")],
+        )]
+    })).sync(SyncRequest(run_id="route-complete-base"))
+
+    def routes():
+        with target.connect() as conn:
+            return set(conn.execute(select(
+                comment_product_routes.c.comment_id,
+                comment_product_routes.c.subject_code,
+            )).all())
+
+    assert routes() == {(11, "2800"), (11, "3033"), (12, "3033")}
+
+    # has_more=True: comment 12 is absent from this page but must be preserved,
+    # together with its already materialized route.
+    FutuRefresh(target, MemorySourceAdapter({
+        "feeds": [feed_observation(
+            1,
+            started + timedelta(hours=1),
+            content="$03033.HK$ 父帖",
+            comments_=[comment(11, "$02800.HK$ 评论已编辑")],
+            comment_count=2,
+        )]
+    })).sync(SyncRequest(run_id="route-partial"))
+    assert routes() == {(11, "2800"), (11, "3033"), (12, "3033")}
+
+    # A complete snapshot is authoritative and removes the missing comment and
+    # only that comment's routes.
+    FutuRefresh(target, MemorySourceAdapter({
+        "feeds": [feed_observation(
+            1,
+            started + timedelta(hours=2),
+            content="$03033.HK$ 父帖",
+            comments_=[comment(11, "$02800.HK$ 评论已编辑")],
+            comment_count=1,
+        )]
+    })).sync(SyncRequest(run_id="route-complete-removal"))
+    assert routes() == {(11, "2800"), (11, "3033")}
+
+
+def test_feed_detail_parent_edit_recomputes_every_child_route(tmp_path):
+    target = engine(tmp_path)
+    started = datetime(2026, 9, 21, 3, 0)
+    FutuRefresh(target, MemorySourceAdapter({
+        "feeds": [feed_observation(
+            1,
+            started,
+            content="$03033.HK$ 父帖",
+            comments_=[comment(11, "沿用父帖"), comment(12, "也是")],
+        )]
+    })).sync(SyncRequest(run_id="detail-route-base"))
+
+    FutuRefresh(target, MemorySourceAdapter({
+        "feed_details": [feed_observation(
+            1,
+            started + timedelta(hours=1),
+            content="$02800.HK$ 父帖已编辑",
+        )]
+    })).sync(SyncRequest(run_id="detail-route-edit"))
+
+    with target.connect() as conn:
+        routes = set(conn.execute(select(
+            comment_product_routes.c.comment_id,
+            comment_product_routes.c.subject_code,
+        )).all())
+    assert routes == {(11, "2800"), (12, "2800")}
 
 
 def test_comment_counter_change_refreshes_facts_without_invalidating_ai(tmp_path):
@@ -499,6 +932,30 @@ def test_sparse_snapshot_does_not_erase_known_feed_or_comment_fields(tmp_path):
     assert saved_comment["content"] == "评论正文"
 
 
+def test_sparse_snapshot_preserves_body_cashtag_from_retained_content(tmp_path):
+    target = engine(tmp_path)
+    started = datetime(2026, 9, 21, 3, 0)
+    original = feed_observation(1, started, content="$07226.HK$ 旧正文")
+    original.feed["title"] = "旧标题"
+    FutuRefresh(target, MemorySourceAdapter({"feeds": [original]})).sync(
+        SyncRequest(run_id="full-with-body-cashtag")
+    )
+
+    sparse = feed_observation(1, started + timedelta(hours=1), content=None)
+    sparse.feed["title"] = None
+    FutuRefresh(target, MemorySourceAdapter({"feeds": [sparse]})).sync(
+        SyncRequest(run_id="sparse-without-text")
+    )
+
+    with target.connect() as conn:
+        saved_feed = conn.execute(select(feeds.c.title, feeds.c.content)).one()
+        body_mentions = conn.execute(
+            select(mentions.c.code).where(mentions.c.source == "body")
+        ).scalars().all()
+    assert saved_feed == ("旧标题", "$07226.HK$ 旧正文")
+    assert body_mentions == ["7226"]
+
+
 def test_daily_budget_is_shared_and_hard_capped(tmp_path):
     target = engine(tmp_path)
     day = date(2026, 9, 25)
@@ -520,6 +977,10 @@ def test_daily_budget_is_shared_and_hard_capped(tmp_path):
 
 
 def test_ai_request_enforces_safety_bounds():
+    assert AiRequest(date(2026, 9, 29), mode="daily").ranges == ("d1", "d2")
+    assert AiRequest(date(2026, 9, 28), mode="weekly").ranges == (
+        "d1", "d2", "d7", "d14", "d30", "mtd",
+    )
     with pytest.raises(ValueError, match="hard daily cap"):
         AiRequest(date(2026, 9, 25), max_http_attempts=501)
     with pytest.raises(ValueError, match="batch_size"):
@@ -528,6 +989,19 @@ def test_ai_request_enforces_safety_bounds():
         AiRequest(date(2026, 9, 25), concurrency=5)
     with pytest.raises(TypeError, match="explicit bool"):
         AiRequest(date(2026, 9, 25), data_governance_approved="true")
+    with pytest.raises(ValueError, match="numeric product codes"):
+        AiRequest(date(2026, 9, 25), codes=("3037", "bad"))
+    with pytest.raises(ValueError, match="unsupported range"):
+        AiRequest(date(2026, 9, 25), range_keys=("d7", "d90"))
+
+    staged = AiRequest(
+        date(2026, 9, 25),
+        mode="weekly",
+        codes=("3037", "3037", "3042"),
+        range_keys=("d7", "d7", "d14"),
+    )
+    assert staged.codes == ("3037", "3042")
+    assert staged.ranges == ("d7", "d14")
 
 
 def test_automatic_analysis_fails_closed_before_loading_ai_configuration(tmp_path, monkeypatch):
@@ -566,6 +1040,33 @@ def test_explicit_governance_approval_opens_the_calibration_gate(tmp_path, monke
         FutuRefresh(engine(tmp_path), None).analyze(AiRequest(
             date(2026, 9, 25),
             data_governance_approved=True,
+        ))
+
+
+def test_automatic_analysis_checks_human_gold_before_provider_or_budget(tmp_path, monkeypatch):
+    from ai import config as ai_config
+    from ai import providers
+    from jobs import analyze as analysis_job
+
+    cfg = ai_config.load(
+        model="gpt-5.6-luna", prompt_version="comment-product-v3",
+        schema_version="v2", taxonomy_version="v2", micro_batch_size=5,
+    )
+    monkeypatch.setattr(ai_config, "load", lambda: cfg)
+    monkeypatch.setattr(analysis_job, "check_calibration", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        analysis_job,
+        "check_quality",
+        lambda _cfg, report: (_ for _ in ()).throw(RuntimeError(f"quality boundary: {report['name']}")),
+    )
+    monkeypatch.setattr(providers, "build", lambda *_args, **_kwargs: pytest.fail("provider must not be built"))
+
+    with pytest.raises(RuntimeError, match="quality boundary: gold-v3"):
+        FutuRefresh(engine(tmp_path), None).analyze(AiRequest(
+            date(2026, 9, 25),
+            data_governance_approved=True,
+            calibration_report={"batchGatePassed": True},
+            quality_report={"name": "gold-v3"},
         ))
 
 
@@ -818,7 +1319,7 @@ def test_run_control_counts_persistent_reservations_including_retries(tmp_path):
     assert control.reason == "budget_exhausted"
 
 
-def receipt_source_engine(tmp_path, run, *, with_completion_proof=True):
+def receipt_source_engine(tmp_path, run, *, with_completion_proof=True, ticker="03033.HK"):
     source_engine = make_engine(
         "sqlite:///" + (tmp_path / "source-receipts.sqlite").as_posix()
     )
@@ -873,12 +1374,13 @@ def receipt_source_engine(tmp_path, run, *, with_completion_proof=True):
     source_runs = Table("futu_comments_collection_runs", metadata, *run_columns)
     metadata.create_all(source_engine)
     with source_engine.begin() as conn:
-        conn.execute(insert(stocks).values(stock_id=1, ticker="03033.HK"))
+        conn.execute(insert(stocks).values(stock_id=1, ticker=ticker))
         conn.execute(insert(source_runs).values(**run))
     return source_engine
 
 
-def full_run_receipt(**overrides):
+def full_run_receipt(*, pool_codes=("3033",), **overrides):
+    pool_codes = set(pool_codes)
     values = {
         "run_id": "all-1",
         "collection_kind": "comments_all",
@@ -887,13 +1389,30 @@ def full_run_receipt(**overrides):
         "finished_at": datetime(2026, 9, 24, 11, 40),
         "high_watermark_at": datetime(2026, 9, 24, 11, 39),
         "complete_through": date(2026, 9, 24),
-        "configured_symbol_count": 120,
-        "configured_symbols_fingerprint": "sha256:configured-pool",
-        "attempted_symbol_count": 120,
-        "succeeded_symbol_count": 120,
+        "configured_symbol_count": len(pool_codes),
+        "configured_symbols_fingerprint": configured_symbols_fingerprint(pool_codes),
+        "attempted_symbol_count": len(pool_codes),
+        "succeeded_symbol_count": len(pool_codes),
     }
     values.update(overrides)
     return values
+
+
+def test_market_insight_adapter_rejects_numeric_symbol_from_another_market(tmp_path):
+    source_engine = receipt_source_engine(
+        tmp_path,
+        full_run_receipt(),
+        ticker="03033.US",
+    )
+
+    with pytest.raises(SourceSchemaError, match="missing from source"):
+        MarketInsightMySqlAdapter(source_engine, {"3033"})
+
+
+def test_configured_symbols_fingerprint_has_a_stable_cross_repository_format():
+    assert configured_symbols_fingerprint(["3408", "3033", "3033"]) == (
+        "sha256:2899b01b85382df59ab72bcec475d5f5482126f397a303ccabce1f675a069056"
+    )
 
 
 @pytest.mark.parametrize(
@@ -942,6 +1461,26 @@ def test_completion_claim_accepts_a_valid_symbol_proof(tmp_path):
 
     assert adapter.complete_through("all-1") == date(2026, 9, 24)
     assert adapter.closing_run(date(2026, 9, 24))["run_id"] == "all-1"
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        full_run_receipt(pool_codes=("3033", "3408")),
+        full_run_receipt(
+            configured_symbols_fingerprint=configured_symbols_fingerprint({"3408"})
+        ),
+    ],
+    ids=("different-count", "different-fingerprint"),
+)
+def test_completion_claim_rejects_receipt_for_a_different_symbol_pool(
+    tmp_path, receipt
+):
+    source_engine = receipt_source_engine(tmp_path, receipt)
+    adapter = MarketInsightMySqlAdapter(source_engine, {"3033"})
+
+    assert adapter.complete_through("all-1") is None
+    assert adapter.closing_run(date(2026, 9, 24)) is None
 
 
 def test_legacy_completion_claim_without_proof_schema_fails_closed(tmp_path):
@@ -1053,10 +1592,10 @@ def test_market_insight_adapter_uses_stable_keyset_and_all_run_watermark(tmp_pat
             scheduled_for=datetime(2026, 9, 24, 11, 30), finished_at=observed,
             high_watermark_at=observed,
             complete_through=date(2026, 9, 24),
-            configured_symbol_count=2,
-            configured_symbols_fingerprint="sha256:configured-pool",
-            attempted_symbol_count=2,
-            succeeded_symbol_count=2,
+            configured_symbol_count=1,
+            configured_symbols_fingerprint=configured_symbols_fingerprint({"3033"}),
+            attempted_symbol_count=1,
+            succeeded_symbol_count=1,
         ))
 
     adapter = MarketInsightMySqlAdapter(source_engine, {"3033"})

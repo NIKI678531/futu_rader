@@ -1,4 +1,4 @@
-# ADR-0026 — 自动 AI 以完整日期为门槛，并使用持久日预算与校准闸门
+# ADR-0026 — 自动 AI 以完整日期为门槛，并使用持久日预算与双重质量闸门
 
 - **状态**：已接受
 - **日期**：2026-09-25
@@ -46,18 +46,25 @@ batch／并发组合后继续共用旧策略。
 窗口并另写 ADR；若同时改变模型、Prompt、schema、taxonomy、batch size 或任一请求边界，
 还必须生成精确匹配的新校准报告。
 
-### 3. 校准不匹配时零调用
+### 3. 批量校准或人工金标不匹配时零调用
 
 自动批量 AI 必须提供已通过的校准报告。报告必须与当前模型、Prompt、schema、taxonomy、
 batch size、最大输入 token、最大载荷字节和最大输出 token 完全一致，并明确记录
 `batchGatePassed=true`。缺失、无效或策略不匹配时，在创建第一个付费请求前失败。
 
-生产环境可通过 Secret 注入完整 JSON，也可挂载只读报告文件；两种形式执行同一校验。
+生产环境还必须提供 `scripts.evaluate_gold` 生成的人工金标报告：至少 400 条直接 LLM 样本，
+相关类 precision ≥95%、recall ≥90%，投诉回归样本全部通过。报告从混淆矩阵重算指标，且其
+实际标注 run 的 model、`comment-product-v3`、schema、taxonomy 必须与当前运行配置完全一致；
+旧 v2、来源元数据缺失、仅手工修改 `qualityGate.passed` 的报告一律拒绝。
+
+生产环境可通过 `AI_CALIBRATION_REPORT` 与 `AI_QUALITY_REPORT` Secret 注入两份完整 JSON，
+也可挂载只读报告文件；两种形式执行同一校验。
 这里的校准是**请求前的批处理一致性闸门**：它证明当前模型／Prompt／schema／taxonomy／
 batch 与请求边界和报告一致，且 b=1 对 b=5 的实验达到既定阈值。它不是 ADR-0017 的
 逐条 `calibrated_confidence`，不证明结论与人工真值一致，不改变 `/meta.aiValidation`，
-也不替代数据治理批准。只有 ADR-0021 §6 的独立人工金标评估可以把 `aiValidation` 从
-`none` 改为 `spot_check`；该评估仍只是量尺，不是发布批准。
+也不替代数据治理批准。ADR-0021 §6 的独立人工金标评估既把 `aiValidation` 从
+`none` 改为 `spot_check`，也是本轮 v3 批量回填的总体质量门槛；它不是逐条人工发布批准，
+模型输出仍遵守 ADR-0019 的自动发布规则。
 
 ### 4. 数据治理批准与结果发布是两道不同的门
 
@@ -93,7 +100,7 @@ pending/stale 状态；不回滚 feeds、comments、mentions、users，也不谎
 
 - 自动 AI task 在 Airflow 层不重试；若以后启用重试，持久预算仍是唯一上限。
 - 生产 Secret 未明确提供治理批准时，自动任务保持零调用；运维不能把“有 API key”当授权。
-- 每次 AI 策略变更都需要生成与新策略精确匹配的校准报告。
+- 每次 AI 策略变更都需要生成与新策略精确匹配的校准报告与人工金标报告。
 - “完成”按产品与区间判断，不能再以一个进程正常退出代替完成证明。
 
 ## 否决的备选

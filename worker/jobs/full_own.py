@@ -17,17 +17,42 @@ for folder in (ROOT, ROOT / "worker", ROOT / "backend"):
     sys.path.insert(0, str(folder))
 
 from ai import config
+from ai.prompts import requires_full_reannotation
+import clock
 from core.calendar import PRESETS, build
 from jobs import annotate, classify, extract, pipeline
+from jobs.backfill_comment_filter import prepare_comment_task_execution
 from radar_db import make_engine
+from radar_db.comment_filter import load_comment_filter_config
+from radar_db.comment_routes import (
+    readiness_on_connection as comment_routes_ready_on_connection,
+    supersede_ineligible_jobs as supersede_ineligible_route_jobs,
+)
 from radar_db.events import emit
 from radar_db.leases import WorkerLease
+from radar_db.product_catalog import load_products
 from radar_db.revisions import ai_source_version
 from radar_db.schema import analysis_scopes, annotation_jobs, comments, feeds, meta_kv
 from radar_db.scope_jobs import scope_condition
 from radar_db.time_windows import utc_naive_to_hkt
 
 log = logging.getLogger("worker.full_own")
+
+
+def _prepare_comment_execution(engine, *, supersede=False):
+    with engine.connect() as conn:
+        route_active = comment_routes_ready_on_connection(conn)
+    if not route_active:
+        return prepare_comment_task_execution(
+            engine,
+            load_comment_filter_config(),
+            supersede=supersede,
+        )
+    retired = 0
+    if supersede:
+        with engine.begin() as conn:
+            retired = supersede_ineligible_route_jobs(conn)
+    return None, retired
 
 
 def save_progress(engine, progress):
@@ -58,8 +83,10 @@ def prepare(engine, cfg, anchor, codes, *, ranges=None, optimized=False, page_si
                 analysis_scopes.c.taxonomy_version == cfg.taxonomy_version,
             ).order_by(analysis_scopes.c.created_at.desc())).mappings().first()
         old_stats = json.loads(existing["stats_json"] or "{}") if existing else {}
-        if (existing and existing["stats_json"] and old_stats.get("sourceVersion", {}) == source_version
-            and old_stats.get("model", cfg.model) == cfg.model):
+        if (existing and existing["stats_json"]
+            and old_stats.get("sourceVersion", {}) == source_version
+            and old_stats.get("model", cfg.model) == cfg.model
+            and old_stats.get("exactRuleVersion") == extract.EXACT_RULE_VERSION):
             scopes[code] = existing["scope_id"]
             continue
         missing.append(code)
@@ -88,10 +115,20 @@ def queue_status(engine, scope_id):
 class StudentChannel(threading.Thread):
     """Continuously drain the CPU student stage while the LLM channel runs."""
 
-    def __init__(self, engine, cfg, state, *, idle_seconds=5, model_dir=None):
+    def __init__(
+        self,
+        engine,
+        cfg,
+        state,
+        *,
+        idle_seconds=5,
+        model_dir=None,
+        parent_filter_config=None,
+    ):
         super().__init__(name="student-channel", daemon=True)
         self.engine, self.cfg, self.state = engine, cfg, state
         self.idle_seconds, self.model_dir = idle_seconds, model_dir
+        self.parent_filter_config = parent_filter_config
         self.stop_event = threading.Event()
         self.rounds = 0
 
@@ -107,6 +144,7 @@ class StudentChannel(threading.Thread):
                         self.cfg,
                         scope_id=scope_id,
                         model_dir=self.model_dir,
+                        parent_filter_config=self.parent_filter_config,
                     )
                     processed += stats["input"]
                 except Exception as exc:  # noqa: BLE001
@@ -166,12 +204,16 @@ def source_state(engine):
 def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
     from ai.providers.base import RunStopped
 
+    parent_filter_config, _retired = _prepare_comment_execution(
+        engine, supersede=True,
+    )
     control = provider.control
     state = source_state(engine)
     if state != plan["sourceState"]:
         raise ValueError("Source changed after planning; create a new plan")
     anchor = date.fromisoformat(plan["anchor"])
     codes = plan["codes"]
+    all_codes = {product["code"] for product in load_products()}
     with WorkerLease(engine, "own-analysis") as lease:
         def check_source():
             if lease.lost:
@@ -180,7 +222,7 @@ def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
                 control.stop("source_changed")
         control.before_request = check_source
         progress = {"anchor": plan["anchor"], "baselineFrom": plan["from"],
-                    "scope": "all" if len(codes) == 120 else "selection", "ranges": plan["ranges"],
+                    "scope": "all" if set(codes) == all_codes else "selection", "ranges": plan["ranges"],
                     "sourceVersion": {key: value for key, value in state.items() if key != "anchor"},
                     "model": cfg.model, "batchSize": cfg.micro_batch_size, "status": "running", "products": {}}
         try:
@@ -208,7 +250,12 @@ def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
                 order.remove(code)
                 order.append(code)
                 before = queue_status(engine, scopes[code])
-                classify.run(engine, cfg, scope_id=scopes[code])
+                classify.run(
+                    engine,
+                    cfg,
+                    scope_id=scopes[code],
+                    parent_filter_config=parent_filter_config,
+                )
                 result = pipeline.run(engine, cfg, scopes[code], provider=provider,
                                       max_items=cfg.micro_batch_size * cfg.concurrency,
                                       ranges=plan["ranges"], anchor_override=anchor, audit_report=False,
@@ -240,7 +287,7 @@ def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
     return progress
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--anchor")
     parser.add_argument("--watch", action="store_true")
@@ -250,8 +297,12 @@ def main():
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--ranges", default=",".join(PRESETS))
     parser.add_argument("--max-http-requests", type=int, required=True)
+    parser.add_argument("--calibration-report", type=Path,
+                        help="scripts.calibrate 产生且通过的批量校准报告")
+    parser.add_argument("--quality-report", type=Path,
+                        help="scripts.evaluate_gold 产生且通过的 v3 人工金标报告")
     parser.add_argument("--sync-prices", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.max_http_requests < 1:
         parser.error("--max-http-requests must be positive")
     ranges = list(dict.fromkeys(key.strip() for key in args.ranges.split(",") if key.strip()))
@@ -259,21 +310,39 @@ def main():
         parser.error("--ranges must contain supported date presets: " + ",".join(PRESETS))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     cfg = config.load()
+    student_enabled = not args.no_student and not requires_full_reannotation(
+        "comment_product",
+        cfg.prompt_version,
+        schema_version=cfg.schema_version,
+    )
+    # Import lazily because jobs.analyze imports this module.
+    from jobs import analyze as analysis_job
+    try:
+        analysis_job.check_calibration(
+            cfg, args.calibration_report, require_singleton=True,
+        )
+        analysis_job.check_quality(cfg, args.quality_report)
+    except (ValueError, RuntimeError) as exc:
+        parser.error(str(exc))
     from ai.providers import build as build_provider
     from ai.providers.base import RunControl, RunStopped
     control = RunControl(args.max_http_requests)
     provider = build_provider(cfg, control=control)
     engine = make_engine()
+    try:
+        parent_filter_config, _retired = _prepare_comment_execution(
+            engine, supersede=True,
+        )
+    except RuntimeError as exc:
+        parser.error(str(exc))
     with engine.connect() as conn:
         measured = date.fromisoformat(conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar_one())
     anchor = date.fromisoformat(args.anchor) if args.anchor else measured
     if anchor != measured:
         raise SystemExit("Anchor must match the complete source day; no synthetic month end")
-    master = json.loads((ROOT / "backend/fixtures/demo/master.json").read_text(encoding="utf-8"))
-    codes = [row["code"] for row in master["products"] if args.all or row["ownership"] == "own"]
-    ownership = {row["code"]: row["ownership"] for row in master["products"]}
-    if len(codes) != (120 if args.all else 61):
-        raise SystemExit("Product master must contain 61 own and 59 peer products")
+    products = load_products()
+    codes = [row["code"] for row in products if args.all or row["ownership"] == "own"]
+    ownership = {row["code"]: row["ownership"] for row in products}
     with WorkerLease(engine, "own-analysis") as lease, control.interruptible():
         emit(engine, "orchestrator", f"Starting LLM analysis for {len(codes)} products: {','.join(ranges)}")
         scopes, start = prepare(engine, cfg, anchor, codes, ranges=ranges)
@@ -291,7 +360,7 @@ def main():
         progress = {"anchor": anchor.isoformat(), "baselineFrom": start.isoformat(), "products": {},
                     "status": "running", "model": cfg.model, "batchSize": cfg.micro_batch_size,
                     "sourceVersion": source_version, "scope": "all" if args.all else "own", "ranges": ranges,
-                    "student": not args.no_student}
+                    "student": student_enabled}
         for code, scope_id in scopes.items():
             previous = prior.get("products", {}).get(code, {})
             status = queue_status(engine, scope_id)
@@ -302,16 +371,29 @@ def main():
         order = sorted(codes, key=lambda code: sum(count for state, count in progress["products"][code]["queue"].items() if state != "done"))
 
         student = None
-        if args.watch and not args.no_student:
-            student = StudentChannel(engine, cfg, student_state, model_dir=args.student_model_dir)
+        if args.watch and student_enabled:
+            student = StudentChannel(
+                engine,
+                cfg,
+                student_state,
+                model_dir=args.student_model_dir,
+                parent_filter_config=parent_filter_config,
+            )
             student.start()
             emit(engine, "orchestrator", "学生通道线程已启动（与主模型通道并行）")
 
         def run_student_inline(scope_id):
-            if args.no_student:
-                routed = classify.route_all_to_llm(engine, scope_id, None, "--no-student")
+            if not student_enabled:
+                reason = "--no-student" if args.no_student else f"{cfg.prompt_version} direct LLM policy"
+                routed = classify.route_all_to_llm(engine, scope_id, None, reason)
                 return {"input": routed, "routed": routed}
-            return classify.run(engine, cfg, scope_id=scope_id, model_dir=args.student_model_dir)
+            return classify.run(
+                engine,
+                cfg,
+                scope_id=scope_id,
+                model_dir=args.student_model_dir,
+                parent_filter_config=parent_filter_config,
+            )
 
         def tick():
             nonlocal scopes, start, anchor, source_version, order
@@ -410,7 +492,7 @@ def main():
                     scheduler.add_job(lambda: sync(engine, FmpClient(), codes, start, anchor, force=True),
                                       "interval", hours=1, max_instances=1, coalesce=True)
                 scheduler.add_job(tick, "interval", seconds=5, max_instances=1, coalesce=True,
-                                  next_run_time=datetime.now())
+                                  next_run_time=clock.now())
                 try:
                     scheduler.start()
                 except (KeyboardInterrupt, SystemExit):

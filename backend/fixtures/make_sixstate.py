@@ -20,6 +20,7 @@
 """
 
 import json
+import re
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -66,7 +67,7 @@ def build_posts():
     无关。跟着供体走的话，③ 和 ④ 演的就不是「待确认」与它的反面，而是同一态两遍。
     """
     src = load("official_posts")[RANGE]
-    tpl = next(p for p in src if p["mentioned"])  # 有挂载标的的模板
+    tpl = next(p for p in src if p["attributedProducts"])  # 有显式正文归属的模板
 
     def make(base, account, post_id, **over):
         p = dict(base)
@@ -117,28 +118,47 @@ def build_posts():
         #    「— 区间内未提及 ETF」，而不是「0 只 · 0 次」。
         make(tpl, BARE, "sixstate-nomention", likes=3, comments=1, shares=0,
              engagement=4, confidence=0.9, reviewState="pending",
-             mentioned=[], camp="none",
+             attributedProducts=[], attributionStatus="unattributed",
+             attributedCamp="none", mentioned=[], camp="none",
+             code=None, name=None, sector=None, ownership=None, issuer=None,
              campPrimary="none", hasSummary=True,
              summary="这条没提任何 ETF：字段不适用，不是数值为零。"),
     ]
 
 
 def build_mentions(posts):
-    """两个官号的提及 ETF：一个有、一个空。其余官号照常回落演示数据。"""
-    src = load("etf_mentions")
-    donor = next(v for k, v in src.items() if k.endswith("|" + RANGE) and v["own"] and v["peer"])
-
-    own = [dict(donor["own"][0], count=3, posts=2)]
-    peer = [dict(donor["peer"][0], count=1, posts=1)]
+    """从帖子级显式归属构造两个官号汇总，不再借旧 etf_mentions 供体。"""
+    rows = {}
+    post_ids = set()
+    for post in posts:
+        if post["account"] != ISSUER:
+            continue
+        for product in post["attributedProducts"]:
+            code = product["code"]
+            row = rows.setdefault(code, {
+                **product,
+                "short": re.sub(r"(指數|指数)?ETF$", "", product["name"]),
+                "count": 0,
+                "posts": 0,
+            })
+            row["count"] += 1
+            row["posts"] += 1
+            post_ids.add(post["id"])
+    items = sorted(
+        rows.values(),
+        key=lambda item: (
+            0 if item["ownership"] == "own" else 1,
+            -item["count"],
+            item["code"],
+        ),
+    )
     issuer = {
-        "list": own + peer,
-        "own": own,
-        "peer": peer,
-        "etfCount": 2,
-        # total > postCount：出现次数累加口径（ETF_MENTION_RULE），一帖内出现 3 次计 3。
-        # 与市场域的评论去重语义相反，这里刻意让它对不上以便被断言钉住。
-        "total": 4,
-        "postCount": 3,
+        "list": items,
+        "own": [item for item in items if item["ownership"] == "own"],
+        "peer": [item for item in items if item["ownership"] != "own"],
+        "etfCount": len(items),
+        "total": sum(item["count"] for item in items),
+        "postCount": len(post_ids),
     }
     # 空态：查过了，区间内没有符合条件的内容 → status=empty，**不是** 0，也不是 null。
     bare = {"list": [], "own": [], "peer": [], "etfCount": 0, "total": 0, "postCount": 0}
@@ -165,6 +185,11 @@ def build_kol():
     """
     src = load("kol_impact")[RANGE]
     donor = next(p for p in src["posts"] if p["mentioned"] and p["hasSummary"])
+    peer = next(p for p in load("master")["products"] if p["code"] == "2800")
+    peer_mention = {
+        "code": peer["code"], "name": peer["name"],
+        "issuer": peer["issuer"], "ownership": peer["ownership"],
+    }
     # 「方向待确认」徽章的样式对象由设计源的 dirStyle(null, true) 产出，这里借一份现成的，
     # 不在 Python 里重拼——那等于把展示助手实现两遍。
     pending_dir = next(p["dir"] for p in src["posts"] if p["directionPending"])
@@ -185,6 +210,7 @@ def build_kol():
         # ① `0` —— 数过了确实是零，必须仍然渲染成 0（反向断言，防矫枉过正）。
         make("sixstate-kol-zero", likes=0, comments=0, shares=0, engagement=0,
              confidence=0.95, reviewState="pending", hasSummary=True,
+             mentioned=donor["mentioned"] + [peer_mention], camp="both",
              summary="互动为零的帖子：赞、评、转都确实是 0，不是缺数据。"),
 
         # ② 暂不可用 —— 三个计数字段都取不到。这一条同时钉住**聚合**：
@@ -236,7 +262,7 @@ def build_kol():
              direction=None, directionLabel=None, directionPending=None,
              hasDir=None, dir=None,
              hasSummary=None, summary=None,
-             evidenceIdx=None, typeEvidence=None, reviewState=None),
+             fullText=None, evidenceIdx=None, typeEvidence=None, reviewState=None),
     ]
 
     # leaders 是**全量**画像榜，KOL 详情页拿它定「声量排名第一」与上一位／下一位的顺序。
@@ -602,6 +628,7 @@ def write(name, table):
     path.write_text(
         json.dumps(table, ensure_ascii=False, indent=1, sort_keys=True) + "\n",
         encoding="utf-8",
+        newline="\n",
     )
     print(f"{path.name}  {path.stat().st_size:,} B")
 

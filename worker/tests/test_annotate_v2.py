@@ -22,7 +22,16 @@ from ai.prompts import get as get_prompt  # noqa: E402
 from ai.providers.base import Completion, Usage  # noqa: E402
 from jobs import annotate  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
-from radar_db.schema import annotation_evidence, annotation_jobs, annotations, comments, feeds  # noqa: E402
+from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config  # noqa: E402
+from radar_db.schema import (  # noqa: E402
+    annotation_evidence,
+    annotation_jobs,
+    annotations,
+    comments,
+    feed_mentions,
+    feeds,
+    meta_kv,
+)
 
 CODE = "3033"
 TEXT_A = "这只ETF点差太大，来回一趟就蚀掉不少，不太适合短线"
@@ -37,11 +46,19 @@ def engine(tmp_path):
     with eng.begin() as conn:
         conn.execute(
             insert(feeds).values(
-                feed_id=1, code=CODE, posted_at=datetime(2026, 8, 1, 10, 0), feed_type=1,
+                feed_id=1, code=CODE, source_ticker=f"0{CODE}.HK",
+                posted_at=datetime(2026, 8, 1, 10, 0), feed_type=1,
                 title="恒科今日走势", content="今日恒科低开高走，" * 30,
                 like_count=0, comment_count=3, image_count=0, raw_json_broken=False,
             )
         )
+        conn.execute(insert(feed_mentions).values(
+            feed_id=1, raw_ticker=f"0{CODE}.HK", market="HK", occurrences=1,
+        ))
+        conn.execute(insert(meta_kv), [
+            {"k": key, "v": value}
+            for key, value in filter_readiness_values(load_comment_filter_config()).items()
+        ])
         conn.execute(
             insert(comments),
             [
@@ -167,8 +184,9 @@ def test_v1_schema_rejects_v2_shape_and_vice_versa():
         schemas.parse("comment_product", v1, "v2")
 
 
-def test_prompt_registry_defaults_to_v2_and_pairs_schema():
-    assert get_prompt("comment_product").VERSION == "comment-product-v2"
+def test_prompt_registry_defaults_to_v3_and_keeps_historical_versions():
+    assert get_prompt("comment_product").VERSION == "comment-product-v3"
+    assert get_prompt("comment_product", "comment-product-v2").VERSION == "comment-product-v2"
     assert get_prompt("comment_product", "comment-product-v1").VERSION == "comment-product-v1"
     # 一个变量盖两个任务：给帖子任务传评论的版本号 ⇒ 落到帖子任务的默认版本。
     assert get_prompt("post_annotation", "comment-product-v2").VERSION == "post-annotation-v2"
@@ -190,6 +208,45 @@ def test_payload_carries_product_name_aliases_and_post_context(engine, cfg):
     # 正文只带开头，不带全文。
     ctx = [line for line in sent.splitlines() if '"post_context"' in line][0]
     assert len(ctx) < annotate.POST_CONTEXT_CHARS + 40
+
+
+def test_v3_payload_uses_three_parent_levels_nearest_first(engine):
+    """短回复最多查看三层祖先；更远内容既不外发，也不进入指纹。"""
+    with engine.begin() as conn:
+        conn.execute(insert(comments), [
+            {"comment_id": 20, "feed_id": 1, "content": "第四层，不应外发", "reply_to_comment_id": None},
+            {"comment_id": 21, "feed_id": 1, "content": "第三层", "reply_to_comment_id": 20},
+            {"comment_id": 22, "feed_id": 1, "content": "第二层", "reply_to_comment_id": 21},
+            {"comment_id": 23, "feed_id": 1, "content": "第一层", "reply_to_comment_id": 22},
+            {"comment_id": 24, "feed_id": 1, "content": "同意", "reply_to_comment_id": 23},
+        ])
+
+    jobs = [{"target_type": "comment", "target_id": 24, "subject_code": CODE}]
+    src = annotate._load_sources(engine, "comment_product", jobs)[("comment", 24)]
+    payload = annotate._build_payload("comment_product", jobs[0], src)
+
+    assert payload["parent_comments"] == ["第一层", "第二层", "第三层"]
+    assert "第四层，不应外发" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_v3_ignores_fill_missing_only_and_queues_reannotation(engine, cfg):
+    """v3 是语义修订，不得把旧版“字段齐全”误当成无需重标。"""
+    annotate.enqueue_comments(engine, cfg)
+    annotate.run(engine, cfg, max_items=10, provider=FakeProvider([script_realistic]))
+
+    v3 = config.load(
+        model="test-model",
+        prompt_version="comment-product-v3",
+        schema_version="v2",
+        taxonomy_version="v2",
+        fill_missing_only=True,
+    )
+    assert annotate.enqueue_comments(engine, v3) == 3
+    v3_jobs = rows(engine, annotation_jobs, annotation_jobs.c.input_hash.notin_({
+        row["input_hash"] for row in rows(engine, annotation_jobs)
+        if row["status"] == "done"
+    }))
+    assert v3_jobs and all(row["stage"] != annotate.FILL_MISSING_STAGE for row in v3_jobs)
 
 
 # ── 写库：五个 kind，合规空数组也写，合规证据挂在合规行 ─────────────────
@@ -295,8 +352,16 @@ def test_concurrent_batches_do_not_double_process(tmp_path):
     n = 40
     with eng.begin() as conn:
         conn.execute(insert(feeds).values(
-            feed_id=1, code=CODE, posted_at=datetime(2026, 8, 1), feed_type=1,
+            feed_id=1, code=CODE, source_ticker=f"0{CODE}.HK",
+            posted_at=datetime(2026, 8, 1), feed_type=1,
             like_count=0, comment_count=n, image_count=0, raw_json_broken=False))
+        conn.execute(insert(feed_mentions).values(
+            feed_id=1, raw_ticker=f"0{CODE}.HK", market="HK", occurrences=1,
+        ))
+        conn.execute(insert(meta_kv), [
+            {"k": key, "v": value}
+            for key, value in filter_readiness_values(load_comment_filter_config()).items()
+        ])
         conn.execute(insert(comments), [
             {"comment_id": 100 + i, "feed_id": 1, "content": f"点差太大 第{i}条", "author_uid": f"u{i}"}
             for i in range(n)

@@ -100,12 +100,24 @@ def _provider_of_runs(engine):
 def collect_units(engine, *, codes=None):
     """`[{unit, group, text, relevance, attitude, aspects, posted_at}]`，只含 Luna 写的现行单元。"""
     from jobs import annotate
-    from radar_db.annotations_read import current_annotations
+    from ai.prompts.comment_product_v3 import VERSION as comment_prompt_version
+    from radar_db.annotations_read import released_annotations
+    from radar_db.comment_filter import load_comment_filter_config
+    from radar_db.comment_routes import require_ready as require_comment_routes_ready
 
+    filter_config = load_comment_filter_config()
+    # 训练数据也是筛选口径的下游产物；历史回填未完成或配置漂移时宁可停，
+    # 不能把旧的全量评论悄悄混入下一版学生模型。
+    require_comment_routes_ready(engine)
     providers = _provider_of_runs(engine)
-    rel = current_annotations(engine, "relevance", "comment")
-    att = current_annotations(engine, "attitude", "comment")
-    asp = current_annotations(engine, "aspect", "comment")
+    annotation_scope = {
+        "task": "comment_product",
+        "prompt_version": comment_prompt_version,
+        "parent_filter_config": filter_config,
+    }
+    rel = released_annotations(engine, "relevance", "comment", **annotation_scope)
+    att = released_annotations(engine, "attitude", "comment", **annotation_scope)
+    asp = released_annotations(engine, "aspect", "comment", **annotation_scope)
 
     keep = {}
     for unit, r in rel.items():

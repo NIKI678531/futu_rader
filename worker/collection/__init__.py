@@ -1,4 +1,4 @@
-"""Automatic Futu collection behind one small worker-facing interface."""
+"""MarketInsight-to-Radar database synchronization and analysis interface."""
 
 from .models import AiRequest, AiResult, SyncRequest, SyncResult
 from .service import FutuRefresh

@@ -1,0 +1,434 @@
+{
+  "schemaVersion": 1,
+  "provenance": {
+    "sourceWorkbook": "ETP_Data_Export.xlsx",
+    "sheet": "Sheet JS",
+    "range": "A1:I411",
+    "reviewedAsOf": "2026-09-28",
+    "selectionRule": {
+      "ownProducts": "Normalize Unicode to NFKC and trim whitespace; select rows whose ETF名称* contains 南方东英 or starts with 南方富时中国A50.",
+      "deduplication": "Group by (主要交收柜台, ETF名称*) and retain every distinct 简称* as shortNames; R/U trading-counter rows are aliases, not separate products.",
+      "peerProducts": "High-confidence peers use the same normalized benchmark and security type; benchmark normalization removes whitespace, punctuation, and return-version qualifiers. Code 3187 is the sole thematic exception, selected for the same Asia-Pacific equity REIT exposure as 3447.",
+      "pendingProducts": "Rows whose 主要交收柜台 is '-' do not enter the formal code pool and remain pending until a confirmed exchange code is available.",
+      "issuer": "The workbook has no issuer column. CSOP ownership follows the own-product name rule; peer issuer labels are inferred from product-name prefixes and should be treated as catalog labels rather than source fields.",
+      "southbound": "The workbook does not provide Southbound Stock Connect eligibility; additions default to false until separately confirmed.",
+      "newListing": "isNew is true when listingDate is less than 30 calendar days before reviewedAsOf."
+    }
+  },
+  "products": [
+    {
+      "code": "3447",
+      "name": "南方东英富时亚太精选房地产信托 ETF",
+      "shortNames": [
+        "南方亚太房托"
+      ],
+      "listingDate": "2025-05-13",
+      "securityType": "交易所买卖基金",
+      "benchmark": "富时 EPRA Nareit 亚太精选 REITs 权重上限净税指数",
+      "benchmarkCurrency": "USD",
+      "assetClass": "股票",
+      "region": "亚太区",
+      "sector": "apac",
+      "struct": "ETF",
+      "issuer": "CSOP 南方东英",
+      "issuerBasis": "own_product_selection_rule",
+      "ownership": "own",
+      "ownCode": null,
+      "mappingBasis": "own_product_name_rule",
+      "isNew": false,
+      "sourceRows": [
+        67
+      ]
+    },
+    {
+      "code": "3121",
+      "name": "南方东英 KOSPI 200 ETF",
+      "shortNames": [
+        "南方ＫＯＳＰＩ"
+      ],
+      "listingDate": "2026-06-18",
+      "securityType": "交易所买卖基金",
+      "benchmark": "KOSPI 200 指数（净总回报版本）",
+      "benchmarkCurrency": "KRW",
+      "assetClass": "股票",
+      "region": "韓國",
+      "sector": "apac",
+      "struct": "ETF",
+      "issuer": "CSOP 南方东英",
+      "issuerBasis": "own_product_selection_rule",
+      "ownership": "own",
+      "ownCode": null,
+      "mappingBasis": "own_product_name_rule",
+      "isNew": false,
+      "sourceRows": [
+        93
+      ]
+    },
+    {
+      "code": "3537",
+      "name": "南方东英 KOSPI 200 备兑认购期权主动型 ETF",
+      "shortNames": [
+        "Ａ南方韩国备兑"
+      ],
+      "listingDate": "2026-07-31",
+      "securityType": "交易所买卖基金",
+      "benchmark": "-",
+      "benchmarkCurrency": "USD",
+      "assetClass": "股票",
+      "region": "韓國",
+      "sector": "apac",
+      "struct": "备兑高息",
+      "issuer": "CSOP 南方东英",
+      "issuerBasis": "own_product_selection_rule",
+      "ownership": "own",
+      "ownCode": null,
+      "mappingBasis": "own_product_name_rule",
+      "isNew": false,
+      "sourceRows": [
+        231
+      ]
+    },
+    {
+      "code": "3423",
+      "name": "招商恒生科技指数 ETF",
+      "shortNames": [
+        "招商恒生科技"
+      ],
+      "listingDate": "2025-03-31",
+      "securityType": "交易所买卖基金",
+      "benchmark": "恒生科技指数",
+      "benchmarkCurrency": "HKD",
+      "assetClass": "股票",
+      "region": "中国",
+      "sector": "hk",
+      "struct": "ETF",
+      "issuer": "招商基金（香港）",
+      "issuerBasis": "inferred_from_product_name",
+      "ownership": "peer",
+      "ownCode": "3033",
+      "mappingBasis": "exact_normalized_benchmark_same_security_type",
+      "isNew": false,
+      "sourceRows": [
+        173
+      ]
+    },
+    {
+      "code": "3111",
+      "name": "易方达（香港）MSCI 中国A50 互联互通ETF",
+      "shortNames": [
+        "易方达Ａ５０",
+        "易方达Ａ５０－Ｒ"
+      ],
+      "listingDate": "2021-12-14",
+      "securityType": "交易所买卖基金",
+      "benchmark": "MSCI 中国 A50 互联互通指数（净总回报版本）",
+      "benchmarkCurrency": "RMB",
+      "assetClass": "股票",
+      "region": "中国",
+      "sector": "a",
+      "struct": "ETF",
+      "issuer": "E Fund 易方达",
+      "issuerBasis": "inferred_from_product_name",
+      "ownership": "peer",
+      "ownCode": "3003",
+      "mappingBasis": "exact_normalized_benchmark_same_security_type",
+      "isNew": false,
+      "sourceRows": [
+        189,
+        190
+      ]
+    },
+    {
+      "code": "3031",
+      "name": "Fullgoal 恒生港股红利 ETF",
+      "shortNames": [
+        "ＦＧ恒生红利",
+        "ＦＧ恒生红利－Ｒ",
+        "ＦＧ恒生红利－Ｕ"
+      ],
+      "listingDate": "2026-03-31",
+      "securityType": "交易所买卖基金",
+      "benchmark": "恒生港股通高股息低波动指数（净总报酬版本）",
+      "benchmarkCurrency": "HKD",
+      "assetClass": "股票",
+      "region": "香港",
+      "sector": "hk",
+      "struct": "备兑高息",
+      "issuer": "Fullgoal 富国",
+      "issuerBasis": "inferred_from_product_name",
+      "ownership": "peer",
+      "ownCode": "3469",
+      "mappingBasis": "exact_normalized_benchmark_same_security_type",
+      "isNew": false,
+      "sourceRows": [
+        281,
+        282,
+        283
+      ]
+    },
+    {
+      "code": "2832",
+      "name": "博时科创50指数ETF",
+      "shortNames": [
+        "博时科创５０",
+        "博时科创５０－Ｒ"
+      ],
+      "listingDate": "2013-12-09",
+      "securityType": "交易所买卖基金",
+      "benchmark": "上证科创板 50 成份指数",
+      "benchmarkCurrency": "RMB",
+      "assetClass": "股票",
+      "region": "中国",
+      "sector": "a",
+      "struct": "ETF",
+      "issuer": "Bosera 博时",
+      "issuerBasis": "inferred_from_product_name",
+      "ownership": "peer",
+      "ownCode": "3109",
+      "mappingBasis": "exact_normalized_benchmark_same_security_type",
+      "isNew": false,
+      "sourceRows": [
+        102,
+        103
+      ]
+    },
+    {
+      "code": "2834",
+      "name": "iShares 安硕纳斯达克100 ETF",
+      "shortNames": [
+        "安硕纳指一百",
+        "安硕纳指一百—Ｕ"
+      ],
+      "listingDate": "2016-06-29",
+      "securityType": "交易所买卖基金",
+      "benchmark": "纳斯达克100指数",
+      "benchmarkCurrency": "USD",
+      "assetClass": "股票",
+      "region": "美国",
+      "sector": "us",
+      "struct": "ETF",
+      "issuer": "BlackRock",
+      "issuerBasis": "inferred_from_product_name",
+      "ownership": "peer",
+      "ownCode": "3034",
+      "mappingBasis": "exact_normalized_benchmark_same_security_type",
+      "isNew": false,
+      "sourceRows": [
+        133,
+        134
+      ]
+    },
+    {
+      "code": "3455",
+      "name": "景顺QQQ ETF",
+      "shortNames": [
+        "景顺ＱＱＱ",
+        "景顺ＱＱＱ－Ｒ",
+        "景顺ＱＱＱ－Ｕ"
+      ],
+      "listingDate": "2025-02-26",
+      "securityType": "交易所买卖基金",
+      "benchmark": "纳斯达克100指数",
+      "benchmarkCurrency": "-",
+      "assetClass": "股票",
+      "region": "美国",
+      "sector": "us",
+      "struct": "ETF",
+      "issuer": "Invesco 景顺",
+      "issuerBasis": "inferred_from_product_name",
+      "ownership": "peer",
+      "ownCode": "3034",
+      "mappingBasis": "exact_normalized_benchmark_same_security_type",
+      "isNew": false,
+      "sourceRows": [
+        196,
+        197,
+        198
+      ]
+    },
+    {
+      "code": "3444",
+      "name": "恒生富时香港股票 ETF",
+      "shortNames": [
+        "恒生香港股票"
+      ],
+      "listingDate": "2026-05-15",
+      "securityType": "交易所买卖基金",
+      "benchmark": "富时强积金香港指数（净总回报版本）",
+      "benchmarkCurrency": "HKD",
+      "assetClass": "股票",
+      "region": "香港",
+      "sector": "hk",
+      "struct": "ETF",
+      "issuer": "恒生投资",
+      "issuerBasis": "inferred_from_product_name",
+      "ownership": "peer",
+      "ownCode": "3443",
+      "mappingBasis": "exact_normalized_benchmark_same_security_type",
+      "isNew": false,
+      "sourceRows": [
+        165
+      ]
+    },
+    {
+      "code": "3579",
+      "name": "易方达(香港)富时MPF香港股票ETF",
+      "shortNames": [
+        "易方达ＭＰＦ港股"
+      ],
+      "listingDate": "2026-06-23",
+      "securityType": "交易所买卖基金",
+      "benchmark": "富时强积金香港指数",
+      "benchmarkCurrency": "HKD",
+      "assetClass": "股票",
+      "region": "香港",
+      "sector": "hk",
+      "struct": "ETF",
+      "issuer": "E Fund 易方达",
+      "issuerBasis": "inferred_from_product_name",
+      "ownership": "peer",
+      "ownCode": "3443",
+      "mappingBasis": "exact_normalized_benchmark_same_security_type",
+      "isNew": false,
+      "sourceRows": [
+        194
+      ]
+    },
+    {
+      "code": "3418",
+      "name": "华夏数字黄金 ETF",
+      "shortNames": [
+        "华夏数字黄金",
+        "华夏数字黄金－Ｒ",
+        "华夏数字黄金－Ｕ"
+      ],
+      "listingDate": "2026-05-29",
+      "securityType": "交易所买卖基金",
+      "benchmark": "LBMA 上午黄金价",
+      "benchmarkCurrency": "USD",
+      "assetClass": "商品",
+      "region": "环球",
+      "sector": "cm",
+      "struct": "ETF",
+      "issuer": "AMC 华夏",
+      "issuerBasis": "inferred_from_product_name",
+      "ownership": "peer",
+      "ownCode": "3030",
+      "mappingBasis": "exact_normalized_benchmark_same_security_type",
+      "isNew": false,
+      "sourceRows": [
+        39,
+        40,
+        41
+      ]
+    },
+    {
+      "code": "2843",
+      "name": "东方汇理富时中国A50指数ETF",
+      "shortNames": [
+        "东汇Ａ５０",
+        "东汇Ａ５０—Ｒ"
+      ],
+      "listingDate": "2016-10-31",
+      "securityType": "交易所买卖基金",
+      "benchmark": "富时中国 A50 指数",
+      "benchmarkCurrency": "RMB",
+      "assetClass": "股票",
+      "region": "中国",
+      "sector": "a",
+      "struct": "ETF",
+      "issuer": "Amundi 东方汇理",
+      "issuerBasis": "inferred_from_product_name",
+      "ownership": "peer",
+      "ownCode": "2822",
+      "mappingBasis": "exact_normalized_benchmark_same_security_type",
+      "isNew": false,
+      "sourceRows": [
+        13,
+        14
+      ]
+    },
+    {
+      "code": "3408",
+      "name": "Global X KOSPI 200 ETF",
+      "shortNames": [
+        "GX KOSPI 200",
+        "GX KOSPI 200-U"
+      ],
+      "listingDate": "2026-09-15",
+      "securityType": "交易所买卖基金",
+      "benchmark": "KOSPI 200 指数（净总回报版本）",
+      "benchmarkCurrency": "KRW",
+      "assetClass": "股票",
+      "region": "韓國",
+      "sector": "apac",
+      "struct": "ETF",
+      "issuer": "Global X",
+      "issuerBasis": "inferred_from_product_name",
+      "ownership": "peer",
+      "ownCode": "3121",
+      "mappingBasis": "exact_normalized_benchmark_same_security_type",
+      "isNew": true,
+      "sourceRows": [
+        2,
+        3
+      ]
+    },
+    {
+      "code": "3187",
+      "name": "三星亚太高息房地产信托(新西兰除外)ETF",
+      "shortNames": [
+        "三星高息房托",
+        "三星高息房托－Ｕ"
+      ],
+      "listingDate": "2020-10-15",
+      "securityType": "交易所买卖基金",
+      "benchmark": "标普高收益亚太地区（新西兰除外）房地产投资信托精选指数",
+      "benchmarkCurrency": "USD",
+      "assetClass": "股票",
+      "region": "亚太区",
+      "sector": "apac",
+      "struct": "备兑高息",
+      "issuer": "Samsung 三星",
+      "issuerBasis": "inferred_from_product_name",
+      "ownership": "peer",
+      "ownCode": "3447",
+      "mappingBasis": "same_region_asset_class_and_reit_theme",
+      "isNew": false,
+      "sourceRows": [
+        7,
+        8
+      ]
+    }
+  ],
+  "pendingProducts": [
+    {
+      "code": null,
+      "sourceCode": "-",
+      "status": "pending_code",
+      "pendingReason": "The workbook has no confirmed main trading-counter code, so this product must not enter the formal product or extraction code pool.",
+      "name": "南方东英 Solactive 亚洲 AI 瓶颈指数 ETF",
+      "shortNames": [
+        "南方ＡＩ瓶颈"
+      ],
+      "listingDate": "2026-09-17",
+      "securityType": "交易所买卖基金",
+      "benchmark": "Solactive亚洲AI瓶颈指数（净总回报版本）",
+      "benchmarkCurrency": "USD",
+      "assetClass": "股票",
+      "region": "亚太区",
+      "sector": "apac",
+      "struct": "主题",
+      "issuer": "CSOP 南方东英",
+      "issuerBasis": "own_product_selection_rule",
+      "ownership": "own",
+      "ownCode": null,
+      "mappingBasis": "own_product_name_rule",
+      "isNew": true,
+      "sourceRows": [
+        92
+      ]
+    }
+  ]
+}
+

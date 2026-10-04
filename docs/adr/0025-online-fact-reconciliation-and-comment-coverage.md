@@ -4,6 +4,8 @@
 - **日期**：2026-09-25
 - **相关**：[ADR-0009](0009-worker-scope.md)、[ADR-0011](0011-comment-volume-caliber.md)、[ADR-0022](0022-heat-lower-bound-disclosure.md)、[ADR-0024](0024-airflow-source-boundary-and-dataset-sync.md)
 
+> **2026-09-29 修订**：[ADR-0029](0029-parent-feed-comment-qualification.md) 保留本文的在线对账与评论覆盖机制，但页面评论量改为合格父帖的 `comment_count` 之和；筛选前平台量只用于采集与漏斗审计。
+
 ## 背景
 
 历史导入把一份静态 `raw_json` 拆成 facts；在线同步则会反复看到同一帖子：正文可能被
@@ -28,7 +30,9 @@
 ### 2. 失效按语义变化，而不是按“行被写过”
 
 帖子正文、评论正文／归属、mention 的新增、修改或可证明的删除会推进 AI 数据版本，并把
-受影响的产品区间标成 stale。详情流只有拿到**更长正文**时才更新并触发失效。
+受影响的产品区间标成 stale。可解析的详情流把当前标题、正文和正文提及作为同一份权威
+快照事务性替换，因此作者缩短或改写正文时旧 mention 会同步清除；载荷损坏时三者都保留
+旧值，不能用不完整输入做删除证明。
 
 用户昵称、粉丝数等资料变化，以及点赞、浏览、评论量等计数变化，只推进事实数据版本，
 不重新调用评论分类模型。它们仍会刷新 API，但不会制造无意义的 AI 账单。
@@ -46,8 +50,9 @@ complete | partial | retryable_incomplete | unknown
 - 外部 API 将 `retryable_incomplete` 合并展示为 `partial`，因此兼容字段保持
   `complete | partial | unknown`。
 
-页面继续把平台 `comment_count` 作为评论量；`parsedCommentCount` 只表示 AI 实际可读的
-评论正文数，并明确披露“正文可能为部分覆盖”。这延续 ADR-0011，不改变热度口径。
+页面把合格父帖的 `comment_count` 之和作为筛后评论量；`parsedCommentCount` 只表示合格
+父帖下 AI 实际可读的评论正文数，并明确披露“正文可能为部分覆盖”。筛选前平台总量单列
+为审计字段，不进入热度或排名。
 
 ### 4. 计数以观察序列保留，并冻结约 24 小时值
 

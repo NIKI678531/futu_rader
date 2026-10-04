@@ -8,6 +8,7 @@ import KolActivity from './screens/KolActivity'
 import KolDetail from './screens/KolDetail'
 import ProductMonitor from './screens/productMonitor/index.jsx'
 import SectorOverview from './screens/sectorOverview/index.jsx'
+import Admin from './screens/Admin'
 
 /* The ported screens read `location.search` directly, exactly as the .dc.html
    sources do. Keying each route on the full URL remounts on navigation so those
@@ -35,9 +36,10 @@ export default function App() {
       <Route path="/kol/detail" element={screen(<KolDetail />)} />
       <Route path="/product" element={screen(<ProductMonitor />)} />
       <Route path="/sector" element={screen(<SectorOverview />)} />
+      <Route path="/admin" element={<Admin />} />
       <Route path="*" element={<Navigate to="/official" replace />} />
     </Routes>
-    <ProgressDrawer />
+    {loc.pathname !== '/admin' && <ProgressDrawer />}
     </>
   )
 }

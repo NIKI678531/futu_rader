@@ -30,8 +30,11 @@ _USER_URL = re.compile(r"https?://[^\s]*?/user/\d+", re.I)
 # 裸 URL 可能带签名 token（§11.4 末条）。
 _ANY_URL = re.compile(r"https?://\S+")
 
-# 允许出现在产品块里的键。多一个键就是多一次泄露机会。
+# 允许出现在产品块里的键。v3 评论任务将唯一产品别名与共享题材／标的词分栏，避免模型
+# 把「恒指／HSI／BTC／NVDA」直接当成某一只 ETF 的身份证明；帖子任务保持旧白名单。
 _PRODUCT_KEYS = ("code", "name", "aliases")
+_COMMENT_PRODUCT_KEYS = _PRODUCT_KEYS + ("family_terms", "underlying_terms")
+MAX_PARENT_COMMENT_DEPTH = 3
 
 
 class RedactionError(ValueError):
@@ -53,7 +56,7 @@ def scrub_text(text):
 
 
 def comment_payload(item_id, product, comment, post_title=None, parent_comment=None,
-                    post_context=None):
+                    post_context=None, parent_comments=None):
     """构造一条评论×产品的请求体（runbook §11.1 的输入形状）。
 
     只有这里构造的 dict 才准进请求。调用方**不要**自己拼一个 dict 传下去 ——
@@ -66,7 +69,7 @@ def comment_payload(item_id, product, comment, post_title=None, parent_comment=N
     if not product:
         raise RedactionError(f"{item_id}: 产品块缺失，判定单元不成立（§10.1）")
 
-    p = {k: product[k] for k in _PRODUCT_KEYS if product.get(k) is not None}
+    p = {k: product[k] for k in _COMMENT_PRODUCT_KEYS if product.get(k) is not None}
     if "code" not in p:
         raise RedactionError(f"{item_id}: 产品代码缺失，判定单元不成立（§10.1）")
 
@@ -76,7 +79,14 @@ def comment_payload(item_id, product, comment, post_title=None, parent_comment=N
     # 三样都在 §11.4 的许可清单里（「必需的帖子标题／父评论」，正文与标题同源）。
     if post_title:
         payload["post_title"] = scrub_text(post_title)
-    if parent_comment:
+    if parent_comments:
+        values = [parent_comments] if isinstance(parent_comments, str) else list(parent_comments)
+        chain = [scrub_text(value) for value in values[:MAX_PARENT_COMMENT_DEPTH] if value]
+        chain = [value for value in chain if value]
+        if chain:
+            payload["parent_comments"] = chain
+    elif parent_comment:
+        # 旧任务仍使用单层字段；v3 调度接入 parent_comments 后自然切换为链形态。
         payload["parent_comment"] = scrub_text(parent_comment)
     if post_context:
         payload["post_context"] = scrub_text(post_context)

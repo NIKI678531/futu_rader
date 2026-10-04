@@ -17,6 +17,6 @@ def test_interval_comes_from_the_argument():
 
 
 def test_interval_falls_back_to_the_environment(monkeypatch):
-    monkeypatch.setenv("COLLECT_INTERVAL_SECONDS", "120")
+    monkeypatch.setenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", "120")
     job = build_scheduler().get_jobs()[0]
     assert job.trigger.interval.total_seconds() == 120

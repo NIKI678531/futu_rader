@@ -10,7 +10,7 @@ The repo holds the same screens twice, on purpose:
 | `design/` | Byte-exact mirror of the design project. Read-only reference — never hand-edit. |
 | `frontend/` | React + Vite port of the five screens, built from that mirror. |
 | `backend/` | Flask API. 22 endpoints under `/api/v1`, two providers (`demo` / `sql`). Every metric formula lives in `backend/core/`. |
-| `worker/` | Dump import, `raw_json` ETL, and the collection scheduler. Raw rows only — no metric formulas. |
+| `worker/` | MarketInsight database sync, `raw_json` ETL, and AI jobs. Radar does not collect community data itself. |
 | `radar_db/` | The slim DB's SQLAlchemy `MetaData`, shared by `backend/` and `worker/`. SQLite locally, MySQL 8 in production. |
 | `docs/` | Spec and client-confirmation markdown, plus `docs/adr/` for decisions. |
 
@@ -42,13 +42,13 @@ complete **source** day, not today's date. Current and baseline days are dedupli
 Optional filters: `--sector hk`, `--struct ETF`, `--ownership own`, `--codes 3033,2802`.
 Filters intersect; invalid or empty selections fail explicitly.
 
-Batch execution requires a matching calibration report. These commands **make paid
-model requests**; run them only when you intend to spend the stated request budget:
+Batch execution requires governance approval plus matching calibration and 400-row
+human-gold reports. These commands **make paid model requests**; run them only when
+you intend to spend the stated persistent daily request budget:
 
 ```powershell
-./.venv/Scripts/python.exe -X utf8 -m scripts.calibrate --codes 3033,2802 --from 2026-08-12 --to 2026-08-25 --n 300 --batch 5 --skip-v1 --max-http-requests 500
-./.venv/Scripts/python.exe -X utf8 -m jobs.analyze run --ranges d1,d2 --ownership all --batch-size 5 --concurrency 2 --calibration-report "../.scratch/llm-90d/calibration-<timestamp>.json" --max-http-requests 500
-./.venv/Scripts/python.exe -X utf8 -m jobs.analyze resume --scope "<scope from status>" --ranges d1,d2 --batch-size 5 --calibration-report "../.scratch/llm-90d/calibration-<timestamp>.json" --max-http-requests 500
+./.venv/Scripts/python.exe -X utf8 -m scripts.calibrate --codes 3033,2802 --from 2026-08-12 --to 2026-08-25 --n 400 --batch 5 --skip-v1 --max-http-requests 500
+./.venv/Scripts/python.exe -X utf8 -m jobs.refresh analyze --mode daily --ranges d1,d2 --batch-size 5 --concurrency 2 --calibration-report "../.scratch/llm-90d/calibration-<timestamp>.json" --quality-report "../.scratch/llm-90d/gold-eval-<timestamp>.json" --max-http-attempts 500
 ```
 
 Use dates with enough actual samples for calibration. At least 300 fully returned
@@ -58,14 +58,11 @@ accuracy claim or a human approval gate for individual annotations. The old 30-i
 experiment failed; batch size 5 is a candidate, not a validated production default.
 Smaller `--n 60` experiments can be run first but do not qualify a batch policy.
 
-`run` is one-shot until completion, budget exhaustion, cancellation, or a blocker.
-Only explicit `run --watch` watches for new imported data. All retries, split batches
-and summaries share `--max-http-requests`; a resumed command authorizes a new budget.
-The limit counts HTTP attempts, not currency. Ctrl+C stops new requests and lets
-in-flight calls finish within their request timeout. Already completed jobs are
-reused. A timeout or crash after a remote response may still incur repeat charges.
-Exit codes: 0 completed, 2 budget/error/blocked, 130 cancelled. Failed jobs are not
-silently reset; investigate their recorded error before running again.
+`jobs.refresh analyze` stops on completion, budget exhaustion, cancellation, or a
+blocker. All retries, split batches and summaries share the persistent HKT-day
+allowance; rerunning the same ranges resumes idempotently without resetting it. The
+limit counts HTTP attempts, not currency. Ctrl+C stops new requests and lets in-flight
+calls finish within their timeout. Failed jobs are not silently reset.
 
 The API and worker are independent: restarting the API does not start a worker or
 stop an already running `--watch`. Before switching from an old watcher, stop that
@@ -78,8 +75,8 @@ Compose's worker is in the `manual` profile with restart disabled; ordinary
 `docker compose up` starts no worker. Existing running containers need to be stopped
 explicitly when switching configuration. Details are in
 [the runbook, section 23.8](docs/ai-data-integration-runbook.md#238-手动启动与按产品日期分包2026-09-17).
-New normalized Futu exports can still enter via `worker/jobs/ingest.py`. Production
-incremental collection uses the authorized, read-only MarketInsight adapter behind
+Normalized historical exports can still enter via `worker/jobs/ingest.py`. Production
+incremental synchronization uses the authorized, read-only MarketInsight adapter behind
 `worker/jobs/refresh.py`; deployment and recovery commands are documented in
 [Automatic Futu collection](docs/automatic-collection.md).
 
