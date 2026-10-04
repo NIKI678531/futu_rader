@@ -1,4 +1,4 @@
-# 舆情雷达 / futu-radar
+# Finacial Market Monitor
 
 Local import of the Claude Design project
 [fd51d8b0-14cd-4cd8-900b-45e95ac4d314](https://claude.ai/design/p/fd51d8b0-14cd-4cd8-900b-45e95ac4d314?file=official-activity.dc.html).
