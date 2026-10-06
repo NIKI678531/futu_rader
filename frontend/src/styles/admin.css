@@ -108,6 +108,19 @@
 .admin-progress-track { height:8px; margin-top:12px; overflow:hidden; border-radius:999px; background:var(--ink-100); }
 .admin-progress-track > span { display:block; height:100%; border-radius:inherit; background:var(--csop-blue-600); transition:width 180ms ease; }
 .admin-progress-meta { flex-wrap:wrap; justify-content:space-between; margin-top:9px; }
+.admin-checks, .admin-coverage { padding:22px; margin-bottom:16px; }
+.admin-check-list { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:10px; margin-top:16px; }
+.admin-check { display:grid; grid-template-columns:auto minmax(0,1fr); gap:10px; align-items:start; padding:12px; border:1px solid var(--ink-100); border-radius:8px; background:#fff; }
+.admin-check strong, .admin-check small { display:block; }
+.admin-check small { margin-top:4px; color:var(--ink-500); font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+.admin-check.is-fail { border-color:#efc1c1; background:var(--negative-50); }
+.admin-pill.is-ok { color:var(--positive-700); background:var(--positive-100); }
+.admin-pill.is-fail { color:var(--negative-700); background:var(--negative-100); }
+.admin-pill.is-info { color:var(--csop-blue-700); background:var(--csop-blue-50); }
+.admin-pill.is-incomplete { color:#755b1e; background:var(--warning-100); }
+.admin-code-list { display:block; max-width:520px; margin-top:6px; color:var(--ink-500); font-size:12px; line-height:1.5; white-space:normal; overflow-wrap:anywhere; }
+.admin-shell button.admin-inline-toggle { margin-left:8px; padding:2px 8px; font-size:12px; }
+.admin-run-error.is-reason { color:#755b1e; }
 
 @media (max-width: 900px) {
   .admin-shell { padding:20px; }

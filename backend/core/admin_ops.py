@@ -27,6 +27,8 @@ from radar_db.analysis_requests import (
     list_requests,
     worker_health,
 )
+from radar_db.comment_filter import is_filter_ready, load_comment_filter_config
+from radar_db.comment_routes import is_ready as comment_routes_ready
 from radar_db.product_catalog import load_products
 from radar_db.revisions import synthesis_generation_key
 from radar_db.schema import (
@@ -67,6 +69,47 @@ AI_LAYER_B = (
     ("topic_label", "产品话题标签", ["产品监控"]),
     ("competitor_reason", "竞品关联原因", ["产品监控 · 关联竞品"]),
 )
+
+
+MISSING_CODE_LIMIT = 40
+LAST_DAILY_RUN_KEY = "ai_daily_last_run"
+
+
+def _dirty_codes(meta: Mapping[str, Any], range_key: str) -> set[str]:
+    suffix = "_" + range_key
+    return {
+        key[len("synth_dirty_") : -len(suffix)]
+        for key, value in meta.items()
+        if key.startswith("synth_dirty_") and key.endswith(suffix) and value == "1"
+    }
+
+
+def layer_b_states(
+    meta: Mapping[str, Any], codes: list[str], range_key: str, anchor: str
+) -> dict[str, dict[str, list[str]]]:
+    """Per kind: products whose published generation is fresh, stale or missing.
+
+    ``synth_current_*`` marks generated text, low-sample results and intentional
+    empty results alike, so it is the completion signal, not ``synthesis_outputs``.
+    Pages still show a stale generation (dirty pair or older anchor) with a
+    「待更新」badge; only ``missing`` products have nothing to show.
+    """
+
+    dirty = _dirty_codes(meta, range_key)
+    out = {}
+    for kind, _label, _locations in AI_LAYER_B:
+        fresh, stale, missing = [], [], []
+        for code in codes:
+            generation = meta.get(synthesis_generation_key(code, range_key, kind))
+            published, _, fingerprint = str(generation or "").partition("|")
+            if not fingerprint or not published or (anchor and published > anchor):
+                missing.append(code)
+            elif published == anchor and code not in dirty:
+                fresh.append(code)
+            else:
+                stale.append(code)
+        out[kind] = {"fresh": fresh, "stale": stale, "missing": missing}
+    return out
 
 
 class AdminOpsError(RuntimeError):
@@ -211,40 +254,18 @@ class AdminOperations:
         ]
 
         anchor = str(meta.get("anchor") or "")
-        # Readers publish a Layer-B generation through ``synth_current_*``.
-        # That marker exists for generated text, low-sample results and
-        # intentional empty results alike. Counting only synthesis_outputs rows
-        # leaves valid empty generations looking "not started" forever.
-        published_pairs = {kind: set() for kind, _label, _locations in AI_LAYER_B}
-        if anchor:
-            anchor_prefix = anchor + "|"
-            for kind in published_pairs:
-                for code in codes:
-                    generation = meta.get(
-                        synthesis_generation_key(code, range_key, kind)
-                    )
-                    if isinstance(generation, str) and generation.startswith(
-                        anchor_prefix
-                    ):
-                        published_pairs[kind].add(code)
-
-        dirty_codes = {
-            key[len("synth_dirty_") : -len("_" + range_key)]
-            for key, value in meta.items()
-            if key.startswith("synth_dirty_")
-            and key.endswith("_" + range_key)
-            and value == "1"
-        } & set(codes)
+        states = layer_b_states(meta, codes, range_key, anchor)
+        dirty_codes = _dirty_codes(meta, range_key) & set(codes)
         analysis_running = progress.get("status") == "running" and range_key in progress_ranges
         expected = len(codes)
         layer_b = []
         for kind, label, locations in AI_LAYER_B:
-            produced = len(published_pairs[kind])
-            if dirty_codes:
-                status = "running" if analysis_running else "waiting"
-            elif expected and produced >= expected:
+            fresh, stale, missing = (states[kind][state] for state in ("fresh", "stale", "missing"))
+            if expected and len(fresh) == expected:
                 status = "complete"
-            elif produced:
+            elif analysis_running:
+                status = "running"
+            elif fresh or stale:
                 status = "partial"
             else:
                 status = "not_started"
@@ -254,9 +275,13 @@ class AdminOperations:
                     "label": label,
                     "locations": locations,
                     "status": status,
-                    "producedPairs": produced,
+                    "producedPairs": len(fresh),
+                    "stalePairs": len(stale),
+                    "missingPairs": len(missing),
                     "expectedPairs": expected,
                     "dirtyPairs": len(dirty_codes),
+                    "staleCodes": stale[:MISSING_CODE_LIMIT],
+                    "missingCodes": missing[:MISSING_CODE_LIMIT],
                 }
             )
 
@@ -407,6 +432,19 @@ class AdminOperations:
             ]
             with self.target_engine.connect() as conn:
                 layers = self._ai_layers(conn, meta, range_key, selected_products)
+            codes_by_range = {range_key: top_codes}
+            for other in RANGE_PRIORITY:
+                if other not in codes_by_range:
+                    codes_by_range[other] = (
+                        [str(product["code"]) for product in products]
+                        if own_limit is None
+                        else [
+                            row["code"]
+                            for row in analysis_products(
+                                self.target_engine, other, own_limit=own_limit
+                            )
+                        ]
+                    )
             runs = list_requests(self.target_engine, limit=20)
             active_runs = list_active_requests(self.target_engine)
         except AdminOpsError:
@@ -414,6 +452,8 @@ class AdminOperations:
         except (SQLAlchemyError, OSError, RuntimeError, ValueError) as exc:
             raise AdminUnavailable("Radar 数据库暂时不可用") from exc
         observed_at = self.now()
+        health = worker_health(meta, now=observed_at)
+        range_states = self._range_states(runs, active_runs)
         return {
             "generatedAt": _iso(observed_at),
             "anchor": meta.get("anchor"),
@@ -421,30 +461,146 @@ class AdminOperations:
             "comments": comment_rows,
             "commentDisplayLimit": TOP_COMMENT_PRODUCT_LIMIT,
             "analyzedProductCodes": top_codes,
+            "ownTopLimit": own_limit,
             "layers": layers,
-            "worker": worker_health(meta, now=observed_at),
-            "ranges": self._range_states(runs, active_runs),
+            "coverage": self._coverage(meta, codes_by_range, range_states),
+            "checks": self._checks(meta, health, [str(p["code"]) for p in products]),
+            "daily": _json(meta.get(LAST_DAILY_RUN_KEY), None),
+            "worker": health,
+            "ranges": range_states,
             "recentRuns": runs,
         }
+
+    @staticmethod
+    def _coverage(meta, codes_by_range, range_states):
+        """Completion of every page range: products fully fresh, served stale, or missing."""
+
+        anchor = str(meta.get("anchor") or "")
+        active = {row["key"]: row.get("activeRun") for row in range_states}
+        rows = []
+        for range_key in RANGE_PRIORITY:
+            codes = codes_by_range.get(range_key) or []
+            states = layer_b_states(meta, codes, range_key, anchor)
+            missing = {code for state in states.values() for code in state["missing"]}
+            stale = {code for state in states.values() for code in state["stale"]} - missing
+            complete = len(codes) - len(missing) - len(stale)
+            if codes and complete == len(codes):
+                status = "complete"
+            elif active.get(range_key):
+                status = active[range_key]["status"]
+            elif complete or stale:
+                status = "partial"
+            else:
+                status = "not_started"
+            rows.append({
+                "key": range_key,
+                "expected": len(codes),
+                "complete": complete,
+                "stale": len(stale),
+                "missing": len(missing),
+                "missingCodes": sorted(missing)[:MISSING_CODE_LIMIT],
+                "status": status,
+            })
+        return rows
+
+    @staticmethod
+    def _checks(meta, health, codes):
+        readiness = _json(meta.get(WORKER_READINESS_KEY), {})
+        daily = _json(meta.get(LAST_DAILY_RUN_KEY), {}) or {}
+        filter_ready = is_filter_ready(meta, load_comment_filter_config())
+        routes_ready = comment_routes_ready(meta, codes)
+        checks = [
+            {
+                "id": "worker",
+                "label": "AI worker 心跳",
+                "status": "ok" if health["online"] else "fail",
+                "detail": (
+                    f"上次心跳 {health['lastSeenAt']}" if health["online"]
+                    else "worker 未运行：在 worker 目录执行 python scheduler.py"
+                ),
+            },
+            {
+                "id": "classifier",
+                "label": "Layer A 模型（逐条判定）",
+                "status": "ok" if health["ready"] else "fail",
+                "detail": (
+                    f"{readiness.get('provider') or ''} · {readiness.get('model') or ''}".strip(" ·")
+                    if health["ready"] else (health["error"] or "未就绪")
+                ),
+            },
+            {
+                "id": "generation",
+                "label": "Layer B 生成模型（页面总结）",
+                "status": (
+                    "fail" if not health["ready"] or readiness.get("generationError") else "ok"
+                ),
+                "detail": readiness.get("generationError") or (
+                    f"{readiness.get('generationProvider') or ''} · {readiness.get('generationModel') or ''}".strip(" ·")
+                    or "等待 worker 心跳"
+                ),
+            },
+            {
+                "id": "routes",
+                "label": "评论归属口径",
+                "status": "ok" if routes_ready or filter_ready else "fail",
+                "detail": (
+                    "按正文 cashtag 归属" if routes_ready
+                    else "按父帖 tag 归属" if filter_ready
+                    else "评论过滤未激活：执行 python -m jobs.backfill_comment_filter --resume --activate"
+                ),
+            },
+            {
+                "id": "anchor",
+                "label": "数据 anchor",
+                "status": "ok" if meta.get("anchor") else "fail",
+                "detail": meta.get("anchor") or "库里没有 anchor：先导入数据",
+            },
+            {
+                "id": "mode",
+                "label": "数据模式",
+                "status": "info",
+                "detail": (
+                    "生产：每日任务先从 MarketInsight 同步最新数据"
+                    if readiness.get("dataMode") == "production"
+                    else "本地 dump：不同步，只分析库内已有数据"
+                ),
+            },
+            {
+                "id": "daily",
+                "label": "每日定时任务",
+                "status": "info" if readiness.get("dailyCron") else "fail",
+                "detail": (
+                    (f"{readiness['dailyCron']}（香港时间）" if readiness.get("dailyCron") else "已关闭（AI_DAILY_CRON=off）")
+                    + (
+                        f" · 上次 {daily.get('startedAt')}，同步 {(daily.get('sync') or {}).get('status')}"
+                        if daily.get("startedAt") else " · 尚未运行过"
+                    )
+                ),
+            },
+        ]
+        return checks
+
+    def _require_ready_worker(self):
+        with self.target_engine.connect() as conn:
+            meta = dict(
+                conn.execute(
+                    select(meta_kv.c.k, meta_kv.c.v).where(
+                        meta_kv.c.k.in_((
+                            "ai_analysis_worker_heartbeat",
+                            "ai_analysis_worker_readiness",
+                        ))
+                    )
+                ).all()
+            )
+        health = worker_health(meta, now=self.now())
+        if not health["ready"]:
+            raise AdminUnavailable(health["error"])
 
     def enqueue_analysis(self, range_key: str) -> dict[str, Any]:
         if range_key not in RANGE_PRIORITY:
             raise AdminValidationError("range 只允许 d1、d2、d7、d14、d30 或 mtd")
         try:
-            with self.target_engine.connect() as conn:
-                meta = dict(
-                    conn.execute(
-                        select(meta_kv.c.k, meta_kv.c.v).where(
-                            meta_kv.c.k.in_((
-                                "ai_analysis_worker_heartbeat",
-                                "ai_analysis_worker_readiness",
-                            ))
-                        )
-                    ).all()
-                )
-            health = worker_health(meta, now=self.now())
-            if not health["ready"]:
-                raise AdminUnavailable(health["error"])
+            self._require_ready_worker()
             request, created = enqueue(self.target_engine, range_key)
         except AdminOpsError:
             raise
@@ -453,3 +609,17 @@ class AdminOperations:
         except SQLAlchemyError as exc:
             raise AdminUnavailable("Radar 数据库暂时不可用") from exc
         return {"run": request, "created": created}
+
+    def enqueue_all(self) -> dict[str, Any]:
+        """「一键补齐全部」: every page range, highest priority first."""
+        try:
+            self._require_ready_worker()
+            results = [enqueue(self.target_engine, range_key) for range_key in RANGE_PRIORITY]
+        except AdminOpsError:
+            raise
+        except SQLAlchemyError as exc:
+            raise AdminUnavailable("Radar 数据库暂时不可用") from exc
+        return {
+            "runs": [request for request, _created in results],
+            "created": sum(bool(created) for _request, created in results),
+        }
