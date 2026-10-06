@@ -51,6 +51,13 @@ LAST_RUN_KEY = "ai_daily_last_run"
 PRICE_LOOKBACK_DAYS = 59
 
 
+def daily_cron(value=None) -> str | None:
+    """``AI_DAILY_CRON``（默认 08:00）；``off`` 关闭定时，只保留手动补齐。"""
+    raw = os.getenv("AI_DAILY_CRON", "0 8 * * *") if value is None else value
+    raw = raw.strip()
+    return None if raw.lower() in ("", "off", "false", "none") else raw
+
+
 def _error(exc) -> str:
     return " ".join(str(exc).split())[:500]
 

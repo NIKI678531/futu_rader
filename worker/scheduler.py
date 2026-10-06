@@ -70,13 +70,6 @@ def daily_refresh(*, engine=None):
     run_daily(engine=engine)
 
 
-def daily_cron(value=None):
-    """``AI_DAILY_CRON``（默认 08:00）；``off`` 关闭定时，只保留手动补齐。"""
-    raw = os.getenv("AI_DAILY_CRON", "0 8 * * *") if value is None else value
-    raw = raw.strip()
-    return None if raw.lower() in ("", "off", "false", "none") else raw
-
-
 def upgrade_schema(engine):
     """Apply pending Alembic migrations; databases without a version table are left alone."""
     from sqlalchemy import inspect
@@ -118,6 +111,8 @@ def build_scheduler(interval_seconds=None, poll_seconds=None, *, engine=None, cr
         coalesce=True,
         kwargs={"engine": engine},
     )
+    from jobs.daily import daily_cron
+
     expression = daily_cron(cron)
     if expression:
         scheduler.add_job(

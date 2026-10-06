@@ -11,15 +11,19 @@ from dataclasses import replace
 from datetime import timezone
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import select, update
+
 from ai import config
-from ai.providers import build as build_provider
+from ai.providers import build as build_provider, generation_supported
 from ai.providers.base import RunControl
 from collection.budget import DailyBudget
 from collection.models import HARD_DAILY_MAX
-from jobs import analyze, full_own, refresh
+from jobs import analyze, daily, full_own, refresh, synthesize
 from core.top_products import analysis_products, parse_own_limit
 from radar_db import make_engine
 from radar_db.analysis_requests import RANGE_PRIORITY, claim_next, finish, renew, requeue
+from radar_db.revisions import synthesis_generation_key
+from radar_db.schema import annotation_jobs, meta_kv
 
 import clock
 
@@ -101,19 +105,72 @@ def runtime_readiness() -> dict:
             "ready": False,
             "error": " ".join(str(exc).split())[:500],
         }
+    synth_cfg = config.synthesis(cfg)
     return {
         "ready": True,
         "error": None,
+        "provider": cfg.provider,
         "model": cfg.model,
+        "generationProvider": synth_cfg.provider,
+        "generationModel": synth_cfg.model,
+        "generationError": None if generation_supported(cfg) else GENERATION_MISSING,
         "promptVersion": cfg.prompt_version,
         "schemaVersion": cfg.schema_version,
         "taxonomyVersion": cfg.taxonomy_version,
         "ownTopLimit": limit,
+        "dataMode": "production" if refresh.source_configured() else "dump",
+        "dailyCron": daily.daily_cron(),
     }
 
 
+GENERATION_MISSING = (
+    "Layer B 需要能生成文字的模型：Layer A 用 TypeSafe 时请配置 "
+    "AI_SYNTH_BASE_URL、AI_SYNTH_API_KEY、AI_SYNTH_MODEL"
+)
+MISSING_LIST_LIMIT = 60
+REVIVED_TASKS = ("comment_product", "kol_comment_opinion", "post_annotation")
+
+
+def revive_failed_jobs(engine, codes) -> int:
+    """Give failed/dead Layer-A jobs of these products one more round (attempts reset)."""
+
+    codes = list(codes)
+    revived = 0
+    with engine.begin() as conn:
+        for offset in range(0, len(codes), 500):
+            revived += int(conn.execute(
+                update(annotation_jobs)
+                .where(
+                    annotation_jobs.c.subject_code.in_(codes[offset:offset + 500]),
+                    annotation_jobs.c.task.in_(REVIVED_TASKS),
+                    annotation_jobs.c.status.in_(("failed", "dead")),
+                )
+                .values(status="pending", attempts=0, lease_until=None)
+            ).rowcount or 0)
+    return revived
+
+
+def missing_layer_b(engine, codes, range_key, anchor) -> list[dict]:
+    """``[{code, kinds}]`` for every product whose Layer B is not published for ``anchor``."""
+
+    keys = {
+        synthesis_generation_key(code, range_key, kind): (code, kind)
+        for code in codes for kind in synthesize.KINDS
+    }
+    with engine.connect() as conn:
+        published = dict(conn.execute(
+            select(meta_kv.c.k, meta_kv.c.v).where(meta_kv.c.k.like(f"synth_current_%_{range_key}_%"))
+        ).all())
+    prefix = f"{anchor}|"
+    missing = {}
+    for key, (code, kind) in keys.items():
+        if not str(published.get(key) or "").startswith(prefix):
+            missing.setdefault(code, []).append(kind)
+    return [{"code": code, "kinds": kinds} for code, kinds in missing.items()]
+
+
 def run_analysis(range_key: str, *, engine=None) -> dict:
-    """Run one range's selected products through both AI layers."""
+    """Run one range's selected products through both AI layers until nothing is left."""
 
     if range_key not in RANGE_PRIORITY:
         raise ValueError("range 只允许 d1、d2、d7、d14、d30 或 mtd")
@@ -150,9 +207,11 @@ def run_analysis(range_key: str, *, engine=None) -> dict:
             "anchor_mode": "latest-complete",
             "ranges": range_key,
             "current_window_only": False,
+            "baseline_fallback": True,
         },
     )()
     plan = analyze.make_plan(engine, args)
+    revived = revive_failed_jobs(engine, plan["codes"])
     max_attempts = int(os.getenv("AI_MANUAL_MAX_HTTP_REQUESTS", str(HARD_DAILY_MAX)))
     if not 1 <= max_attempts <= HARD_DAILY_MAX:
         raise ValueError(f"AI_MANUAL_MAX_HTTP_REQUESTS 必须在 1 到 {HARD_DAILY_MAX} 之间")
@@ -172,6 +231,20 @@ def run_analysis(range_key: str, *, engine=None) -> dict:
     )
     batch = progress.get("batchRun") or control.snapshot()
     work = progress.get("work") or {}
+    missing = missing_layer_b(engine, plan["codes"], range_key, plan["anchor"])
+    status = progress.get("status", "partial")
+    reasons = []
+    if not generation_supported(cfg):
+        reasons.append(GENERATION_MISSING)
+    if plan.get("baselineUnavailable"):
+        reasons.append("基准期早于库内数据起点：只分析当前区间，环比显示为数据暂不可用")
+    blocked = sorted(
+        code for code, row in progress.get("products", {}).items() if row.get("blocked")
+    )
+    if blocked:
+        reasons.append(f"{len(blocked)} 只产品仍有失败或被占用的标注任务")
+    if status == "complete" and missing:
+        status = "incomplete"
     return {
         "anchor": plan["anchor"],
         "range": range_key,
@@ -182,8 +255,14 @@ def run_analysis(range_key: str, *, engine=None) -> dict:
         "synthesisWritten": work.get("synthesisWritten", 0),
         "reused": work.get("annotationsReused", 0) + work.get("synthesisReused", 0),
         "errors": work.get("errors", 0),
+        "revivedJobs": revived,
+        "missingPairs": len(missing),
+        "missing": missing[:MISSING_LIST_LIMIT],
+        "blockedCodes": blocked[:MISSING_LIST_LIMIT],
+        "reasons": reasons,
+        "baselineUnavailable": bool(plan.get("baselineUnavailable")),
         "budgetDate": budget_date.isoformat(),
-        "status": progress.get("status", "partial"),
+        "status": status,
         "ownTopLimit": limit,
         "selectedCodes": selected_codes,
     }

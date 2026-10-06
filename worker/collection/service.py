@@ -316,7 +316,7 @@ class FutuRefresh:
                 "sector": None, "struct": None, "ownership": "all",
                 "anchor": request.anchor.isoformat() if request.anchor else None,
                 "anchor_mode": "latest-complete", "ranges": range_key,
-                "current_window_only": False,
+                "current_window_only": False, "baseline_fallback": True,
             })()
             plans.append((range_key, analysis_job.make_plan(self.target, args)))
         policy_hash = hashlib.sha256(_json({

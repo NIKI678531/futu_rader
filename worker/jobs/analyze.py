@@ -106,8 +106,15 @@ def make_plan(engine, args):
     windows = sorted((build(key, anchor) for key in ranges), key=lambda window: window["days"])
     current_only = bool(getattr(args, "current_window_only", False))
     first = min(window["from"] if current_only else window["benchFrom"] for window in windows)
+    baseline_unavailable = False
     if meta.get("window_from") and first < meta["window_from"][:10]:
-        raise ValueError("Requested baseline predates imported source coverage")
+        # Completion-oriented callers analyze what the database holds: the
+        # current window still gets its conclusions, the comparison stays unknown.
+        if not getattr(args, "baseline_fallback", False):
+            raise ValueError("Requested baseline predates imported source coverage")
+        if not current_only:
+            current_only, baseline_unavailable = True, True
+            first = min(window["from"] for window in windows)
     if anchor != complete and not meta.get("window_from"):
         raise ValueError("Historical replay requires a declared window_from")
     days = []
@@ -156,7 +163,7 @@ def make_plan(engine, args):
     semantic_version = ai_source_version(meta)
     return {"anchor": anchor.isoformat(), "sourceCompleteThrough": complete.isoformat(), "from": first,
             "ranges": [window["key"] for window in windows], "priorityDays": days, "codes": codes,
-            "currentWindowOnly": current_only,
+            "currentWindowOnly": current_only, "baselineUnavailable": baseline_unavailable,
             "ownership": {row["code"]: row["ownership"] for row in products},
             "commentRoutingReady": route_active,
             "sourceState": {"anchor": meta["anchor"], **semantic_version},

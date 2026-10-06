@@ -35,6 +35,14 @@ def build(config, **kwargs):
     return cls(config, **kwargs)
 
 
+def generation_supported(config) -> bool:
+    """Whether the configured Layer B provider can write text (TypeSafe cannot)."""
+    from .. import config as ai_config
+
+    cls = _PROVIDERS.get(ai_config.synthesis(config).provider)
+    return cls is not None and getattr(cls, "supports_generation", True)
+
+
 def build_synthesis(config, *, primary=None, control=None):
     """Return ``(cfg, provider)`` for Layer B generation.
 
