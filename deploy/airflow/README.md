@@ -73,20 +73,19 @@ Configure these Airflow Variables before unpausing:
 All DAGs use the same digest-pinned image and runtime Secret. The Secret is
 injected with `envFrom` and must contain
 `RADAR_DB_URL` (the same current database used by the web backend),
-`MARKET_INSIGHT_DATABASE_URL`, the AI credentials,
-`AI_DATA_GOVERNANCE_APPROVED=true`, `AI_CALIBRATION_REPORT`, and
-`AI_QUALITY_REPORT`. Do not store those values in Airflow Variables. Keep the
-DAG paused until the calibration and 400-row human-gold reports were generated
-for the active `commentRouteVersion` and `catalogPolicyVersion`. A compliant
-additive catalog change only needs the new-product identity regression and
-complete route proof; it does not invalidate the whole 400-row gold set.
+`MARKET_INSIGHT_DATABASE_URL`, the Layer A credentials (`AI_PRIMARY_*`) and,
+when Layer A is a classification-only provider such as TypeSafe, the Layer B
+generation model (`AI_SYNTH_BASE_URL`, `AI_SYNTH_API_KEY`, `AI_SYNTH_MODEL`).
+Do not store those values in Airflow Variables. Calibration and human-gold
+reports are no longer run gates; `AI_DATA_GOVERNANCE_APPROVED=false` remains
+the switch that stops all AI requests.
 
 ## Admin API
 
 The Flask backend only needs the same `RADAR_DB_URL` as the worker. Manual
-analysis requests are durable database rows claimed by the always-on worker;
-the backend has no Airflow or MarketInsight credential. These DAGs remain
-independent scheduled assets and do not implement the `/admin` buttons.
+analysis requests and the daily job's requests are durable rows in the same
+`ai_analysis_requests` queue; the backend has no Airflow or MarketInsight
+credential.
 
 Example Secret key inventories live in
 `deploy/kubernetes/futu-radar-secrets.example.yaml`.
