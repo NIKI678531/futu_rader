@@ -16,11 +16,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from providers import get_provider
 from providers.sentinel import MISSING
-from core.top_products import TOP_COMMENT_PRODUCT_LIMIT
+from core.top_products import TOP_COMMENT_PRODUCT_LIMIT, analysis_products
 from radar_db import make_engine
 from radar_db import clock
 from radar_db.analysis_requests import (
     RANGE_PRIORITY,
+    WORKER_READINESS_KEY,
     enqueue,
     list_active_requests,
     list_requests,
@@ -391,17 +392,20 @@ class AdminOperations:
             if pool_data is MISSING:
                 raise AdminValidationError("不支持这个时间区间")
             comment_rows = self._comment_rows(pool_data, products)
+            with self.target_engine.connect() as conn:
+                meta = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v)).all())
+            own_limit = _json(meta.get(WORKER_READINESS_KEY), {}).get("ownTopLimit")
             top_codes = [
                 row["code"]
-                for row in comment_rows
-                if row["pageCommentCount"] is not None
-            ][:TOP_COMMENT_PRODUCT_LIMIT]
+                for row in analysis_products(
+                    self.target_engine, range_key, own_limit=own_limit
+                )
+            ]
             products_by_code = {str(product["code"]): product for product in products}
             selected_products = [
                 products_by_code[code] for code in top_codes if code in products_by_code
             ]
             with self.target_engine.connect() as conn:
-                meta = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v)).all())
                 layers = self._ai_layers(conn, meta, range_key, selected_products)
             runs = list_requests(self.target_engine, limit=20)
             active_runs = list_active_requests(self.target_engine)

@@ -1058,7 +1058,7 @@ def test_explicit_governance_approval_opens_the_calibration_gate(tmp_path, monke
         ))
 
 
-def test_automatic_analysis_runs_each_range_top_ten_in_priority_order(tmp_path, monkeypatch):
+def test_automatic_analysis_runs_each_range_selection_in_priority_order(tmp_path, monkeypatch):
     from ai import config as ai_config
     from ai import providers
     from collection import budget as budget_module
@@ -1078,9 +1078,10 @@ def test_automatic_analysis_runs_each_range_top_ten_in_priority_order(tmp_path, 
     monkeypatch.setattr(analysis_job, "check_calibration", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(analysis_job, "check_quality", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(comment_routes, "require_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.delenv("AI_OWN_TOP_LIMIT", raising=False)
     monkeypatch.setattr(
         top_products,
-        "top_comment_products",
+        "analysis_products",
         lambda _engine, range_key, **_kwargs: [
             {"rank": 1, "code": {"d1": "3033", "d2": "3067", "d7": "2800"}[range_key], "comments": 9}
         ],
@@ -1127,7 +1128,7 @@ def test_automatic_analysis_runs_each_range_top_ten_in_priority_order(tmp_path, 
     assert seen == [("d1", ["3033"]), ("d2", ["3067"]), ("d7", ["2800"])]
     assert result.status == "complete"
     assert result.completed_ranges == ["d1", "d2", "d7"]
-    assert result.detail["selectionLimit"] == 10
+    assert result.detail["ownTopLimit"] is None
     assert result.detail["selectedCodesByRange"] == {
         "d1": ["3033"], "d2": ["3067"], "d7": ["2800"],
     }

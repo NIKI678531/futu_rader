@@ -183,13 +183,13 @@ def test_comment_rows_reuse_pool_counts_and_preserve_zero_vs_unavailable(monkeyp
             assert range_key == "d1"
             return {"list": pool_rows}
 
-    monkeypatch.setattr("core.admin_ops.load_products", lambda **_kwargs: products)
+    _use_products(monkeypatch, products)
     result = AdminOperations(target_engine=engine, market_provider=PoolProvider()).pipeline("d1")
 
     assert [row["code"] for row in result["comments"]] == ["3033", "3067", "3088"]
     assert [row["rank"] for row in result["comments"]] == [1, 2, 3]
     assert result["commentDisplayLimit"] == 10
-    assert result["analyzedProductCodes"] == ["3033", "3067"]
+    assert result["analyzedProductCodes"] == ["3033", "3067", "3088"]
     assert [row["key"] for row in result["ranges"]] == ["d1", "d2", "d7", "d14", "d30"]
     assert result["recentRuns"] == []
     first = result["comments"][0]
@@ -210,7 +210,12 @@ def test_comment_rows_reuse_pool_counts_and_preserve_zero_vs_unavailable(monkeyp
     assert result["comments"][2]["pageCommentLabel"] == "暂不可用"
 
 
-def test_pipeline_orders_comments_by_volume_and_limits_ai_scope_to_top_ten(monkeypatch):
+def _use_products(monkeypatch, products):
+    monkeypatch.setattr("core.admin_ops.load_products", lambda **_kwargs: products)
+    monkeypatch.setattr("core.top_products.load_products", lambda **_kwargs: products)
+
+
+def test_pipeline_orders_comments_by_volume_and_analyzes_every_product(monkeypatch):
     engine = _engine()
     with engine.begin() as conn:
         conn.execute(insert(meta_kv), {"k": "anchor", "v": "2026-08-25"})
@@ -227,13 +232,38 @@ def test_pipeline_orders_comments_by_volume_and_limits_ai_scope_to_top_ten(monke
         def pool(self, _range_key):
             return {"list": pool_rows}
 
-    monkeypatch.setattr("core.admin_ops.load_products", lambda **_kwargs: products)
+    _use_products(monkeypatch, products)
     result = AdminOperations(target_engine=engine, market_provider=PoolProvider()).pipeline("d1")
 
     expected = [f"{3000 + index}" for index in range(11, 1, -1)]
     assert [row["code"] for row in result["comments"][:10]] == expected
-    assert result["analyzedProductCodes"] == expected
-    assert result["layers"]["productCount"] == 10
+    assert sorted(result["analyzedProductCodes"]) == sorted(p["code"] for p in products)
+    assert result["layers"]["productCount"] == 12
+
+
+def test_pipeline_selection_follows_the_worker_own_limit(monkeypatch):
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv), [
+            {"k": "anchor", "v": "2026-08-25"},
+            {"k": "ai_analysis_worker_readiness", "v": '{"ready":true,"ownTopLimit":15}'},
+        ])
+    seen = {}
+
+    def select_products(_engine, range_key, *, own_limit=None, anchor=None):
+        seen.update(range=range_key, own_limit=own_limit)
+        return [{"code": "3033"}]
+
+    class PoolProvider:
+        def pool(self, _range_key):
+            return {"list": []}
+
+    _use_products(monkeypatch, [{"code": "3033", "name": "产品", "ownership": "own"}])
+    monkeypatch.setattr("core.admin_ops.analysis_products", select_products)
+    result = AdminOperations(target_engine=engine, market_provider=PoolProvider()).pipeline("d7")
+
+    assert seen == {"range": "d7", "own_limit": 15}
+    assert result["analyzedProductCodes"] == ["3033"]
 
 
 def test_pipeline_refreshes_its_cached_market_provider_before_reading(monkeypatch):
@@ -261,7 +291,7 @@ def test_pipeline_refreshes_its_cached_market_provider_before_reading(monkeypatc
             }
 
     provider = RefreshingProvider()
-    monkeypatch.setattr("core.admin_ops.load_products", lambda **_kwargs: products)
+    _use_products(monkeypatch, products)
 
     result = AdminOperations(target_engine=engine, market_provider=provider).pipeline("d1")
 
@@ -281,7 +311,7 @@ def test_pipeline_reports_worker_heartbeat_health(monkeypatch):
                 "v": '{"ready":true,"error":null}',
             },
         ])
-    monkeypatch.setattr("core.admin_ops.load_products", lambda **_kwargs: [])
+    _use_products(monkeypatch, [])
 
     class EmptyProvider:
         def pool(self, _range_key):
@@ -303,7 +333,7 @@ def test_pipeline_reports_worker_heartbeat_health(monkeypatch):
 
 def test_pipeline_reports_missing_worker_as_offline(monkeypatch):
     engine = _engine()
-    monkeypatch.setattr("core.admin_ops.load_products", lambda **_kwargs: [])
+    _use_products(monkeypatch, [])
 
     class EmptyProvider:
         def pool(self, _range_key):
@@ -352,7 +382,7 @@ def test_layer_b_counts_published_empty_generations_as_complete(monkeypatch):
                 ]
             }
 
-    monkeypatch.setattr("core.admin_ops.load_products", lambda **_kwargs: products)
+    _use_products(monkeypatch, products)
     result = AdminOperations(target_engine=engine, market_provider=PoolProvider()).pipeline("d1")
 
     assert all(row["status"] == "complete" for row in result["layers"]["layerB"])

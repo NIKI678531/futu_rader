@@ -93,7 +93,7 @@ def test_global_analysis_lease_contention_requeues_the_request():
     assert list_requests(engine)[0]["status"] == "queued"
 
 
-def test_run_uses_selected_range_top_comment_products_and_can_make_zero_calls(monkeypatch):
+def test_run_uses_the_shared_product_selection_and_can_make_zero_calls(monkeypatch):
     engine = _engine()
     monkeypatch.setenv("AI_MANUAL_MAX_HTTP_REQUESTS", "500")
     cfg = config.load(
@@ -105,10 +105,11 @@ def test_run_uses_selected_range_top_comment_products_and_can_make_zero_calls(mo
     captured = {}
     monkeypatch.delenv("AI_DATA_GOVERNANCE_APPROVED", raising=False)
     monkeypatch.setattr(admin_analysis.config, "load", lambda: cfg)
+    monkeypatch.setenv("AI_OWN_TOP_LIMIT", "15")
     monkeypatch.setattr(
         admin_analysis,
-        "top_comment_products",
-        lambda *_args, **_kwargs: [
+        "analysis_products",
+        lambda _engine, range_key, **kwargs: captured.update(selection=(range_key, kwargs)) or [
             {"rank": 1, "code": "3033", "comments": 10},
             {"rank": 2, "code": "3067", "comments": 5},
         ],
@@ -156,6 +157,7 @@ def test_run_uses_selected_range_top_comment_products_and_can_make_zero_calls(mo
     summary = admin_analysis.run_analysis("d30", engine=engine)
 
     assert captured == {
+        "selection": ("d30", {"own_limit": 15}),
         "ranges": "d30",
         "codes": "3033,3067",
         "ownership": "all",
@@ -165,7 +167,7 @@ def test_run_uses_selected_range_top_comment_products_and_can_make_zero_calls(mo
     assert summary["aiRequests"] == 0
     assert summary["reused"] == 16
     assert summary["selectedCodes"] == ["3033", "3067"]
-    assert summary["selectionLimit"] == 10
+    assert summary["ownTopLimit"] == 15
 
 
 def test_readiness_needs_no_release_reports(monkeypatch):

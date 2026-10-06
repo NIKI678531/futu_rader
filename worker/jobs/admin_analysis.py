@@ -17,7 +17,7 @@ from ai.providers.base import RunControl
 from collection.budget import DailyBudget
 from collection.models import HARD_DAILY_MAX
 from jobs import analyze, full_own, refresh
-from core.top_products import TOP_COMMENT_PRODUCT_LIMIT, top_comment_products
+from core.top_products import analysis_products, parse_own_limit
 from radar_db import make_engine
 from radar_db.analysis_requests import RANGE_PRIORITY, claim_next, finish, renew, requeue
 
@@ -86,11 +86,16 @@ def validated_runtime_config():
     return cfg
 
 
+def own_top_limit() -> int | None:
+    return parse_own_limit(os.getenv("AI_OWN_TOP_LIMIT"))
+
+
 def runtime_readiness() -> dict:
     """Return a safe status payload for the worker heartbeat."""
 
     try:
         cfg = validated_runtime_config()
+        limit = own_top_limit()
     except (OSError, RuntimeError, ValueError) as exc:
         return {
             "ready": False,
@@ -103,19 +108,19 @@ def runtime_readiness() -> dict:
         "promptVersion": cfg.prompt_version,
         "schemaVersion": cfg.schema_version,
         "taxonomyVersion": cfg.taxonomy_version,
+        "ownTopLimit": limit,
     }
 
 
 def run_analysis(range_key: str, *, engine=None) -> dict:
-    """Run the strict-tag comment-volume Top 10 through both AI layers."""
+    """Run one range's selected products through both AI layers."""
 
     if range_key not in RANGE_PRIORITY:
         raise ValueError("range 只允许 d1、d2、d7、d14 或 d30")
     engine = engine or make_engine()
     cfg = validated_runtime_config()
-    selected = top_comment_products(
-        engine, range_key, limit=TOP_COMMENT_PRODUCT_LIMIT
-    )
+    limit = own_top_limit()
+    selected = analysis_products(engine, range_key, own_limit=limit)
     selected_codes = [row["code"] for row in selected]
     if not selected_codes:
         return {
@@ -130,7 +135,7 @@ def run_analysis(range_key: str, *, engine=None) -> dict:
             "errors": 0,
             "budgetDate": clock.now(ZoneInfo("Asia/Hong_Kong")).date().isoformat(),
             "status": "complete",
-            "selectionLimit": TOP_COMMENT_PRODUCT_LIMIT,
+            "ownTopLimit": limit,
             "selectedCodes": [],
         }
     args = type(
@@ -179,7 +184,7 @@ def run_analysis(range_key: str, *, engine=None) -> dict:
         "errors": work.get("errors", 0),
         "budgetDate": budget_date.isoformat(),
         "status": progress.get("status", "partial"),
-        "selectionLimit": TOP_COMMENT_PRODUCT_LIMIT,
+        "ownTopLimit": limit,
         "selectedCodes": selected_codes,
     }
 
