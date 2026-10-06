@@ -1,6 +1,10 @@
 # ADR-0030: Content-cashtag comment routing and scheduled AI analysis
 
-Status: Accepted
+Status: Accepted; the scheduled-analysis parts are superseded by
+[ADR-0031](0031-daily-full-refresh-single-queue.md) (2026-10-06): one daily
+`jobs.daily` entry covers every page range and every active product, and
+calibration/human-gold reports are no longer run gates. Comment routing is
+unchanged.
 
 Schedule amendment (2026-10-05): the automatic check now runs every day at
 08:00 Asia/Hong_Kong. Daily runs cover `d1,d2,d7`; Monday also covers
