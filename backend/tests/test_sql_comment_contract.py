@@ -779,7 +779,7 @@ def test_current_irrelevant_verdict_gates_product_views_but_keeps_market_topic()
     )
 
     assert provider.evidence_for(OWN_CODE, "d1|sum", "negative", 5) == []
-    assert provider.themes_for(OWN_CODE, "d1") == {"positive": [], "negative": []}
+    assert provider.themes_for(OWN_CODE, "d1") == {"positive": [], "negative": [], "stale": False}
     topics = provider.topics_for(OWN_CODE, "d1")
     assert len(topics) == 1
     assert topics[0]["negative"] == 1
