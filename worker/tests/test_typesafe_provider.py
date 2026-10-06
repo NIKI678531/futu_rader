@@ -317,3 +317,61 @@ def test_permanent_and_retryable_http_errors(cfg):
         "kol_comment_opinion", [payload], "v2"
     )
     assert len(retry.calls) == 2
+
+
+def test_comment_v4_schema_v3_is_answered_with_issuer_fields_and_v4_aspects(cfg):
+    from ai import schemas
+
+    def respond(body):
+        questions = body["questions"]
+        assert "aspect__product_design" in questions and "aspect__other" not in questions
+        assert "issuer_relevance_attitude" in questions
+        excerpt = next(key for key in questions["product_evidence"]["criteria"] if key.startswith("excerpt_"))
+        return _response(body, {
+            "relevance_attitude": "relevant_negative",
+            "market_direction": "not_expressed",
+            "product_evidence": excerpt,
+            "issuer_relevance_attitude": "relevant_negative",
+            "issuer_evidence": excerpt,
+        }, {"aspect__spread": 0.92, "issuer_aspect__service": 0.9})
+
+    client = build(cfg, session=FakeSession(respond), sleep=lambda _seconds: None)
+    payload = {
+        "item_id": "comment:9|product:3033",
+        "product": {"code": "3033", "name": "恒生科技指数ETF", "aliases": ["恒科"]},
+        "comment": "3033点差太大，南方东英客服也不回复。",
+    }
+    row = client.complete_annotations("comment_product", [payload], "v3").data["results"][0]
+
+    parsed = schemas.parse("comment_product", row, "v3")
+    assert (parsed.relevance, parsed.attitude, parsed.aspects) == ("relevant", "negative", ["spread"])
+    assert (parsed.issuer_relevance, parsed.issuer_attitude, parsed.issuer_aspects) == (
+        "relevant", "negative", ["service"],
+    )
+    assert parsed.issuer_evidence in payload["comment"]
+
+
+def test_schema_v3_never_returns_relevant_without_aspect_or_evidence(cfg):
+    from ai import schemas
+
+    def respond(body):
+        return _response(body, {
+            "relevance_attitude": "relevant_positive",
+            "market_direction": "not_expressed",
+            "product_evidence": "none",
+            "issuer_relevance_attitude": "irrelevant",
+        })
+
+    client = build(cfg, session=FakeSession(respond), sleep=lambda _seconds: None)
+    payload = {
+        "item_id": "comment:10|product:3033",
+        "product": {"code": "3033", "name": "恒生科技指数ETF", "aliases": []},
+        "comment": "3033 我觉得还可以，继续拿着。",
+    }
+    row = client.complete_annotations("comment_product", [payload], "v3").data["results"][0]
+
+    parsed = schemas.parse("comment_product", row, "v3")
+    assert parsed.relevance == "relevant" and parsed.aspects == ["other_product"]
+    assert parsed.evidence and parsed.evidence in payload["comment"]
+    assert parsed.issuer_relevance == "irrelevant" and parsed.issuer_evidence is None
+    assert parsed.needs_review is True
