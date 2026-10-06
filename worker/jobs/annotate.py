@@ -948,10 +948,7 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
             engine,
             run_id,
             stats,
-            mark_synthesis_dirty=(
-                task == "comment_product"
-                and getattr(provider, "supports_generation", True)
-            ),
+            mark_synthesis_dirty=task == "comment_product",
         )
         if stats["aborted"]:
             emit(

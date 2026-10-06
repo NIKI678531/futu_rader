@@ -338,3 +338,63 @@ def test_llm_annotations_reach_folded_comments(engine, cfg, tmp_path):
     assert labels["relevance"] == "relevant"
     assert labels["attitude"] == "positive"
     assert labels["aspect"] == ["fee"]
+
+
+class ClassificationOnlyFake(UniversalFake):
+    """Layer A 能判、写不出文字：TypeSafe System One 的形状。"""
+
+    supports_generation = False
+
+    def complete_json(self, system, user, schema, schema_name):
+        assert not schema_name.startswith("synth_"), "分类型 provider 不该收到 Layer B 请求"
+        return super().complete_json(system, user, schema, schema_name)
+
+
+def test_layer_b_uses_dedicated_generation_model(engine, cfg, tmp_path, monkeypatch):
+    from dataclasses import replace
+    from ai import providers
+
+    generator = UniversalFake()
+    monkeypatch.setitem(providers._PROVIDERS, "fake_generation", lambda _cfg, **_kw: generator)
+    cfg = replace(cfg, synth_provider="fake_generation", synth_base_url="https://gen.invalid/v1",
+                  synth_api_key="k", synth_model="gen-model")
+    ext = extract.run(engine, cfg, codes=[CODE], date_from=datetime(2026, 8, 19), date_to=datetime(2026, 8, 25),
+                      task="both", ownership={CODE: "own"}, report_dir=tmp_path)
+    classifier = ClassificationOnlyFake()
+
+    out = pipeline.run(engine, cfg, ext["scope_id"], provider=classifier, ranges=["d7"])
+
+    steps = {s["task"]: s for s in out["steps"]}
+    assert steps["comment_product"]["success"] == 13
+    assert steps["synthesize"]["errors"] == 0 and steps["synthesize"]["written"] >= 4
+    assert any(call.startswith("synth_") for call in generator.calls)
+    assert not any(call.startswith("synth_") for call in classifier.calls)
+    from radar_db.schema import annotation_runs
+
+    with engine.connect() as conn:
+        synth_runs = conn.execute(select(annotation_runs.c.provider).where(
+            annotation_runs.c.task == "synthesize"
+        )).scalars().all()
+    assert synth_runs and set(synth_runs) == {"fake_generation"}
+
+
+def test_classification_only_without_generation_model_is_incomplete(engine, cfg, tmp_path):
+    ext = extract.run(engine, cfg, codes=[CODE], date_from=datetime(2026, 8, 19), date_to=datetime(2026, 8, 25),
+                      ownership={CODE: "own"}, report_dir=tmp_path)
+    out = pipeline.run(engine, cfg, ext["scope_id"], provider=ClassificationOnlyFake(), ranges=["d7"])
+    synth = next(s for s in out["steps"] if s["task"] == "synthesize")
+    assert "AI_SYNTH_" in synth["skipped"]
+    assert out["complete"] is False
+
+
+def test_synthesis_config_requires_complete_generation_settings():
+    from dataclasses import replace
+
+    base = config.load(model="m")
+    assert config.synthesis(base) is base
+    with pytest.raises(config.ConfigError):
+        config.synthesis(replace(base, synth_model="gen-model"))
+    synth = config.synthesis(replace(base, synth_base_url="https://gen.invalid/v1", synth_api_key="k",
+                                     synth_model="gen-model"))
+    assert (synth.provider, synth.model, synth.prompt_version) == ("openai_compatible", "gen-model",
+                                                                   base.prompt_version)

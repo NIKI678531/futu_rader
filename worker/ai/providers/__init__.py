@@ -33,3 +33,20 @@ def build(config, **kwargs):
             f"可选：{', '.join(sorted(_PROVIDERS))}"
         ) from None
     return cls(config, **kwargs)
+
+
+def build_synthesis(config, *, primary=None, control=None):
+    """Return ``(cfg, provider)`` for Layer B generation.
+
+    Reuses ``primary`` when no dedicated ``AI_SYNTH_*`` model is configured;
+    otherwise builds the generation provider on the same ``RunControl`` so both
+    layers share one request budget.
+    """
+    from .. import config as ai_config
+
+    synth_cfg = ai_config.synthesis(config)
+    if synth_cfg is config and primary is not None:
+        return synth_cfg, primary
+    if control is None and primary is not None:
+        control = getattr(primary, "control", None)
+    return synth_cfg, build(synth_cfg, control=control)
