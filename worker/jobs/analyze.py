@@ -63,8 +63,6 @@ def parser():
     cli.add_argument("--max-output-tokens", type=int, default=8192)
     cli.add_argument("--page-size", type=int, default=1000)
     cli.add_argument("--max-http-requests", type=int)
-    cli.add_argument("--calibration-report", type=Path)
-    cli.add_argument("--quality-report", type=Path)
     cli.add_argument("--watch", action="store_true")
     return cli
 
@@ -274,6 +272,7 @@ def preview(engine, cfg, plan, page_size):
 
 
 def check_calibration(cfg, report_source, *, require_singleton=False):
+    """Offline validator for ``scripts.calibrate`` reports (ADR-0031: not a run gate)."""
     if cfg.micro_batch_size <= 1 and not require_singleton:
         return
     if report_source is None:
@@ -299,7 +298,7 @@ def check_calibration(cfg, report_source, *, require_singleton=False):
 
 
 def check_quality(cfg, report_source):
-    """Require a v4, policy-matched 400-row human-gold release report."""
+    """Offline validator for a v4 human-gold report (ADR-0031: not a run gate)."""
     if report_source is None:
         raise ValueError("Production analysis requires --quality-report from scripts.evaluate_gold; no paid requests sent")
     if isinstance(report_source, Mapping):
@@ -350,8 +349,6 @@ def main(argv=None):
             print(json.dumps(preview(engine, cfg, plan, args.page_size), ensure_ascii=False, indent=2))
             return 0
         require_comment_routes_ready(engine)
-        check_calibration(cfg, args.calibration_report, require_singleton=True)
-        check_quality(cfg, args.quality_report)
         scopes = None
         if args.command == "resume":
             if not args.scope:

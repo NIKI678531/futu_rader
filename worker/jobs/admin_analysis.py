@@ -15,6 +15,7 @@ from ai import config
 from ai.providers import build as build_provider
 from ai.providers.base import RunControl
 from collection.budget import DailyBudget
+from collection.models import HARD_DAILY_MAX
 from jobs import analyze, full_own, refresh
 from core.top_products import TOP_COMMENT_PRODUCT_LIMIT, top_comment_products
 from radar_db import make_engine
@@ -75,16 +76,13 @@ def _policy_hash(cfg) -> str:
 
 
 def validated_runtime_config():
-    """Load the worker policy and fail closed before any paid request."""
+    """Load the worker policy; only missing credentials or an explicit off switch stop it."""
 
     if not refresh._data_governance_approved():
-        raise ValueError("AI_DATA_GOVERNANCE_APPROVED 必须为 true")
+        raise ValueError("AI_DATA_GOVERNANCE_APPROVED=false：AI 分析已被手动关闭")
     cfg = config.load()
     cfg = replace(cfg, grouped_batches=True, fill_missing_only=False)
-    analyze.check_calibration(
-        cfg, refresh._calibration_report(None), require_singleton=True
-    )
-    analyze.check_quality(cfg, refresh._quality_report(None))
+    config.synthesis(cfg)
     return cfg
 
 
@@ -150,9 +148,9 @@ def run_analysis(range_key: str, *, engine=None) -> dict:
         },
     )()
     plan = analyze.make_plan(engine, args)
-    max_attempts = int(os.getenv("AI_MANUAL_MAX_HTTP_REQUESTS", "500"))
-    if not 1 <= max_attempts <= 500:
-        raise ValueError("AI_MANUAL_MAX_HTTP_REQUESTS 必须在 1 到 500 之间")
+    max_attempts = int(os.getenv("AI_MANUAL_MAX_HTTP_REQUESTS", str(HARD_DAILY_MAX)))
+    if not 1 <= max_attempts <= HARD_DAILY_MAX:
+        raise ValueError(f"AI_MANUAL_MAX_HTTP_REQUESTS 必须在 1 到 {HARD_DAILY_MAX} 之间")
     budget_date = clock.now(ZoneInfo("Asia/Hong_Kong")).date()
     budget = DailyBudget(
         engine,

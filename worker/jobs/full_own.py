@@ -351,10 +351,6 @@ def main(argv=None):
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--ranges", default=",".join(PRESETS))
     parser.add_argument("--max-http-requests", type=int, required=True)
-    parser.add_argument("--calibration-report", type=Path,
-                        help="scripts.calibrate 产生且通过的批量校准报告")
-    parser.add_argument("--quality-report", type=Path,
-                        help="scripts.evaluate_gold 产生且通过的 v4 人工金标报告")
     parser.add_argument("--sync-prices", action="store_true")
     args = parser.parse_args(argv)
     if args.max_http_requests < 1:
@@ -369,15 +365,6 @@ def main(argv=None):
         cfg.prompt_version,
         schema_version=cfg.schema_version,
     )
-    # Import lazily because jobs.analyze imports this module.
-    from jobs import analyze as analysis_job
-    try:
-        analysis_job.check_calibration(
-            cfg, args.calibration_report, require_singleton=True,
-        )
-        analysis_job.check_quality(cfg, args.quality_report)
-    except (ValueError, RuntimeError) as exc:
-        parser.error(str(exc))
     from ai.providers import build as build_provider
     from ai.providers.base import RunControl, RunStopped
     control = RunControl(args.max_http_requests)

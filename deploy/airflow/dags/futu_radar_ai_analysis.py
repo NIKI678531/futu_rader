@@ -67,7 +67,7 @@ with DAG(
             "--wait-timeout-seconds", "28800",
             "--batch-size", "5",
             "--concurrency", "2",
-            "--max-http-attempts", "500",
+            "--max-http-attempts", "100000",
         ],
         env_from=[
             k8s.V1EnvFromSource(

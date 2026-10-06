@@ -287,10 +287,6 @@ class FutuRefresh:
         from dataclasses import replace
         cfg = replace(cfg, micro_batch_size=request.batch_size, concurrency=request.concurrency,
                       grouped_batches=True)
-        analysis_job.check_calibration(cfg, request.calibration_report, require_singleton=True)
-        analysis_job.check_quality(cfg, request.quality_report)
-        # Check release artifacts first, then the active route generation. All
-        # gates still run before provider construction or budget reservation.
         from radar_db.comment_routes import require_ready as require_comment_routes_ready
 
         require_comment_routes_ready(self.target)

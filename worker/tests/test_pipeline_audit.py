@@ -253,19 +253,6 @@ def test_pipeline_paid_run_rejects_scope_without_current_exact_provenance(
     assert provider.calls == []
 
 
-def test_pipeline_cli_fails_closed_without_both_release_reports(monkeypatch):
-    load_config = config.load
-    monkeypatch.setattr(pipeline, "make_engine", lambda: object())
-    monkeypatch.setattr(pipeline.config, "load", lambda **_kwargs: load_config(
-        model="gate-model", prompt_version="comment-product-v3",
-        schema_version="v2", taxonomy_version="v2", micro_batch_size=5,
-    ))
-
-    with pytest.raises(SystemExit) as exc:
-        pipeline.main(["--scope", "scope-x", "--max-http-requests", "1"])
-    assert exc.value.code == 2
-
-
 def test_incomplete_pipeline_does_not_synthesize(engine, cfg, tmp_path):
     ext = extract.run(engine, cfg, codes=[CODE], date_from=datetime(2026, 8, 19),
                       date_to=datetime(2026, 8, 25), ownership={CODE: "own"}, report_dir=tmp_path)

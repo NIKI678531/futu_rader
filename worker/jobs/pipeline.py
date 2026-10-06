@@ -216,10 +216,6 @@ def main(argv=None):
     ap.add_argument("--budget-requests", type=int)
     ap.add_argument("--max-http-requests", type=int)
     ap.add_argument("--max-items", type=int)
-    ap.add_argument("--calibration-report", type=Path,
-                    help="scripts.calibrate 产生且通过的批量校准报告")
-    ap.add_argument("--quality-report", type=Path,
-                    help="scripts.evaluate_gold 产生且通过的 v3 人工金标报告")
     ap.add_argument("--skip-synth", action="store_true")
     ap.add_argument("--ranges", help="Layer B 只做这些区间，如 d7,d30")
     ap.add_argument("--synth-workers", type=int, help="Layer B (code, range) 并行线程数，默认 8")
@@ -229,16 +225,6 @@ def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s")
     engine = make_engine()
     cfg = config.load(_allow_missing_key=args.dry_run)
-    if not args.dry_run:
-        # Import lazily: analyze imports full_own -> pipeline at module load time.
-        from jobs import analyze as analysis_job
-        try:
-            analysis_job.check_calibration(
-                cfg, args.calibration_report, require_singleton=True,
-            )
-            analysis_job.check_quality(cfg, args.quality_report)
-        except (ValueError, RuntimeError) as exc:
-            ap.error(str(exc))
     from ai.providers.base import RunControl, RunStopped
     from radar_db.leases import WorkerLease
     control = None if args.dry_run else RunControl(args.max_http_requests)

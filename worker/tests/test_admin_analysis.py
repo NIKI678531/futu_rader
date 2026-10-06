@@ -103,12 +103,8 @@ def test_run_uses_selected_range_top_comment_products_and_can_make_zero_calls(mo
         taxonomy_version="product-feedback-v4",
     )
     captured = {}
-    monkeypatch.setattr(admin_analysis.refresh, "_data_governance_approved", lambda: True)
-    monkeypatch.setattr(admin_analysis.refresh, "_calibration_report", lambda _path: {})
-    monkeypatch.setattr(admin_analysis.refresh, "_quality_report", lambda _path: {})
+    monkeypatch.delenv("AI_DATA_GOVERNANCE_APPROVED", raising=False)
     monkeypatch.setattr(admin_analysis.config, "load", lambda: cfg)
-    monkeypatch.setattr(admin_analysis.analyze, "check_calibration", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(admin_analysis.analyze, "check_quality", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         admin_analysis,
         "top_comment_products",
@@ -170,3 +166,18 @@ def test_run_uses_selected_range_top_comment_products_and_can_make_zero_calls(mo
     assert summary["reused"] == 16
     assert summary["selectedCodes"] == ["3033", "3067"]
     assert summary["selectionLimit"] == 10
+
+
+def test_readiness_needs_no_release_reports(monkeypatch):
+    cfg = config.load(model="test-model")
+    monkeypatch.delenv("AI_DATA_GOVERNANCE_APPROVED", raising=False)
+    monkeypatch.delenv("AI_CALIBRATION_REPORT", raising=False)
+    monkeypatch.delenv("AI_QUALITY_REPORT", raising=False)
+    monkeypatch.setattr(admin_analysis.config, "load", lambda: cfg)
+
+    assert admin_analysis.runtime_readiness()["ready"] is True
+
+    monkeypatch.setenv("AI_DATA_GOVERNANCE_APPROVED", "false")
+    readiness = admin_analysis.runtime_readiness()
+    assert readiness["ready"] is False
+    assert "AI_DATA_GOVERNANCE_APPROVED=false" in readiness["error"]

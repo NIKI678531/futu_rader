@@ -1788,8 +1788,7 @@ def main(argv=None):
     """影子运行入口。
 
         python -m jobs.extract --codes 3033,2822 --from 2026-09-01 --to 2026-09-07
-        python -m jobs.annotate --run --scope <scope_id> --max-items 100 --max-http-requests 100 \
-          --calibration-report <calibration.json> --quality-report <gold-eval.json>
+        python -m jobs.annotate --run --scope <scope_id> --max-items 100 --max-http-requests 100
         python -m jobs.annotate --run --scope <scope_id> --dry-run
 
     `--enqueue` 与 `--run` **分开两步**，不是一个命令里顺次做完：排队不花钱，跑标注花钱。
@@ -1813,10 +1812,6 @@ def main(argv=None):
     ap.add_argument("--max-items", type=int, help="本轮最多处理多少条")
     ap.add_argument("--budget-requests", type=int, help="本轮最多领取多少批（≈请求数）")
     ap.add_argument("--max-http-requests", type=int, help="Required for --run; includes retries")
-    ap.add_argument("--calibration-report", type=Path,
-                    help="comment_product 付费运行所需的批量校准报告")
-    ap.add_argument("--quality-report", type=Path,
-                    help="comment_product 付费运行所需的 v3 人工金标报告")
     ap.add_argument("--scope", help="只处理这个抽取范围（analysis_scopes.scope_id）")
     ap.add_argument("--stage", choices=(STAGE_STUDENT, STAGE_LLM, FILL_MISSING_STAGE),
                     help="只处理指定漏斗段；默认不分段")
@@ -1843,14 +1838,7 @@ def main(argv=None):
     log.info("配置：%s", json.dumps(cfg.redacted(), ensure_ascii=False))
 
     if args.run and not args.dry_run and args.task == "comment_product":
-        # This low-level command remains available for bounded diagnosis, but a
-        # real provider call receives the same release gates as orchestration.
-        from jobs import analyze as analysis_job
         try:
-            analysis_job.check_calibration(
-                cfg, args.calibration_report, require_singleton=True,
-            )
-            analysis_job.check_quality(cfg, args.quality_report)
             load_current_exact_scope(
                 engine,
                 args.scope,

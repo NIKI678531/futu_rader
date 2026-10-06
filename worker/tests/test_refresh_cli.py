@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -35,30 +34,6 @@ def test_refresh_wires_only_market_insight_database_source(monkeypatch):
     }
 
 
-def test_calibration_report_accepts_inline_secret_json(monkeypatch):
-    report = {"policy": {"model": "test"}, "batchGatePassed": True}
-    monkeypatch.setenv("AI_CALIBRATION_REPORT", json.dumps(report))
-
-    assert refresh._calibration_report(None) == report
-
-
-def test_calibration_report_keeps_explicit_or_secret_path(monkeypatch):
-    explicit = Path("explicit.json")
-    monkeypatch.setenv("AI_CALIBRATION_REPORT", "secret.json")
-
-    assert refresh._calibration_report(explicit) == explicit
-    assert refresh._calibration_report(None) == Path("secret.json")
-
-
-def test_quality_report_accepts_inline_secret_json_or_path(monkeypatch):
-    report = {"reportType": "comment-relevance-human-gold-v1"}
-    monkeypatch.setenv("AI_QUALITY_REPORT", json.dumps(report))
-    assert refresh._quality_report(None) == report
-
-    explicit = Path("gold-v3.json")
-    assert refresh._quality_report(explicit) == explicit
-
-
 @pytest.mark.parametrize("value", ["1", "yes", "approved", "false-ish"])
 def test_governance_approval_rejects_ambiguous_secret_values(monkeypatch, value):
     monkeypatch.setenv("AI_DATA_GOVERNANCE_APPROVED", value)
@@ -67,43 +42,38 @@ def test_governance_approval_rejects_ambiguous_secret_values(monkeypatch, value)
         refresh._data_governance_approved()
 
 
-@pytest.mark.parametrize("value", [None, "", "false", " FALSE "])
-def test_governance_approval_defaults_to_false(monkeypatch, value):
+@pytest.mark.parametrize("value", [None, "", "true", " TRUE "])
+def test_governance_switch_defaults_to_on(monkeypatch, value):
     if value is None:
         monkeypatch.delenv("AI_DATA_GOVERNANCE_APPROVED", raising=False)
     else:
         monkeypatch.setenv("AI_DATA_GOVERNANCE_APPROVED", value)
+
+    assert refresh._data_governance_approved() is True
+
+
+def test_governance_switch_explicit_false_turns_ai_off(monkeypatch):
+    monkeypatch.setenv("AI_DATA_GOVERNANCE_APPROVED", " FALSE ")
 
     assert refresh._data_governance_approved() is False
 
 
-@pytest.mark.parametrize("value", [None, "false"])
-def test_analyze_cli_fails_closed_before_calibration_or_runtime_setup(
-    monkeypatch, capsys, value
-):
-    if value is None:
-        monkeypatch.delenv("AI_DATA_GOVERNANCE_APPROVED", raising=False)
-    else:
-        monkeypatch.setenv("AI_DATA_GOVERNANCE_APPROVED", value)
-    monkeypatch.setattr(
-        refresh,
-        "_calibration_report",
-        lambda *_args: pytest.fail("calibration report must not load before approval"),
-    )
+def test_analyze_cli_stops_before_runtime_setup_when_switched_off(monkeypatch, capsys):
+    monkeypatch.setenv("AI_DATA_GOVERNANCE_APPROVED", "false")
     monkeypatch.setattr(
         refresh,
         "_refresh",
-        lambda **_kwargs: pytest.fail("runtime must not initialize before approval"),
+        lambda **_kwargs: pytest.fail("runtime must not initialize when AI is switched off"),
     )
 
     with pytest.raises(SystemExit) as raised:
         refresh.main(["analyze", "--budget-date", "2026-09-25"])
 
     assert raised.value.code == 2
-    assert "AI_DATA_GOVERNANCE_APPROVED=true" in capsys.readouterr().err
+    assert "AI_DATA_GOVERNANCE_APPROVED" in capsys.readouterr().err
 
 
-def test_analyze_cli_injects_explicit_governance_approval(monkeypatch, capsys):
+def test_analyze_cli_runs_without_release_reports(monkeypatch, capsys):
     captured = {}
 
     class FakeRefresh:
@@ -111,14 +81,12 @@ def test_analyze_cli_injects_explicit_governance_approval(monkeypatch, capsys):
             captured["request"] = request
             return SimpleNamespace(status="complete", as_dict=lambda: {"status": "complete"})
 
-    monkeypatch.setenv("AI_DATA_GOVERNANCE_APPROVED", "true")
-    monkeypatch.setenv("AI_CALIBRATION_REPORT", json.dumps({"batchGatePassed": True}))
-    monkeypatch.setenv("AI_QUALITY_REPORT", json.dumps({"reportType": "comment-relevance-human-gold-v1"}))
+    monkeypatch.delenv("AI_DATA_GOVERNANCE_APPROVED", raising=False)
     monkeypatch.setattr(refresh, "_refresh", lambda **_kwargs: FakeRefresh())
 
     assert refresh.main(["analyze", "--budget-date", "2026-09-25"]) == 0
     assert captured["request"].data_governance_approved is True
-    assert captured["request"].quality_report == {"reportType": "comment-relevance-human-gold-v1"}
+    assert captured["request"].max_http_attempts == 100000
     assert json.loads(capsys.readouterr().out) == {"status": "complete"}
 
 
@@ -131,11 +99,6 @@ def test_analyze_cli_accepts_staged_codes_and_ranges(monkeypatch, capsys):
             return SimpleNamespace(status="complete", as_dict=lambda: {"status": "complete"})
 
     monkeypatch.setenv("AI_DATA_GOVERNANCE_APPROVED", "true")
-    monkeypatch.setenv("AI_CALIBRATION_REPORT", json.dumps({"batchGatePassed": True}))
-    monkeypatch.setenv(
-        "AI_QUALITY_REPORT",
-        json.dumps({"reportType": "comment-relevance-human-gold-v1"}),
-    )
     monkeypatch.setattr(refresh, "_refresh", lambda **_kwargs: FakeRefresh())
 
     assert refresh.main([
