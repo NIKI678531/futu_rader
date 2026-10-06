@@ -34,6 +34,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+# Every 2-second queue poll would otherwise print two INFO lines.
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 log = logging.getLogger("worker")
 
 
