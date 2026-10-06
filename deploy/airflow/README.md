@@ -39,24 +39,28 @@ python -m jobs.refresh sync --mode incremental \
 Before unpausing this DAG, run the same image once with `--dry-run`, compare
 counts and `completeThrough`, then perform one manually observed real sync.
 
-## AI analysis
+## Daily refresh and AI analysis
 
-`futu_radar_ai_analysis` runs every day at 08:00 Asia/Hong_Kong. Monday's
-`auto` mode covers every configured range; the other days cover
-`d1,d2,d7`. Completed input fingerprints are reused, so a scheduled run only
-sends model requests for missing results or inputs changed by synchronization.
+`futu_radar_ai_analysis` runs every day at 08:00 Asia/Hong_Kong and executes
+`python -m jobs.daily --now --drain` ([ADR-0031](../../docs/adr/0031-daily-full-refresh-single-queue.md)):
 
-For the one-time `comment-product-v4` cutover, run all active products with
-`--ranges d1,d2,d7,d14,d30,mtd --current-window-only`. This intentionally
-reprocesses no more than the latest 30 days. The previous d30 comparison stays
-unavailable until a full subsequent baseline has accumulated; v2/v3 rows remain
-auditable but are excluded once `product_feedback_taxonomy=product-feedback-v4`
-is published after the complete run.
-The Airflow logical date is passed as the Hong Kong budget date, while
-the analysis window itself is always built from the current Radar database's
-latest complete `meta_kv.anchor`. The task waits for that day's 19:30
-`comments_all` run to be successfully synchronized first. The DAG is paused
-when first discovered.
+1. sync MarketInsight through the latest completed `comments_all` receipt
+   (today's, or the previous evening's 19:30 run), so `meta_kv.anchor` advances;
+2. sync prices when `FMP_API_KEY` is present;
+3. enqueue `d1,d2,d7,d14,d30,mtd` (`requested_by=schedule`) and execute the
+   queue inside the pod until it is empty.
+
+The pod never waits for the same day's 19:30 run (the previous design timed
+out at 16:00 every day). A failed sync does not block analysis of the facts
+already in Radar. Completed input fingerprints are reused, so a scheduled run
+only sends model requests for missing results or inputs changed by the sync.
+Each run and its result are visible on `/admin` under 最近运行 as 定时.
+
+Use either this DAG or the always-on worker's own `AI_DAILY_CRON` (default
+`0 8 * * *`), not both: set `AI_DAILY_CRON=off` on the worker when this DAG is
+unpaused. If both fire anyway, active ranges are de-duplicated in the queue and
+the analysis lease keeps a single executor. The DAG is paused when first
+discovered.
 
 Configure these Airflow Variables before unpausing:
 
