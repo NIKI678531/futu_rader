@@ -382,7 +382,7 @@ class AdminOperations:
 
     def pipeline(self, range_key: str) -> dict[str, Any]:
         if range_key not in RANGE_PRIORITY:
-            raise AdminValidationError("range 只允许 d1、d2、d7、d14 或 d30")
+            raise AdminValidationError("range 只允许 d1、d2、d7、d14、d30 或 mtd")
         try:
             refresh_provider = getattr(self.market_provider, "refresh", None)
             if callable(refresh_provider):
@@ -429,7 +429,7 @@ class AdminOperations:
 
     def enqueue_analysis(self, range_key: str) -> dict[str, Any]:
         if range_key not in RANGE_PRIORITY:
-            raise AdminValidationError("range 只允许 d1、d2、d7、d14 或 d30")
+            raise AdminValidationError("range 只允许 d1、d2、d7、d14、d30 或 mtd")
         try:
             with self.target_engine.connect() as conn:
                 meta = dict(

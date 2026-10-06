@@ -15,7 +15,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -65,6 +65,50 @@ def _refresh(with_source=True, through_source_run_id=None):
     service = FutuRefresh(target, source)
     service.activated_catalog_codes = tuple(activated)
     return service
+
+
+def source_configured() -> bool:
+    return bool(os.getenv("MARKET_INSIGHT_DATABASE_URL", "").strip())
+
+
+def latest_closing_run(source, hkt_day: date):
+    """The newest successful ``comments_all`` receipt for ``hkt_day`` or the day before."""
+
+    closing = getattr(source, "closing_run", None)
+    if closing is None:
+        return None
+    for day in (hkt_day, hkt_day - timedelta(days=1)):
+        receipt = closing(day)
+        if receipt:
+            return receipt
+    return None
+
+
+def sync_once(*, mode="incremental", run_id=None, through_source_run_id=None, page_size=1000,
+              dry_run=False, feed_ids=(), service=None):
+    """One MarketInsight → Radar sync, including catalog-driven route rebuilds."""
+
+    service = service or _refresh(through_source_run_id=through_source_run_id)
+    result = service.sync(SyncRequest(
+        mode=mode,
+        run_id=run_id,
+        through_source_run_id=through_source_run_id,
+        page_size=page_size,
+        dry_run=dry_run,
+        feed_ids=tuple(feed_ids),
+    ))
+    payload = result.as_dict()
+    activated = tuple(getattr(service, "activated_catalog_codes", ()))
+    if activated and not dry_run:
+        from jobs.backfill_comment_routes import run as rebuild_comment_routes
+        route_result = rebuild_comment_routes(
+            service.target,
+            activate_routes=True,
+            preserve_quality_gate=True,
+        )
+        payload["catalogActivatedCodes"] = list(activated)
+        payload["commentRouteDigest"] = route_result["productPoolDigest"]
+    return payload
 
 
 def _data_governance_approved() -> bool:
@@ -138,26 +182,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "sync":
-            service = _refresh(through_source_run_id=args.through_source_run_id)
-            result = service.sync(SyncRequest(
+            payload = sync_once(
                 mode=args.mode,
                 run_id=args.run_id,
                 through_source_run_id=args.through_source_run_id,
                 page_size=args.page_size,
                 dry_run=args.dry_run,
                 feed_ids=tuple(args.feed_id),
-            ))
-            payload = result.as_dict()
-            activated = tuple(getattr(service, "activated_catalog_codes", ()))
-            if activated and not args.dry_run:
-                from jobs.backfill_comment_routes import run as rebuild_comment_routes
-                route_result = rebuild_comment_routes(
-                    service.target,
-                    activate_routes=True,
-                    preserve_quality_gate=True,
-                )
-                payload["catalogActivatedCodes"] = list(activated)
-                payload["commentRouteDigest"] = route_result["productPoolDigest"]
+            )
             print(json.dumps(payload, ensure_ascii=False, default=str))
             return 0
 

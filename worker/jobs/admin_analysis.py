@@ -116,7 +116,7 @@ def run_analysis(range_key: str, *, engine=None) -> dict:
     """Run one range's selected products through both AI layers."""
 
     if range_key not in RANGE_PRIORITY:
-        raise ValueError("range 只允许 d1、d2、d7、d14 或 d30")
+        raise ValueError("range 只允许 d1、d2、d7、d14、d30 或 mtd")
     engine = engine or make_engine()
     cfg = validated_runtime_config()
     limit = own_top_limit()

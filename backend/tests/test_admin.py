@@ -190,7 +190,7 @@ def test_comment_rows_reuse_pool_counts_and_preserve_zero_vs_unavailable(monkeyp
     assert [row["rank"] for row in result["comments"]] == [1, 2, 3]
     assert result["commentDisplayLimit"] == 10
     assert result["analyzedProductCodes"] == ["3033", "3067", "3088"]
-    assert [row["key"] for row in result["ranges"]] == ["d1", "d2", "d7", "d14", "d30"]
+    assert [row["key"] for row in result["ranges"]] == ["d1", "d2", "d7", "d14", "d30", "mtd"]
     assert result["recentRuns"] == []
     first = result["comments"][0]
     source = pool_rows[0]
@@ -434,7 +434,18 @@ def test_terminal_request_allows_a_new_run_for_the_same_range():
     assert [row["status"] for row in history] == ["queued", "failed"]
 
 
-@pytest.mark.parametrize("range_key", ["mtd", "d90", ""])
+@pytest.mark.parametrize("range_key", ["d90", "ytd", ""])
 def test_unknown_analysis_range_is_rejected(range_key):
     with pytest.raises(ValueError):
         enqueue(_engine(), range_key)
+
+
+def test_month_to_date_and_schedule_source_are_queueable():
+    engine = _engine()
+    request, created = enqueue(engine, "mtd", requested_by="schedule")
+
+    assert created is True
+    assert (request["range"], request["requestedBy"]) == ("mtd", "schedule")
+    assert list_requests(engine)[0]["requestedBy"] == "schedule"
+    with pytest.raises(ValueError):
+        enqueue(engine, "d1", requested_by="cron")

@@ -463,14 +463,20 @@ ai_analysis_requests = Table(
     Column("lease_until", DATETIME),
     Column("result_json", Text),
     Column("error_summary", Text),
+    # 'admin' = 管理页按钮；'schedule' = 每日 08:00 任务（ADR-0031）。
+    Column("requested_by", String(20), nullable=False, default="admin", server_default="admin"),
     UniqueConstraint("active_key", name="uq_ai_analysis_requests_active_range"),
     CheckConstraint(
-        "range_key IN ('d1','d2','d7','d14','d30')",
+        "range_key IN ('d1','d2','d7','d14','d30','mtd')",
         name="ck_ai_analysis_requests_range",
     ),
     CheckConstraint(
         "status IN ('queued','running','succeeded','partial','failed')",
         name="ck_ai_analysis_requests_status",
+    ),
+    CheckConstraint(
+        "requested_by IN ('admin','schedule')",
+        name="ck_ai_analysis_requests_requested_by",
     ),
     Index("ix_ai_analysis_requests_queue", "status", "priority", "requested_at"),
 )
