@@ -60,10 +60,26 @@ class TestSynthSchemas:
             synth.parse("hot_summary", {"text": "费率获认可", "evidence_ids": [], "needs_review": False}, {"c1"})
 
     def test_batch_keys_must_match(self):
-        raw = {"results": [{"key": "positive|fee", "title": "费率同类最低", "summary": "多条评论把费率当持有理由。", "evidence_ids": ["c1"]}]}
+        raw = {"results": [{"key": "positive|fee", "title": "费率同类最低", "summary": "多条评论把费率当持有理由。",
+                            "key_points": [{"text": "管理费低于同类产品", "evidence_ids": ["c1"]}],
+                            "evidence_ids": ["c1"]}]}
         synth.parse("theme_label", raw, {"c1"}, expected_keys=["positive|fee"])
         with pytest.raises(SchemaError, match="键集合"):
             synth.parse("theme_label", raw, {"c1"}, expected_keys=["positive|fee", "negative|spread"])
+
+    def test_summary_is_capped_at_five_detailed_points(self):
+        point = {"text": "评论明确提到管理费低于同类产品，因此更愿意长期持有。", "evidence_ids": ["c1"]}
+        assert len(synth.parse("summary", {"points": [point] * 5, "needs_review": False}, {"c1"}).points) == 5
+        with pytest.raises(SchemaError, match="1–5"):
+            synth.parse("summary", {"points": [point] * 6, "needs_review": False}, {"c1"})
+
+    def test_theme_rejects_generic_product_experience_title(self):
+        raw = {"results": [{"key": "positive|other_product", "title": "产品整体体验获认可",
+                            "summary": "评论认可该产品。",
+                            "key_points": [{"text": "具体体验未说明", "evidence_ids": ["c1"]}],
+                            "evidence_ids": ["c1"]}]}
+        with pytest.raises(SchemaError, match="具体产品体验"):
+            synth.parse("theme_label", raw, {"c1"}, expected_keys=["positive|other_product"])
 
     def test_stage_unit_category_enum(self):
         raw = {"results": [{"key": "2026-08-20", "category": "made_up", "digest": "x", "evidence_ids": [], "needs_review": False}]}
@@ -170,7 +186,9 @@ class FakeSynthProvider:
             data = {"points": [{"text": "多條評論認可費率", "evidence_ids": ids[:2]}], "needs_review": False}
         elif kind in ("theme_label", "neg_category"):
             data = {"results": [{"key": b["key"], "title": "費率同類最低" if "fee" in b["key"] else "點差過大",
-                                 "summary": "多條評論如此表述。", "evidence_ids": b["evidence_ids"][:1]} for b in f["buckets"]]}
+                                 "summary": "多條評論如此表述。",
+                                 "key_points": [{"text": "評論點出具體產品體驗", "evidence_ids": b["evidence_ids"][:1]}],
+                                 "evidence_ids": b["evidence_ids"][:1]} for b in f["buckets"]]}
         elif kind == "stage_unit":
             data = {"results": [{"key": u["key"], "category": "add_opportunity", "digest": "討論以加倉為主",
                                  "evidence_ids": u["evidence_ids"][:1], "needs_review": False} for u in f["units"]]}
@@ -204,9 +222,9 @@ def test_full_run_writes_each_kind_with_facts_only_from_core(engine, cfg):
     assert hot["facts"]["compliance"]["hits"] == 1
     topic = [p for k, p in prov.calls if k == "topic_label"][0]
     assert topic["facts"]["topic"] == {
-        "bullish": 0, "bearish": 1, "neutral": 0, "mentions": 1,
+        "bullish": 0, "bearish": 3, "neutral": 0, "mentions": 3,
     }
-    assert [item["id"] for item in topic["evidence"]] == ["c110"]
+    assert {item["id"] for item in topic["evidence"]} == {"c110", "c112", "c113"}
     assert all(e["id"].startswith("c") for e in hot["evidence"])
     assert hot["language"] in ("zh-Hant", "yue")
     assert hot["facts"]["themes"]["positive"][0]["title"] == "費率同類最低"

@@ -27,6 +27,12 @@ migration = import_module(
 routes_migration = import_module(
     "radar_db.migrations.versions.0012_comment_product_routes"
 )
+catalog_migration = import_module(
+    "radar_db.migrations.versions.0013_product_catalog"
+)
+analysis_request_migration = import_module(
+    "radar_db.migrations.versions.0014_ai_analysis_requests"
+)
 
 
 def _datetime_columns():
@@ -52,7 +58,12 @@ def _render_migration(monkeypatch, dialect, direction: str) -> str:
 def test_all_metadata_datetimes_use_microseconds_only_on_mysql():
     columns = _datetime_columns()
 
-    expected = set(migration.DATETIME_COLUMNS) | set(routes_migration.DATETIME_COLUMNS)
+    expected = (
+        set(migration.DATETIME_COLUMNS)
+        | set(routes_migration.DATETIME_COLUMNS)
+        | set(catalog_migration.DATETIME_COLUMNS)
+        | set(analysis_request_migration.DATETIME_COLUMNS)
+    )
     assert set(columns) == expected
     for column in columns.values():
         assert column.type.compile(dialect=mysql.dialect()) == "DATETIME(6)"

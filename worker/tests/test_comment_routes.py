@@ -157,6 +157,9 @@ def test_backfill_dry_run_then_activate_is_resumable_and_hides_stale_conclusions
     activated = backfill_comment_routes.run(engine, batch_size=1, resume=True, activate_routes=True)
     assert activated["status"] == "active"
     assert activated["processed"] == 0
+    assert activated["products"]["3033"]["matchedParent"] == 2
+    assert activated["products"]["2800"]["matchedComment"] == 1
+    assert activated["products"]["7226"]["crossProduct"] == 2
     with engine.connect() as conn:
         rows = conn.execute(select(
             comment_product_routes.c.comment_id,

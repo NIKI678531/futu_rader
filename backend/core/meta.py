@@ -143,7 +143,7 @@ def version_payload():
         "dataRevision": revision,
         "analysisProgress": summary,
         "aiCommentRouting": {
-            "ready": comment_routes_ready(source),
+            "ready": comment_routes_ready(source, (product["code"] for product in provider._products)),
             "ruleVersion": source.get("comment_route_version", COMMENT_ROUTE_VERSION),
             "productPoolDigest": source.get(
                 "comment_route_pool_digest",

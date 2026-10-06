@@ -19,6 +19,7 @@ import React from 'react'
 import R, { prefetchScreen } from '../../data/radar'
 import { shortName, navGroups, num, numRaw, stamp, naBox, aiValidationNote, heatLowerBoundNote, staleSuffix, rowsStale, STALE_TITLE, kolDisplayLabel } from '../../lib/view'
 import { commentFunnelView } from '../../lib/commentFunnel'
+import { ownManagementView } from '../../lib/ownManagement'
 import { s } from '../../lib/dc'
 import DataUnavailable from '../../components/DataUnavailable'
 import Shell from '../../components/Shell'
@@ -332,7 +333,7 @@ class SectorOverview extends React.Component {
       return asc ? -d : d;
     };
     var sorted = visible.slice().sort(cmp);
-    var rows = (s.listAll ? sorted : sorted.slice(0, 50)).map(function (o, i) {
+    var rows = sorted.slice(0, 10).map(function (o, i) {
       /* `attitude` **整块**可能是 null（三态要 AI 标注，ADR-0017：标注表没建起来之前
          观测上就没有这个块）。设计源直接 `att.positive`，接真库时第一次渲染就 TypeError。
          注意不能退化成 `sampleSufficient: false` 去走「样本不足」那条分支 ——
@@ -484,21 +485,21 @@ class SectorOverview extends React.Component {
        看着还挺像样（比 NaN 难发现得多）。合计里有一个不知道，合计就是不知道（铁律 2）。
        环比同理 —— delta 是 PRD 第 3 章的全局口径，只在后端实现一份（铁律 1）。 */
     var own = P.own;
-    var dOH = own.dHeat, dON = own.dNeg, dOP = own.dPos;
+    var dOH = own.dHeat;
     /* 自家合计里有几帖转发数未知（`own.heatUnknownPosts > 0`）⇒ 数值显示为下限；demo 下没有这个键。 */
     var k1 = { value: (own.heatUnknownPosts > 0 ? '≥ ' : '') + num(own.heat), delta: dOH.short, dfg: self.dfg(dOH) };
-    var pnTot = own.neg == null || own.pos == null ? null : own.neg + own.pos;
+    var management = ownManagementView(own);
     var ownFunnelViews = P.list.filter(function (o) { return o.ownership === 'own'; })
       .map(function (o) { return commentFunnelView(o.commentFunnel); });
     var ownPartial = ownFunnelViews.some(function (funnel) { return funnel.partial; });
     var ownCoverageUnavailable = ownFunnelViews.some(function (funnel) { return !funnel.available; });
     var k2 = {
-      neg: num(own.neg), negDelta: dON.short, negDfg: dON.dir > 0 ? 'var(--negative-600)' : (dON.dir < 0 ? 'var(--positive-700)' : 'var(--ink-400)'),
-      pos: num(own.pos), posDelta: dOP.short, posDfg: self.dfg(dOP),
-      partialData: ownPartial,
-      coverageLabel: ownCoverageUnavailable ? '数据暂不可用' : '部分数据',
-      negW: pnTot ? (own.neg / pnTot * 100).toFixed(1) : '0', posW: pnTot ? (own.pos / pnTot * 100).toFixed(1) : '0',
-      barTitle: '负面 ' + num(own.neg) + ' ： 正面 ' + num(own.pos) + (pnTot ? ' · 负面占 ' + (own.neg / pnTot * 100).toFixed(0) + '%' : '')
+      neg: management.neg, negDelta: management.negDelta, negDfg: management.negDir > 0 ? 'var(--negative-600)' : (management.negDir < 0 ? 'var(--positive-700)' : 'var(--ink-400)'),
+      pos: management.pos, posDelta: management.posDelta, posDfg: management.posDir > 0 ? 'var(--positive-700)' : (management.posDir < 0 ? 'var(--negative-600)' : 'var(--ink-400)'),
+      partialData: ownPartial || management.partial,
+      coverageLabel: management.partial ? management.coverageLabel : (ownCoverageUnavailable ? '数据暂不可用' : '部分数据'),
+      negW: management.negWidth, posW: management.posWidth,
+      barTitle: management.barTitle
     };
     /* 两张 Top3 卡：按评论量环比增长率降序，只取正增长；基准期不足 5 条不参与（与榜单环比同口径）；点行打开右侧快速详情抽屉 */
     var topOf = function (own) {
@@ -533,11 +534,11 @@ class SectorOverview extends React.Component {
         : (s.scope === 'peer' ? '暂无相关内容 — 当前条件下没有匹配的同业产品。'
         : (s.onlyRisk ? '暂无相关内容 — 当前条件下没有需合规关注的产品。' : '暂无相关内容 — 当前搜索与筛选下没有匹配的产品。')),
       riskRef: self.riskRef, drawerBodyRef: self.drawerBodyRef,
-      listMore: sorted.length > 50,
-      listAll: !!s.listAll,
-      listMoreLabel: s.listAll ? '收起，只看前 50 只' : '展开全部 ' + sorted.length + ' 只（当前显示前 50）',
-      listToggle: () => self.setState({ listAll: !s.listAll, tip: null }),
-      boardNote: SORTS[sortKey].note,
+      listMore: false,
+      listAll: false,
+      listMoreLabel: '',
+      listToggle: () => {},
+      boardNote: SORTS[sortKey].note + ' · 仅显示前 10 只',
       sortComments: mkSort('comments'), sortGrowth: mkSort('growth'),
       sortHeat: mkSort('heat'), sortNeg: mkSort('neg'), sortAtt: mkSort('att'),
       heatRef: self.heatRef,

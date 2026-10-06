@@ -107,11 +107,11 @@ def new_run_id():
     return "synth-" + clock.now().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
 
 
-def load_master(path=None):
+def load_master(path=None, engine=None):
     if path is not None:
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
-    return {"products": load_products()}
+    return {"products": load_products(engine=engine)}
 
 
 def read_anchor(engine):
@@ -183,7 +183,7 @@ def fingerprint(
 class Material:
     """一只产品一个区间的全部原料：判定单元、证据、基准期计数。"""
 
-    def __init__(self, engine, code, rng, plex, filter_config):
+    def __init__(self, engine, code, rng, plex, filter_config, prompt_versions=COMMENT_PRODUCT_PROMPT_VERSIONS):
         self.code, self.rng, self.plex = code, rng, plex
         lo, hi = _window(rng)
         self.window = (lo, hi)
@@ -198,18 +198,20 @@ class Material:
                 kind,
                 "comment",
                 task="comment_product",
-                prompt_version=COMMENT_PRODUCT_PROMPT_VERSIONS,
+                prompt_version=prompt_versions,
                 **args,
             )
 
         rel = released("relevance", read_args)
         att = released("attitude", read_args)
         asp = released("aspect", read_args)
+        feedback = released("feedback_eligible", read_args)
         mkt = released("market_direction", read_args)
         comp = released("compliance", read_args)
 
         self.ann_ids = set()
-        self.units = []   # 相关且有态度
+        self.units = []   # 严格产品反馈（态度排行、主题、总结、竞品）
+        self.stage_units = []  # 明确指向产品的全部态度（含纯买卖/表现讨论）
         for unit, a in att.items():
             r = rel.get(unit)
             if r is None or r["value"] != "relevant":
@@ -218,16 +220,18 @@ class Material:
             asp_row = asp.get(unit)
             if asp_row:
                 self.ann_ids.add(asp_row["annotation_id"])
-            self.units.append({
+            candidate = {
                 "comment_id": unit[0], "attitude": a["value"],
                 "aspects": (asp_row or {}).get("value") or [],
+                "feedback_eligible": (feedback.get(unit) or {}).get("value"),
                 "posted_at": utc_naive_to_hkt(a["posted_at"]),
                 "annotation_id": r["annotation_id"],
-            })
+            }
+            self.stage_units.append(candidate)
+            if core_themes.is_product_feedback(candidate):
+                self.units.append(candidate)
         self.market_units = []
         for unit, m in mkt.items():
-            if (rel.get(unit) or {}).get("value") != "relevant":
-                continue
             if m["value"] in ("bullish", "bearish", "neutral"):
                 self.ann_ids.add(m["annotation_id"])
                 self.market_units.append({"comment_id": unit[0], "market_direction": m["value"],
@@ -242,7 +246,10 @@ class Material:
                 self.ann_ids.add(c["annotation_id"])
                 self.compliance_hits.append({"comment_id": unit[0], "tags": tags,
                                              "rationale": (c["value"] or {}).get("rationale")})
-        self.relevant_count = sum(1 for r in rel.values() if r["value"] == "relevant")
+        # This count is shown beside product-attitude facts.  Market-only and
+        # trading-call rows may still be relevant to other surfaces, but they
+        # are deliberately outside the product-feedback denominator.
+        self.relevant_count = len(self.units)
         self.pos = sum(1 for u in self.units if u["attitude"] == "positive")
         self.neg = sum(1 for u in self.units if u["attitude"] == "negative")
         self.neu = sum(1 for u in self.units if u["attitude"] == "neutral")
@@ -257,14 +264,21 @@ class Material:
         b_att = released("attitude", base_args)
         b_rel = released("relevance", base_args)
         b_asp = released("aspect", base_args)
+        b_feedback = released("feedback_eligible", base_args)
         self.base_units = None
         if b_att:
-            self.base_units = [
-                {"attitude": a["value"], "aspects": (b_asp.get(unit) or {}).get("value") or [],
-                 "posted_at": utc_naive_to_hkt(a["posted_at"])}
-                for unit, a in b_att.items()
-                if (b_rel.get(unit) or {}).get("value") == "relevant"
-            ]
+            self.base_units = []
+            for unit, a in b_att.items():
+                if (b_rel.get(unit) or {}).get("value") != "relevant":
+                    continue
+                candidate = {
+                    "attitude": a["value"],
+                    "aspects": (b_asp.get(unit) or {}).get("value") or [],
+                    "feedback_eligible": (b_feedback.get(unit) or {}).get("value"),
+                    "posted_at": utc_naive_to_hkt(a["posted_at"]),
+                }
+                if core_themes.is_product_feedback(candidate):
+                    self.base_units.append(candidate)
 
         self._texts = None
         self._quotes = None
@@ -273,7 +287,8 @@ class Material:
     def texts(self):
         """`{comment_id: 脱敏正文}`，只取本区间用到的评论。"""
         if self._texts is None:
-            ids = {u["comment_id"] for u in self.units} | {u["comment_id"] for u in self.market_units} \
+            ids = {u["comment_id"] for u in self.units} | {u["comment_id"] for u in self.stage_units} \
+                | {u["comment_id"] for u in self.market_units} \
                 | {h["comment_id"] for h in self.compliance_hits}
             out = {}
             with self._engine.connect() as conn:
@@ -344,7 +359,7 @@ def build_theme_payload(mat, kind):
         for pol in ("positive", "negative"):
             by_asp = defaultdict(list)
             for u in grouped.get(pol, []):
-                for a in (u["aspects"] or ["other"]):
+                for a in core_themes.product_aspects(u):
                     by_asp[a].append(u)
             for asp, us in by_asp.items():
                 if len(us) < MIN_BUCKET:
@@ -359,9 +374,8 @@ def build_theme_payload(mat, kind):
         neg = [u for u in mat.units if u["attitude"] == "negative"]
         by_asp = defaultdict(list)
         for u in neg:
-            for a in (u["aspects"] or ["other"]):
-                if a in core_themes.NEG_CATEGORY_ASPECTS:
-                    by_asp[a].append(u)
+            for a in core_themes.product_aspects(u):
+                by_asp[a].append(u)
         for asp, us in by_asp.items():
             if len(us) < MIN_BUCKET:
                 continue
@@ -434,7 +448,7 @@ def build_stage_units(mat):
     bi = _bucket_index(rng)
     counts = [[0, 0, 0, 0] for _ in range(nb)]  # mentions pos neg neu
     per_bucket_units = defaultdict(list)
-    for u in mat.units:
+    for u in mat.stage_units:
         i = bi(u)
         if i is None or not 0 <= i < nb:
             continue
@@ -550,8 +564,13 @@ class Synthesizer:
         if self.stop.is_set():
             return self._tls.counts
         rng = build_range(range_key, anchor)
-        mat = Material(self.engine, code, rng, self.plex, self.filter_config)
-        if not mat.units and not mat.market_units:
+        versions = ((self.cfg.prompt_version,) if self.cfg.prompt_version == "comment-product-v4"
+                    else COMMENT_PRODUCT_PROMPT_VERSIONS)
+        mat = Material(self.engine, code, rng, self.plex, self.filter_config, versions)
+        has_stage_material = bool(
+            {"stage_unit", "stage_summary"}.intersection(kinds) and mat.stage_units
+        )
+        if not mat.units and not has_stage_material and not ("topic_label" in kinds and mat.market_units):
             self._inc("no_material")
             for kind in kinds:
                 self._publish_empty(code, range_key, anchor, kind, "no_material")
@@ -874,7 +893,7 @@ def run(engine, cfg, *, codes=None, ranges=DEFAULT_RANGES, kinds=KINDS, provider
         route_active = comment_routes_ready_on_connection(conn)
     if not dry_run and not route_active:
         require_filter_ready(engine, filter_config)
-    master = master or load_master()
+    master = master or load_master(engine=engine)
     anchor = anchor_override or read_anchor(engine)
     if anchor is None:
         raise SystemExit("meta_kv 里没有 anchor：先跑 import_dump / etl")

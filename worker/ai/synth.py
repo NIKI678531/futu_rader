@@ -5,9 +5,9 @@
 | kind | 页面 | 输入（都是 `backend/core/` 算好的事实＋带 id 的证据引文） | 输出 |
 |---|---|---|---|
 | `hot_summary` | 板块总览榜单 | 正负中计数、主题桶计数、证据 | ≤30 字「现象＋主流观点」 |
-| `summary` | P7／S10 当前舆情总结 | 同上＋环比 | 2–4 条要点，每条 ≤60 字＋evidence_ids |
-| `theme_label` | P9／S10 观点主题 | 每个极性×aspect 桶的计数与证据 | 每桶标题 ≤12 字＋摘要 ≤40 字 |
-| `neg_category` | S10 负面舆情摘要／P9 消极卡 | 每个负面 aspect 桶 | 每桶类别名 ≤10 字＋摘要 ≤40 字 |
+| `summary` | P7／S10 当前舆情总结 | 同上＋环比 | 最多 5 条具体要点，每条 ≤100 字＋evidence_ids |
+| `theme_label` | P9／S10 观点主题 | 每个极性×aspect 桶的计数与证据 | 具体标题＋详细摘要＋1–3 条理由 |
+| `neg_category` | S10 负面舆情摘要／P9 消极卡 | 每个负面 aspect 桶 | 具体问题名＋详细摘要＋1–3 条理由 |
 | `stage_unit` | P12 阶段观点 | 每个足量时段的计数与证据 | 7 类之一＋≤40 字摘要 |
 | `stage_summary` | P12 阶段观点 | 合并后的阶段（多时段） | ≤40 字总结 |
 | `topic_label` | P13 产品话题情绪 | 市场方向三色计数与证据 | 标题 ≤16 字＋摘要 ≤40 字 |
@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from .schemas import SchemaError, _strictify
 
-VERSION = "synth-v1"
+VERSION = "synth-v3"
 
 KINDS = ("hot_summary", "summary", "theme_label", "neg_category", "stage_unit",
          "stage_summary", "topic_label", "competitor_reason")
@@ -80,8 +80,24 @@ class SummaryPoint(BaseModel):
 
     @model_validator(mode="after")
     def _rules(self):
-        _max_len(self.text, 60, "summary.point")
+        _max_len(self.text, 100, "summary.point")
         _no_ratio(self.text, "summary.point")
+        if not self.evidence_ids:
+            raise ValueError("summary.point: 至少引用一条证据")
+        return self
+
+
+class ThemeKeyPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str
+    evidence_ids: list[str]
+
+    @model_validator(mode="after")
+    def _rules(self):
+        _max_len(self.text, 72, "theme.key_point")
+        _no_ratio(self.text, "theme.key_point")
+        if not self.evidence_ids:
+            raise ValueError("theme.key_point: 至少引用一条证据")
         return self
 
 
@@ -92,8 +108,8 @@ class Summary(BaseModel):
 
     @model_validator(mode="after")
     def _rules(self):
-        if not 1 <= len(self.points) <= 4:
-            raise ValueError(f"summary: 要点 {len(self.points)} 条，应为 1–4 条")
+        if not 1 <= len(self.points) <= 5:
+            raise ValueError(f"summary: 要点 {len(self.points)} 条，应为 1–5 条")
         return self
 
 
@@ -103,12 +119,21 @@ class BucketLabel(BaseModel):
     key: str
     title: str
     summary: str
+    key_points: list[ThemeKeyPoint]
     evidence_ids: list[str]
 
     @model_validator(mode="after")
     def _rules(self):
-        _max_len(self.title, 12, f"{self.key}.title")
-        _max_len(self.summary, 40, f"{self.key}.summary")
+        _max_len(self.title, 20, f"{self.key}.title")
+        _max_len(self.summary, 120, f"{self.key}.summary")
+        if not 1 <= len(self.key_points) <= 3:
+            raise ValueError(f"{self.key}: key_points 应为 1–3 条")
+        generic_titles = {
+            "产品整体体验获认可", "产品整体体验受认可", "产品整体体验受质疑",
+            "其他产品体验获认可", "其他产品体验受认可", "其他产品体验受质疑",
+        }
+        if self.title.strip() in generic_titles:
+            raise ValueError(f"{self.key}.title: 必须指出具体产品体验，不能使用泛化标题")
         _no_ratio(self.title, f"{self.key}.title")
         _no_ratio(self.summary, f"{self.key}.summary")
         return self
@@ -240,6 +265,8 @@ def check_evidence_ids(kind, obj, allowed):
     if hasattr(obj, "results"):
         for r in obj.results:
             _check(r.evidence_ids, getattr(r, "key", None) or getattr(r, "code", ""))
+            for point in getattr(r, "key_points", []):
+                _check(point.evidence_ids, f"{getattr(r, 'key', '')}.key_point")
     elif hasattr(obj, "points"):
         for p in obj.points:
             _check(p.evidence_ids, "point")
@@ -272,9 +299,11 @@ SYSTEMS = {
 
 # 任务：当前舆情总结（产品监控页要点列表）
 
-写 **1–4 条要点**，每条 **不超过 60 字**，按重要性排序：
-- 第一条概括讨论最集中的方面（看 `facts.themes` 与 `facts.negCategories` 谁的提及多）。
-- 积极与消极若都有，各给一条；只有一方就只写一方。
+写 **3–5 条要点**，页面最多只展示 5 条；每条 **不超过 100 字**，按重要性排序：
+- 每条都要同时写清：评价的是哪项具体产品体验、评论提到的现象或使用场景、用户因此怎样评价产品。不要只写「整体获认可／整体受质疑」「体验较好／体验不佳」等泛化结论。
+- 第一条概括讨论最集中的具体问题，并写清「什么现象／原因 → 用户因此怎样评价产品」。
+- 积极与消极若都有，各至少给一条；只有一方才只写一方。
+- 再补次要原因或观点变化；优先写费率、点差、成交深度、跟踪误差／折溢价、派息、杠杆损耗、产品结构、披露、服务或交易渠道等可核验细节，避免只复述正负数量。
 - 有 `facts.compliance` 命中时，最后一条提示「有评论涉及……（需合规关注）」，不判真伪。
 - 每条列出支撑它的 `evidence_ids`。""",
 
@@ -284,8 +313,9 @@ SYSTEMS = {
 
 `facts.buckets` 里每个桶是「一种极性 × 一个方面」的评论集合，带计数与证据。对**每个桶**输出：
 - `key`：原样抄回。
-- `title`：**不超过 12 字**的具体观点名，如「费率同类最低」「点差过大影响短线」。不要只重复方面名（不要写「费率」）。
-- `summary`：**不超过 40 字**，概括这个桶里评论在说什么。
+- `title`：**不超过 20 字**的具体结论，写成「具体产品属性／使用场景＋用户感受或结果」，如「溢价收窄改善入场体验」「港元柜台成交深度不足」。严禁只重复方面名，也严禁「产品整体体验获认可／受质疑」「其他产品体验获认可／受质疑」等泛化标题。
+- `summary`：**不超过 120 字**，至少点出一个证据中出现的具体对象、现象或场景，并说明它为何令用户肯定／质疑这只产品；证据没有因果时只并列写现象与评价，不补造因果。
+- `key_points`：1–3 条关键理由，每条含不超过 72 字的 `text` 和自己的 `evidence_ids`；每条应保留区别于其他话题的具体细节，不能换一种说法重复标题。
 - `evidence_ids`：支撑标题的引文。
 桶一个都不能少、不能多。""",
 
@@ -295,8 +325,9 @@ SYSTEMS = {
 
 `facts.buckets` 是消极评论里「可归类、可行动的产品问题」桶（费率／流动性／点差／跟踪／分红／损耗／其他）。对每个桶输出：
 - `key`：原样抄回。
-- `title`：**不超过 10 字**的问题名，如「跟踪偏差扩大」「派息不及预期」。
-- `summary`：**不超过 40 字**，说清用户在质疑什么（不写建议）。
+- `title`：**不超过 20 字**的具体问题名，如「跟踪偏差扩大」「派息到账慢于预期」。不得使用「整体体验受质疑」等泛化标题。
+- `summary`：**不超过 120 字**，点出具体产品属性、使用场景或异常现象，说清用户在质疑什么（不写建议）。
+- `key_points`：1–3 条具体理由，每条不超过 72 字并带自己的 `evidence_ids`。
 - `evidence_ids`。""",
 
     "stage_unit": _COMMON + """

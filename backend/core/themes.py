@@ -37,14 +37,66 @@ ASPECT_LABEL = {
     "tracking": "跟踪表现与折溢价",
     "dividend": "分红派息",
     "leverage_decay": "杠杆／反向损耗",
+    "product_design": "产品结构与策略",
+    "issuer_service": "发行商服务",
+    "disclosure": "产品披露",
+    "trading_access": "交易渠道与柜台",
+    "other_product": "其他产品体验",
     "performance": "涨跌表现",
     "trading_intent": "买卖与仓位意向",
     "other": "其他产品讨论",
 }
 POLARITY_LABEL = {"positive": "积极", "negative": "消极"}
 
+GENERIC_THEME_TITLES = frozenset((
+    "产品整体体验获认可", "产品整体体验受认可", "产品整体体验受质疑",
+    "其他产品体验获认可", "其他产品体验受认可", "其他产品体验受质疑",
+))
+
+# Layer B 尚未生成时也不能只把宽泛的 aspect 名原样当标题。这里不猜评论里没有的
+# 因果，只把已确认的「极性 × 方面」写成一条可读结论；模型生成后会被具体标题覆盖。
+FALLBACK_THEME_TITLE = {
+    "positive": {
+        "fee": "费率与持有成本获认可",
+        "liquidity": "流动性与成交体验获认可",
+        "spread": "买卖点差体验获认可",
+        "tracking": "跟踪与折溢价表现获认可",
+        "dividend": "分红派息表现获认可",
+        "leverage_decay": "杠杆放大效果获认可",
+        "product_design": "产品结构与策略获认可",
+        "issuer_service": "发行商服务获认可",
+        "disclosure": "产品披露获认可",
+        "trading_access": "交易渠道与柜台体验获认可",
+        "other_product": "具体产品体验待 AI 归纳",
+        "performance": "收益与涨幅表现获认可",
+        "trading_intent": "买入与持有意愿增强",
+        "other": "具体产品体验待 AI 归纳",
+    },
+    "negative": {
+        "fee": "费率与持有成本受质疑",
+        "liquidity": "流动性与成交体验受质疑",
+        "spread": "买卖点差偏宽受质疑",
+        "tracking": "跟踪偏差与溢价表现受质疑",
+        "dividend": "分红派息表现受质疑",
+        "leverage_decay": "杠杆损耗与波动风险受质疑",
+        "product_design": "产品结构与策略受质疑",
+        "issuer_service": "发行商服务受质疑",
+        "disclosure": "产品披露完整性受质疑",
+        "trading_access": "交易渠道与柜台体验受质疑",
+        "other_product": "具体产品问题待 AI 归纳",
+        "performance": "下跌与亏损体验引发不满",
+        "trading_intent": "卖出与减仓意愿上升",
+        "other": "具体产品问题待 AI 归纳",
+    },
+}
+
 # 负面类别只收「产品问题」类 aspect（见模块头）。
-NEG_CATEGORY_ASPECTS = ("fee", "liquidity", "spread", "tracking", "dividend", "leverage_decay", "other")
+PRODUCT_FEEDBACK_ASPECTS = frozenset((
+    "fee", "liquidity", "spread", "tracking", "dividend", "leverage_decay",
+    "product_design", "issuer_service", "disclosure", "trading_access",
+    "other_product", "other",  # v2/v3 compatibility during the 30-day replacement window
+))
+NEG_CATEGORY_ASPECTS = tuple(PRODUCT_FEEDBACK_ASPECTS)
 NEG_CATEGORY_MAX = 6
 
 
@@ -53,11 +105,24 @@ def _aspects_of(unit):
     return list(a) if a else ["other"]
 
 
+def product_aspects(unit):
+    """Return only aspects that are allowed to appear in product themes."""
+    return [aspect for aspect in _aspects_of(unit) if aspect in PRODUCT_FEEDBACK_ASPECTS]
+
+
+def is_product_feedback(unit):
+    """One audited eligibility rule shared by ranking, themes and synthesis."""
+    explicit = unit.get("feedback_eligible")
+    if explicit is not None:
+        return explicit is True
+    return bool(product_aspects(unit))
+
+
 def bucket_counts(units, nb, bucket_index):
     """`{aspect: {mentions, per_bucket[], first, last}}`，`bucket_index(unit)` 给桶号或 None。"""
     out = {}
     for u in units:
-        for asp in _aspects_of(u):
+        for asp in product_aspects(u):
             s = out.setdefault(asp, {"mentions": 0, "per_bucket": [0] * nb, "first": None, "last": None})
             s["mentions"] += 1
             bi = bucket_index(u) if nb else None
@@ -68,6 +133,25 @@ def bucket_counts(units, nb, bucket_index):
                 s["first"] = ts if s["first"] is None or ts < s["first"] else s["first"]
                 s["last"] = ts if s["last"] is None or ts > s["last"] else s["last"]
     return out
+
+
+def _fallback_theme_copy(polarity, aspect, stats, base_n, buckets):
+    """把已确认的计数、环比与峰值写成详细事实，不补造具体原因。"""
+    label = ASPECT_LABEL.get(aspect, aspect)
+    verb = "肯定" if polarity == "positive" else "质疑"
+    parts = [f"{stats['mentions']} 条{POLARITY_LABEL[polarity]}评论主要{verb}{label}"]
+    if base_n is not None:
+        change = stats["mentions"] - base_n
+        if change > 0:
+            parts.append(f"较基准期增加 {change} 条")
+        elif change < 0:
+            parts.append(f"较基准期减少 {-change} 条")
+        else:
+            parts.append("与基准期持平")
+    if stats["per_bucket"] and max(stats["per_bucket"]) > 0:
+        peak_i = max(range(len(stats["per_bucket"])), key=stats["per_bucket"].__getitem__)
+        parts.append(f"讨论在 {buckets[peak_i]['label']} 最集中")
+    return "；".join(parts) + "。"
 
 
 def themes(code, units_by_polarity, base_units_by_polarity, buckets, bucket_index, labels=None):
@@ -92,6 +176,7 @@ def themes(code, units_by_polarity, base_units_by_polarity, buckets, bucket_inde
         rows = []
         for asp, s in counts.items():
             lab = labels.get((pol, asp)) or {}
+            label_is_specific = bool(lab.get("title")) and lab["title"].strip() not in GENERIC_THEME_TITLES
             base_n = None if base_counts is None else base_counts.get(asp, {}).get("mentions", 0)
             share = (s["mentions"] / total * 100) if total else 0
             life = lifecycle(s["mentions"], base_n)
@@ -101,10 +186,12 @@ def themes(code, units_by_polarity, base_units_by_polarity, buckets, bucket_inde
                     "id": f"{code}-{pol}-{asp}",
                     "polarity": pol,
                     "aspect": asp,
-                    "title": lab.get("title") or ASPECT_LABEL.get(asp, asp),
-                    "summary": lab.get("summary")
-                    or f"区间内 {s['mentions']} 条{POLARITY_LABEL[pol]}评论涉及{ASPECT_LABEL.get(asp, asp)}。",
-                    "labelStatus": "ok" if lab.get("title") else "unavailable",
+                    "title": (lab.get("title") if label_is_specific else None) or FALLBACK_THEME_TITLE.get(pol, {}).get(
+                        asp, f"{ASPECT_LABEL.get(asp, asp)}{'获认可' if pol == 'positive' else '受质疑'}"
+                    ),
+                    "summary": (lab.get("summary") if label_is_specific else None)
+                    or _fallback_theme_copy(pol, asp, s, base_n, buckets),
+                    "labelStatus": "ok" if label_is_specific else "unavailable",
                     "mentions": s["mentions"],
                     "share": share,
                     "hasMeta": pol == "negative" and asp in NEG_CATEGORY_ASPECTS,
@@ -119,7 +206,8 @@ def themes(code, units_by_polarity, base_units_by_polarity, buckets, bucket_inde
                         for b, n in zip(buckets, s["per_bucket"])
                     ],
                     "evidenceCount": s["mentions"],
-                    "evidenceIds": lab.get("evidence_ids") or [],
+                    "evidenceIds": (lab.get("evidence_ids") if label_is_specific else None) or [],
+                    "keyPoints": (lab.get("key_points") if label_is_specific else None) or [],
                 }
             )
         rows.sort(key=lambda r: (-r["mentions"], r["aspect"]))
@@ -168,6 +256,7 @@ def neg_categories(code, neg_units, base_neg_units, buckets, bucket_index, label
                 "severityLabel": SEVERITY_LABEL.get(sev) if sev else None,
                 "evidenceCount": s["mentions"],
                 "evidenceIds": lab.get("evidence_ids") or [],
+                "keyPoints": lab.get("key_points") or [],
             }
         )
     rows.sort(key=lambda r: (-r["mentions"], r["aspect"]))

@@ -280,6 +280,7 @@ class FutuRefresh:
         from ai import config
         from ai.providers import build as build_provider
         from ai.providers.base import RunControl
+        from core.top_products import TOP_COMMENT_PRODUCT_LIMIT, top_comment_products
         from jobs import analyze as analysis_job, full_own
 
         cfg = config.load()
@@ -295,13 +296,31 @@ class FutuRefresh:
         require_comment_routes_ready(self.target)
         if request.wait_for_ready:
             self._wait_for_ready(request.anchor or request.budget_date, request.wait_timeout_seconds)
-        args = type("Args", (), {
-            "codes": ",".join(request.codes) or None,
-            "sector": None, "struct": None, "ownership": "all",
-            "anchor": request.anchor.isoformat() if request.anchor else None,
-            "anchor_mode": "latest-complete", "ranges": ",".join(request.ranges),
-        })()
-        plan = analysis_job.make_plan(self.target, args)
+        plans = []
+        selected_codes_by_range = {}
+        range_priority = {"d1": 0, "d2": 1, "d7": 2, "d14": 3, "d30": 4, "mtd": 5}
+        ordered_ranges = tuple(sorted(request.ranges, key=range_priority.__getitem__))
+        for range_key in ordered_ranges:
+            selected_codes = list(request.codes[:TOP_COMMENT_PRODUCT_LIMIT]) or [
+                row["code"]
+                for row in top_comment_products(
+                    self.target,
+                    range_key,
+                    anchor=request.anchor,
+                    limit=TOP_COMMENT_PRODUCT_LIMIT,
+                )
+            ]
+            selected_codes_by_range[range_key] = selected_codes
+            if not selected_codes:
+                continue
+            args = type("Args", (), {
+                "codes": ",".join(selected_codes),
+                "sector": None, "struct": None, "ownership": "all",
+                "anchor": request.anchor.isoformat() if request.anchor else None,
+                "anchor_mode": "latest-complete", "ranges": range_key,
+                "current_window_only": False,
+            })()
+            plans.append((range_key, analysis_job.make_plan(self.target, args)))
         policy_hash = hashlib.sha256(_json({
             "model": cfg.model,
             "prompt": cfg.prompt_version,
@@ -317,25 +336,50 @@ class FutuRefresh:
         control = RunControl(request.max_http_attempts)
         control.reserve_hook = budget.reserve
         provider = build_provider(cfg, control=control)
-        progress = full_own.run_manual(self.target, cfg, plan, provider)
+        progress_by_range = {}
+        completed_ranges = []
+        pending_ranges = []
+        pending = 0
+        overall_status = "complete"
+        for range_key, plan in plans:
+            progress = full_own.run_manual(self.target, cfg, plan, provider)
+            progress_by_range[range_key] = progress
+            pending += sum(
+                not row.get("complete", False)
+                for row in progress.get("products", {}).values()
+            )
+            if progress.get("status") == "complete":
+                completed_ranges.append(range_key)
+            else:
+                pending_ranges.append(range_key)
+                overall_status = progress.get("status", "unknown")
+            if control.reason:
+                remaining = [key for key, _plan in plans if key not in progress_by_range]
+                pending_ranges.extend(remaining)
+                pending += sum(len(selected_codes_by_range[key]) for key in remaining)
+                break
+        for range_key in ordered_ranges:
+            if range_key not in completed_ranges and range_key not in pending_ranges:
+                completed_ranges.append(range_key)
         snapshot = budget.snapshot()
-        pending = sum(not row.get("complete", False) for row in progress.get("products", {}).values())
-        status = progress.get("status", "unknown")
-        completed_ranges, pending_ranges = self._analysis_range_state(
-            plan["codes"], request.ranges
-        )
         failure_reason = control.reason or (
-            status if status in {"blocked", "error", "cancelled"} else None
+            overall_status
+            if overall_status in {"blocked", "error", "cancelled"}
+            else None
         )
         return AiResult(
-            status=status,
+            status=overall_status,
             attempts_used=control.attempts,
             attempts_remaining=snapshot["requestsRemaining"],
             pending_products=pending,
             completed_ranges=completed_ranges,
             pending_ranges=pending_ranges,
             failure_reason=failure_reason,
-            detail=progress,
+            detail={
+                "selectionLimit": TOP_COMMENT_PRODUCT_LIMIT,
+                "selectedCodesByRange": selected_codes_by_range,
+                "ranges": progress_by_range,
+            },
         )
 
     def _analysis_range_state(self, codes, ranges):

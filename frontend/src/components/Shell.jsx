@@ -84,6 +84,16 @@ export default function Shell({ vals, children }) {
             <span style={s('font:600 14px/1.4 var(--font-mono);color:var(--ink-800)')}>{updated}</span>
           </div>
           {isSql && <ProgressButton />}
+          {isSql && (
+            <DcLink
+              href="/admin"
+              title="查看评论进入与 AI 分析链路"
+              style={s('display:inline-flex;align-items:center;height:30px;padding:0 11px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:600 12px/1.2 var(--font-cjk);color:var(--ink-700);text-decoration:none')}
+              className={hover('background:var(--canvas-alt);color:var(--csop-blue-700);text-decoration:none')}
+            >
+              数据管理
+            </DcLink>
+          )}
         </div>
       </div>
       <div style={s('display:flex;align-items:stretch;height:42px;padding:0 24px;background:#fff;border-bottom:1px solid var(--border-1)')}>

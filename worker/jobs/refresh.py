@@ -36,6 +36,7 @@ from collection import (
     SyncRequest,
 )
 from jobs.import_dump import pool_codes
+from jobs.hkex_catalog import activate_pending_if_receipt_matches
 from radar_db import make_engine
 from radar_db.schema import ai_daily_budget, ingestion_runs
 
@@ -47,13 +48,24 @@ def _source_engine():
     return create_engine(url, future=True, pool_pre_ping=True)
 
 
-def _refresh(with_source=True):
+def _refresh(with_source=True, through_source_run_id=None):
     target = make_engine()
-    source = (
-        MarketInsightMySqlAdapter(_source_engine(), set(pool_codes()))
-        if with_source else None
-    )
-    return FutuRefresh(target, source)
+    activated = []
+    source = None
+    if with_source:
+        source_engine = _source_engine()
+        if through_source_run_id:
+            activated = activate_pending_if_receipt_matches(
+                target, source_engine, through_source_run_id
+            )
+        try:
+            active_codes = pool_codes(engine=target)
+        except TypeError:  # compatibility for injected adapters in operational tests
+            active_codes = pool_codes()
+        source = MarketInsightMySqlAdapter(source_engine, set(active_codes))
+    service = FutuRefresh(target, source)
+    service.activated_catalog_codes = tuple(activated)
+    return service
 
 
 def _calibration_report(explicit: Path | None):
@@ -172,7 +184,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "sync":
-            result = _refresh().sync(SyncRequest(
+            service = _refresh(through_source_run_id=args.through_source_run_id)
+            result = service.sync(SyncRequest(
                 mode=args.mode,
                 run_id=args.run_id,
                 through_source_run_id=args.through_source_run_id,
@@ -180,7 +193,18 @@ def main(argv=None):
                 dry_run=args.dry_run,
                 feed_ids=tuple(args.feed_id),
             ))
-            print(json.dumps(result.as_dict(), ensure_ascii=False, default=str))
+            payload = result.as_dict()
+            activated = tuple(getattr(service, "activated_catalog_codes", ()))
+            if activated and not args.dry_run:
+                from jobs.backfill_comment_routes import run as rebuild_comment_routes
+                route_result = rebuild_comment_routes(
+                    service.target,
+                    activate_routes=True,
+                    preserve_quality_gate=True,
+                )
+                payload["catalogActivatedCodes"] = list(activated)
+                payload["commentRouteDigest"] = route_result["productPoolDigest"]
+            print(json.dumps(payload, ensure_ascii=False, default=str))
             return 0
 
         if args.command == "analyze":

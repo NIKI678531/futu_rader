@@ -86,7 +86,7 @@ def main():
         anchor = date.fromisoformat(conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar_one())
     end = date.fromisoformat(args.end) if args.end else anchor
     start = date.fromisoformat(args.start) if args.start else end - timedelta(days=59)
-    own = [product["code"] for product in load_products() if product["ownership"] == "own"]
+    own = [product["code"] for product in load_products(engine=engine) if product["ownership"] == "own"]
     codes = args.codes.split(",") if args.codes else own
     if not set(codes) <= set(own):
         parser.error("Only configured own products are supported")

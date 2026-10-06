@@ -71,11 +71,11 @@ ATT_ZH = {"positive": "积极", "neutral": "中性", "negative": "消极"}
 LANG_ZH = {"zh-Hans": "简", "zh-Hant": "繁", "yue": "粤"}
 LABEL_SHEET = "标注"
 GUIDE_SHEET = "说明"
-COLUMNS = ("编号", "产品代码", "产品名", "帖子标题", "父评论", "评论正文", "相关性", "态度", "备注")
+COLUMNS = ("编号", "产品代码", "产品名", "帖子标题", "父评论", "评论正文", "相关性", "态度", "备注", "产品反馈")
 LABEL_COLUMNS = ("编号", "comment_id", "产品代码", "层", "学生相关性", "学生相关性概率", "学生态度", "学生态度概率",
                  "Luna相关性", "Luna态度", "学生模型", "抽样来源",
                  "LLM模型", "LLM请求模型", "LLM Prompt", "LLM Schema", "LLM Taxonomy",
-                 "评论路由版本", "产品池摘要", "回归案例ID")
+                 "评论路由版本", "产品池摘要", "目录规则版本", "回归案例ID", "Luna产品反馈")
 # 不算 Luna 结论的写入方（ADR-0021 §8），与 evaluate_gold.NON_LLM_PROVIDERS 同一份含义。
 NON_LLM_PROVIDERS = ("rule", "local_model", "propagated")
 
@@ -86,6 +86,7 @@ LLM_ONLY_GUIDE_LINES = (
 
 GUIDE_LINES = (
     "填「相关性」列：相关 / 无关 / 需上下文（下拉）。「态度」列只在相关时填：积极 / 消极 / 中性（下拉）。",
+    "每行都填「产品反馈」：只有费率、流动性、点差、跟踪/折溢价、派息、产品结构、发行商服务或披露等实质体验填“是”；涨跌、指数/宏观、成分股和买卖喊单填“否”。",
     "",
     "相关 ＝ 评论在评价这只 ETF 本身，或在说买卖／持有它，或用它的成分股解释它的涨跌。",
     "无关 ＝ 只聊个股、大盘、宏观、闲聊、表情、复读；提到 ETF 代码但没有针对它的内容也算无关。",
@@ -183,8 +184,7 @@ def collect_units(engine, *, ownership=None, source="student", llm_only=False):
         raise ValueError(f"未知抽样来源：{source}")
     llm_only = llm_only or source == "llm"
     ownership = ownership or pool_codes()
-    from ai.prompts.comment_product_v3 import VERSION as comment_prompt_version
-    from radar_db.annotations_read import released_annotations
+    from radar_db.annotations_read import COMMENT_PRODUCT_PROMPT_VERSIONS, released_annotations
     from radar_db.comment_filter import load_comment_filter_config, require_filter_ready
 
     filter_config = load_comment_filter_config()
@@ -213,11 +213,12 @@ def collect_units(engine, *, ownership=None, source="student", llm_only=False):
     routing_policy = report_policy_fields(engine) if route_active else {}
     annotation_scope = {
         "task": "comment_product",
-        "prompt_version": comment_prompt_version,
+        "prompt_version": COMMENT_PRODUCT_PROMPT_VERSIONS,
         "parent_filter_config": filter_config,
     }
     cur_rel = released_annotations(engine, "relevance", "comment", **annotation_scope)
     cur_att = released_annotations(engine, "attitude", "comment", **annotation_scope)
+    cur_feedback = released_annotations(engine, "feedback_eligible", "comment", **annotation_scope)
     # 学生行需要保留 provider 自己的历史预测（即使后来由 Luna 接管），但它的
     # 判定单元必须仍出现在共享的现行、合格父帖集合中。这样不会另写一份父帖 SQL。
     s_rel = {} if llm_only else {
@@ -284,6 +285,7 @@ def collect_units(engine, *, ownership=None, source="student", llm_only=False):
             "student_relevance_p": rel_conf, "student_attitude_p": att_conf if rel == "relevant" else None,
             "student_confidence": min(confs) if confs else None,
             "llm_relevance": l_rel, "llm_attitude": luna(cur_att, (cid, code)) if l_rel == "relevant" else None,
+            "llm_feedback_eligible": luna(cur_feedback, (cid, code)),
             "llm_policy": luna_policy((cid, code)),
             "language": detect_language([src["text"]]),
             "llm_only": llm_only,
@@ -332,17 +334,21 @@ def write_workbooks(picked, out_dir, *, names=None, source="student", llm_only=F
         c.font = Font(bold=True)
     for u in picked:
         ws.append([u["id"], u["code"], names.get(u["code"], u["code"]), u.get("title") or "", u.get("parent") or "",
-                   u["text"], "", "", ""])
+                   u["text"], "", "", "", ""])
     n = len(picked)
     dv_rel = DataValidation(type="list", formula1='"相关,无关,需上下文"', allow_blank=True, showErrorMessage=True,
                             errorTitle="相关性", error="只能填：相关 / 无关 / 需上下文")
     dv_att = DataValidation(type="list", formula1='"积极,消极,中性"', allow_blank=True, showErrorMessage=True,
                             errorTitle="态度", error="只能填：积极 / 消极 / 中性（仅相关时填）")
+    dv_feedback = DataValidation(type="list", formula1='"是,否"', allow_blank=True, showErrorMessage=True,
+                                 errorTitle="产品反馈", error="只能填：是 / 否")
     ws.add_data_validation(dv_rel)
     ws.add_data_validation(dv_att)
+    ws.add_data_validation(dv_feedback)
     if n:
         dv_rel.add(f"G2:G{n + 1}")
         dv_att.add(f"H2:H{n + 1}")
+        dv_feedback.add(f"J2:J{n + 1}")
     widths = {"A": 8, "B": 9, "C": 22, "D": 28, "E": 28, "F": 60, "G": 11, "H": 9, "I": 20}
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
@@ -376,7 +382,8 @@ def write_workbooks(picked, out_dir, *, names=None, source="student", llm_only=F
                     policy.get("model"), policy.get("requestedModel"),
                     policy.get("promptVersion"), policy.get("schemaVersion"),
                     policy.get("taxonomyVersion"), policy.get("commentRouteVersion"),
-                    policy.get("productPoolDigest"), u.get("regression_case_id")])
+                    policy.get("productPoolDigest"), policy.get("catalogPolicyVersion"), u.get("regression_case_id"),
+                    u.get("llm_feedback_eligible")])
     for i in range(1, len(LABEL_COLUMNS) + 1):
         ws2.column_dimensions[get_column_letter(i)].width = 16
     labels_path = out_dir / f"{stem}-model-labels.xlsx"

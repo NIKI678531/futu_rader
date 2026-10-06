@@ -1,5 +1,5 @@
 {
-  "manifestVersion": "comment-product-v3-feedback-2026-09-29.1",
+  "manifestVersion": "comment-product-v4-feedback-2026-10-05.1",
   "commentCases": [
     {
       "caseId": "feedback-3037-underlying-hsi-only",
@@ -9,7 +9,8 @@
       "postContent": "讨论恒生指数ETF 3037 的走势和交易。",
       "parentComments": [],
       "commentText": "恒指今日走弱，HSI 可能继续跌。",
-      "expectedRelevance": "irrelevant"
+      "expectedRelevance": "irrelevant",
+      "expectedFeedbackEligible": false
     },
     {
       "caseId": "feedback-3037-other-etf-only",
@@ -19,7 +20,8 @@
       "postContent": "讨论恒生指数ETF 3037 的走势和交易。",
       "parentComments": [],
       "commentText": "$盈富基金 (02800.HK)$ 费率更低，我只买 2800。",
-      "expectedRelevance": "irrelevant"
+      "expectedRelevance": "irrelevant",
+      "expectedFeedbackEligible": false
     },
     {
       "caseId": "feedback-3037-explicit-self",
@@ -29,7 +31,30 @@
       "postContent": "讨论恒生指数ETF 3037 的走势和交易。",
       "parentComments": [],
       "commentText": "$恒生指数ETF (03037.HK)$ 的点差太大。",
-      "expectedRelevance": "relevant"
+      "expectedRelevance": "relevant",
+      "expectedFeedbackEligible": true
+    },
+    {
+      "caseId": "feedback-3037-price-call-only",
+      "commentId": -3037004,
+      "targetCode": "3037",
+      "postTitle": "$恒生指数ETF (03037.HK)$ 讨论区",
+      "postContent": "讨论恒生指数ETF 3037。",
+      "parentComments": [],
+      "commentText": "3037 今天会涨，冲高就卖。",
+      "expectedRelevance": "relevant",
+      "expectedFeedbackEligible": false
+    },
+    {
+      "caseId": "feedback-3037-distribution-product-feedback",
+      "commentId": -3037005,
+      "targetCode": "3037",
+      "postTitle": "$恒生指数ETF (03037.HK)$ 讨论区",
+      "postContent": "讨论恒生指数ETF 3037。",
+      "parentComments": [],
+      "commentText": "3037 派息稳定，公告也写得很清楚。",
+      "expectedRelevance": "relevant",
+      "expectedFeedbackEligible": true
     }
   ],
   "officialAttributionCases": [

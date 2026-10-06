@@ -1,4 +1,4 @@
-"""Fixed v3 release regressions used by calibration and the production gate.
+"""Fixed v4 release regressions used by calibration and the production gate.
 
 The manifest is code-reviewed input, not an annotator-controlled ``备注`` field.
 Comment cases are injected into the bounded calibration sample.  Official-post
@@ -103,13 +103,22 @@ def build_report_evidence(gold, model):
         gid, prediction = matches[0] if len(matches) == 1 else (None, None)
         human = gold.get(gid, {}).get("relevance") if gid else None
         actual = prediction.get("llm", {}).get("relevance") if prediction else None
+        human_feedback = gold.get(gid, {}).get("feedback_eligible") if gid else None
+        actual_feedback = prediction.get("llm", {}).get("feedback_eligible") if prediction else None
         expected = case["expectedRelevance"]
+        expected_feedback = case["expectedFeedbackEligible"]
         comment_results.append({
             "caseId": case["caseId"],
             "expectedRelevance": expected,
             "humanRelevance": human,
             "modelRelevance": actual,
-            "passed": len(matches) == 1 and human == expected and actual == expected,
+            "expectedFeedbackEligible": expected_feedback,
+            "humanFeedbackEligible": human_feedback,
+            "modelFeedbackEligible": actual_feedback,
+            "passed": (
+                len(matches) == 1 and human == expected and actual == expected
+                and human_feedback is expected_feedback and actual_feedback is expected_feedback
+            ),
         })
 
     official_results = official_regression_results()
@@ -141,10 +150,14 @@ def validate_report_evidence(evidence):
         raise ValueError("Quality report does not cover every fixed complaint case exactly once")
     for row in reported_comments:
         expected = expected_comments[row["caseId"]]["expectedRelevance"]
+        expected_feedback = expected_comments[row["caseId"]]["expectedFeedbackEligible"]
         if (
             row.get("expectedRelevance") != expected
             or row.get("humanRelevance") != expected
             or row.get("modelRelevance") != expected
+            or row.get("expectedFeedbackEligible") is not expected_feedback
+            or row.get("humanFeedbackEligible") is not expected_feedback
+            or row.get("modelFeedbackEligible") is not expected_feedback
             or row.get("passed") is not True
         ):
             raise ValueError(f"Fixed complaint regression failed: {row['caseId']}")

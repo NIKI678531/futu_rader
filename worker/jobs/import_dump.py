@@ -62,7 +62,7 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def pool_codes(as_of=None):
+def pool_codes(as_of=None, engine=None):
     """生产产品池代码；给定日期时只返回届时已上市的正式产品。"""
     if isinstance(as_of, datetime):
         as_of = as_of.date()
@@ -71,7 +71,7 @@ def pool_codes(as_of=None):
     elif as_of is not None and not isinstance(as_of, date):
         raise TypeError("as_of must be a date, datetime, ISO date string, or None")
 
-    products = load_products()
+    products = load_products() if engine is None else load_products(engine=engine)
     if as_of is not None:
         products = [
             product

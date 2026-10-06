@@ -445,6 +445,36 @@ runtime_leases = Table(
     Column("expires_at", DATETIME, nullable=False),
 )
 
+# 管理页提交的 AI 分析请求。Web 进程只写这张队列表；常驻 worker 领取后读取
+# Radar 数据库、调用模型并把摘要写回。active_key 在终态清空，利用 UNIQUE + NULL
+# 语义保证同一区间最多只有一个 queued/running 请求，同时保留完整历史。
+ai_analysis_requests = Table(
+    "ai_analysis_requests", metadata,
+    Column("request_id", String(40), primary_key=True),
+    Column("range_key", String(10), nullable=False),
+    Column("priority", Integer, nullable=False),
+    Column("status", String(20), nullable=False),
+    Column("active_key", String(10)),
+    Column("attempts", Integer, nullable=False, default=0),
+    Column("requested_at", DATETIME, nullable=False),
+    Column("started_at", DATETIME),
+    Column("finished_at", DATETIME),
+    Column("lease_owner", String(40)),
+    Column("lease_until", DATETIME),
+    Column("result_json", Text),
+    Column("error_summary", Text),
+    UniqueConstraint("active_key", name="uq_ai_analysis_requests_active_range"),
+    CheckConstraint(
+        "range_key IN ('d1','d2','d7','d14','d30')",
+        name="ck_ai_analysis_requests_range",
+    ),
+    CheckConstraint(
+        "status IN ('queued','running','succeeded','partial','failed')",
+        name="ck_ai_analysis_requests_status",
+    ),
+    Index("ix_ai_analysis_requests_queue", "status", "priority", "requested_at"),
+)
+
 source_snapshots = Table(
     "source_snapshots", metadata,
     Column("feed_id", BigInteger, primary_key=True),
@@ -585,6 +615,56 @@ meta_kv = Table(
     metadata,
     Column("k", String(60), primary_key=True),
     Column("v", Text),
+)
+
+# Versioned HKEX-backed product catalog.  Active rows are the public product
+# pool; pending_source rows are deterministic additions waiting for a complete
+# MarketInsight receipt; pending_review rows require an explicit admin choice.
+product_catalog_snapshots = Table(
+    "product_catalog_snapshots", metadata,
+    Column("snapshot_id", String(64), primary_key=True),
+    Column("fetched_at", DATETIME, nullable=False),
+    Column("source_url", String(500), nullable=False),
+    Column("payload_sha256", String(64), nullable=False),
+    Column("status", String(24), nullable=False),
+    Column("row_count", Integer, nullable=False, default=0),
+    Column("error", Text),
+    Index("ix_product_catalog_snapshots_fetched", "fetched_at"),
+)
+
+product_catalog_entries = Table(
+    "product_catalog_entries", metadata,
+    Column("code", String(10), primary_key=True),
+    Column("name", String(255), nullable=False),
+    Column("issuer", String(255), nullable=False),
+    Column("ownership", String(10), nullable=False),
+    Column("own_code", String(10)),
+    Column("sector", String(20), nullable=False),
+    Column("sector_name", String(80), nullable=False),
+    Column("struct", String(80), nullable=False),
+    Column("listing_date", Date, nullable=False),
+    Column("southbound", Boolean, nullable=False, default=False),
+    Column("benchmark", String(500)),
+    Column("security_type", String(120)),
+    Column("product_subcategory", String(160)),
+    Column("management_style", String(120)),
+    Column("replication_method", String(120)),
+    Column("management_fee", String(80)),
+    Column("asset_class", String(120)),
+    Column("geographic_focus", String(160)),
+    Column("currencies_json", Text, nullable=False, default="[]"),
+    Column("aliases_json", Text, nullable=False, default="[]"),
+    Column("status", String(24), nullable=False),
+    Column("match_reason", Text),
+    Column("source_snapshot_id", String(64)),
+    Column("source_json", LONGTEXT),
+    Column("first_seen_at", DATETIME, nullable=False),
+    Column("last_seen_at", DATETIME, nullable=False),
+    Column("reviewed_at", DATETIME),
+    Column("reviewed_by", String(120)),
+    Column("review_note", Text),
+    Index("ix_product_catalog_entries_status", "status"),
+    Index("ix_product_catalog_entries_owner", "ownership", "status"),
 )
 
 price_instruments = Table(

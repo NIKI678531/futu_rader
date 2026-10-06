@@ -2,6 +2,9 @@
 
 - **状态**：已接受
 - **日期**：2026-09-25
+- **2026-10-05 调度修订**：自动检查改为每天香港时间 08:00；日常范围为
+  `d1,d2,d7`，周一额外包含 `d14,d30,mtd`。已存在且输入指纹未变化的结果直接复用，
+  只有缺失或输入已更新的项目会产生新的模型请求。其余预算与质量闸门不变。
 - **取代／限定**：本 ADR 仅对生产定时链路取代 [ADR-0021](0021-student-funnel.md) §5
   与「后果」中的 LLM 并发 16–24，以及并发 24 时历史积压 ≤30 分钟、低于 24 时退为
   40 分钟的容量假设。日常自动链路固定 batch size 5、并发 2，并受每个实际 HKT 自然日
@@ -26,10 +29,10 @@ ADR-0019 已裁定模型结果自动发布，ADR-0021 已裁定 Student → Luna
 
 ### 1. 只在完整同步后启动当日分析
 
-Airflow 在香港工作日 20:30 启动 AI 编排。任务先等待当日 19:30 `comments_all` 的成功回执，
+Airflow 每天香港时间 08:00 启动 AI 编排。任务先等待最近一次 `comments_all` 的成功回执，
 以及 Radar 对该精确 source run 的成功同步；最长等待 8 小时，超时失败且不猜完整日期。
 
-周二至周五运行 `d1,d2`；周一运行 `d1,d2,d7,d14,d30,mtd`。计划日用于选择分析范围，
+日常运行 `d1,d2,d7`；周一运行 `d1,d2,d7,d14,d30,mtd`。计划日用于选择分析范围，
 不用于制造新的预算桶。
 
 ### 2. 每次真实 HTTP 尝试前原子扣减香港自然日预算
@@ -53,8 +56,8 @@ batch size、最大输入 token、最大载荷字节和最大输出 token 完全
 `batchGatePassed=true`。缺失、无效或策略不匹配时，在创建第一个付费请求前失败。
 
 生产环境还必须提供 `scripts.evaluate_gold` 生成的人工金标报告：至少 400 条直接 LLM 样本，
-相关类 precision ≥95%、recall ≥90%，投诉回归样本全部通过。报告从混淆矩阵重算指标，且其
-实际标注 run 的 model、`comment-product-v3`、schema、taxonomy 必须与当前运行配置完全一致；
+产品实质反馈类 precision ≥95%、recall ≥90%，固定市场内容误入回归样本全部通过。报告从混淆矩阵重算指标，且其
+实际标注 run 的 model、`comment-product-v4`、schema、taxonomy、catalog policy 必须与当前运行配置完全一致；
 旧 v2、来源元数据缺失、仅手工修改 `qualityGate.passed` 的报告一律拒绝。
 
 生产环境可通过 `AI_CALIBRATION_REPORT` 与 `AI_QUALITY_REPORT` Secret 注入两份完整 JSON，

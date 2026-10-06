@@ -794,8 +794,13 @@ class TestAttitudeAggregation:
                 {"annotation_id": 2, "target_id": 11, "value": "positive"},
             ],
         )
-        assert p.pool("d1")["own"]["pos"] is None
-        assert p.pool("d1")["own"]["dPos"]["text"] == "数据暂不可用"
+        own = p.pool("d1")["own"]
+        assert own["pos"] is None
+        assert own["dPos"]["text"] == "数据暂不可用"
+        assert own["posLowerBound"] == 1
+        assert own["managementCoverage"]["positiveProducts"] == 1
+        assert own["managementCoverage"]["totalProducts"] > 1
+        assert own["managementCoverage"]["complete"] is False
 
 
 class TestPostAnnotations:

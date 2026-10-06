@@ -137,7 +137,7 @@ def test_run_creates_scope_jobs_and_rule_rows(engine, cfg, tmp_path):
     scope = rows(engine, analysis_scopes)[0]
     assert scope["scope_id"] == sid and json.loads(scope["codes_json"]) == [OWN, PEER]
     scope_stats = json.loads(scope["stats_json"])
-    assert scope_stats["exactRuleVersion"] == "parent-feed-v1"
+    assert scope_stats["exactRuleVersion"] == "parent-feed-v2"
     assert scope_stats["comments"]["kept"] == 2
 
     jobs = rows(engine, annotation_jobs)
@@ -390,7 +390,7 @@ def test_unqualified_parent_drops_all_replies_and_supersedes_old_job(engine, cfg
     assert routed == set()
     old_job = next(row for row in jobs if row["target_id"] == 18)
     assert old_job["status"] == "superseded"
-    assert old_job["last_error"] == "Excluded by parent-feed-v1:parent_feed_filter"
+    assert old_job["last_error"] == "Excluded by parent-feed-v2:parent_feed_filter"
     irrelevant = rows(
         engine,
         annotations,
@@ -642,7 +642,7 @@ def test_removed_body_target_reconciles_old_subject_outside_current_candidates(
 
     job = rows(engine, annotation_jobs, annotation_jobs.c.target_id == 25)[0]
     assert job["status"] == "superseded"
-    assert job["last_error"] == "Excluded by parent-feed-v1:parent_feed_filter"
+    assert job["last_error"] == "Excluded by parent-feed-v2:parent_feed_filter"
     current = current_annotations(
         engine, "relevance", "comment", ids=[25], subject_code=PEER
     )[(25, PEER)]

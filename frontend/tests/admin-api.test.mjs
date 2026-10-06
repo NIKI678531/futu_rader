@@ -1,53 +1,42 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-const values = new Map()
-global.window = {
-  sessionStorage: {
-    getItem: key => values.get(key) || null,
-    setItem: (key, value) => values.set(key, value),
-    removeItem: key => values.delete(key),
-  },
-}
-
 const admin = await import('../src/lib/adminApi.js')
 
-test('admin token is kept in sessionStorage and sent only as a header', async () => {
-  admin.saveAdminToken('  short-lived-token  ')
-  assert.equal(admin.getAdminToken(), 'short-lived-token')
+test('pipeline reads one range without browser credentials', async () => {
   let request
   global.fetch = async (url, options) => {
     request = { url, options }
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({ status: 'ok', data: { items: [] } }),
-    }
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', data: { comments: [] } }) }
   }
-  await admin.loadAdminTasks()
-  assert.equal(request.options.headers['X-Admin-Token'], 'short-lived-token')
-  assert.equal(request.url.includes('short-lived-token'), false)
+  await admin.loadAdminPipeline('d14')
+  assert.equal(request.url, '/api/v1/admin/pipeline?range=d14')
   assert.equal(request.options.cache, 'no-store')
-  admin.clearAdminToken()
-  assert.equal(admin.getAdminToken(), '')
+  assert.equal('X-Admin-Token' in request.options.headers, false)
 })
 
-test('structured 409 keeps all gate reasons for the admin page', async () => {
+test('analysis submission sends only the selected range', async () => {
+  let request
+  global.fetch = async (url, options) => {
+    request = { url, options }
+    return { ok: true, status: 202, json: async () => ({ status: 'ok', data: { run: { status: 'queued' } } }) }
+  }
+  await admin.runAdminAnalysis('d7')
+  assert.equal(request.url, '/api/v1/admin/analysis-runs')
+  assert.equal(request.options.method, 'POST')
+  assert.deepEqual(JSON.parse(request.options.body), { range: 'd7' })
+})
+
+test('structured API errors are exposed to the page', async () => {
   global.fetch = async () => ({
     ok: false,
-    status: 409,
-    json: async () => ({
-      error: {
-        message: '任务当前不能启动',
-        blockedReasons: ['AI 数据治理尚未批准', '评论路由尚未就绪'],
-      },
-    }),
+    status: 503,
+    json: async () => ({ error: { type: 'dependency_unavailable', message: 'Radar 数据库暂时不可用' } }),
   })
   await assert.rejects(
-    () => admin.runAdminTask('analyze'),
+    () => admin.loadAdminPipeline('d1'),
     error => error instanceof admin.AdminApiError
-      && error.status === 409
-      && error.blockedReasons.length === 2,
+      && error.status === 503
+      && error.code === 'dependency_unavailable',
   )
 })
-

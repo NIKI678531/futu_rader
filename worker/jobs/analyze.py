@@ -30,7 +30,7 @@ from radar_db.comment_routes import (
     require_ready as require_comment_routes_ready,
     product_pool_digest,
 )
-from radar_db.product_catalog import load_products
+from radar_db.product_catalog import CATALOG_POLICY_VERSION, load_products
 from radar_db.revisions import ai_source_version
 from radar_db.schema import (
     analysis_scopes,
@@ -53,6 +53,8 @@ def parser():
     cli.add_argument("--codes")
     cli.add_argument("--anchor")
     cli.add_argument("--anchor-mode", choices=("latest-complete", "calendar-yesterday"), default="latest-complete")
+    cli.add_argument("--current-window-only", action="store_true",
+                     help="initial taxonomy rollout: reprocess current windows only, without prior baselines")
     cli.add_argument("--scope")
     cli.add_argument("--batch-size", type=int, default=5)
     cli.add_argument("--concurrency", type=int, default=2)
@@ -67,8 +69,8 @@ def parser():
     return cli
 
 
-def selected_products(args):
-    master = load_products()
+def selected_products(args, engine=None):
+    master = load_products(engine=engine)
     selected = master
     for argument, field in (("codes", "code"), ("sector", "sector"), ("struct", "struct")):
         raw = getattr(args, argument)
@@ -87,7 +89,7 @@ def selected_products(args):
 
 
 def make_plan(engine, args):
-    products = selected_products(args)
+    products = selected_products(args, engine)
     with engine.connect() as conn:
         meta = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v)).all())
     if not meta.get("anchor"):
@@ -104,14 +106,18 @@ def make_plan(engine, args):
     if not ranges or set(ranges) - set(PRESETS):
         raise ValueError("Unsupported ranges")
     windows = sorted((build(key, anchor) for key in ranges), key=lambda window: window["days"])
-    first = min(window["benchFrom"] for window in windows)
+    current_only = bool(getattr(args, "current_window_only", False))
+    first = min(window["from"] if current_only else window["benchFrom"] for window in windows)
     if meta.get("window_from") and first < meta["window_from"][:10]:
         raise ValueError("Requested baseline predates imported source coverage")
     if anchor != complete and not meta.get("window_from"):
         raise ValueError("Historical replay requires a declared window_from")
     days = []
     for window in windows:
-        for start, end in ((window["from"], window["to"]), (window["benchFrom"], window["benchTo"])):
+        periods = ((window["from"], window["to"]),) if current_only else (
+            (window["from"], window["to"]), (window["benchFrom"], window["benchTo"]),
+        )
+        for start, end in periods:
             day, lower = date.fromisoformat(end), date.fromisoformat(start)
             while day >= lower:
                 if day.isoformat() not in days:
@@ -152,6 +158,7 @@ def make_plan(engine, args):
     semantic_version = ai_source_version(meta)
     return {"anchor": anchor.isoformat(), "sourceCompleteThrough": complete.isoformat(), "from": first,
             "ranges": [window["key"] for window in windows], "priorityDays": days, "codes": codes,
+            "currentWindowOnly": current_only,
             "ownership": {row["code"]: row["ownership"] for row in products},
             "commentRoutingReady": route_active,
             "sourceState": {"anchor": meta["anchor"], **semantic_version},
@@ -283,7 +290,7 @@ def check_calibration(cfg, report_source, *, require_singleton=False):
                 "maxInputTokens": cfg.max_input_tokens, "maxPayloadBytes": cfg.max_payload_bytes}
     expected["maxOutputTokens"] = cfg.max_output_tokens
     expected["commentRouteVersion"] = COMMENT_ROUTE_VERSION
-    expected["productPoolDigest"] = product_pool_digest()
+    expected["catalogPolicyVersion"] = CATALOG_POLICY_VERSION
     actual = report.get("policy")
     if (not isinstance(actual, Mapping)
             or any(actual.get(key) != value for key, value in expected.items())
@@ -292,7 +299,7 @@ def check_calibration(cfg, report_source, *, require_singleton=False):
 
 
 def check_quality(cfg, report_source):
-    """Require a v3, policy-matched 400-row human-gold release report."""
+    """Require a v4, policy-matched 400-row human-gold release report."""
     if report_source is None:
         raise ValueError("Production analysis requires --quality-report from scripts.evaluate_gold; no paid requests sent")
     if isinstance(report_source, Mapping):
@@ -310,7 +317,7 @@ def check_quality(cfg, report_source):
         "schemaVersion": cfg.schema_version,
         "taxonomyVersion": cfg.taxonomy_version,
         "commentRouteVersion": COMMENT_ROUTE_VERSION,
-        "productPoolDigest": product_pool_digest(),
+        "catalogPolicyVersion": CATALOG_POLICY_VERSION,
     }
     validate_release_report(report, expected_policy=expected)
 

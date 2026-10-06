@@ -180,8 +180,21 @@ class DemoProvider:
         data = self._lookup("pool", range_key)
         if data is MISSING:
             return MISSING
+        own = data["own"]
+        own_count = own["count"]
         return {
             **data,
+            "own": {
+                **own,
+                "negLowerBound": own["neg"],
+                "posLowerBound": own["pos"],
+                "managementCoverage": {
+                    "negativeProducts": own_count,
+                    "positiveProducts": own_count,
+                    "totalProducts": own_count,
+                    "complete": True,
+                },
+            },
             "list": [self._with_comment_funnel(item) for item in data["list"]],
         }
 
@@ -207,7 +220,18 @@ class DemoProvider:
 
     def themes_for(self, code, range_key):
         """一次给两个极性 `{positive, negative}`。调用点从来都是正负各取一次。"""
-        return self._lookup("themes", code, range_key)
+        value = self._lookup("themes", code, range_key)
+        if value is not None and value is not MISSING:
+            for rows in value.values():
+                for row in rows:
+                    row.setdefault("evidenceIds", [])
+                    row.setdefault("keyPoints", [])
+        return value
+
+    def issuer_opinions(self, issuer, range_key):
+        if issuer != "csop":
+            return MISSING
+        return {"status": "unavailable", "issuer": "南方东英", "counts": None, "list": []}
 
     def neg_cats_for(self, code, range_key):
         return self._lookup("neg_cats", code, range_key)

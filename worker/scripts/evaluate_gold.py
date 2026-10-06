@@ -1,7 +1,7 @@
 """人工核对集评估（ADR-0021 §人工核对）—— 三套系统对 400 条人工标签的准确率，写 `meta_kv.ai_validation`。
 
     cd worker && python -m scripts.evaluate_gold --file gold-400.xlsx
-    cd worker && python -m scripts.evaluate_gold --file gold-llm-400.xlsx                # v3 生产门禁只接受这类直接 LLM 样本
+    cd worker && python -m scripts.evaluate_gold --file gold-llm-400.xlsx                # v4 生产门禁只接受这类直接 LLM 样本
     cd worker && python -m scripts.evaluate_gold --file D:/x/gold-400.xlsx --labels-file D:/x/gold-400-model-labels.xlsx
     cd worker && python -m scripts.evaluate_gold --file gold-400.xlsx --from-db          # 不用标签表，按正文回库取现行结论
     cd worker && python -m scripts.evaluate_gold --file gold-400.xlsx --no-write         # 只算不写库
@@ -15,6 +15,7 @@
 - `attitude_accuracy`：人工判**相关**且填了态度的行里，系统态度与人一致的比例。系统判成无关
   （没有态度）算错 —— 页面上那条评论就是没态度；
 - `attitude_macro_f1`：态度三类的 macro-F1（同一批行）；
+- `product_feedback_precision/recall`：可进入产品观点榜的实质反馈精确率／召回率；
 - 混淆矩阵。
 
 三套：`student`（学生标签）、`llm`（Luna 现行标签）、`combined`（生产上的路由：学生两头概率
@@ -50,7 +51,7 @@
 
 评估只要两个 xlsx，不要库；写库只要库，不要 xlsx。`--no-write` 在没有库的机器上算出报告
 （`.scratch/llm-90d/gold-eval-<stamp>.json`，只有计数，可进 git），`--apply <报告>` 在有库的机器上把报告里的
-`ai_validation` 原样写进 `meta_kv`。生产报告还绑定模型标签实际来自的 model/prompt/schema/taxonomy；
+`ai_validation` 原样写进 `meta_kv`。生产报告还绑定模型标签实际来自的 model/prompt/schema/taxonomy/catalog policy；
 混用版本、旧 v2 或缺来源字段都会拒绝。报告里另带 `by_stratum_agreement`（每个抽样层里 Luna 与人的一致条数）——
 低分是集中在某一层还是均匀分布，决定该改 Prompt、改判定规则，还是重新对齐标注口径。
 """
@@ -86,6 +87,7 @@ from radar_db.comment_routes import (  # noqa: E402
     require_ready as require_comment_routes_ready,
 )
 from radar_db.schema import annotation_runs, annotations, comments, feeds, meta_kv  # noqa: E402
+from radar_db.product_catalog import CATALOG_POLICY_VERSION  # noqa: E402
 
 log = logging.getLogger("worker.evaluate_gold")
 
@@ -96,7 +98,7 @@ REL_LABELS = ("relevant", "irrelevant", "needs_context")
 ATT_LABELS = ("positive", "neutral", "negative")
 SYSTEMS = ("student", "llm", "combined")
 RELEASE_REPORT_TYPE = "comment-relevance-human-gold-v1"
-RELEASE_PROMPT_VERSION = "comment-product-v3"
+RELEASE_PROMPT_VERSION = "comment-product-v4"
 # 不算 Luna 结论的写入方（ADR-0021 §8）：规则行是词表判的，学生行与抄来的行不是 Luna 说的。
 NON_LLM_PROVIDERS = ("rule", "local_model", "propagated")
 
@@ -109,7 +111,9 @@ LABEL_COLUMNS = {
     "llm_model": "LLM模型", "llm_requested_model": "LLM请求模型", "llm_prompt": "LLM Prompt",
     "llm_schema": "LLM Schema", "llm_taxonomy": "LLM Taxonomy",
     "comment_route_version": "评论路由版本", "product_pool_digest": "产品池摘要",
+    "catalog_policy_version": "目录规则版本",
     "regression_case_id": "回归案例ID",
+    "llm_feedback_eligible": "Luna产品反馈",
 }
 
 
@@ -131,6 +135,19 @@ def _cell(row, idx, name):
         v = v.strip()
         return v or None
     return v
+
+
+def _norm_feedback(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"是", "yes", "true", "1", "eligible"}:
+        return True
+    if normalized in {"否", "no", "false", "0", "ineligible"}:
+        return False
+    return None
 
 
 def read_gold(path):
@@ -159,6 +176,7 @@ def read_gold(path):
         code = _cell(r, idx, "产品代码")
         out[str(_cell(r, idx, "编号"))] = {
             "relevance": rel, "attitude": att if rel == "relevant" else None,
+            "feedback_eligible": _norm_feedback(_cell(r, idx, "产品反馈")),
             "note": _cell(r, idx, "备注"),
             "code": str(code) if code is not None else None,
             "text": _cell(r, idx, "评论正文"), "title": _cell(r, idx, "帖子标题"), "parent": _cell(r, idx, "父评论"),
@@ -196,19 +214,24 @@ def read_model_labels(path):
             "schemaVersion": g["llm_schema"],
             "taxonomyVersion": g["llm_taxonomy"],
         }
-        if g["comment_route_version"] and g["product_pool_digest"]:
+        if g["comment_route_version"] and g["catalog_policy_version"]:
             llm_policy.update(
                 commentRouteVersion=g["comment_route_version"],
-                productPoolDigest=g["product_pool_digest"],
+                catalogPolicyVersion=g["catalog_policy_version"],
             )
+            if g["product_pool_digest"]:
+                llm_policy["productPoolDigest"] = g["product_pool_digest"]
+        llm_label = {"relevance": _norm(g["llm_relevance"], REL_FROM_ZH),
+                     "attitude": _norm(g["llm_attitude"], ATT_FROM_ZH)}
+        if LABEL_COLUMNS["llm_feedback_eligible"] in idx:
+            llm_label["feedback_eligible"] = _norm_feedback(g["llm_feedback_eligible"])
         out[str(_cell(r, idx, "编号"))] = {
             "sample_source": _cell(r, idx, "抽样来源") or "student",
             "comment_id": g["comment_id"], "code": str(code) if code is not None else None, "stratum": g["stratum"],
             "student": {"relevance": _norm(g["student_relevance"], REL_FROM_ZH),
                         "attitude": _norm(g["student_attitude"], ATT_FROM_ZH),
                         "relevance_p": g["student_relevance_p"], "attitude_p": g["student_attitude_p"]},
-            "llm": {"relevance": _norm(g["llm_relevance"], REL_FROM_ZH),
-                    "attitude": _norm(g["llm_attitude"], ATT_FROM_ZH)},
+            "llm": llm_label,
             "llm_policy": llm_policy,
             "regression_case_id": g["regression_case_id"],
         }
@@ -257,8 +280,7 @@ def labels_from_db(engine, gold):
     复读评论（同产品同正文多条）用帖子标题＋父评论消歧；仍分不开且各候选的结论不一致 ⇒ 记
     `ambiguous`，这一行不进评估。匹配不到 ⇒ `unmatched`。两种都不猜。
     """
-    from ai.prompts.comment_product_v3 import VERSION as comment_prompt_version
-    from radar_db.annotations_read import released_annotations
+    from radar_db.annotations_read import COMMENT_PRODUCT_PROMPT_VERSIONS, released_annotations
     from radar_db.comment_filter import load_comment_filter_config, require_filter_ready
 
     filter_config = load_comment_filter_config()
@@ -334,11 +356,12 @@ def labels_from_db(engine, gold):
     annotation_scope = {
         "ids": all_ids,
         "task": "comment_product",
-        "prompt_version": comment_prompt_version,
+        "prompt_version": COMMENT_PRODUCT_PROMPT_VERSIONS,
         "parent_filter_config": filter_config,
     }
     cur_rel = released_annotations(engine, "relevance", "comment", **annotation_scope)
     cur_att = released_annotations(engine, "attitude", "comment", **annotation_scope)
+    cur_feedback = released_annotations(engine, "feedback_eligible", "comment", **annotation_scope)
     # 学生预测是 provider 维度的历史快照，不能用全局链末替代；但只允许共享
     # current_annotations 接缝确认过的合格、同产品判定单元进入回库结果。
     st_rel = {
@@ -373,7 +396,8 @@ def labels_from_db(engine, gold):
         return {
             "student": {"relevance": rel, "attitude": att if rel == "relevant" else None,
                         "relevance_p": rel_p, "attitude_p": att_p if rel == "relevant" else None},
-            "llm": {"relevance": l_rel, "attitude": luna(cur_att, unit) if l_rel == "relevant" else None},
+            "llm": {"relevance": l_rel, "attitude": luna(cur_att, unit) if l_rel == "relevant" else None,
+                    "feedback_eligible": luna(cur_feedback, unit)},
             "llm_policy": llm_policy,
         }
 
@@ -407,7 +431,10 @@ def labels_from_db(engine, gold):
 
 def _label_or_none(sysd):
     rel = sysd.get("relevance")
-    return {"relevance": rel, "attitude": sysd.get("attitude") if rel == "relevant" else None}
+    label = {"relevance": rel, "attitude": sysd.get("attitude") if rel == "relevant" else None}
+    if "feedback_eligible" in sysd:
+        label["feedback_eligible"] = sysd.get("feedback_eligible")
+    return label
 
 
 def combined_label(m, threshold=None):
@@ -470,6 +497,18 @@ def _relevant_precision_recall(pairs):
     return precision, recall
 
 
+def _positive_precision_recall(pairs, positive):
+    pairs = [(gold, predicted) for gold, predicted in pairs if gold is not None]
+    if not pairs:
+        return None, None
+    tp = sum(gold == positive and predicted == positive for gold, predicted in pairs)
+    fp = sum(gold != positive and predicted == positive for gold, predicted in pairs)
+    fn = sum(gold == positive and predicted != positive for gold, predicted in pairs)
+    precision = round(tp / (tp + fp), 4) if tp + fp else None
+    recall = round(tp / (tp + fn), 4) if tp + fn else None
+    return precision, recall
+
+
 def evaluate(gold, model, *, threshold=None):
     """返回 `{n, n_gold, n_unmatched, by_system: {system: {relevance_accuracy, attitude_accuracy,
     attitude_macro_f1, n_relevance, n_attitude, n_unlabeled, coverage, confusion}}}`。
@@ -479,14 +518,12 @@ def evaluate(gold, model, *, threshold=None):
     """
     joined = [(gold[k], model[k]) for k in sorted(gold) if k in model]
     manifest, _digest = release_regressions.load_manifest()
-    fixed_expectations = {
-        row["caseId"]: row["expectedRelevance"] for row in manifest["commentCases"]
-    }
+    fixed_expectations = {row["caseId"]: row for row in manifest["commentCases"]}
     source = "llm" if joined and all(m.get("sample_source") == "llm" for _, m in joined) else "student"
     out = {"n": len(joined), "n_gold": len(gold), "n_unmatched": len(set(gold) - set(model)),
            "sample_source": source, "by_system": {}}
     for system in SYSTEMS:
-        rel_pairs, att_pairs, complaint_checks, unlabeled = [], [], [], 0
+        rel_pairs, att_pairs, feedback_pairs, complaint_checks, unlabeled = [], [], [], [], 0
         system_rows = [] if source == "llm" and system != "llm" else joined
         for g, m in system_rows:
             pred = combined_label(m, threshold) if system == "combined" else _label_or_none(m[system])
@@ -499,27 +536,44 @@ def evaluate(gold, model, *, threshold=None):
             if case_id in fixed_expectations:
                 expected = fixed_expectations[case_id]
                 complaint_checks.append(
-                    g["relevance"] == expected and pred.get("relevance") == expected
+                    g["relevance"] == expected["expectedRelevance"]
+                    and pred.get("relevance") == expected["expectedRelevance"]
+                    and g.get("feedback_eligible") is expected["expectedFeedbackEligible"]
+                    and pred.get("feedback_eligible") is expected["expectedFeedbackEligible"]
                 )
+            if g.get("feedback_eligible") is not None:
+                feedback_pairs.append((
+                    "eligible" if g["feedback_eligible"] else "ineligible",
+                    ("eligible" if pred["feedback_eligible"] else "ineligible")
+                    if pred.get("feedback_eligible") is not None else None,
+                ))
             if g["relevance"] == "relevant" and g["attitude"] is not None:
                 att_pairs.append((g["attitude"], pred.get("attitude") if pred.get("relevance") == "relevant" else None))
         rel_acc, n_rel = _accuracy(rel_pairs)
         att_acc, n_att = _accuracy(att_pairs)
         rel_precision, rel_recall = _relevant_precision_recall(rel_pairs)
+        feedback_precision, feedback_recall = _positive_precision_recall(feedback_pairs, "eligible")
         # 一行都没判过的系统给 None 不给 0：0 是「量了，全错」，这里是「没有东西可量」。
         labeled_any = any(p is not None for _g, p in rel_pairs)
         out["by_system"][system] = {
             "relevance_accuracy": rel_acc if labeled_any else None,
             "relevant_precision": rel_precision if labeled_any else None,
             "relevant_recall": rel_recall if labeled_any else None,
+            "product_feedback_precision": feedback_precision,
+            "product_feedback_recall": feedback_recall,
             "attitude_accuracy": att_acc if labeled_any else None,
             "attitude_macro_f1": _macro_f1(att_pairs, ATT_LABELS) if labeled_any else None,
             "n_relevance": n_rel, "n_attitude": n_att, "n_unlabeled": unlabeled,
+            "n_product_feedback": len(feedback_pairs),
             "complaint_n": len(complaint_checks),
             "complaint_pass_count": sum(complaint_checks),
             "complaint_passed": all(complaint_checks) if complaint_checks else None,
             "coverage": round(n_rel / len(joined), 4) if joined else None,
-            "confusion": {"relevance": _confusion(rel_pairs, REL_LABELS), "attitude": _confusion(att_pairs, ATT_LABELS)},
+            "confusion": {
+                "relevance": _confusion(rel_pairs, REL_LABELS),
+                "attitude": _confusion(att_pairs, ATT_LABELS),
+                "product_feedback": _confusion(feedback_pairs, ("eligible", "ineligible")),
+            },
         }
     return out
 
@@ -533,18 +587,19 @@ def relevance_quality_gate(result, *, system=None, min_samples=400,
     """
     system = system or ("llm" if result.get("sample_source") == "llm" else "combined")
     metrics = result["by_system"][system]
-    precision = metrics.get("relevant_precision")
-    recall = metrics.get("relevant_recall")
+    use_product_feedback = metrics.get("n_product_feedback", 0) > 0
+    precision = metrics.get("product_feedback_precision" if use_product_feedback else "relevant_precision")
+    recall = metrics.get("product_feedback_recall" if use_product_feedback else "relevant_recall")
     complaint_n = metrics.get("complaint_n", 0)
     complaints_passed = metrics.get("complaint_passed")
-    sample_count = metrics.get("n_relevance", 0)
+    sample_count = metrics.get("n_product_feedback" if use_product_feedback else "n_relevance", 0)
     passed = (
         sample_count >= min_samples
         and precision is not None and precision >= min_precision
         and recall is not None and recall >= min_recall
         and complaint_n > 0 and complaints_passed is True
     )
-    return {
+    gate = {
         "passed": passed,
         "system": system,
         "minSamples": min_samples,
@@ -556,6 +611,9 @@ def relevance_quality_gate(result, *, system=None, min_samples=400,
         "complaintCount": complaint_n,
         "complaintsPassed": complaints_passed,
     }
+    if use_product_feedback:
+        gate["metricBasis"] = "product_feedback"
+    return gate
 
 
 def release_policy(gold, model):
@@ -567,7 +625,7 @@ def release_policy(gold, model):
         "schemaVersion",
         "taxonomyVersion",
     )
-    route_keys = ("commentRouteVersion", "productPoolDigest")
+    route_keys = ("commentRouteVersion", "catalogPolicyVersion")
     policies = []
     for gid in gold:
         row = model.get(gid)
@@ -614,6 +672,26 @@ def _metrics_from_relevance_confusion(confusion):
     return sample_count, precision, recall
 
 
+def _metrics_from_feedback_confusion(confusion):
+    try:
+        matrix = confusion["product_feedback"]
+        counts = {
+            gold: {pred: matrix[gold][pred] for pred in ("eligible", "ineligible", "none")}
+            for gold in ("eligible", "ineligible")
+        }
+    except (KeyError, TypeError):
+        raise ValueError("Quality report has no complete product-feedback confusion matrix") from None
+    if any(type(value) is not int or value < 0 for row in counts.values() for value in row.values()):
+        raise ValueError("Quality report product-feedback confusion matrix must contain non-negative integer counts")
+    sample_count = sum(value for row in counts.values() for value in row.values())
+    tp = counts["eligible"]["eligible"]
+    fp = counts["ineligible"]["eligible"]
+    fn = counts["eligible"]["ineligible"] + counts["eligible"]["none"]
+    precision = round(tp / (tp + fp), 4) if tp + fp else None
+    recall = round(tp / (tp + fn), 4) if tp + fn else None
+    return sample_count, precision, recall
+
+
 def validate_release_report(report, *, expected_policy=None):
     """Validate a production human-gold release report.
 
@@ -634,13 +712,15 @@ def validate_release_report(report, *, expected_policy=None):
         "schemaVersion",
         "taxonomyVersion",
     }
-    route_policy = {"commentRouteVersion", "productPoolDigest"}
+    route_policy = {"commentRouteVersion", "catalogPolicyVersion"}
     required_policy = (
         base_policy | route_policy
         if expected_policy is not None and route_policy <= set(expected_policy)
         else base_policy
     )
-    if not isinstance(policy, dict) or set(policy) != required_policy or any(not policy[key] for key in required_policy):
+    allowed_policy = required_policy | {"productPoolDigest"}
+    if (not isinstance(policy, dict) or not required_policy <= set(policy)
+            or not set(policy) <= allowed_policy or any(not policy[key] for key in required_policy)):
         raise ValueError("Quality report has no complete model/prompt/schema/taxonomy policy")
     if policy["promptVersion"] != RELEASE_PROMPT_VERSION:
         raise ValueError(f"Quality report must be for {RELEASE_PROMPT_VERSION}")
@@ -651,14 +731,15 @@ def validate_release_report(report, *, expected_policy=None):
 
     try:
         metrics = report["by_system"]["llm"]
-        sample_count, precision, recall = _metrics_from_relevance_confusion(metrics["confusion"])
+        sample_count, precision, recall = _metrics_from_feedback_confusion(metrics["confusion"])
         complaint_n = metrics["complaint_n"]
         complaint_pass_count = metrics["complaint_pass_count"]
     except (KeyError, TypeError):
         raise ValueError("Quality report is missing required LLM gate evidence") from None
-    if metrics.get("n_relevance") != sample_count:
+    if metrics.get("n_product_feedback") != sample_count:
         raise ValueError("Quality report sample count does not match its confusion matrix")
-    if metrics.get("relevant_precision") != precision or metrics.get("relevant_recall") != recall:
+    if (metrics.get("product_feedback_precision") != precision
+            or metrics.get("product_feedback_recall") != recall):
         raise ValueError("Quality report metrics do not match its confusion matrix")
     if type(complaint_n) is not int or type(complaint_pass_count) is not int:
         raise ValueError("Quality report complaint counts must be integers")
@@ -678,7 +759,7 @@ def validate_release_report(report, *, expected_policy=None):
         and complaint_n > 0 and complaint_pass_count == complaint_n
     )
     if recomputed["passed"] is not True:
-        raise ValueError("Quality report did not pass 400 gold rows, precision/recall, and complaint regressions")
+        raise ValueError("Quality report did not pass 400 product-feedback gold rows, precision/recall, and regressions")
     if report.get("qualityGate", {}).get("passed") is not True:
         raise ValueError("Quality report is not marked as passed")
     if report.get("n") != sample_count or report.get("n_gold", sample_count) < sample_count:
@@ -878,7 +959,7 @@ def read_report_payload(path):
             "schemaVersion": cfg.schema_version,
             "taxonomyVersion": cfg.taxonomy_version,
             "commentRouteVersion": COMMENT_ROUTE_VERSION,
-            "productPoolDigest": product_pool_digest(),
+            "catalogPolicyVersion": CATALOG_POLICY_VERSION,
         }
         validate_release_report(report, expected_policy=expected_policy)
     except (KeyError, TypeError, ValueError, RuntimeError) as exc:
@@ -963,11 +1044,19 @@ def main(argv=None):
               "gold_distribution": {
                   "relevance": dict(Counter(g["relevance"] for g in gold.values())),
                   "attitude": dict(Counter(g["attitude"] for g in gold.values() if g["attitude"])),
+                  "product_feedback": dict(Counter(
+                      "eligible" if g["feedback_eligible"] else "ineligible"
+                      for g in gold.values() if g.get("feedback_eligible") is not None
+                  )),
               },
               "model_distribution": {
                   s: {"relevance": dict(Counter(model[k][s]["relevance"] for k in gold if k in model)),
                       "attitude": dict(Counter(model[k][s]["attitude"] for k in gold if k in model
-                                               and model[k][s]["attitude"]))}
+                                               and model[k][s]["attitude"])),
+                      "product_feedback": dict(Counter(
+                          "eligible" if model[k][s]["feedback_eligible"] else "ineligible"
+                          for k in gold if k in model and model[k][s].get("feedback_eligible") is not None
+                      ))}
                   for s in ("student", "llm")
               },
               **result, "qualityGate": quality_gate, "ai_validation": payload}

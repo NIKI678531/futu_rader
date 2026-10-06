@@ -33,7 +33,7 @@ export default function Competitors({ v }) {
                 <div onClick={c.goPos} style={s('background:var(--positive-50);border-radius:4px;padding:10px 11px;cursor:pointer')}>
                   <div style={s('display:flex;align-items:center;gap:6px;margin-bottom:6px;color:var(--positive-700)')}>
                     <ThumbUp size="12" />
-                    <span style={s('font:600 12px/1.4 var(--font-cjk)')}>用户喜欢或选择它的原因</span>
+                    <span style={s('font:600 12px/1.4 var(--font-cjk)')}>{c.posLabel}</span>
                   </div>
                   <div style={s('font:400 12px/1.7 var(--font-cjk);color:var(--ink-700);text-wrap:pretty')}>{c.pos}</div>
                   <div style={s('margin-top:6px;font:500 11px/1.4 var(--font-cjk);color:var(--csop-blue-600)')}>证据 {c.posEv} 条 →</div>
@@ -41,7 +41,7 @@ export default function Competitors({ v }) {
                 <div onClick={c.goNeg} style={s('background:var(--negative-50);border-radius:4px;padding:10px 11px;cursor:pointer')}>
                   <div style={s('display:flex;align-items:center;gap:6px;margin-bottom:6px;color:var(--negative-700)')}>
                     <ThumbDown size="12" />
-                    <span style={s('font:600 12px/1.4 var(--font-cjk)')}>用户质疑或放弃它的原因</span>
+                    <span style={s('font:600 12px/1.4 var(--font-cjk)')}>{c.negLabel}</span>
                   </div>
                   <div style={s('font:400 12px/1.7 var(--font-cjk);color:var(--ink-700);text-wrap:pretty')}>{c.neg}</div>
                   <div style={s('margin-top:6px;font:500 11px/1.4 var(--font-cjk);color:var(--csop-blue-600)')}>证据 {c.negEv} 条 →</div>

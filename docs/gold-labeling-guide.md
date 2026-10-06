@@ -1,6 +1,6 @@
 # 人工核对集（400 条）—— 流程与判定规则
 
-这份文档给**填表的人**看。它对应 [ADR-0021](adr/0021-student-funnel.md) §6：抽至少 400 条评论请人判「相关性」与「态度」，用来度量学生模型、当前 LLM 与组合路由三套系统各自与人的一致程度，并校准 `comment-product-v3`。只有相关类 precision ≥95%、recall ≥90%，且投诉回归样本全部通过，结果才允许写进 `meta_kv.ai_validation`，页面上的 `aiValidation` 才会从 `none` 变成 `spot_check`。
+这份文档给**填表的人**看。它对应 [ADR-0021](adr/0021-student-funnel.md) §6：抽至少 400 条评论请人判「相关性」「产品反馈」与「态度」，用来度量当前 LLM。`comment-product-v4` 的生产门禁直接以“产品反馈”作为正类；只有 precision ≥95%、recall ≥90%，且固定回归样本全部通过，结果才允许写进 `meta_kv.ai_validation`。
 
 先说清它**不是**什么：它不是逐行人工审批。[ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md) 不变 —— 这 400 条不批准或驳回任何一条线上标注。它同时是一把量尺和本轮相关性放量的总体质量门槛：门槛控制验证声明与回填放量，不把人工判定直接发布到产品页。400 条的 95% 置信区间约 ±5 个百分点；页面声明必须带条数与指标，**不许**出现「已核验」。
 
@@ -49,7 +49,7 @@
    .\.venv\Scripts\python.exe -X utf8 -m scripts.evaluate_gold --file gold-llm-400.xlsx
    ```
 
-   输出学生、LLM、组合路由（学生高置信用学生，否则用 LLM）三套的 relevance/attitude 准确率、相关类 precision/recall、attitude macro-F1、混淆矩阵，写 `.scratch/llm-90d/gold-eval-<时间>.json`（只有计数，没有原文）。模型标签表同时保存每条 LLM 结论的请求模型、供应商实际返回模型、prompt/schema/taxonomy；只有 400 条直接 LLM 样本都来自同一套 `comment-product-v3` 策略且 `qualityGate.passed=true`，报告才可作为生产回填的 `--quality-report`，并更新 `meta_kv.ai_validation`。
+   输出 relevance/attitude 指标及产品反馈 precision/recall、混淆矩阵，写 `.scratch/llm-90d/gold-eval-<时间>.json`（只有计数，没有原文）。模型标签表同时保存每条 LLM 结论的请求模型、供应商实际返回模型、prompt/schema/taxonomy 和目录规则版本；只有 400 条直接 LLM 样本都来自同一套 `comment-product-v4` 策略、产品反馈 precision ≥95%、recall ≥90% 且 `qualityGate.passed=true`，报告才可作为生产回填的 `--quality-report`。
 
    评估只用填了的行：`相关性` 为空的行跳过；`相关性=相关` 而 `态度` 为空的行只计相关性，不计态度。没填够的行数如实反映在 `n` 里，不会补 0。相关性门槛要求实际匹配并参与计算的 `n_relevance ≥ 400`，不是表格名写了 400 就算满足。
 

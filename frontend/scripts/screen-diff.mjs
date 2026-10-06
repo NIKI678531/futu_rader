@@ -181,6 +181,12 @@ const WHITELIST = [
     note: '官号清单标题旁的辅助说明已按页面批注删除。',
   },
   {
+    screen: '/official',
+    match: /^(原帖 ↗|https:\/\/www\.futunn\.com\/post\/\d+)$/,
+    source: '2026-10-05 用户浏览器页面批注',
+    note: '官号动态卡片中的外部原帖按钮及对应链接已按页面批注全部删除。',
+  },
+  {
     screen: '/product',
     match: /^(暂不可用|样本不足)$/,
     source: 'PRD §3.6 六态表 ／ §5 表 P8「主要态度（<3 条不输出）」／ 本期 spec',

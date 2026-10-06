@@ -19,6 +19,13 @@ For every run:
    `market-insight://futu-community` with
    `outlet_events[dataset].extra={"source_run_id": run_id}`.
 
+The collector's configured list must come from Radar's desired catalog
+manifest (`python -m jobs.hkex_catalog manifest`). The manifest includes active
+products plus approved/exact candidates waiting for source data and returns the
+same count/fingerprint format used by the receipt. Keep collecting the previous
+manifest until the next manifest is accepted; never infer removals from a
+temporary HKEX omission.
+
 Partial and `comments_important` runs may have receipts, but must leave
 `complete_through` null. Radar independently verifies every completion-proof
 field and refuses to advance its anchor when any field is missing or mismatched.

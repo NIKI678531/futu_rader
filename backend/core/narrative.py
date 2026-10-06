@@ -73,6 +73,12 @@ def themes_for(code, range_key):
     return get_provider().themes_for(code, range_key)
 
 
+def issuer_opinions(issuer, range_key):
+    if range_key not in VALID_KEYS:
+        return MISSING
+    return get_provider().issuer_opinions(issuer, range_key)
+
+
 def neg_cats_for(code, range_key):
     """负面舆情类别：可归类、可行动的那部分，**不等于全部消极观点**。
 

@@ -46,6 +46,18 @@ ASPECTS = (
     "leverage_decay", "performance", "trading_intent", "other",
 )
 
+# v4 deliberately separates product-quality feedback from market performance and
+# trading calls.  The latter remain useful inputs for topic/stage surfaces, but
+# must never move the positive/negative product-opinion ranking.
+PRODUCT_FEEDBACK_ASPECTS = (
+    "fee", "liquidity", "spread", "tracking", "dividend", "leverage_decay",
+    "product_design", "issuer_service", "disclosure", "trading_access",
+    "other_product",
+)
+ASPECTS_V3 = PRODUCT_FEEDBACK_ASPECTS + ("performance", "trading_intent")
+ISSUER_RELEVANCE = ("relevant", "irrelevant", "needs_context")
+ISSUER_ASPECTS = ("service", "disclosure", "governance", "product_management", "other")
+
 
 class SchemaError(ValueError):
     """输出不符合约定。**不带默认值兜底** —— runbook §11.3：达到最大次数进 dead-letter，
@@ -193,6 +205,65 @@ class CommentAnnotationV2(BaseModel):
         return self
 
 
+class CommentAnnotationV3(BaseModel):
+    """comment-product-v4 wire contract (schema v3).
+
+    Product feedback and CSOP issuer feedback are two independent subjects. A
+    comment may be irrelevant to the routed ETF while still making a clear
+    issuer-level statement; downstream readers therefore never need to assign
+    a company opinion to an arbitrary ETF.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str
+    relevance: Literal[RELEVANCE]  # type: ignore[valid-type]
+    attitude: Optional[Literal[ATTITUDES]]  # type: ignore[valid-type]
+    aspects: list[Literal[ASPECTS_V3]]  # type: ignore[valid-type]
+    evidence: Optional[str]
+    market_direction: Optional[Literal[MARKET_DIRECTIONS]]  # type: ignore[valid-type]
+    compliance_tags: list[Literal[COMPLIANCE_TAGS]]  # type: ignore[valid-type]
+    compliance_rationale: Optional[str]
+    compliance_evidence: Optional[str]
+    issuer_relevance: Literal[ISSUER_RELEVANCE]  # type: ignore[valid-type]
+    issuer_attitude: Optional[Literal[ATTITUDES]]  # type: ignore[valid-type]
+    issuer_aspects: list[Literal[ISSUER_ASPECTS]]  # type: ignore[valid-type]
+    issuer_evidence: Optional[str]
+    needs_review: bool
+    uncertainty_reasons: list[str]
+
+    @model_validator(mode="after")
+    def _cross_field_rules(self):
+        if self.relevance == "relevant":
+            if self.attitude is None:
+                raise ValueError(f"{self.item_id}: relevance=relevant 但没有给出 attitude")
+            if not self.aspects:
+                raise ValueError(f"{self.item_id}: relevance=relevant 时至少给一个 aspect")
+            if self.evidence is None:
+                raise ValueError(f"{self.item_id}: relevance=relevant 时必须给 evidence")
+        elif self.attitude is not None or self.aspects or self.evidence is not None:
+            raise ValueError(
+                f"{self.item_id}: relevance={self.relevance} 时 attitude/evidence 必须为 null，aspects 必须为空"
+            )
+        if self.issuer_relevance == "relevant":
+            if self.issuer_attitude is None or not self.issuer_aspects or self.issuer_evidence is None:
+                raise ValueError(
+                    f"{self.item_id}: issuer_relevance=relevant 时必须给 attitude/aspects/evidence"
+                )
+        elif self.issuer_attitude is not None or self.issuer_aspects or self.issuer_evidence is not None:
+            raise ValueError(
+                f"{self.item_id}: issuer_relevance={self.issuer_relevance} 时发行商字段必须为空"
+            )
+        if self.compliance_tags:
+            if not (self.compliance_rationale or "").strip() or not self.compliance_evidence:
+                raise ValueError(f"{self.item_id}: 标了合规信号却没有依据或原文")
+            if len(self.compliance_rationale) > COMPLIANCE_RATIONALE_MAX:
+                raise ValueError(f"{self.item_id}: compliance_rationale 超过 40 字")
+        elif self.compliance_rationale is not None or self.compliance_evidence is not None:
+            raise ValueError(f"{self.item_id}: 无合规标签时 rationale/evidence 必须为 null")
+        return self
+
+
 # ── KOL 评论观点（PRD §4.4 M7「其他产品观点及操作」） ─────────────────────
 #
 # 只跑合作 KOL 的评论。`summary` 是这条评论对该产品观点的一句话（≤30 字），`action` 是设计源
@@ -244,7 +315,7 @@ TASKS = {
 # 按 schema 版本选模型。`v1` 是 Gate 0–2 的形状，保留给回放与对照实验；生产默认 `v2`
 # （`AI_SCHEMA_VERSION`）。post_annotation 两版形状相同。
 VERSIONED = {
-    "comment_product": {"v1": CommentAnnotation, "v2": CommentAnnotationV2},
+    "comment_product": {"v1": CommentAnnotation, "v2": CommentAnnotationV2, "v3": CommentAnnotationV3},
     "post_annotation": {"v1": PostAnnotation, "v2": PostAnnotation},
     "kol_comment_opinion": {"v1": KolOpinionAnnotation, "v2": KolOpinionAnnotationV2},
 }
@@ -277,6 +348,11 @@ class CommentBatchV2(BaseModel):
     results: list[CommentAnnotationV2]
 
 
+class CommentBatchV3(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    results: list[CommentAnnotationV3]
+
+
 class PostBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     results: list[PostAnnotation]
@@ -289,7 +365,7 @@ BATCHES = {
 }
 
 VERSIONED_BATCHES = {
-    "comment_product": {"v1": CommentBatch, "v2": CommentBatchV2},
+    "comment_product": {"v1": CommentBatch, "v2": CommentBatchV2, "v3": CommentBatchV3},
     "post_annotation": {"v1": PostBatch, "v2": PostBatch},
     "kol_comment_opinion": {"v1": KolOpinionBatch, "v2": KolOpinionBatchV2},
 }

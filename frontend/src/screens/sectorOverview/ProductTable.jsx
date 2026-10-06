@@ -8,9 +8,6 @@ export default function ProductTable({ v }) {
       <div style={s('flex:none;display:flex;align-items:center;gap:10px;height:44px;padding:0 14px;border-bottom:1px solid var(--border-1)')}>
         <span style={s('flex:none;font:600 14px/1.3 var(--font-cjk);color:var(--ink-900)')}>产品榜单</span>
         <span style={s('flex:none;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>{v.boardNote}</span>
-        {v.listAll && (
-          <div onClick={v.listToggle} style={s('flex:none;display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:9999px;background:var(--csop-blue-50);font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-100)')}>完整榜单 {v.poolCount} 只<span style={s('font:400 12px/1 var(--font-cjk)')}>✕</span></div>
-        )}
         <span style={s('margin-left:auto;min-width:0;text-align:right;font:600 12px/1.4 var(--font-cjk);color:var(--ink-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>热度＝筛后评论量＋0.3×点赞＋转发 · 点表头排序</span>
       </div>
       <div style={s('flex:none;display:flex;align-items:center;gap:8px;height:40px;padding:0 14px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1)')}>

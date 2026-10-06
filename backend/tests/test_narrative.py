@@ -69,6 +69,15 @@ def test_unknown_range_is_404_everywhere(client, own_code):
         assert r.status_code == 404, tail
 
 
+def test_csop_issuer_opinions_are_a_separate_resource(client):
+    response = client.get("/api/v1/issuers/csop/opinions?range=d7")
+    assert response.status_code == 200
+    assert response.get_json()["data"] == {
+        "status": "unavailable", "issuer": "南方东英", "counts": None, "list": [],
+    }
+    assert client.get("/api/v1/issuers/unknown/opinions?range=d7").status_code == 404
+
+
 def test_unknown_product_is_404_not_an_empty_narrative(client):
     """池里没这只产品 → 404。**不是** 200 + 空数组。
 
@@ -188,7 +197,7 @@ def test_theme_deltas_are_the_embedded_shape(client, own_code):
         for t in items:
             assert set(t["delta"]) == {"text", "short", "abs", "pct", "dir"}
             assert {"id", "title", "summary", "share", "confidence",
-                    "evidenceCount", "buckets"} <= set(t)
+                    "evidenceCount", "evidenceIds", "keyPoints", "buckets"} <= set(t)
 
 
 def test_an_empty_theme_list_is_a_200(client, codes):

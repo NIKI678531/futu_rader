@@ -29,7 +29,7 @@
  *
  * `design/` 目录**不删**：它仍是逐字节只读镜像，仍是 `npm run diff` 的对照组。删掉它，
  * 「移植版和设计源一模一样」这句话就再也验不了了（ADR-0006）。变的只是运行时不再读它
- * ——`styles/tokens.css` 仍从那里 @import 设计系统的色板与字体，那是样式不是数据。
+ * ——`main.jsx` 仍把设计系统 CSS 作为独立模块导入，那是样式不是数据。
  *
  * ## 铁律
  *
@@ -153,6 +153,10 @@ const migrated = {
        `null['positive']` 是硬 TypeError，产品监控整页白屏。 */
     const both = read(product(code, 'themes', rangeKey))
     return both == null ? null : both[polarity]
+  },
+
+  issuerOpinions(rangeKey) {
+    return read('/issuers/csop/opinions' + qs({ range: rangeKey || DEFAULT_RANGE }))
   },
 
   themesStale(code, rangeKey) {

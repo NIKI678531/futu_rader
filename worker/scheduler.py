@@ -1,16 +1,20 @@
-"""Worker 容器存活入口。
-
-生产同步和分析均由 Airflow 显式调用 ``jobs.refresh``；本进程只发出 heartbeat，
-不采集社区数据、不轮询 MarketInsight，也不自动启动 AI。
-"""
+"""Worker entry point for heartbeat and database-backed admin AI requests."""
 
 import logging
 import os
 import signal
 import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
+
+from radar_db import make_engine
+from radar_db.analysis_requests import record_worker_heartbeat
 
 _ENV = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 if os.path.exists(_ENV):
@@ -28,26 +32,67 @@ logging.basicConfig(
 log = logging.getLogger("worker")
 
 
-def heartbeat():
-    log.info("heartbeat —— 等待 Airflow 显式触发数据库同步或分析")
+def runtime_readiness():
+    from jobs.admin_analysis import runtime_readiness as inspect_runtime
+
+    return inspect_runtime()
 
 
-def build_scheduler(interval_seconds=None):
-    """装配存活心跳但不启动；它不承载采集或分析任务。"""
+def heartbeat(*, engine=None, now=None):
+    engine = engine or make_engine()
+    readiness = runtime_readiness()
+    record_worker_heartbeat(engine, now=now, readiness=readiness)
+    if readiness["ready"]:
+        log.info("heartbeat —— AI worker 已就绪，等待数据库请求")
+    else:
+        log.warning("heartbeat —— AI worker 未就绪：%s", readiness["error"])
+
+
+def process_analysis_request(*, engine=None):
+    from jobs.admin_analysis import process_next
+
+    result = process_next(engine=engine)
+    if result:
+        log.info(
+            "admin AI request %s (%s): %s",
+            result["id"], result["range"], result["status"],
+        )
+
+
+def build_scheduler(interval_seconds=None, poll_seconds=None, *, engine=None):
+    """Build the persistent worker scheduler without starting it."""
+    engine = engine or make_engine()
     interval = interval_seconds or int(os.getenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", "60"))
+    poll = poll_seconds or int(os.getenv("AI_REQUEST_POLL_SECONDS", "2"))
     scheduler = BlockingScheduler(timezone=os.getenv("TZ", "Asia/Hong_Kong"))
-    scheduler.add_job(heartbeat, "interval", seconds=interval, id="heartbeat")
+    scheduler.add_job(
+        heartbeat,
+        "interval",
+        seconds=interval,
+        id="heartbeat",
+        kwargs={"engine": engine},
+    )
+    scheduler.add_job(
+        process_analysis_request,
+        "interval",
+        seconds=poll,
+        id="admin-ai-requests",
+        max_instances=1,
+        coalesce=True,
+        kwargs={"engine": engine},
+    )
     return scheduler
 
 
 def main():
-    scheduler = build_scheduler()
+    engine = make_engine()
+    scheduler = build_scheduler(engine=engine)
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: sys.exit(0))
     log.info(
         "Worker 存活进程启动：%s", [(j.id, str(j.trigger)) for j in scheduler.get_jobs()]
     )
-    heartbeat()  # 先跑一次，免得启动后要等满一个间隔才看得到反馈
+    heartbeat(engine=engine)  # 先跑一次，免得启动后要等满一个间隔才看得到反馈
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):

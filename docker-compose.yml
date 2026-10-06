@@ -59,19 +59,20 @@ services:
     restart: unless-stopped
 
   worker:
-    profiles: ["manual"]
     build:
       context: .
       dockerfile: worker/Dockerfile
     environment:
       TZ: Asia/Hong_Kong
       WORKER_HEARTBEAT_INTERVAL_SECONDS: 60
+      AI_REQUEST_POLL_SECONDS: 2
+      AI_MANUAL_MAX_HTTP_REQUESTS: 500
       LOOKBACK_DAYS: 60
       RADAR_DB_URL: mysql+pymysql://radar:radar@mysql:3306/futu_radar?charset=utf8mb4
     depends_on:
       mysql:
         condition: service_healthy
-    restart: "no"
+    restart: unless-stopped
 
 volumes:
   mysql-data:

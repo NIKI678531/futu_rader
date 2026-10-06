@@ -444,7 +444,7 @@ def test_partial_feed_never_reports_full_source_coverage_when_counts_happen_to_m
     assert funnel["sourceCoverage"] is None
 
 
-def test_3037_exclude_mode_drives_every_product_metric_from_the_same_parents():
+def test_3037_exact_mode_drives_every_product_metric_from_the_same_parents():
     provider = make_sql_provider(broken_share=False)
     rows = [
         {
@@ -523,16 +523,16 @@ def test_3037_exclude_mode_drives_every_product_metric_from_the_same_parents():
 
     product = next(row for row in provider.pool("d1")["list"] if row["code"] == "3037")
 
-    assert product["mentions"] == 2
-    assert product["comments"] == 15
-    assert product["likes"] == 6
-    assert product["shares"] == 3
-    assert product["activeAccounts"] == 3
+    assert product["mentions"] == 1
+    assert product["comments"] == 10
+    assert product["likes"] == 3
+    assert product["shares"] == 1
+    assert product["activeAccounts"] == 2
     assert product["commentFunnel"] == {
         "rawPlatformCount": 115,
-        "platformCount": 15,
-        "qualifyingFeedCount": 2,
-        "filterExcludedPlatformCount": 100,
+        "platformCount": 10,
+        "qualifyingFeedCount": 1,
+        "filterExcludedPlatformCount": 105,
         "parsedCount": 1,
         "ruleEligibleCount": 0,
         "ruleExcludedCount": 0,
@@ -540,11 +540,11 @@ def test_3037_exclude_mode_drives_every_product_metric_from_the_same_parents():
         "relevantCount": 0,
         "needsContextCount": 0,
         "pendingCount": 1,
-        "sourceCoverage": 0.0667,
+        "sourceCoverage": 0.1,
         "analysisCoverage": 0.0,
     }
     day = next(row for row in provider.daily_for("3037") if row["iso"] == "2026-08-25")
-    assert (day["comments"], day["active"]) == (15, 3)
+    assert (day["comments"], day["active"]) == (10, 2)
     assert provider.ranks("d1")["map"]["3037"] == 1
     # The collection control plane remains an unfiltered source audit.
     assert provider.collection_metadata()["platformCommentCount"] == 132
@@ -754,7 +754,7 @@ def test_current_irrelevant_verdict_hides_an_older_attitude_from_product_totals(
     }
 
 
-def test_current_irrelevant_verdict_gates_evidence_themes_and_topic_aggregates():
+def test_current_irrelevant_verdict_gates_product_views_but_keeps_market_topic():
     provider = add_annotations(
         make_sql_provider(),
         [
@@ -780,7 +780,9 @@ def test_current_irrelevant_verdict_gates_evidence_themes_and_topic_aggregates()
 
     assert provider.evidence_for(OWN_CODE, "d1|sum", "negative", 5) == []
     assert provider.themes_for(OWN_CODE, "d1") == {"positive": [], "negative": []}
-    assert provider.topics_for(OWN_CODE, "d1") == []
+    topics = provider.topics_for(OWN_CODE, "d1")
+    assert len(topics) == 1
+    assert topics[0]["negative"] == 1
 
 
 def test_official_attribution_ignores_anchor_and_prefers_body_mentions():

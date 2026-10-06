@@ -1,16 +1,12 @@
-"""Token-protected operational endpoints for the independent admin page."""
+"""Database-only endpoints for the internal pipeline management page."""
 
-import os
-from functools import lru_cache, wraps
+from functools import lru_cache
 
 from flask import current_app, jsonify, request
 
-from core.admin_ops import (
-    AdminOperations,
-    AdminOpsError,
-    constant_time_token_matches,
-)
+from core.admin_ops import AdminOperations, AdminOpsError
 from core.envelope import respond
+from radar_db.product_catalog import catalog_status, review_candidate
 
 from . import v1_bp
 
@@ -26,19 +22,6 @@ def _error(status, message, *, code=None, blocked_reasons=None):
     if blocked_reasons:
         payload["error"]["blockedReasons"] = blocked_reasons
     return jsonify(payload), status
-
-
-def admin_token_required(view):
-    @wraps(view)
-    def wrapped(*args, **kwargs):
-        expected = os.getenv("ADMIN_API_TOKEN")
-        if not expected:
-            return _error(503, "管理接口尚未配置", code="admin_not_configured")
-        if not constant_time_token_matches(expected, request.headers.get("X-Admin-Token")):
-            return _error(401, "管理令牌无效", code="admin_unauthorized")
-        return view(*args, **kwargs)
-
-    return wrapped
 
 
 @lru_cache(maxsize=1)
@@ -63,49 +46,51 @@ def _run(callable_):
         )
 
 
-@v1_bp.get("/admin/data-sources")
-@admin_token_required
-def data_sources():
-    return _run(lambda: respond(_operations().data_sources()))
+@v1_bp.get("/admin/pipeline")
+def pipeline():
+    range_key = request.args.get("range", "d1")
+    return _run(lambda: respond(_operations().pipeline(range_key)))
 
 
-@v1_bp.get("/admin/tasks")
-@admin_token_required
-def tasks():
-    return _run(lambda: respond(_operations().tasks()))
+@v1_bp.post("/admin/analysis-runs")
+def create_analysis_run():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or set(body) != {"range"}:
+        return _error(
+            400,
+            "请求内容只允许 range",
+            code="invalid_task_context",
+        )
+    result = _run(lambda: _operations().enqueue_analysis(body.get("range")))
+    if isinstance(result, tuple):
+        return result
+    response, _ = respond(result)
+    return response, 202
 
 
-@v1_bp.get("/admin/job-runs")
-@admin_token_required
-def job_runs():
-    task = request.args.get("task") or None
-    if task not in (None, "sync", "analyze"):
-        return _error(400, "task 只允许 sync 或 analyze", code="invalid_task")
+# Product catalog operations remain available for other internal tooling even
+# though the simplified pipeline page no longer renders that management UI.
+@v1_bp.get("/admin/product-catalog")
+def product_catalog_status():
+    return _run(lambda: respond(catalog_status(_operations().target_engine)))
+
+
+@v1_bp.post("/admin/product-catalog/<code>/review")
+def product_catalog_review(code):
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict) or body.get("decision") not in {"approve", "reject"}:
+        return _error(400, "decision 只允许 approve 或 reject", code="invalid_catalog_decision")
     try:
-        limit = int(request.args.get("limit", "50"))
-    except ValueError:
-        return _error(400, "limit 必须是整数", code="invalid_limit")
-    if not 1 <= limit <= 200:
-        return _error(400, "limit 必须在 1 到 200 之间", code="invalid_limit")
-    return _run(lambda: respond(_operations().job_runs(task, limit)))
-
-
-@v1_bp.post("/admin/tasks/sync/run")
-@admin_token_required
-def run_sync():
-    result = _run(lambda: _operations().trigger("sync"))
-    if isinstance(result, tuple):
-        return result
-    response, _ = respond(result)
-    return response, 202
-
-
-@v1_bp.post("/admin/tasks/analyze/run")
-@admin_token_required
-def run_analyze():
-    result = _run(lambda: _operations().trigger("analyze"))
-    if isinstance(result, tuple):
-        return result
-    response, _ = respond(result)
-    return response, 202
-
+        result = review_candidate(
+            _operations().target_engine,
+            code,
+            body["decision"],
+            own_code=body.get("ownCode"),
+            reviewer=str(body.get("reviewer") or "admin")[:120],
+            note=str(body.get("note") or "")[:2000] or None,
+        )
+    except KeyError:
+        return _error(404, "目录候选不存在或已完成审核", code="catalog_candidate_not_found")
+    except ValueError as exc:
+        return _error(400, str(exc), code="invalid_catalog_mapping")
+    return respond(result)

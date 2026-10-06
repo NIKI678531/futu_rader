@@ -18,6 +18,7 @@ from radar_db.comment_routes import (
     COMMENT_ROUTE_VERSION,
     readiness_values as route_readiness_values,
 )
+from radar_db.product_catalog import CATALOG_POLICY_VERSION
 from radar_db.schema import (
     analysis_scopes,
     annotation_jobs,
@@ -302,6 +303,7 @@ def test_nonempty_strata_report_is_json_serializable(tmp_path, monkeypatch):
     monkeypatch.setattr(calibrate, "report_policy_fields", lambda _engine: {
         "commentRouteVersion": COMMENT_ROUTE_VERSION,
         "productPoolDigest": route_readiness_values()["comment_route_pool_digest"],
+        "catalogPolicyVersion": CATALOG_POLICY_VERSION,
     })
     monkeypatch.setattr(calibrate, "candidates", lambda *args: [sample])
     monkeypatch.setattr(release_regressions, "comment_case_rows", lambda **_kwargs: [])
@@ -344,6 +346,7 @@ def test_nonempty_strata_report_is_json_serializable(tmp_path, monkeypatch):
         "schemaVersion": "v2", "taxonomyVersion": "v2",
         "commentRouteVersion": COMMENT_ROUTE_VERSION,
         "productPoolDigest": route_readiness_values()["comment_route_pool_digest"],
+        "catalogPolicyVersion": CATALOG_POLICY_VERSION,
     }
     assert gold.exists()
 

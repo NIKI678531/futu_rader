@@ -26,6 +26,9 @@ export default {
   resolve: { preserveSymlinks: onNetworkDrive },
   server: {
     port: 5173,
+    proxy: {
+      '/api': { target: 'http://127.0.0.1:8008', changeOrigin: true },
+    },
     fs: { allow: ['..'] },
     watch,
   },

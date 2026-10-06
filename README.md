@@ -63,6 +63,17 @@ python -m pip install -r requirements.txt
 python app.py
 ```
 
+Start the queue worker in a second terminal. The admin page only enqueues AI
+requests; without this process, runs deliberately remain queued:
+
+```bash
+cd worker
+python -m venv .venv
+# Activate the virtual environment for your shell, then:
+python -m pip install -r requirements.txt
+python scheduler.py
+```
+
 Start the web application:
 
 ```bash
@@ -71,6 +82,8 @@ npm install
 npm run dev
 ```
 
+On Windows mapped network drives, `npm run dev` automatically syncs the source to the local
+mirror described in ADR-0018 and runs Vite there; do not start `vite` directly from the share.
 Open `http://localhost:5173` in a browser. The API runs on `http://localhost:8008` by default. Configuration examples are available in `backend/.env.example` and `worker/.env.example`.
 
 To start the containerized infrastructure:

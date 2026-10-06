@@ -755,7 +755,7 @@ def main(argv=None):
     engine = make_engine()
     # 抽取不发请求：没配 Key 也能排队；只要 AI_PRIMARY_MODEL 在（它进 input_hash）。
     cfg = config.load(_allow_missing_key=True)
-    ownership = pool_codes()
+    ownership = pool_codes(engine=engine)
     codes = resolve_codes(args, ownership)
     date_from, date_to = resolve_window(args, engine)
 

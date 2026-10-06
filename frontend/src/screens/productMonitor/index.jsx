@@ -5,18 +5,22 @@
    sections share derived values and the design computes them in one pass.
 
    Everything from `state` through `renderVals()` is the design source verbatim, with
-   three deviations forced by the move off the dc runtime:
+   four deliberate deviations from the frozen design source:
      - `window.RADAR` is a synchronous import, so componentDidMount no longer polls for
        the runtime's async <script>; the deep-link parse runs once, inline.
      - `go()` rewrites the address to `/product?code=…&range=…` instead of
        `product-monitor.dc.html?…`. It still uses history.replaceState, which the router
        does not observe — the URL updates silently, exactly as in the design.
+     - the no-parameter default product is 7709, while valid `?code=` deep links remain
+       authoritative.
      - `{{ }}` holes became JSX; `style="…"` strings are parsed by `s()` and
        `style-hover` by `hover()`. */
 import React from 'react'
 import R from '../../data/radar'
 import { rgba, num, numRaw, navGroups, stamp, naBox, aiValidationNote, heatLowerBoundNote, kolDisplayLabel } from '../../lib/view'
 import { commentFunnelView } from '../../lib/commentFunnel'
+import { DEFAULT_PRODUCT_CODE, productCodeOrDefault } from '../../lib/productSelection'
+import { productSummaryPoints } from '../../lib/productSummary'
 import { s } from '../../lib/dc'
 import DataUnavailable from '../../components/DataUnavailable'
 import Shell from '../../components/Shell'
@@ -38,7 +42,7 @@ export default class ProductMonitor extends React.Component {
   }
 
   state = {
-    code: '3033', rangeKey: 'd7', selOpen: false, q: '', pq: '', secF: 'all', newF: 'all',
+    code: DEFAULT_PRODUCT_CODE, rangeKey: 'd7', selOpen: false, q: '', pq: '', secF: 'all', newF: 'all',
     posMore: false, negMore: false, panel: null, post: null, hover: null, loading: false,
     legend: { comments: 1, inter: 1, active: 1, pos: 1, neg: 1, px: 1 }, kolMore: false, riskMore: false,
     /* 热度变化与阶段观点：折线悬停桶 / 展开的阶段 / 悬停的阶段 */ heatHover: null, stageOpen: null, stageHover: null,
@@ -336,7 +340,7 @@ export default class ProductMonitor extends React.Component {
 
   renderVals() {
     var s = this.state, self = this;
-    var code = R.MASTER[s.code] ? s.code : '3033';
+    var code = productCodeOrDefault(R.MASTER, s.code);
     var m = R.MASTER[code];
     var range = R.buildRange(s.rangeKey);
     var P = R.pool(s.rangeKey);
@@ -435,9 +439,10 @@ export default class ProductMonitor extends React.Component {
       var meta = t.polarity === 'negative' ? themeMeta(t) : { hasMeta: false };
       return Object.assign(meta, themeSpan(t), {
         title: t.title, summary: t.summary, mentions: String(t.mentions),
+        keyPoints: t.keyPoints || [],
         share: t.share.toFixed(0) + '%',
         confidenceText: t.confidence == null
-          ? (t.labelStatus === 'ok' ? 'AI 标签已生成' : '规则归类')
+          ? (t.labelStatus === 'ok' ? 'AI 标签已生成' : '待 AI 具体归纳')
           : 'AI 置信度 ' + t.confidence + '%',
         delta: t.delta.short, dfg: self.dfg(t.delta), evidence: String(t.evidenceCount),
         cells: themeCells(t),
@@ -464,6 +469,17 @@ export default class ProductMonitor extends React.Component {
     if (negNa) negAll = [];
     var posThemes = (s.posMore ? posAll : posAll.slice(0, 3)).map(function (t) { return themeRow(t); });
     var negThemes = (s.negMore ? negAll : negAll.slice(0, 3)).map(function (t) { return themeRow(t); });
+
+    var issuerOpinions = o.ownership === 'own' ? R.issuerOpinions(s.rangeKey) : null;
+    var issuerRows = issuerOpinions?.list?.map(function (row) {
+      return {
+        id: row.id, attitude: row.attitudeLabel,
+        color: row.attitude === 'positive' ? 'var(--positive-700)' : (row.attitude === 'negative' ? 'var(--negative-700)' : 'var(--ink-600)'),
+        aspects: (row.aspectLabels || []).join(' · '), time: row.publishedAt,
+        original: row.original, author: row.authorName || '匿名用户',
+        evidence: (row.evidenceIds || []).join('、'), sourceUrl: row.sourceUrl
+      };
+    }) || [];
 
     /* 产品话题情绪 */
     var topicsAll = R.topicsFor(code, s.rangeKey);
@@ -507,15 +523,19 @@ export default class ProductMonitor extends React.Component {
       };
       return {
         code: c.code, name: c.name, issuer: c.issuer, reason: c.reason,
-        relation: c.relation === 'confirmed' ? '已确认' : 'AI 生成 · 待确认',
+        relation: c.relation === 'confirmed' ? '已确认'
+          : (c.reasonStatus === 'product_opinions' ? '同结构候选 · 待确认' : 'AI 生成 · 待确认'),
         rbg: c.relation === 'confirmed' ? 'var(--csop-blue-50)' : 'var(--warning-100)',
         rfg: c.relation === 'confirmed' ? 'var(--csop-blue-700)' : 'var(--warning-700)',
         /* `num()` 就是 `toLocaleString('en-US')` 加一道空值关口，逐字等价，多的是
            null 分支 —— 设计源的 `|| 0` 会把「竞品这一项没取到」写成「0 条评论」。 */
         mentions: num(c.comments), delta: c.delta.short, dfg: self.dfg(c.delta),
-        pos: c.positiveThemes.length ? c.positiveThemes.map(function (t) { return t.title; }).join('；') : '暂无相关内容',
-        neg: c.negativeThemes.length ? c.negativeThemes.map(function (t) { return t.title; }).join('；') : '暂无相关内容',
-        posEv: String(c.evidencePos), negEv: String(c.evidenceNeg),
+        posLabel: c.opinionScope === 'comparison' ? '用户喜欢或选择它的原因' : '该产品主要积极观点',
+        negLabel: c.opinionScope === 'comparison' ? '用户质疑或放弃它的原因' : '该产品主要消极观点',
+        pos: c.positiveThemes.length ? c.positiveThemes.map(function (t) { return t.title; }).join('；') : '暂无相关积极观点',
+        neg: c.negativeThemes.length ? c.negativeThemes.map(function (t) { return t.title; }).join('；') : '暂无相关消极观点',
+        posEv: c.evidencePos == null ? '数据暂不可用' : String(c.evidencePos),
+        negEv: c.evidenceNeg == null ? '数据暂不可用' : String(c.evidenceNeg),
         goPos: mk('positive', c.positiveThemes), goNeg: mk('negative', c.negativeThemes),
         open: () => self.go({ code: c.code, panel: null, post: null, posMore: false, negMore: false })
       };
@@ -600,17 +620,8 @@ export default class ProductMonitor extends React.Component {
     var sum = R.summaryFor(code, s.rangeKey);
     var sumNa = sum == null;
     if (sumNa) sum = { text: '', sample: null, low: false };
-    /* 总结按句拆成要点；过短的片段并入上一条 */
-    var sumPts = [], sumBuf = '';
-    Array.from(String(sum.text || '')).forEach(function (ch) {
-      sumBuf += ch;
-      if ('。；！'.indexOf(ch) >= 0) { sumPts.push(sumBuf.trim()); sumBuf = ''; }
-    });
-    if (sumBuf.trim()) sumPts.push(sumBuf.trim());
-    sumPts = sumPts.reduce(function (acc, p) {
-      if (p.length < 14 && acc.length) acc[acc.length - 1] += p; else acc.push(p);
-      return acc;
-    }, []);
+    /* 优先展示结构化 AI 要点；旧数据才按句拆 text，且统一限制为 5 条。 */
+    var sumPts = productSummaryPoints(sum);
     var trendLegend = [
       { key: 'comments', label: '筛后评论数', color: '#2361AD' },
       { key: 'active', label: '活跃账号数', color: '#C9A961' },
@@ -720,10 +731,14 @@ export default class ProductMonitor extends React.Component {
       summaryCountText: sumNa ? '数据暂不可用' : sumPts.length + ' 条要点 · 基于 ' + sum.sample + ' 条有效样本',
       /* P7 元信息末尾的如实声明（ADR-0019 §4）：徽章说的是这一条怎么来的，这句说的是
          整页的 AI 结论被验证到了什么程度。文案跟 /meta 的 `aiValidation` 走。 */
-      aiValidationNote: aiValidationNote(R.AI_VALIDATION),
-      aiLabel: sumNa ? '暂不可用' : (partialData ? '部分数据 · AI 生成' : (sum.low ? '样本不足 · 不输出倾向结论' : 'AI 生成 · 可追溯原文')),
-      aiBg: sumNa ? 'var(--ink-100)' : (sum.low ? 'var(--ink-100)' : 'var(--warning-100)'),
-      aiFg: sumNa ? 'var(--ink-500)' : (sum.low ? 'var(--ink-700)' : 'var(--warning-700)'),
+      aiValidationNote: sum.summaryMode === 'facts'
+        ? '本摘要由已标注数据自动整理，未生成未经数据支撑的因果推断。'
+        : aiValidationNote(R.AI_VALIDATION),
+      aiLabel: sumNa ? '暂不可用' : (sum.summaryMode === 'facts'
+        ? (partialData ? '部分数据 · 统计摘要' : '统计摘要')
+        : (partialData ? '部分数据 · AI 生成' : (sum.low ? '样本不足 · 不输出倾向结论' : 'AI 生成 · 可追溯原文'))),
+      aiBg: sumNa ? 'var(--ink-100)' : (sum.summaryMode === 'facts' ? 'var(--csop-blue-50)' : (sum.low ? 'var(--ink-100)' : 'var(--warning-100)')),
+      aiFg: sumNa ? 'var(--ink-500)' : (sum.summaryMode === 'facts' ? 'var(--csop-blue-700)' : (sum.low ? 'var(--ink-700)' : 'var(--warning-700)')),
       hasSummaryEvidence: !sumNa && o.mentions > 0,
       summaryEvidence: String(Math.round(o.mentions * 0.4)),
       openSummaryEvidence: () => self.openPanel({
@@ -770,6 +785,10 @@ export default class ProductMonitor extends React.Component {
           + Math.round(negAll.slice(0, 2).reduce(function (a, t) { return a + t.share; }, 0)) + '%。')
         : '区间内没有可归类的消极观点。',
       posThemes: posThemes, negThemes: negThemes,
+      showIssuerOpinions: o.ownership === 'own',
+      issuerUnavailable: issuerOpinions?.status === 'unavailable',
+      issuerEmpty: issuerOpinions?.status === 'empty',
+      issuerRows: issuerRows,
       noPos: !posNa && posThemes.length === 0, noNeg: !negNa && negThemes.length === 0,
       posUnavailable: posNa, negUnavailable: negNa,
       posMoreVisible: posAll.length > 3, negMoreVisible: negAll.length > 3,

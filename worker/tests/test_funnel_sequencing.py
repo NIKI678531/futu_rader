@@ -109,6 +109,7 @@ class SynthFake:
             data = {"points": [{"text": "多條評論認可費率", "evidence_ids": ids[:1]}], "needs_review": False}
         elif kind in ("theme_label", "neg_category"):
             data = {"results": [{"key": b["key"], "title": "費率同類最低", "summary": "如此。",
+                                 "key_points": [{"text": "管理費低於同類產品", "evidence_ids": b["evidence_ids"][:1]}],
                                  "evidence_ids": b["evidence_ids"][:1]} for b in f["buckets"]]}
         elif kind == "stage_unit":
             data = {"results": [{"key": u["key"], "category": "add_opportunity", "digest": "加倉為主",

@@ -737,7 +737,6 @@ class OfficialActivity extends React.Component {
                   <div style={s('display:flex;align-items:center;gap:10px;margin:12px 0 0;padding:10px 14px 12px;border-top:1px solid var(--ink-100)')}>
                     <span style={s('font:500 13px/1.4 var(--font-mono);color:var(--ink-600);white-space:nowrap')}>赞 {c.likes} · 评 {c.comments} · 转 {c.shares}</span>
                     <span onClick={c.toggle} style={s(`margin-left:auto;display:inline-flex;align-items:center;padding:3px 10px;border:1px solid ${c.linkBc};border-radius:6px;background:${c.linkBg};font:500 12px/1.4 var(--font-cjk);color:${c.linkFg};cursor:pointer;white-space:nowrap`)} className={hover('background:var(--csop-blue-50)')}>{c.openLabel}</span>
-                    <a href={c.url} target="_blank" rel="noopener" style={s('display:inline-flex;align-items:center;padding:3px 10px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>原帖 ↗</a>
                   </div>
                 </div>
               ))}

@@ -85,16 +85,51 @@ class TestThemes:
         out = themes.themes("3033", themes.group_by_polarity(units), None, self.rng["buckets"], self.bi)
         t = out["positive"][0]
         assert t["confidence"] is None
-        assert t["title"] == "费率与管理费" and t["labelStatus"] == "unavailable"
+        assert t["title"] == "费率与持有成本获认可" and t["labelStatus"] == "unavailable"
+        assert "1 条积极评论" in t["summary"]
         assert "1 条积极评论" in t["summary"]
 
     def test_model_labels_are_used_when_present(self):
         units = [unit("positive", ["fee"], 19)]
         labels = {("positive", "fee"): {"title": "费率同类最低", "summary": "多条评论把费率当作长期持有理由。",
-                                        "evidence_ids": ["ev-1"]}}
+                                        "evidence_ids": ["ev-1"],
+                                        "key_points": [{"text": "管理费低于同类", "evidenceIds": ["ev-1"]}]}}
         out = themes.themes("3033", themes.group_by_polarity(units), None, self.rng["buckets"], self.bi, labels)
         t = out["positive"][0]
         assert t["title"] == "费率同类最低" and t["labelStatus"] == "ok" and t["evidenceIds"] == ["ev-1"]
+        assert t["keyPoints"] == [{"text": "管理费低于同类", "evidenceIds": ["ev-1"]}]
+
+    def test_generic_legacy_label_is_not_published_as_a_specific_topic(self):
+        units = [unit("positive", ["other_product"], 19)]
+        labels = {("positive", "other_product"): {
+            "title": "产品整体体验获认可", "summary": "整体评价不错。",
+            "evidence_ids": ["ev-1"], "key_points": [{"text": "体验不错", "evidenceIds": ["ev-1"]}],
+        }}
+
+        topic = themes.themes(
+            "3033", themes.group_by_polarity(units), None, self.rng["buckets"], self.bi, labels,
+        )["positive"][0]
+
+        assert topic["title"] == "具体产品体验待 AI 归纳"
+        assert topic["labelStatus"] == "unavailable"
+        assert topic["keyPoints"] == []
+
+    def test_explicit_feedback_gate_excludes_market_and_trading_only_rows(self):
+        allowed = unit("negative", ["spread", "trading_intent"], 19)
+        allowed["feedback_eligible"] = True
+        market = unit("negative", ["performance"], 20)
+        market["feedback_eligible"] = False
+        trade = unit("positive", ["trading_intent"], 21)
+        trade["feedback_eligible"] = False
+
+        eligible = [row for row in (allowed, market, trade) if themes.is_product_feedback(row)]
+        out = themes.themes(
+            "3033", themes.group_by_polarity(eligible), None,
+            self.rng["buckets"], self.bi,
+        )
+
+        assert [row["aspect"] for row in out["negative"]] == ["spread"]
+        assert out["positive"] == []
 
     def test_delta_unavailable_without_baseline_and_computed_with(self):
         units = [unit("positive", ["fee"], 19), unit("positive", ["fee"], 20)]

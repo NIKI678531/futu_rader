@@ -29,6 +29,9 @@ function ThemeCard({ t, accent, tint, shareLabel }) {
         </div>
       )}
       <div style={s('font:400 13px/1.65 var(--font-cjk);color:var(--ink-600);text-wrap:pretty;margin-bottom:9px')}>{t.summary}</div>
+      {t.keyPoints?.length > 0 && <ul style={s('margin:0 0 10px 17px;padding:0;font:400 12px/1.65 var(--font-cjk);color:var(--ink-700)')}>
+        {t.keyPoints.map((point, index) => <li key={index}>{point.text}</li>)}
+      </ul>}
       <div style={s('display:flex;gap:2px;height:16px;margin-bottom:4px')}>
         {t.cells.map((b, i) => (
           <div key={i} title={b.title} style={s(`flex:1;min-width:3px;background:${b.bg};border-radius:2px`)}></div>
@@ -161,6 +164,23 @@ export default function Attitude({ v }) {
           )}
         </div>
       </div>
+      {v.showIssuerOpinions && <section style={s('margin:0 20px 20px;padding:16px;border:1px solid var(--csop-blue-200);border-radius:7px;background:var(--csop-blue-50)')}>
+        <div style={s('display:flex;align-items:baseline;gap:12px;margin-bottom:10px')}>
+          <strong style={s('font:600 15px/1.4 var(--font-cjk);color:var(--csop-blue-800)')}>南方东英发行商观点</strong>
+          <span style={s('font:400 12px/1.5 var(--font-cjk);color:var(--ink-600)')}>公司级评价独立去重，不计入当前 ETF 产品态度</span>
+        </div>
+        {v.issuerUnavailable && <div style={s('color:var(--ink-500)')}>数据暂不可用 — 发行商观点尚未完成 v4 分析。</div>}
+        {v.issuerEmpty && <div style={s('color:var(--ink-500)')}>暂无相关内容 — 区间内未识别到南方东英公司级评价。</div>}
+        {v.issuerRows?.map(row => <article key={row.id} style={s('padding:10px 0;border-top:1px solid var(--csop-blue-200)')}>
+          <div style={s('display:flex;gap:8px;align-items:center;margin-bottom:5px')}>
+            <span style={s(`font:600 12px/1.5 var(--font-cjk);color:${row.color}`)}>{row.attitude}</span>
+            <span style={s('font:500 12px/1.5 var(--font-cjk);color:var(--ink-600)')}>{row.aspects}</span>
+            <span style={s('margin-left:auto;font:400 11px/1.5 var(--font-mono);color:var(--ink-400)')}>{row.time}</span>
+          </div>
+          <div style={s('font:400 13px/1.65 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>“{row.original}”</div>
+          <div style={s('margin-top:4px;font:400 11px/1.5 var(--font-cjk);color:var(--ink-500)')}>原评论 · {row.author} · 证据 {row.evidence}{row.sourceUrl && <> · <a href={row.sourceUrl} target="_blank" rel="noreferrer">查看原文</a></>}</div>
+        </article>)}
+      </section>}
     </div>
   )
 }

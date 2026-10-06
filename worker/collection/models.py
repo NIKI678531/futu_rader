@@ -120,7 +120,11 @@ class AiRequest:
     def ranges(self) -> tuple[str, ...]:
         if self.range_keys:
             return self.range_keys
-        return ("d1", "d2", "d7", "d14", "d30", "mtd") if self.mode == "weekly" else ("d1", "d2")
+        return (
+            ("d1", "d2", "d7", "d14", "d30", "mtd")
+            if self.mode == "weekly"
+            else ("d1", "d2", "d7")
+        )
 
 
 @dataclass(frozen=True)

@@ -163,7 +163,7 @@ def test_metadata_is_the_only_schema_definition():
         "annotation_runs", "annotation_jobs", "annotations",
         "annotation_evidence", "review_decisions",
         "ingestion_runs", "collector_checkpoints", "ai_daily_budget",
-        "feed_counter_observations",
+        "feed_counter_observations", "ai_analysis_requests",
     }
 
 

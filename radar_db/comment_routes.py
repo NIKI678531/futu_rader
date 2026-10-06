@@ -15,9 +15,9 @@ from datetime import datetime
 from sqlalchemy import delete, exists, insert, select, update
 
 from .comment_filter import extract_feed_mentions, source_ticker_to_code
-from .product_catalog import load_products
+from .product_catalog import CATALOG_POLICY_VERSION, load_products
 from .revisions import bump_revision, ensure_ai_revision, mark_synthesis
-from .schema import annotation_jobs, comment_product_routes, meta_kv
+from .schema import annotation_jobs, comment_product_routes, meta_kv, product_catalog_entries
 
 
 COMMENT_ROUTE_VERSION = "content-cashtag-v1"
@@ -27,8 +27,8 @@ COMMENT_ROUTE_POOL_DIGEST_META_KEY = "comment_route_pool_digest"
 COMMENT_ROUTE_READY_VALUE = "1"
 
 
-def active_product_codes() -> frozenset[str]:
-    return frozenset(str(row["code"]) for row in load_products())
+def active_product_codes(engine=None) -> frozenset[str]:
+    return frozenset(str(row["code"]) for row in load_products(engine=engine))
 
 
 def product_pool_digest(codes: Iterable[str] | None = None) -> str:
@@ -189,6 +189,14 @@ def is_ready(values: Mapping[str, str | None], codes: Iterable[str] | None = Non
 
 
 def readiness_on_connection(conn, *, lock: bool = False, codes=None) -> bool:
+    if codes is None:
+        try:
+            db_codes = list(conn.execute(select(product_catalog_entries.c.code).where(
+                product_catalog_entries.c.status == "active"
+            )).scalars())
+            codes = db_codes or None
+        except Exception:
+            codes = None
     expected = readiness_values(codes)
     query = select(meta_kv.c.k, meta_kv.c.v).where(meta_kv.c.k.in_(tuple(expected)))
     if lock:
@@ -212,8 +220,15 @@ def require_ready(engine, *, codes=None) -> None:
 def report_policy_fields(engine, *, codes=None) -> dict[str, str]:
     """Routing provenance embedded in calibration and human-gold reports."""
 
-    expected = readiness_values(codes)
     with engine.connect() as conn:
+        if codes is None:
+            try:
+                codes = list(conn.execute(select(product_catalog_entries.c.code).where(
+                    product_catalog_entries.c.status == "active"
+                )).scalars()) or None
+            except Exception:
+                codes = None
+        expected = readiness_values(codes)
         values = dict(
             conn.execute(
                 select(meta_kv.c.k, meta_kv.c.v).where(meta_kv.c.k.in_(tuple(expected)))
@@ -226,6 +241,7 @@ def report_policy_fields(engine, *, codes=None) -> dict[str, str]:
     return {
         "commentRouteVersion": values[COMMENT_ROUTE_VERSION_META_KEY],
         "productPoolDigest": values[COMMENT_ROUTE_POOL_DIGEST_META_KEY],
+        "catalogPolicyVersion": CATALOG_POLICY_VERSION,
     }
 
 
@@ -260,9 +276,16 @@ def supersede_ineligible_jobs(conn, *, reason: str | None = None) -> int:
     return max(0, int(result.rowcount or 0))
 
 
-def activate(conn, *, codes: Iterable[str] | None = None) -> dict[str, object]:
+def activate(conn, *, codes: Iterable[str] | None = None, invalidate_quality=True) -> dict[str, object]:
     """Atomically publish one complete route generation and invalidate derivatives."""
 
+    if codes is None:
+        try:
+            codes = list(conn.execute(select(product_catalog_entries.c.code).where(
+                product_catalog_entries.c.status == "active"
+            )).scalars()) or None
+        except Exception:
+            codes = None
     pool = set(codes or active_product_codes())
     invalid = int(
         conn.execute(
@@ -281,7 +304,8 @@ def activate(conn, *, codes: Iterable[str] | None = None) -> dict[str, object]:
     # A human-gold score is valid only for the candidate universe it sampled.
     # Remove the prior database-level claim when publishing a new route
     # generation; the newly generated report can restore it explicitly.
-    conn.execute(delete(meta_kv).where(meta_kv.c.k == "ai_validation"))
+    if invalidate_quality:
+        conn.execute(delete(meta_kv).where(meta_kv.c.k == "ai_validation"))
     for key, value in readiness_values(pool).items():
         _put_meta(conn, key, value)
     return {"active": True, "supersededJobs": retired}

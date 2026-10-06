@@ -55,6 +55,8 @@ worker/.venv/Scripts/alembic -c radar_db/alembic.ini upgrade head
 | `0001` | 基线：迁移引入之前 `create_all()` 建出来的那套表（`src_*`、四张事实表、ADR-0010 的单表 `annotations`、`meta_kv`）。**不改变任何东西**，只是给后续迁移一个共同起点。 |
 | `0002` | AI 标注管线五张表，取代单表形态：`annotation_runs` / `annotation_jobs` / `annotations` / `annotation_evidence` / `review_decisions`。同时修掉 §10.3 的 SQLite 主键问题。 |
 | `0003` | ADR-0020：`analysis_scopes`（按 ETF × 时间段的抽取范围）、`annotation_jobs.scope_id`（领取隔离）、`synthesis_outputs`（产品 × 区间级 Layer B 生成物，指纹幂等）。 |
+| `0013` | HKEX ETP 产品目录：官方快照、有效／待源数据／待审核状态及人工竞品映射；迁移时把现有 135 只目录作为初始有效版本。 |
+| `0014` | 管理页 AI 请求队列：按区间持久化排队、运行、租约、结果摘要与错误；Web 与 worker 只通过数据库交接。 |
 
 ## 写新迁移时
 

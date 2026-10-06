@@ -21,6 +21,7 @@ from core.narrative import (
     compliance_for,
     competitors_for,
     hot_summaries,
+    issuer_opinions,
     neg_cats_for,
     summary_for,
     themes_for,
@@ -70,3 +71,9 @@ def competitors_endpoint(code):
 def compliance_endpoint(code):
     key = range_key()
     return _respond(compliance_for(code, key), f"未知的产品 {code!r} 或区间预设 {key!r}")
+
+
+@v1_bp.get("/issuers/<issuer>/opinions")
+def issuer_opinions_endpoint(issuer):
+    key = range_key()
+    return _respond(issuer_opinions(issuer.lower(), key), f"未知的发行商 {issuer!r} 或区间预设 {key!r}")

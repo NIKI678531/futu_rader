@@ -41,7 +41,7 @@ const WEB = `http://localhost:${WEB_PORT}`
  * 断言必须**限定在一张卡片之内**。整页 includes('赞 0') 毫无意义 —— 页面上总有别的卡
  * 真的就是 0；固定长度的窗口也不行，会溢到下一张卡上去误报。所以先划窗口，再在窗口里判断：
  *
- *   marker  按卡片切开（split，默认「原帖 ↗」），取含这句独有摘要的那一张
+ *   marker  按卡片切开（split）或截取标记前后的局部窗口（around），取含这句独有摘要的那一张
  *   window  [起, 止] 之间的一段，用于表格行这种没有天然分隔符的地方
  *   都不给  整页
  *
@@ -53,6 +53,7 @@ const OFFICIAL = [
     name: '① 真零仍然显示 0（反向断言）',
     why: '`0` 是「已取得数据且确实为零」的专用值。矫枉过正把真零也抹掉，等于换一个方向撒谎。',
     marker: '互动为零的帖子',
+    around: 220,
     want: ['赞 0 · 评 0 · 转 0'],
     reject: ['赞 数据暂不可用'],
   },
@@ -60,6 +61,7 @@ const OFFICIAL = [
     name: '② null 显示「数据暂不可用」，绝不显示 0 —— 本文件的红线',
     why: '铁律 2。这条挂了，整套护栏就等于没有。',
     marker: '平台计数字段未回传',
+    around: 220,
     want: ['赞 数据暂不可用 · 评 数据暂不可用 · 转 数据暂不可用'],
     reject: ['赞 0', '评 0', '转 0', '赞  · 评'],
   },
@@ -72,6 +74,7 @@ const OFFICIAL = [
       + '置信度也不再跟在徽章后面：它是模型自报的数，与「有没有人看过」不是一件事，'
       + '挂在同一枚徽章上会被读成一件（数值仍在下面那行「类型置信度」与 CSV 里）。',
     marker: '模型自报存疑：标签照挂',
+    around: 220,
     want: ['AI 生成 · 待确认', '类型置信度 0.42'],
     reject: ['待确认 0.42', '已核验'],
   },
@@ -81,6 +84,7 @@ const OFFICIAL = [
       + '而它没有可定位的判定依据句（evidenceIdx = -1），所以退成「AI 生成」而不是'
       + '「AI 生成 · 可追溯原文」—— 指不到原文就不能这么承诺（ADR-0019 §2）。',
     marker: '模型没有自报存疑',
+    around: 220,
     want: ['赞 88 · 评 9 · 转 4', 'AI 生成'],
     reject: ['待确认', '已核验', 'AI 生成 · 可追溯原文'],
   },
@@ -88,6 +92,7 @@ const OFFICIAL = [
     name: '⑤ 没摘要是「暂无内容」，不是「暂不可用」',
     why: '「查过了确实没有」和「应该有但没取到」是两套文案，不可互换（PRD §3.6）。',
     marker: '暂无摘要 · 图片帖，第一期不覆盖图片内容',
+    around: 220,
     want: ['赞 5 · 评 0 · 转 0'],
     reject: ['数据暂不可用'],
   },
@@ -825,6 +830,10 @@ function excerpt(win, needle) {
 
 /* 三种划窗方式，见 OFFICIAL 上方的注释。找不到窗口返回 null（与「窗口是空串」区分开）。 */
 function windowOf(text, c) {
+  if (c.marker && c.around) {
+    const i = text.indexOf(c.marker)
+    return i < 0 ? null : text.slice(Math.max(0, i - c.around), i + c.marker.length + c.around)
+  }
   if (c.marker) {
     /* 发帖卡／表格行都以「原帖 ↗」结尾，按它切开就是一张一段。 */
     const cards = text.split(c.split || '原帖 ↗')

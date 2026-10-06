@@ -22,7 +22,7 @@ from radar_db.comment_filter import (
 
 
 EXACT_RULE = "parent_feed_filter"
-EXACT_RULE_VERSION = "parent-feed-v1"
+EXACT_RULE_VERSION = "parent-feed-v2"
 
 
 def normalize_futu_ticker(value: str) -> str | None:

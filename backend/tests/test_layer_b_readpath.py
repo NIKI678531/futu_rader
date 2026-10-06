@@ -166,7 +166,7 @@ class TestThemesAndNegCats:
         th = p.themes_for(OWN_CODE, "d1")
         assert [t["aspect"] for t in th["positive"]] == ["fee"]
         assert th["positive"][0]["mentions"] == 8 and th["positive"][0]["labelStatus"] == "unavailable"
-        assert th["positive"][0]["title"] == "费率与管理费"      # 固定名兜底
+        assert th["positive"][0]["title"] == "费率与持有成本获认可"  # 具体结论兜底
         assert th["positive"][0]["confidence"] is None
         assert th["negative"][0]["aspect"] == "spread" and th["negative"][0]["mentions"] == 4
         assert th["negative"][0]["hasMeta"] is True
@@ -281,6 +281,8 @@ class TestSummary:
         p = annotated(provider)
         s = p.summary_for(OWN_CODE, "d1")
         assert s["low"] is False and s["sample"] == 12 and s["aiStatus"] == "unavailable"
+        assert s["summaryMode"] == "facts" and len(s["points"]) == 2
+        assert all("观点中" in point["text"] for point in s["points"])
         assert "积极 8 条、消极 4 条" in s["text"] and "积极比消极多 4 条" in s["text"]
         add_synth(p, [{"kind": "summary", "value": {"points": [
             {"text": "多条评论认可费率", "evidence_ids": ["c100"]},
@@ -289,6 +291,17 @@ class TestSummary:
         assert s["aiStatus"] == "ok" and len(s["points"]) == 2
         assert s["text"].endswith("多条评论认可费率。点差是主要抱怨。")
         assert s["evidenceIds"] == ["c100", "c108"]
+
+    def test_summary_read_path_caps_legacy_rows_at_five_points(self, provider):
+        p = annotated(provider)
+        add_synth(p, [{"kind": "summary", "value": {"points": [
+            {"text": f"第 {index} 条具体产品体验", "evidence_ids": ["c100"]}
+            for index in range(1, 7)
+        ], "needs_review": False}}])
+
+        summary = p.summary_for(OWN_CODE, "d1")
+        assert len(summary["points"]) == 5
+        assert "第 6 条具体产品体验" not in summary["text"]
 
     def test_summary_low_sample_wording_is_verbatim(self, provider):
         p = annotated(provider, n_pos=3, n_neg=2)

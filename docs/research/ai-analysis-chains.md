@@ -183,8 +183,8 @@ Layer B 的原则是“模型只写字，不写数”：计数和桶先由程序
 | kind | AI 输出 | 输入事实 | 页面／接口 | 关键代码 |
 |---|---|---|---|---|
 | `hot_summary` | ≤30 字“现象＋主流观点”+ evidence IDs | 正负中、主题桶、负面类别、合规、基准 | 板块榜单 `/hot-summaries` | schema `worker/ai/synth.py:61-73`；prompt `:262-270`；provider `backend/providers/sql.py:757-785` |
-| `summary` | 1–4 条、每条 ≤60 字要点 | 同上 | 产品页／板块抽屉 `/summary` | schema `worker/ai/synth.py:76-97`；prompt `:271-279`；provider `backend/providers/sql.py:787-831` |
-| `theme_label` | 每个“极性×aspect”桶的标题和摘要 | Layer A attitude + aspect 桶、抽样证据 | `/themes` | schema `worker/ai/synth.py:100-120`；payload `worker/jobs/synthesize.py:292-329`；provider `backend/providers/sql.py:833-845` |
+| `summary` | 最多 5 条、每条 ≤100 字的具体要点 | 同上 | 产品页／板块抽屉 `/summary` | schema 与 prompt：`worker/ai/synth.py`；provider：`backend/providers/sql.py` |
+| `theme_label` | 每个“极性×aspect”桶的具体标题、详细摘要和 1–3 条理由 | Layer A attitude + aspect 桶、抽样证据 | `/themes` | schema 与 prompt：`worker/ai/synth.py`；payload：`worker/jobs/synthesize.py`；provider：`backend/providers/sql.py` |
 | `neg_category` | 每个负面产品问题桶的名称和摘要 | negative + 可行动 aspect | `/negative-categories` | prompt `worker/ai/synth.py:292-300`；payload `worker/jobs/synthesize.py:292-329`；provider `backend/providers/sql.py:851-866` |
 | `stage_unit` | 每个足量时段 7 类之一 + digest | 每时段正负中计数、tone、证据 | `/stages` | schema `worker/ai/synth.py:122-140`；payload `worker/jobs/synthesize.py:384-422`；provider `backend/providers/sql.py:887-908` |
 | `stage_summary` | 合并阶段的一句总结 | 相邻同类时段及其 digest／证据 | `/stages` | schema `worker/ai/synth.py:142-158`；生成 `worker/jobs/synthesize.py:532-568` |

@@ -4,8 +4,6 @@
    The tokens themselves come from the design system; this block narrows and
    overrides them exactly as the design source does. */
 
-@import '../../../design/_ds/csop-design-system-019e159a-9eb8-740d-9d7d-8a5f9a550a1c/colors_and_type.css';
-
 :root {
   --csop-blue-50:#EAF1FB; --csop-blue-100:#D2E0F4; --csop-blue-200:#A8C3E8; --csop-blue-300:#7DA5DC;
   --csop-blue-400:#5288CF; --csop-blue-500:#3674C2; --csop-blue-600:#2361AD; --csop-blue-700:#1B4F8E;

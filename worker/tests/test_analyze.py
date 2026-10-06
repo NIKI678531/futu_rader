@@ -9,7 +9,8 @@ from ai import release_regressions
 from jobs import analyze
 from scripts import calibrate
 from radar_db import create_all, make_engine
-from radar_db.comment_routes import COMMENT_ROUTE_VERSION, product_pool_digest
+from radar_db.comment_routes import COMMENT_ROUTE_VERSION
+from radar_db.product_catalog import CATALOG_POLICY_VERSION
 from radar_db.schema import comments, feeds, mentions, meta_kv
 
 
@@ -96,11 +97,11 @@ def test_preview_uses_exact_routes_and_counts_the_actual_subject(engine):
     )
     result = analyze.preview(engine, cfg, plan, 100)
 
-    # 3037 uses exclude mode and neither reply can rescue or reroute its parent;
-    # both remain anchored to 3037 because the parent contains no excluded tag.
-    assert result["commentPlan"]["filtered"] == 0
-    assert result["commentPlan"]["newOrPending"] == 2
-    assert result["commentPlan"]["plannedCommentBatches"] == 2
+    # The parent lacks 3037's exact tag, so neither its section nor a reply can
+    # make these comments eligible for 3037.
+    assert result["commentPlan"]["filtered"] == 2
+    assert result["commentPlan"]["newOrPending"] == 0
+    assert result["commentPlan"]["plannedCommentBatches"] == 0
 
 
 def test_filters_intersect_and_unknown_values_fail():
@@ -159,13 +160,19 @@ def _passed_gold_report(cfg):
         "n_relevance": 400,
         "relevant_precision": 0.9524,
         "relevant_recall": 0.9,
-        "complaint_n": 3,
-        "complaint_pass_count": 3,
+        "n_product_feedback": 400,
+        "product_feedback_precision": 0.9524,
+        "product_feedback_recall": 0.9,
+        "complaint_n": 5,
+        "complaint_pass_count": 5,
         "complaint_passed": True,
         "confusion": {"relevance": {
             "relevant": {"relevant": 180, "irrelevant": 20, "needs_context": 0, "none": 0},
             "irrelevant": {"relevant": 9, "irrelevant": 191, "needs_context": 0, "none": 0},
             "needs_context": {"relevant": 0, "irrelevant": 0, "needs_context": 0, "none": 0},
+        }, "product_feedback": {
+            "eligible": {"eligible": 180, "ineligible": 20, "none": 0},
+            "ineligible": {"eligible": 9, "ineligible": 191, "none": 0},
         }},
     }
     manifest, digest = release_regressions.load_manifest()
@@ -177,6 +184,9 @@ def _passed_gold_report(cfg):
             "expectedRelevance": row["expectedRelevance"],
             "humanRelevance": row["expectedRelevance"],
             "modelRelevance": row["expectedRelevance"],
+            "expectedFeedbackEligible": row["expectedFeedbackEligible"],
+            "humanFeedbackEligible": row["expectedFeedbackEligible"],
+            "modelFeedbackEligible": row["expectedFeedbackEligible"],
             "passed": True,
         } for row in manifest["commentCases"]],
         "officialAttributionCases": release_regressions.official_regression_results(),
@@ -194,7 +204,7 @@ def _passed_gold_report(cfg):
             "schemaVersion": cfg.schema_version,
             "taxonomyVersion": cfg.taxonomy_version,
             "commentRouteVersion": COMMENT_ROUTE_VERSION,
-            "productPoolDigest": product_pool_digest(),
+            "catalogPolicyVersion": CATALOG_POLICY_VERSION,
         },
         "by_system": {"student": {}, "llm": llm, "combined": {}},
         "fixedRegressions": fixed,
@@ -203,10 +213,10 @@ def _passed_gold_report(cfg):
     }
 
 
-def test_production_analysis_requires_matching_v3_human_gold_report():
+def test_production_analysis_requires_matching_v4_human_gold_report():
     cfg = config.load(
-        model="gpt-5.6-luna", prompt_version="comment-product-v3",
-        schema_version="v2", taxonomy_version="v2", micro_batch_size=5,
+        model="gpt-5.6-luna", prompt_version="comment-product-v4",
+        schema_version="v3", taxonomy_version="product-feedback-v4", micro_batch_size=5,
     )
     with pytest.raises(ValueError, match="quality-report"):
         analyze.check_quality(cfg, None)
@@ -216,16 +226,16 @@ def test_production_analysis_requires_matching_v3_human_gold_report():
 
     stale_routes = json.loads(json.dumps(report))
     stale_routes["policy"].pop("commentRouteVersion")
-    stale_routes["policy"].pop("productPoolDigest")
+    stale_routes["policy"].pop("catalogPolicyVersion")
     with pytest.raises(ValueError, match="policy"):
         analyze.check_quality(cfg, stale_routes)
 
     old = json.loads(json.dumps(report))
     old["policy"]["promptVersion"] = "comment-product-v2"
-    with pytest.raises(ValueError, match="comment-product-v3"):
+    with pytest.raises(ValueError, match="comment-product-v4"):
         analyze.check_quality(cfg, old)
 
     forged = json.loads(json.dumps(report))
-    forged["by_system"]["llm"]["relevant_precision"] = 1.0
+    forged["by_system"]["llm"]["product_feedback_precision"] = 1.0
     with pytest.raises(ValueError, match="confusion matrix"):
         analyze.check_quality(cfg, forged)

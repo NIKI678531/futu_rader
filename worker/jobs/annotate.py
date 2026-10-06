@@ -1477,6 +1477,17 @@ def _kinds_for(task, item, src, schema_version):
             [item.compliance_evidence] if item.compliance_evidence else [],
             bool(item.compliance_tags),
         ))
+    if schema_version == "v3":
+        feedback_aspects = set(item.aspects).intersection(schemas.PRODUCT_FEEDBACK_ASPECTS)
+        kinds.append(("feedback_eligible", item.relevance == "relevant" and bool(feedback_aspects), [], False))
+        issuer_spans = [item.issuer_evidence] if item.issuer_evidence else []
+        issuer_expect = item.issuer_relevance == "relevant"
+        kinds.extend([
+            ("issuer_relevance", item.issuer_relevance, issuer_spans, issuer_expect),
+            ("issuer_attitude", item.issuer_attitude, [], False),
+        ])
+        if item.issuer_aspects:
+            kinds.append(("issuer_aspect", item.issuer_aspects, [], False))
     return kinds
 
 
@@ -1688,7 +1699,7 @@ def reprioritize(engine, *, anchor=None, ownership=None, dry_run=False):
     if ownership is None:
         from jobs.import_dump import pool_codes
 
-        ownership = pool_codes()
+        ownership = pool_codes(engine=engine)
 
     def as_date(value):
         return value.date() if isinstance(value, datetime) else value

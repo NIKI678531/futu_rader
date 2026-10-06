@@ -13,7 +13,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import Integer, cast, delete, func, insert, select, update
 
 ROOT = Path(__file__).resolve().parents[2]
 for folder in (ROOT, ROOT / "worker"):
@@ -57,10 +57,10 @@ def _audit(engine):
             select(
                 comment_product_routes.c.subject_code,
                 func.count().label("routes"),
-                func.sum(comment_product_routes.c.matched_parent).label("parent"),
-                func.sum(comment_product_routes.c.matched_comment).label("comment"),
+                func.sum(cast(comment_product_routes.c.matched_parent, Integer)).label("parent"),
+                func.sum(cast(comment_product_routes.c.matched_comment, Integer)).label("comment"),
                 func.sum(
-                    (comment_product_routes.c.subject_code != feeds.c.code)
+                    cast(comment_product_routes.c.subject_code != feeds.c.code, Integer)
                 ).label("cross_product"),
             )
             .select_from(
@@ -84,13 +84,14 @@ def _audit(engine):
         }
 
 
-def run(engine, *, batch_size=500, resume=False, activate_routes=False, dry_run=False):
+def run(engine, *, batch_size=500, resume=False, activate_routes=False, dry_run=False,
+        preserve_quality_gate=False):
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
     if dry_run and activate_routes:
         raise ValueError("--dry-run cannot be combined with --activate")
 
-    pool = active_product_codes()
+    pool = active_product_codes(engine)
     digest = product_pool_digest(pool)
     with engine.connect() as conn:
         saved_cursor = conn.execute(
@@ -186,7 +187,7 @@ def run(engine, *, batch_size=500, resume=False, activate_routes=False, dry_run=
         with engine.begin() as conn:
             _put_meta(conn, STATUS_KEY, "populated")
             if activate_routes:
-                result = activate(conn, codes=pool)
+                result = activate(conn, codes=pool, invalidate_quality=not preserve_quality_gate)
                 superseded = result["supersededJobs"]
                 _put_meta(conn, STATUS_KEY, "active")
                 conn.execute(delete(meta_kv).where(meta_kv.c.k.in_((

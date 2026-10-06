@@ -18,6 +18,7 @@ from radar_db.comment_routes import (  # noqa: E402
     product_pool_digest,
     readiness_values as route_readiness_values,
 )
+from radar_db.product_catalog import CATALOG_POLICY_VERSION  # noqa: E402
 from radar_db.schema import (  # noqa: E402
     annotation_runs, annotations, comments, feed_mentions, feeds, meta_kv,
 )
@@ -36,6 +37,9 @@ def _passing_fixed_regressions():
         "expectedRelevance": row["expectedRelevance"],
         "humanRelevance": row["expectedRelevance"],
         "modelRelevance": row["expectedRelevance"],
+        "expectedFeedbackEligible": row["expectedFeedbackEligible"],
+        "humanFeedbackEligible": row["expectedFeedbackEligible"],
+        "modelFeedbackEligible": row["expectedFeedbackEligible"],
         "passed": True,
     } for row in manifest["commentCases"]]
     return {
@@ -122,7 +126,7 @@ def test_sample_is_stratified_and_workbooks_have_shape(engine, tmp_path):
     assert [c.value for c in ws[1]] == list(gold_sample.COLUMNS)
     assert ws.max_row == 21
     dvs = ws.data_validations.dataValidation
-    assert {dv.formula1 for dv in dvs} == {'"相关,无关,需上下文"', '"积极,消极,中性"'}
+    assert {dv.formula1 for dv in dvs} == {'"相关,无关,需上下文"', '"积极,消极,中性"', '"是,否"'}
     assert wb.properties.creator == "futu-radar"
     # 人工表里没有模型标签、没有昵称
     text = "\n".join(str(c.value) for row in ws.iter_rows() for c in row if c.value is not None)
@@ -133,9 +137,9 @@ def test_sample_is_stratified_and_workbooks_have_shape(engine, tmp_path):
     ws2 = wb2.active
     header = [c.value for c in ws2[1]]
     assert header[:4] == ["编号", "comment_id", "产品代码", "层"] and "Luna相关性" in header
-    assert header[-8:] == [
+    assert header[-10:] == [
         "LLM模型", "LLM请求模型", "LLM Prompt", "LLM Schema", "LLM Taxonomy",
-        "评论路由版本", "产品池摘要", "回归案例ID",
+        "评论路由版本", "产品池摘要", "目录规则版本", "回归案例ID", "Luna产品反馈",
     ]
     assert ws2.max_row == 21
     reread = evaluate_gold.read_model_labels(labels)
@@ -396,26 +400,57 @@ def test_relevant_precision_recall_and_release_gate_cover_complaint_samples():
     }
 
 
-def test_release_report_recomputes_metrics_and_binds_the_v3_model_policy():
+def test_v4_release_gate_measures_product_feedback_not_product_mentions():
+    gold = {
+        f"G{i:04d}": {"relevance": "relevant", "attitude": "neutral", "feedback_eligible": expected}
+        for i, expected in enumerate((True, True, False, False), 1)
+    }
+    predicted = (True, False, True, False)
+    model = {
+        gid: {
+            "sample_source": "llm",
+            "student": {"relevance": None, "attitude": None},
+            "llm": {"relevance": "relevant", "attitude": "neutral", "feedback_eligible": value},
+        }
+        for gid, value in zip(gold, predicted)
+    }
+
+    result = evaluate_gold.evaluate(gold, model)
+    metrics = result["by_system"]["llm"]
+    assert metrics["relevant_precision"] == metrics["relevant_recall"] == 1.0
+    assert metrics["product_feedback_precision"] == metrics["product_feedback_recall"] == 0.5
+    gate = evaluate_gold.relevance_quality_gate(result, system="llm", min_samples=4)
+    assert gate["metricBasis"] == "product_feedback"
+    assert gate["precision"] == gate["recall"] == 0.5
+
+
+def test_release_report_recomputes_metrics_and_binds_the_v4_feedback_policy():
     policy = {
         "model": "provider-returned-snapshot",
         "requestedModel": "gpt-5.6-luna",
-        "promptVersion": "comment-product-v3",
-        "schemaVersion": "v2",
-        "taxonomyVersion": "v2",
+        "promptVersion": "comment-product-v4",
+        "schemaVersion": "v3",
+        "taxonomyVersion": "product-feedback-v4",
     }
     llm = {
         "n_relevance": 400,
         "relevant_precision": 0.9524,
         "relevant_recall": 0.9,
-        "complaint_n": 3,
-        "complaint_pass_count": 3,
+        "n_product_feedback": 400,
+        "product_feedback_precision": 0.9524,
+        "product_feedback_recall": 0.9,
+        "complaint_n": 5,
+        "complaint_pass_count": 5,
         "complaint_passed": True,
         "confusion": {
             "relevance": {
                 "relevant": {"relevant": 180, "irrelevant": 20, "needs_context": 0, "none": 0},
                 "irrelevant": {"relevant": 9, "irrelevant": 191, "needs_context": 0, "none": 0},
                 "needs_context": {"relevant": 0, "irrelevant": 0, "needs_context": 0, "none": 0},
+            },
+            "product_feedback": {
+                "eligible": {"eligible": 180, "ineligible": 20, "none": 0},
+                "ineligible": {"eligible": 9, "ineligible": 191, "none": 0},
             },
         },
     }
@@ -435,21 +470,21 @@ def test_release_report_recomputes_metrics_and_binds_the_v3_model_policy():
     assert checked["passed"] is True
 
     forged = json.loads(json.dumps(report))
-    forged["by_system"]["llm"]["relevant_precision"] = 1.0
+    forged["by_system"]["llm"]["product_feedback_precision"] = 1.0
     with pytest.raises(ValueError, match="confusion matrix"):
         evaluate_gold.validate_release_report(forged, expected_policy=policy)
 
     below_threshold = json.loads(json.dumps(report))
-    below_threshold["by_system"]["llm"]["confusion"]["relevance"]["irrelevant"].update(
-        relevant=12, irrelevant=188,
+    below_threshold["by_system"]["llm"]["confusion"]["product_feedback"]["ineligible"].update(
+        eligible=12, ineligible=188,
     )
-    below_threshold["by_system"]["llm"]["relevant_precision"] = 0.9375
+    below_threshold["by_system"]["llm"]["product_feedback_precision"] = 0.9375
     with pytest.raises(ValueError, match="did not pass"):
         evaluate_gold.validate_release_report(below_threshold, expected_policy=policy)
 
     old_v2 = json.loads(json.dumps(report))
     old_v2["policy"]["promptVersion"] = "comment-product-v2"
-    with pytest.raises(ValueError, match="comment-product-v3"):
+    with pytest.raises(ValueError, match="comment-product-v4"):
         evaluate_gold.validate_release_report(old_v2)
 
     missing_case = json.loads(json.dumps(report))
@@ -706,10 +741,10 @@ def test_apply_writes_report_payload_without_xlsx(engine, tmp_path, monkeypatch)
         "n": 400,
         "n_gold": 400,
         "policy": {"model": "provider-returned-snapshot", "requestedModel": "m",
-                   "promptVersion": "comment-product-v3",
-                       "schemaVersion": "v2", "taxonomyVersion": "v2",
+                   "promptVersion": "comment-product-v4",
+                       "schemaVersion": "v3", "taxonomyVersion": "product-feedback-v4",
                        "commentRouteVersion": COMMENT_ROUTE_VERSION,
-                       "productPoolDigest": product_pool_digest()},
+                       "catalogPolicyVersion": CATALOG_POLICY_VERSION},
         "qualityGate": {"passed": True},
         "fixedRegressions": _passing_fixed_regressions(),
         "by_system": {
@@ -719,13 +754,19 @@ def test_apply_writes_report_payload_without_xlsx(engine, tmp_path, monkeypatch)
                 "n_relevance": 400,
                 "relevant_precision": 0.9583,
                 "relevant_recall": 0.92,
-                "complaint_n": 3,
-                "complaint_pass_count": 3,
+                "n_product_feedback": 400,
+                "product_feedback_precision": 0.9583,
+                "product_feedback_recall": 0.92,
+                "complaint_n": 5,
+                "complaint_pass_count": 5,
                 "complaint_passed": True,
                 "confusion": {"relevance": {
                     "relevant": {"relevant": 184, "irrelevant": 16, "needs_context": 0, "none": 0},
                     "irrelevant": {"relevant": 8, "irrelevant": 192, "needs_context": 0, "none": 0},
                     "needs_context": {"relevant": 0, "irrelevant": 0, "needs_context": 0, "none": 0},
+                }, "product_feedback": {
+                    "eligible": {"eligible": 184, "ineligible": 16, "none": 0},
+                    "ineligible": {"eligible": 8, "ineligible": 192, "none": 0},
                 }},
             },
         },
@@ -733,7 +774,7 @@ def test_apply_writes_report_payload_without_xlsx(engine, tmp_path, monkeypatch)
     }, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(evaluate_gold, "make_engine", lambda: engine)
     cfg = evaluate_gold.config.load(
-        model="m", prompt_version="comment-product-v3", schema_version="v2", taxonomy_version="v2",
+        model="m", prompt_version="comment-product-v4", schema_version="v3", taxonomy_version="product-feedback-v4",
     )
     monkeypatch.setattr(evaluate_gold.config, "load", lambda **_kwargs: cfg)
     with engine.begin() as conn:

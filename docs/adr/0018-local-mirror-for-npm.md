@@ -26,12 +26,18 @@
 ```bash
 cd frontend && npm run mirror        # 同步 P: → 本地镜像
 cd frontend && npm run mirror:test   # 同步后在镜像里跑 npm test
+cd frontend && npm run dev           # 自动同步并从本地镜像启动 Vite
 ```
 
 同步脚本是 `frontend/scripts/mirror.mjs`，用 `robocopy /MIR`，只同步源码目录
 （`frontend/src`、`frontend/scripts`、`frontend/public`、`backend/**`、`radar_db`、
 `design`、以及若干单文件）。**`node_modules` 与 `dist` 不在同步范围内** ——
 `/MIR` 会镜像删除，把它们扫进来就等于每次同步都把依赖删掉再重装。
+
+日常入口 `npm run dev` 由 `frontend/scripts/dev.mjs` 承接：在 Windows 上先用
+`net use <盘符>` 识别映射盘（并保留 realpath 兜底），命中后自动运行上述同步，再直接
+从镜像的 `node_modules/vite/bin/vite.js` 启动。这样即使从 P: 执行惯用命令，也不会让
+长驻 Vite 进程落到不稳定的 SMB/DFS 路径上；本地磁盘与 CI 则仍从当前 checkout 启动。
 
 ### 三条规矩
 

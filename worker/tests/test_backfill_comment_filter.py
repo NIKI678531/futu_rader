@@ -97,7 +97,7 @@ def _engine(tmp_path):
                 "created_at": now, "updated_at": now,
             },
             {
-                "job_id": 3, "target_type": "comment", "target_id": 10,
+                "job_id": 3, "target_type": "comment", "target_id": 30,
                 "subject_code": "3037", "task": "comment_product", "input_hash": "eligible",
                 "status": "pending", "priority": 0, "attempts": 0,
                 "created_at": now, "updated_at": now,
@@ -130,10 +130,10 @@ def test_dry_run_audits_without_writing(tmp_path):
     assert result["processed"] == 3
     assert result["products"]["3037"] == {
         "rawFeeds": 3,
-        "qualifyingFeeds": 2,
+        "qualifyingFeeds": 1,
         "rawPlatformComments": 15,
-        "filteredPlatformComments": 10,
-        "parsedReplies": 2,
+        "filteredPlatformComments": 6,
+        "parsedReplies": 1,
         "unresolvedSourceTickers": 0,
     }
     with engine.connect() as conn:
@@ -159,7 +159,7 @@ def test_backfill_resume_activate_is_idempotent_and_writes_readiness(tmp_path):
     assert active["status"] == "active"
     assert active["processed"] == 0
     assert active["supersededJobs"] == 4
-    assert active["products"]["3037"]["filteredPlatformComments"] == 10
+    assert active["products"]["3037"]["filteredPlatformComments"] == 6
 
     config = load_comment_filter_config()
     metadata = _meta(engine)

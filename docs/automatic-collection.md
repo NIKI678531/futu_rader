@@ -61,7 +61,7 @@ Daily AI uses a persistent Hong Kong calendar-day budget:
   --batch-size 5 `
   --concurrency 2 `
   --calibration-report C:\secure\calibration.json `
-  --quality-report C:\secure\gold-eval-v3.json
+  --quality-report C:\secure\gold-eval-v4.json
 ```
 
 Use `--mode weekly` on Monday to include `d7,d14,d30,mtd`. Every provider HTTP
@@ -73,8 +73,8 @@ In Kubernetes, put the complete validated report JSON in the
 `AI_CALIBRATION_REPORT` Secret value. Local runs may instead use the file-path CLI
 option shown above. Put the independently generated human-gold report in
 `AI_QUALITY_REPORT` (or pass `--quality-report`). The latter must contain at least
-400 directly evaluated LLM rows from `comment-product-v3`, relevant-class precision
-at least 95%, recall at least 90%, and no failed complaint regression. Both reports
+400 directly evaluated LLM rows from `comment-product-v4`, product-feedback precision
+at least 95%, recall at least 90%, and no failed content-contamination regression. Both reports
 must match the current model, prompt, schema and taxonomy. Counts are recomputed from
 the confusion matrix; a stale, edited or policy-mismatched report stops before the
 first paid request.
@@ -189,22 +189,19 @@ additive `/api/v1/meta.dataCollection` response.
 
 ## Admin control plane
 
-The independent `/admin` route presents the same chain in three plain-language
-steps: upstream receipt, Radar synchronization/checkpoint, and AI progress/budget.
-Configure the Flask deployment with `ADMIN_API_TOKEN`, the read-only
-`MARKET_INSIGHT_DATABASE_URL`, `AIRFLOW_API_BASE_URL`, and a narrowly scoped
-`AIRFLOW_API_TOKEN`. The five business pages do not depend on Airflow: when its API
-is down, `/admin` becomes read-only and the business API keeps serving the last
-committed facts.
+The independent `/admin` route has two database-backed views: the per-product
+comment funnel (using the exact `/pool` counts) and manual AI analysis. Refresh
+only reads Radar. A `d1`, `d2`, `d7`, `d14`, or `d30` run inserts one row into
+`ai_analysis_requests`; an always-on worker claims requests in that priority
+order, then runs complete Layer A + Layer B analysis for all products active at
+execution time. Duplicate active requests for one range return the existing row.
 
-The two buttons call only the fixed `futu_radar_sync` and
-`futu_radar_ai_analysis` DAG IDs. The sync button re-reads the latest verified
-receipt immediately before submission and sends its exact `sourceRunId`. The AI
-button is disabled until the route generation is active, the target anchor is
-complete and current, governance is approved, and both release reports match the
-active model, Prompt, schema, taxonomy and product-pool digest. Airflow and the
-worker enforce the same gates again; `/admin` never accepts shell commands,
-historical backfill ranges, repair mode, or a budget override.
+The backend therefore needs only `RADAR_DB_URL`; it does not connect to
+MarketInsight or Airflow and does not hold AI credentials. Governance,
+calibration, quality and provider failures are recorded on the queued run by the
+worker instead of disabling the button in advance. Scheduled Airflow DAGs remain
+independent of this manual database queue. Stable input fingerprints ensure that
+unchanged results are reused and a repeat run can make zero model requests.
 
 ## Comment AI routing and scheduled analysis
 
@@ -226,9 +223,9 @@ claim and marks Layer B dirty. `/api/v1/meta.aiCommentRouting` exposes the activ
 state without changing business endpoint shapes.
 
 Generate a fresh batch-5 calibration report and a fresh 400-row LLM-only human
-gold report after activation. Both artifacts contain `commentRouteVersion` and
-`productPoolDigest`; automatic analysis rejects artifacts from the previous
-candidate universe.
+gold report after a routing-policy change. Both artifacts contain
+`commentRouteVersion` and `catalogPolicyVersion`; a valid additive catalog
+change reuses the gold set after its identity and routing regressions pass.
 
 Deploy `deploy/airflow/dags/futu_radar_ai_analysis.py` and configure the four
 non-secret Airflow Variables described in `deploy/airflow/README.md`. Database

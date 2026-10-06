@@ -24,9 +24,7 @@
 「这是审计时间戳，还是偷偷溜进来的口径」。
 """
 
-from datetime import datetime
+from radar_db.clock import now
 
 
-def now(tz=None):
-    """墙上的钟；仅供审计、租约、调度和显式选择的运行日。"""
-    return datetime.now(tz)
+__all__ = ["now"]

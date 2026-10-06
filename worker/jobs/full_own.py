@@ -10,7 +10,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from apscheduler.schedulers.blocking import BlockingScheduler
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, insert, or_, select, update
 
 ROOT = Path(__file__).resolve().parents[2]
 for folder in (ROOT, ROOT / "worker", ROOT / "backend"):
@@ -32,7 +32,14 @@ from radar_db.events import emit
 from radar_db.leases import WorkerLease
 from radar_db.product_catalog import load_products
 from radar_db.revisions import ai_source_version
-from radar_db.schema import analysis_scopes, annotation_jobs, comments, feeds, meta_kv
+from radar_db.schema import (
+    analysis_scope_jobs,
+    analysis_scopes,
+    annotation_jobs,
+    comments,
+    feeds,
+    meta_kv,
+)
 from radar_db.scope_jobs import scope_condition
 from radar_db.time_windows import utc_naive_to_hkt
 
@@ -57,18 +64,28 @@ def _prepare_comment_execution(engine, *, supersede=False):
 
 def save_progress(engine, progress):
     value = json.dumps(progress, ensure_ascii=False, default=str)
+    keys = ["own_analysis_progress"]
+    keys.extend(
+        f"own_analysis_progress_{range_key}"
+        for range_key in progress.get("ranges", ())
+    )
     with engine.begin() as conn:
-        if not conn.execute(update(meta_kv).where(meta_kv.c.k == "own_analysis_progress").values(v=value)).rowcount:
-            conn.execute(insert(meta_kv).values(k="own_analysis_progress", v=value))
+        for key in dict.fromkeys(keys):
+            if not conn.execute(
+                update(meta_kv).where(meta_kv.c.k == key).values(v=value)
+            ).rowcount:
+                conn.execute(insert(meta_kv).values(k=key, v=value))
 
 
-def prepare(engine, cfg, anchor, codes, *, ranges=None, optimized=False, page_size=1000):
+def prepare(engine, cfg, anchor, codes, *, ranges=None, optimized=False, page_size=1000,
+            include_baseline=True):
     with engine.connect() as conn:
         source_version = ai_source_version(dict(conn.execute(
             select(meta_kv.c.k, meta_kv.c.v)
         ).all()))
     windows = [build(key, anchor) for key in (ranges or PRESETS)]
-    start = min(date.fromisoformat(window["benchFrom"]) for window in windows)
+    start = min(date.fromisoformat(window["benchFrom"] if include_baseline else window["from"])
+                for window in windows)
     end = datetime.combine(anchor, time.min)
     first = datetime.combine(start, time.min)
     scopes = {}
@@ -213,7 +230,7 @@ def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
         raise ValueError("Source changed after planning; create a new plan")
     anchor = date.fromisoformat(plan["anchor"])
     codes = plan["codes"]
-    all_codes = {product["code"] for product in load_products()}
+    all_codes = {product["code"] for product in load_products(engine=engine)}
     with WorkerLease(engine, "own-analysis") as lease:
         def check_source():
             if lease.lost:
@@ -225,10 +242,31 @@ def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
                     "scope": "all" if set(codes) == all_codes else "selection", "ranges": plan["ranges"],
                     "sourceVersion": {key: value for key, value in state.items() if key != "anchor"},
                     "model": cfg.model, "batchSize": cfg.micro_batch_size, "status": "running", "products": {}}
+        progress["work"] = {
+            "annotationsWritten": 0,
+            "annotationsReused": 0,
+            "synthesisWritten": 0,
+            "synthesisReused": 0,
+            "errors": 0,
+        }
         try:
             if scopes is None:
                 scopes, _start = prepare(engine, cfg, anchor, codes, ranges=plan["ranges"],
-                                          optimized=True, page_size=page_size)
+                                          optimized=True, page_size=page_size,
+                                          include_baseline=not plan.get("currentWindowOnly", False))
+            scope_ids = tuple(scopes.values())
+            if scope_ids:
+                linked_to_scope = select(analysis_scope_jobs.c.job_id).where(
+                    analysis_scope_jobs.c.scope_id.in_(scope_ids),
+                    analysis_scope_jobs.c.job_id == annotation_jobs.c.job_id,
+                ).exists()
+                with engine.connect() as conn:
+                    progress["work"]["annotationsReused"] = int(conn.execute(
+                        select(func.count(func.distinct(annotation_jobs.c.job_id))).where(
+                            annotation_jobs.c.status == "done",
+                            or_(annotation_jobs.c.scope_id.in_(scope_ids), linked_to_scope),
+                        )
+                    ).scalar_one())
             for code, scope in scopes.items():
                 prioritize_scope(engine, scope, anchor, own=plan["ownership"][code] == "own", daily=True)
                 progress["products"][code] = {"scope": scope, "queue": queue_status(engine, scope), "complete": False}
@@ -250,16 +288,25 @@ def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
                 order.remove(code)
                 order.append(code)
                 before = queue_status(engine, scopes[code])
-                classify.run(
+                classified = classify.run(
                     engine,
                     cfg,
                     scope_id=scopes[code],
                     parent_filter_config=parent_filter_config,
                 )
+                progress["work"]["annotationsWritten"] += int(classified.get("written", 0))
                 result = pipeline.run(engine, cfg, scopes[code], provider=provider,
                                       max_items=cfg.micro_batch_size * cfg.concurrency,
                                       ranges=plan["ranges"], anchor_override=anchor, audit_report=False,
                                       synth_workers=cfg.concurrency, stage=annotate.STAGE_LLM)
+                for step in result.get("steps", ()):
+                    if step.get("task") == "synthesize":
+                        progress["work"]["synthesisWritten"] += int(step.get("written", 0))
+                        progress["work"]["synthesisReused"] += int(step.get("skipped_same", 0))
+                        progress["work"]["errors"] += int(step.get("errors", 0))
+                    else:
+                        progress["work"]["annotationsWritten"] += int(step.get("success", 0))
+                        progress["work"]["errors"] += int(step.get("error", 0))
                 after = queue_status(engine, scopes[code])
                 priorities[code] = priority_for(code)
                 row = progress["products"][code]
@@ -284,6 +331,13 @@ def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
             progress["batchRun"] = control.snapshot()
             save_progress(engine, progress)
             control.before_request = None
+    if (progress.get("status") == "complete" and progress.get("scope") == "all"
+            and "d30" in progress.get("ranges", ())
+            and cfg.prompt_version == "comment-product-v4"):
+        with engine.begin() as conn:
+            value = "product-feedback-v4"
+            if not conn.execute(update(meta_kv).where(meta_kv.c.k == "product_feedback_taxonomy").values(v=value)).rowcount:
+                conn.execute(insert(meta_kv).values(k="product_feedback_taxonomy", v=value))
     return progress
 
 
@@ -300,7 +354,7 @@ def main(argv=None):
     parser.add_argument("--calibration-report", type=Path,
                         help="scripts.calibrate 产生且通过的批量校准报告")
     parser.add_argument("--quality-report", type=Path,
-                        help="scripts.evaluate_gold 产生且通过的 v3 人工金标报告")
+                        help="scripts.evaluate_gold 产生且通过的 v4 人工金标报告")
     parser.add_argument("--sync-prices", action="store_true")
     args = parser.parse_args(argv)
     if args.max_http_requests < 1:
@@ -340,7 +394,7 @@ def main(argv=None):
     anchor = date.fromisoformat(args.anchor) if args.anchor else measured
     if anchor != measured:
         raise SystemExit("Anchor must match the complete source day; no synthetic month end")
-    products = load_products()
+    products = load_products(engine=engine)
     codes = [row["code"] for row in products if args.all or row["ownership"] == "own"]
     ownership = {row["code"]: row["ownership"] for row in products}
     with WorkerLease(engine, "own-analysis") as lease, control.interruptible():

@@ -89,6 +89,7 @@ from core.heat import heat_of  # noqa: E402
 from radar_db import make_engine  # noqa: E402
 from radar_db.annotations_read import (  # noqa: E402
     COMMENT_PRODUCT_PROMPT_VERSIONS,
+    PRODUCT_FEEDBACK_PROMPT_VERSIONS,
     current_annotations,
     released_annotations,
 )
@@ -131,7 +132,7 @@ class SqlProvider:
 
     def __init__(self, url=None):
         self._engine = make_engine(url)
-        self._products = load_products()
+        self._products = load_products(engine=self._engine)
         self._by_code = {p["code"]: p for p in self._products}
         accounts = load_accounts()
         self._officials = accounts["officials"]
@@ -186,11 +187,15 @@ class SqlProvider:
                     sorted((code, row.get("scope")) for code, row in progress.get("products", {}).items()
                            if row.get("complete") and all(status == "done" for status in row.get("queue", {}))))
 
+        catalog_changed = meta.get("product_catalog_revision") != self._meta.get("product_catalog_revision")
         data_changed = ({key: value for key, value in meta.items() if key != "own_analysis_progress"}
                         != {key: value for key, value in self._meta.items() if key != "own_analysis_progress"})
         data_changed = data_changed or completion_key(meta) != completion_key(self._meta)
         self._meta = meta
         self._anchor = parse_anchor(meta.get("anchor"))
+        if catalog_changed:
+            self._products = load_products(engine=self._engine)
+            self._by_code = {product["code"]: product for product in self._products}
         if data_changed:
             self._cache.clear()
         return data_changed
@@ -530,11 +535,15 @@ class SqlProvider:
         base_heat_own = _add_all(base[o["code"]]["heat"] for o in own)
         # 自家产品的积极内容数合计（板块总览顶部第二张卡）。有一只没标过 ⇒ 合计未知
         # （`_add_all` 的 None 传染），不是把它当 0 加进去 —— 那个数看着完全正常。
-        pos = _add_all(_pos_of(o) for o in own)
+        pos_values = [_pos_of(o) for o in own]
+        pos_known = [value for value in pos_values if value is not None]
+        pos = _add_all(pos_values)
         base_pos = _add_all(_att(base[o["code"]], "positive") for o in own)
         negative = {code: core_themes.negative_rollup(self.neg_cats_for(code, range_key))
                     for code in self._by_code}
-        neg = _add_all(negative[o["code"]]["mentions"] for o in own)
+        neg_values = [negative[o["code"]]["mentions"] for o in own]
+        neg_known = [value for value in neg_values if value is not None]
+        neg = _add_all(neg_values)
         base_neg = _add_all(negative[o["code"]]["baseMentions"] for o in own)
         risk = self._compliance_counts(rng)
         return {
@@ -553,6 +562,17 @@ class SqlProvider:
                 "baseHeatUnknownPosts": sum(base[o["code"]]["heatUnknownPosts"] for o in own),
                 "neg": neg,
                 "pos": pos,
+                # Incomplete AI coverage must not turn unknown products into zero. Keep the
+                # exact totals nullable and publish the sum of known products under an
+                # explicit lower-bound name so the UI can show useful, honest progress.
+                "negLowerBound": sum(neg_known),
+                "posLowerBound": sum(pos_known),
+                "managementCoverage": {
+                    "negativeProducts": len(neg_known),
+                    "positiveProducts": len(pos_known),
+                    "totalProducts": len(own),
+                    "complete": len(neg_known) == len(own) and len(pos_known) == len(own),
+                },
                 # 「没扫过」（None）与「扫了零条」（0）都不能当 0 加进合计，前者让合计未知。
                 "risk": _add_all(risk[o["code"]] for o in own),
                 "dHeat": delta(heat, base_heat_own),
@@ -975,7 +995,7 @@ class SqlProvider:
         key = ("window_annotations", kind, lo, hi)
         if key not in self._cache:
             grouped = defaultdict(dict)
-            route_active = comment_routes_ready(self._meta)
+            route_active = comment_routes_ready(self._meta, self._by_code)
             qualified = {} if route_active else self._qualified_feed_ids(lo, hi)
             for unit, annotation in current_annotations(
                 self._engine, kind, "comment", window=(lo, hi),
@@ -1002,7 +1022,7 @@ class SqlProvider:
             return self._cache[key]
         grouped = defaultdict(dict)
         try:
-            route_active = comment_routes_ready(self._meta)
+            route_active = comment_routes_ready(self._meta, self._by_code)
             qualified = {} if route_active else self._qualified_feed_ids(lo, hi)
             with self._engine.connect() as conn:
                 q = (
@@ -1120,7 +1140,7 @@ class SqlProvider:
 
     def _kol_candidate_units(self, lo, hi, *, code=None, kol=None):
         """与 worker 的 KOL 任务使用同一候选口径，返回评论 × 产品判定单元。"""
-        route_active = comment_routes_ready(self._meta)
+        route_active = comment_routes_ready(self._meta, self._by_code)
         if route_active:
             source = comments.join(
                 feeds, feeds.c.feed_id == comments.c.feed_id,
@@ -1168,27 +1188,34 @@ class SqlProvider:
         lo, hi = _window(rng)
         att = self._released_window_annotations("attitude", lo, hi).get(code, {})
         rel = self._released_window_annotations("relevance", lo, hi).get(code, {})
-        if not att and not rel and self._scan(rng["from"], rng["to"], rng)[code]["att"] is None:
+        mkt = self._released_window_annotations("market_direction", lo, hi).get(code, {})
+        if not att and not rel and not mkt and self._scan(rng["from"], rng["to"], rng)[code]["att"] is None:
             self._cache[key] = None
             return None
         asp = self._released_window_annotations("aspect", lo, hi).get(code, {})
-        mkt = self._released_window_annotations("market_direction", lo, hi).get(code, {})
+        feedback = self._released_window_annotations("feedback_eligible", lo, hi).get(code, {})
         units = []
         for unit, a in att.items():
             if (rel.get(unit) or {}).get("value") != "relevant":
                 continue
-            units.append({
+            candidate = {
                 "comment_id": unit[0], "attitude": a["value"],
                 "aspects": (asp.get(unit) or {}).get("value") or [],
+                "feedback_eligible": (
+                    (feedback.get(unit) or {}).get("value")
+                    if unit in feedback or self._meta.get("product_feedback_taxonomy") != "product-feedback-v4"
+                    else False
+                ),
                 "posted_at": utc_naive_to_hkt(a["posted_at"]),
                 "annotation_id": (rel.get(unit) or {}).get("annotation_id"),
-            })
+            }
+            if core_themes.is_product_feedback(candidate):
+                units.append(candidate)
         market = [
             {"comment_id": unit[0], "market_direction": m["value"],
              "posted_at": utc_naive_to_hkt(m["posted_at"])}
             for unit, m in mkt.items()
-            if (rel.get(unit) or {}).get("value") == "relevant"
-            and m["value"] in ("bullish", "bearish", "neutral")
+            if m["value"] in ("bullish", "bearish", "neutral")
         ]
         out = {"units": units, "market": market}
         self._cache[key] = out
@@ -1202,11 +1229,24 @@ class SqlProvider:
         if not att and not rel and self._scan(rng["benchFrom"], rng["benchTo"])[code]["att"] is None:
             return None
         asp = self._released_window_annotations("aspect", blo, bhi).get(code, {})
-        return [
-            {"attitude": a["value"], "aspects": (asp.get(unit) or {}).get("value") or [],
-             "posted_at": utc_naive_to_hkt(a["posted_at"])}
-            for unit, a in att.items() if (rel.get(unit) or {}).get("value") == "relevant"
-        ]
+        feedback = self._released_window_annotations("feedback_eligible", blo, bhi).get(code, {})
+        result = []
+        for unit, a in att.items():
+            if (rel.get(unit) or {}).get("value") != "relevant":
+                continue
+            candidate = {
+                "attitude": a["value"],
+                "aspects": (asp.get(unit) or {}).get("value") or [],
+                "feedback_eligible": (
+                    (feedback.get(unit) or {}).get("value")
+                    if unit in feedback or self._meta.get("product_feedback_taxonomy") != "product-feedback-v4"
+                    else False
+                ),
+                "posted_at": utc_naive_to_hkt(a["posted_at"]),
+            }
+            if core_themes.is_product_feedback(candidate):
+                result.append(candidate)
+        return result
 
     @staticmethod
     def _bucket_index(rng):
@@ -1226,6 +1266,10 @@ class SqlProvider:
                 continue
             k = tuple(subkey.split("|", 1)) if split else subkey
             out[k] = {"title": v.get("title"), "summary": v.get("summary"),
+                      "key_points": [
+                          {"text": point.get("text"), "evidenceIds": point.get("evidence_ids", [])}
+                          for point in v.get("key_points", []) if isinstance(point, dict)
+                      ],
                       "evidence_ids": row["evidenceIds"], "reviewState": row["reviewState"]}
         return out
 
@@ -1292,16 +1336,50 @@ class SqlProvider:
         )
         row = self._synth(code, range_key, "summary").get(NO_SUBJECT)
         points, ev_ids = [], []
+        has_model_points = False
         if row and isinstance(row["value"], dict) and row["value"].get("points"):
-            for p in row["value"]["points"]:
+            for p in row["value"]["points"][:5]:
                 t = p["text"].rstrip("。；;") + "。"
                 points.append({"text": t, "evidenceIds": p.get("evidence_ids", [])})
                 ev_ids.extend(p.get("evidence_ids", []))
             sentences.extend(p["text"] for p in points)
+            has_model_points = True
+        else:
+            # Layer B 尚未生成时，不能只留两句总量。用后端已经算好的主题计数、占比、
+            # 环比与峰值补成可读摘要；这些都是事实整理，不冒充具体原因或 AI 结论。
+            theme_rows = self.themes_for(code, range_key) or {"positive": [], "negative": []}
+
+            def theme_fact(polarity, theme, rank):
+                side = "积极" if polarity == "positive" else "消极"
+                rank_text = "居首" if rank == 1 else f"位列第{rank}"
+                parts = [
+                    f"{side}观点中，“{theme['title']}”{rank_text}，共 {theme['mentions']} 条，"
+                    f"占{side}内容 {theme['share']:.1f}%"
+                ]
+                change = theme.get("delta", {}).get("abs")
+                if change is not None:
+                    if change > 0:
+                        parts.append(f"较基准期增加 {change} 条")
+                    elif change < 0:
+                        parts.append(f"较基准期减少 {-change} 条")
+                    else:
+                        parts.append("与基准期持平")
+                buckets = theme.get("buckets") or []
+                if buckets and max(b.get("mentions", 0) for b in buckets) > 0:
+                    peak = max(buckets, key=lambda b: b.get("mentions", 0))
+                    parts.append(f"讨论在 {peak['label']} 最集中")
+                return "；".join(parts) + "。"
+
+            for polarity in ("negative", "positive"):
+                for rank, theme in enumerate(theme_rows.get(polarity, [])[:2], start=1):
+                    fact = theme_fact(polarity, theme, rank)
+                    points.append({"text": fact, "evidenceIds": theme.get("evidenceIds") or []})
+                    sentences.append(fact)
         return {
             "text": "".join(sentences), "sample": valid, "low": False, "points": points,
             "evidenceIds": list(dict.fromkeys(ev_ids)),
-            "aiStatus": "ok" if points else "unavailable",
+            "aiStatus": "ok" if has_model_points else "unavailable",
+            "summaryMode": "ai" if has_model_points else "facts",
             "reviewState": row["reviewState"] if row else None,
         }
 
@@ -1318,6 +1396,77 @@ class SqlProvider:
             code, core_themes.group_by_polarity(u["units"]), self._base_units_grouped(code, rng),
             rng["buckets"], self._bucket_index(rng), self._labels(code, range_key, "theme_label", split=True),
         )
+
+    def issuer_opinions(self, issuer, range_key):
+        """Return deduplicated CSOP company opinions, never ETF attitudes."""
+        if issuer != "csop":
+            return MISSING
+        rng = self._filtered_range(range_key)
+        if rng is None:
+            return None
+        lo, hi = _window(rng)
+        kwargs = dict(
+            task="comment_product", prompt_version=PRODUCT_FEEDBACK_PROMPT_VERSIONS,
+            window=(lo, hi), parent_filter_config=self._comment_filter_config,
+        )
+        rel = released_annotations(self._engine, "issuer_relevance", "comment", **kwargs)
+        att = released_annotations(self._engine, "issuer_attitude", "comment", **kwargs)
+        aspects = released_annotations(self._engine, "issuer_aspect", "comment", **kwargs)
+        if not rel:
+            return {"status": "unavailable", "issuer": "南方东英", "list": [], "counts": None}
+
+        chosen = {}
+        for unit, row in rel.items():
+            if row["value"] != "relevant" or unit not in att:
+                continue
+            rank = (row["created_at"], row["annotation_id"])
+            if unit[0] not in chosen or rank > chosen[unit[0]][0]:
+                chosen[unit[0]] = (rank, unit, row)
+        if not chosen:
+            return {"status": "empty", "issuer": "南方东英", "list": [],
+                    "counts": {"positive": 0, "negative": 0, "neutral": 0}}
+
+        details, quotes = {}, {}
+        with self._engine.connect() as conn:
+            for chunk in _chunked(sorted(chosen), 900):
+                q = (select(comments.c.comment_id, comments.c.content, comments.c.author_name,
+                            feeds.c.feed_id, feeds.c.posted_at)
+                     .select_from(comments.join(feeds, feeds.c.feed_id == comments.c.feed_id))
+                     .where(comments.c.comment_id.in_(chunk)))
+                for row in conn.execute(q):
+                    details[row.comment_id] = row
+            annotation_ids = [entry[2]["annotation_id"] for entry in chosen.values()]
+            for chunk in _chunked(annotation_ids, 900):
+                for annotation_id, quote in conn.execute(
+                    select(annotation_evidence.c.annotation_id, annotation_evidence.c.quote_text)
+                    .where(annotation_evidence.c.annotation_id.in_(chunk))
+                ):
+                    quotes.setdefault(annotation_id, quote)
+
+        labels = {"service": "客户服务", "disclosure": "信息披露", "governance": "公司治理",
+                  "product_management": "产品管理", "other": "其他公司评价"}
+        rows, counts = [], {"positive": 0, "negative": 0, "neutral": 0}
+        for comment_id, (_rank, unit, rel_row) in chosen.items():
+            detail = details.get(comment_id)
+            attitude = att[unit]["value"]
+            if detail is None or attitude not in counts:
+                continue
+            counts[attitude] += 1
+            values = (aspects.get(unit) or {}).get("value") or []
+            rows.append({
+                "id": f"issuer-c{comment_id}", "commentId": comment_id,
+                "attitude": attitude,
+                "attitudeLabel": {"positive": "积极", "negative": "消极", "neutral": "中性"}[attitude],
+                "aspects": values, "aspectLabels": [labels.get(value, value) for value in values],
+                "excerpt": quotes.get(rel_row["annotation_id"]) or (detail.content or "")[:240],
+                "original": detail.content or "", "authorName": detail.author_name,
+                "publishedAt": utc_naive_to_hkt(detail.posted_at).strftime("%m-%d %H:%M"),
+                "sourceUrl": f"https://www.futunn.com/post/{detail.feed_id}",
+                "evidenceIds": [f"c{comment_id}"],
+                "reviewState": rel_row["review_state"],
+            })
+        rows.sort(key=lambda row: (row["publishedAt"], row["commentId"]), reverse=True)
+        return {"status": "ok" if rows else "empty", "issuer": "南方东英", "counts": counts, "list": rows}
 
     def _base_units_grouped(self, code, rng):
         base = self._base_units(code, rng)
@@ -1354,16 +1503,13 @@ class SqlProvider:
         baseline = self._released_window_annotations(
             "market_direction", *base_window
         ).get(code, {})
-        base_rel = self._released_window_annotations(
-            "relevance", *base_window
-        ).get(code, {})
         base_units = (
             [
                 {"market_direction": row["value"]}
-                for unit, row in baseline.items()
-                if (base_rel.get(unit) or {}).get("value") == "relevant"
+                for row in baseline.values()
+                if row["value"] in ("bullish", "bearish", "neutral")
             ]
-            if baseline or base_rel
+            if baseline
             else None
         )
         return core_topics.market_topic(
@@ -1425,8 +1571,28 @@ class SqlProvider:
         )
         rows = self._synth(code, range_key, "competitor_reason")
         scan = self._scan(rng["from"], rng["to"], rng)
+        related = []
+        if not fixed and not rows:
+            # 人工映射与共提分析都尚未产出时，先给同板块、同结构且区间内确有讨论的
+            # 产品候选。它们明确标成「待确认」，只用于补足可比较对象，不冒充已确认竞品。
+            related = [
+                q["code"] for q in self._products
+                if q["code"] != code
+                and q.get("sector") == p.get("sector")
+                and q.get("struct") == p.get("struct")
+                and (scan[q["code"]].get("comments") or 0) > 0
+            ]
+            related.sort(key=lambda candidate: (
+                -(scan[candidate].get("comments") or 0),
+                -(scan[candidate].get("mentions") or 0),
+                candidate,
+            ))
+            related = related[:3]
         items = []
-        for c in fixed + [k for k in rows if k not in fixed]:
+        candidates = fixed + [k for k in rows if k not in fixed] + [
+            k for k in related if k not in fixed and k not in rows
+        ]
+        for c in candidates:
             q = self._by_code.get(c)
             if q is None:
                 continue
@@ -1435,20 +1601,41 @@ class SqlProvider:
             like, dislike = v.get("like_reasons") or [], v.get("dislike_reasons") or []
             n_ev = len((r or {}).get("evidenceIds") or [])
             confirmed = c in fixed
+            theme_rows = None if r else self.themes_for(c, range_key)
+            positive = (theme_rows or {}).get("positive", [])[:3]
+            negative = (theme_rows or {}).get("negative", [])[:3]
+            has_product_opinions = bool(positive or negative)
+            candidate_attitude = scan[c].get("att") or {}
             items.append({
                 "code": c, "name": q["name"], "issuer": q["issuer"], "ownership": q["ownership"],
                 "relation": "confirmed" if confirmed else "auto_candidate",
-                "reason": (f"客户维护的固定对位映射 · {q['issuer']}" if confirmed
-                           else "AI 依据本产品评论区的共现识别 · 待确认"),
+                "reason": (
+                    f"客户维护的固定对位映射 · {q['issuer']}" if confirmed else
+                    "AI 依据本产品评论区的共现识别 · 待确认" if r else
+                    f"同属{q['sectorName']}／{q['struct']}产品，按本区间讨论量自动补入 · 待确认"
+                ),
                 "mentions": scan[c]["mentions"], "comments": scan[c]["comments"],
                 "delta": delta(scan[c]["comments"], self._scan(rng["benchFrom"], rng["benchTo"])[c]["comments"]),
-                "positiveThemes": [{"id": f"{c}-like-{i}", "title": t, "mentions": n_ev} for i, t in enumerate(like)],
-                "negativeThemes": [{"id": f"{c}-dislike-{i}", "title": t, "mentions": n_ev} for i, t in enumerate(dislike)],
-                "evidencePos": n_ev if like else 0, "evidenceNeg": n_ev if dislike else 0,
+                "positiveThemes": (
+                    [{"id": f"{c}-like-{i}", "title": t, "mentions": n_ev} for i, t in enumerate(like)]
+                    if r else [{"id": t["id"], "title": t["title"], "mentions": t["mentions"]} for t in positive]
+                ),
+                "negativeThemes": (
+                    [{"id": f"{c}-dislike-{i}", "title": t, "mentions": n_ev} for i, t in enumerate(dislike)]
+                    if r else [{"id": t["id"], "title": t["title"], "mentions": t["mentions"]} for t in negative]
+                ),
+                "evidencePos": (
+                    n_ev if r and like else candidate_attitude.get("positive") if has_product_opinions else 0
+                ),
+                "evidenceNeg": (
+                    n_ev if r and dislike else candidate_attitude.get("negative") if has_product_opinions else 0
+                ),
                 "evidenceIds": (r or {}).get("evidenceIds") or [],
-                "reasonStatus": "ok" if r else "unavailable",
+                "reasonStatus": "ok" if r else "product_opinions" if has_product_opinions else "unavailable",
+                "opinionScope": "product" if not r and has_product_opinions else "comparison",
                 "reviewState": (r or {}).get("reviewState"),
             })
+        items.sort(key=lambda item: (-(item["comments"] or 0), item["code"]))
         return {"status": "ok" if items else "empty", "list": items}
 
     # ── 账号域：产品相关 KOL 与 KOL 其他产品观点 ─────────────────────
@@ -1691,14 +1878,11 @@ class SqlProvider:
         ctxKey ／ polarity ／ n 的合法性由 `core/evidence.py` 先验过了，这里只验产品。
         区间取 ctxKey 的头一段（它的形状就是 `<区间>|<面板 id>`）。
 
-        ## 面板 id 不参与选取，这是一处诚实的降级
+        ## v4 面板证据约束
 
-        演示数据能给五个面板各配一批不同的摘录，因为它是编的。真库里「支撑这条结论的
-        原文」目前只到**评论 × 产品 × 极性**这一层：主题、话题、阶段各自的证据要
-        `kind=topic_label` / `neg_category` / `market_direction` 那几类标注，而它们还
-        没有写入方。所以同一只产品同一极性的几个面板会取到同一批评论 —— 它们确实都是
-        这只产品的该极性原文，不是错配，只是比演示态粗。**不能**为了制造差异随机挑几条
-        （`core/evidence.py` 模块头说的「不报错、数量对、格式对，只是配错了对象」）。
+        摘要和观点主题优先使用 synthesis 写入的 evidence ID 精确定位原文；关键理由的
+        evidence ID 也会合并参与筛选。仅为兼容没有 evidence ID 的旧审计记录，才降级为
+        同产品、同极性的实质产品反馈，绝不随机挑选或跨产品拼接证据。
 
         整块 None ＝ 这只产品在这个区间内尚无 relevance 结论且未完成分析
         （「暂不可用」）；空列表 ＝ 已判过相关性，但当前相关评论里这个极性一条都没有
@@ -1713,6 +1897,9 @@ class SqlProvider:
         lo, hi = window
         att_by_code = self._released_window_annotations("attitude", lo, hi)
         rel_by_code = self._released_window_annotations("relevance", lo, hi)
+        feedback_by_code = self._released_window_annotations("feedback_eligible", lo, hi)
+        aspects_by_code = self._released_window_annotations("aspect", lo, hi)
+        strict_feedback = self._meta.get("product_feedback_taxonomy") == "product-feedback-v4"
         att = {
             unit: row for by_unit in att_by_code.values() for unit, row in by_unit.items()
         }
@@ -1724,12 +1911,40 @@ class SqlProvider:
             cid, subject = unit
             if (rel.get(unit) or {}).get("value") != "relevant":
                 continue
+            feedback_row = feedback_by_code.get(subject, {}).get(unit)
+            candidate = {
+                "feedback_eligible": (
+                    feedback_row.get("value") if feedback_row is not None
+                    else False if strict_feedback else None
+                ),
+                "aspects": (aspects_by_code.get(subject, {}).get(unit) or {}).get("value") or [],
+            }
+            if not core_themes.is_product_feedback(candidate):
+                continue
             by_comment[cid].append((subject, a))
         hits = [
             cid
             for cid, pairs in by_comment.items()
             if any(s == code and a["value"] == polarity for s, a in pairs)
         ]
+        panel_id = str(ctx_key).split("|", 1)[1]
+        referenced_ids = set()
+        if panel_id == "sum":
+            synth_row = self._synth(code, rng["key"], "summary").get(NO_SUBJECT)
+            referenced_ids.update((synth_row or {}).get("evidenceIds") or [])
+        else:
+            prefix = f"{code}-{polarity}-"
+            if panel_id.startswith(prefix):
+                aspect = panel_id[len(prefix):]
+                synth_row = self._synth(code, rng["key"], "theme_label").get(
+                    f"{polarity}|{aspect}"
+                )
+                referenced_ids.update((synth_row or {}).get("evidenceIds") or [])
+                value = (synth_row or {}).get("value") or {}
+                for point in value.get("key_points") or []:
+                    referenced_ids.update(point.get("evidence_ids") or [])
+        if referenced_ids:
+            hits = [cid for cid in hits if f"c{cid}" in referenced_ids]
         has_relevance_result = bool(rel_by_code.get(code))
         has_completed_scope = self._scan(rng["from"], rng["to"], rng)[code]["att"] is not None
         if not has_relevance_result and not has_completed_scope:
@@ -2092,8 +2307,11 @@ class SqlProvider:
         # relevance 是所有下游判断的总闸门。只要该产品已有现行 relevance
         # 结论，就能诚实地返回“已分析、但当前没有相关态度”的全零结果；历史 attitude
         # 不能在 relevance 被翻成 irrelevant / needs_context 后继续泄漏到聚合里。
+        feedback_by_code = self._released_window_annotations("feedback_eligible", lo, hi)
+        aspects_by_code = self._released_window_annotations("aspect", lo, hi)
+        strict_feedback = self._meta.get("product_feedback_taxonomy") == "product-feedback-v4"
         for code, by_unit in released_relevance.items():
-            if code in out and by_unit:
+            if code in out and by_unit and (not strict_feedback or feedback_by_code.get(code)):
                 out[code]["attSeen"] = True
 
         for code, by_unit in self._released_window_annotations("attitude", lo, hi).items():
@@ -2102,6 +2320,15 @@ class SqlProvider:
                 continue
             for unit, a in by_unit.items():
                 if (released_relevance.get(code, {}).get(unit) or {}).get("value") != "relevant":
+                    continue
+                candidate = {
+                    "feedback_eligible": (
+                        (feedback_by_code.get(code, {}).get(unit) or {}).get("value")
+                        if unit in feedback_by_code.get(code, {}) or not strict_feedback else False
+                    ),
+                    "aspects": (aspects_by_code.get(code, {}).get(unit) or {}).get("value") or [],
+                }
+                if not core_themes.is_product_feedback(candidate):
                     continue
                 posted_hkt = utc_naive_to_hkt(a["posted_at"])
                 _bump_att(s, _bucket(gran, origin, posted_hkt) if nb else None, a["value"])

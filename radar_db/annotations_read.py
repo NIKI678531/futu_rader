@@ -45,7 +45,10 @@ _HUMAN_SETTLED = frozenset(("approved", "corrected"))
 COMMENT_PRODUCT_PROMPT_VERSIONS = (
     "comment-product-v2",
     "comment-product-v3",
+    "comment-product-v4",
 )
+
+PRODUCT_FEEDBACK_PROMPT_VERSIONS = ("comment-product-v4",)
 
 
 def _chunked(items, n):

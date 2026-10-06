@@ -108,7 +108,7 @@ def test_exact_parent_qualifies_and_all_replies_inherit_anchor():
     assert route.subject_codes == ("3033",)
     assert route.anchor_rejected is False
     assert route.reason == "parent_exact_qualified"
-    assert EXACT_RULE_VERSION == "parent-feed-v1"
+    assert EXACT_RULE_VERSION == "parent-feed-v2"
 
 
 def test_reply_ticker_cannot_reroute_a_qualified_parent():

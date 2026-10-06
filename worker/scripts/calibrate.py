@@ -67,6 +67,7 @@ from radar_db.comment_routes import (  # noqa: E402
     route_exists_predicate,
 )
 from radar_db.scope_jobs import scope_condition
+from radar_db.product_catalog import CATALOG_POLICY_VERSION
 from radar_db.leases import WorkerLease
 from radar_db.schema import analysis_scopes, annotation_jobs, comments, feeds  # noqa: E402
 from radar_db.time_windows import utc_naive_to_hkt  # noqa: E402
@@ -121,7 +122,7 @@ def calibration_policy(cfg, *, requested_batch_size, effective_batch_size,
         # These values are deterministic for the deployed rule/catalog.  The
         # runtime command additionally requires the database readiness marker.
         "commentRouteVersion": COMMENT_ROUTE_VERSION,
-        "productPoolDigest": product_pool_digest(),
+        "catalogPolicyVersion": CATALOG_POLICY_VERSION,
     }
 
 
@@ -491,6 +492,10 @@ def _main(argv, resources):
             "student_attitude_p": None,
             "llm_relevance": label.relevance,
             "llm_attitude": label.attitude if label.relevance == "relevant" else None,
+            "llm_feedback_eligible": (
+                label.relevance == "relevant"
+                and bool(set(getattr(label, "aspects", ())).intersection(schemas.PRODUCT_FEEDBACK_ASPECTS))
+            ) if hasattr(label, "aspects") else None,
             "llm_policy": {
                 "model": batch_models.get(item_id) or cfg.model,
                 "requestedModel": cfg.model,

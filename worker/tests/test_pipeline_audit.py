@@ -88,6 +88,7 @@ class UniversalFake:
                 data = {"points": [{"text": "多條評論認可費率", "evidence_ids": ids[:1]}], "needs_review": False}
             elif kind in ("theme_label", "neg_category"):
                 data = {"results": [{"key": b["key"], "title": "費率同類最低", "summary": "如此。",
+                                     "key_points": [{"text": "管理費低於同類產品", "evidence_ids": b["evidence_ids"][:1]}],
                                      "evidence_ids": b["evidence_ids"][:1]} for b in f["buckets"]]}
             elif kind == "stage_unit":
                 data = {"results": [{"key": u["key"], "category": "add_opportunity", "digest": "加倉為主",
@@ -181,8 +182,18 @@ def test_manual_batch_workflow_is_bounded_and_second_run_sends_nothing(engine, c
     assert finished["status"] == "complete"
     assert finished["products"][CODE]["complete"]
     repeated = BoundedFake(100)
-    assert full_own.run_manual(engine, cfg, plan, repeated)["status"] == "complete"
+    repeated_progress = full_own.run_manual(engine, cfg, plan, repeated)
+    assert repeated_progress["status"] == "complete"
     assert repeated.calls == []
+    assert repeated_progress["work"]["annotationsReused"] > 0
+    with engine.connect() as conn:
+        per_range = {
+            key: conn.execute(
+                select(meta_kv.c.v).where(meta_kv.c.k == f"own_analysis_progress_{key}")
+            ).scalar_one()
+            for key in ("d1", "d2")
+        }
+    assert all(json.loads(value)["status"] == "complete" for value in per_range.values())
 
 
 def test_manual_workflow_refuses_stale_plan_before_preparing(engine, cfg):

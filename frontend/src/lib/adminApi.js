@@ -1,58 +1,43 @@
-const BASE = import.meta.env?.VITE_API_BASE || 'http://localhost:8008/api/v1'
-const STORAGE_KEY = 'futu-radar-admin-token'
+const API_BASE = import.meta.env?.VITE_API_BASE || '/api/v1'
 
 export class AdminApiError extends Error {
-  constructor(status, message, blockedReasons = []) {
+  constructor(message, { status = 0, code = 'admin_error' } = {}) {
     super(message)
     this.name = 'AdminApiError'
     this.status = status
-    this.blockedReasons = blockedReasons
+    this.code = code
   }
 }
 
-export function getAdminToken() {
-  return window.sessionStorage.getItem(STORAGE_KEY) || ''
-}
-
-export function saveAdminToken(token) {
-  window.sessionStorage.setItem(STORAGE_KEY, token.trim())
-}
-
-export function clearAdminToken() {
-  window.sessionStorage.removeItem(STORAGE_KEY)
-}
-
-export async function adminRequest(path, { method = 'GET', token = getAdminToken() } = {}) {
-  const response = await fetch(BASE + path, {
+async function adminRequest(path, { method = 'GET', body } = {}) {
+  const options = {
     method,
     cache: 'no-store',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      'X-Admin-Token': token,
-    },
-  })
-  let body
-  try {
-    body = await response.json()
-  } catch {
-    throw new AdminApiError(response.status, '管理接口返回了无法识别的响应')
+    headers: { Accept: 'application/json' },
   }
+  if (body !== undefined) {
+    options.headers['Content-Type'] = 'application/json'
+    options.body = JSON.stringify(body)
+  }
+  const response = await fetch(`${API_BASE}${path}`, options)
+  const payload = await response.json().catch(() => ({}))
   if (!response.ok) {
-    throw new AdminApiError(
-      response.status,
-      body?.error?.message || `管理接口请求失败（${response.status}）`,
-      body?.error?.blockedReasons || [],
-    )
+    const apiError = payload?.error
+    throw new AdminApiError(apiError?.message || `请求失败（${response.status}）`, {
+      status: response.status,
+      code: apiError?.type || apiError?.code,
+    })
   }
-  if (!body || !('data' in body)) {
-    throw new AdminApiError(response.status, '管理接口响应缺少 data')
-  }
-  return body.data
+  return payload?.data ?? payload
 }
 
-export const loadAdminSources = () => adminRequest('/admin/data-sources')
-export const loadAdminTasks = () => adminRequest('/admin/tasks')
-export const loadAdminRuns = () => adminRequest('/admin/job-runs?limit=50')
-export const runAdminTask = task => adminRequest(`/admin/tasks/${task}/run`, { method: 'POST' })
+export function loadAdminPipeline(range = 'd1') {
+  return adminRequest(`/admin/pipeline?range=${encodeURIComponent(range)}`)
+}
 
+export function runAdminAnalysis(range) {
+  return adminRequest('/admin/analysis-runs', {
+    method: 'POST',
+    body: { range },
+  })
+}

@@ -1,98 +1,32 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
-import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import Column, Date, DateTime, Integer, MetaData, String, Table, create_engine, insert
+from sqlalchemy import create_engine, insert
 from sqlalchemy.pool import StaticPool
 
 from app import create_app
-from core.admin_ops import (
-    AdminConflict,
-    AdminOperations,
-    AirflowAdapter,
-    MarketInsightStatusAdapter,
-    configured_symbols_fingerprint,
-    sanitize_error,
-)
-from radar_db.comment_routes import readiness_values
-from radar_db.product_catalog import load_products
-from radar_db.schema import ingestion_runs, metadata, meta_kv
+from core.admin_ops import AI_LAYER_B, AdminOperations, AdminUnavailable, AdminValidationError
+from radar_db.analysis_requests import claim_next, enqueue, finish, list_requests
+from radar_db.revisions import synthesis_generation_key
+from radar_db.schema import meta_kv, metadata
 
 
 class DummyOperations:
-    def data_sources(self):
-        return {"chainState": "current"}
+    def __init__(self):
+        self.ranges = []
 
-    def tasks(self):
-        return {"items": []}
+    def pipeline(self, range_key):
+        self.ranges.append(range_key)
+        return {"selectedRange": range_key, "comments": [], "ranges": []}
 
-    def job_runs(self, task, limit):
-        return {"task": task, "limit": limit, "items": []}
-
-    def trigger(self, task):
-        return {"task": task, "run": {"status": "queued"}}
-
-
-def _admin_client(monkeypatch, operations=None):
-    monkeypatch.setenv("ADMIN_API_TOKEN", "correct horse")
-    app = create_app()
-    app.config.update(
-        TESTING=True,
-        ADMIN_OPERATIONS_FACTORY=lambda: operations or DummyOperations(),
-    )
-    return app.test_client()
-
-
-def test_every_admin_endpoint_requires_the_independent_token(monkeypatch):
-    client = _admin_client(monkeypatch)
-    assert client.get("/api/v1/admin/data-sources").status_code == 401
-    assert client.get(
-        "/api/v1/admin/data-sources", headers={"X-Admin-Token": "wrong"}
-    ).status_code == 401
-    response = client.get(
-        "/api/v1/admin/data-sources", headers={"X-Admin-Token": "correct horse"}
-    )
-    assert response.status_code == 200
-    assert response.json["data"]["chainState"] == "current"
-
-
-def test_admin_api_fails_closed_when_server_token_is_missing(monkeypatch):
-    monkeypatch.delenv("ADMIN_API_TOKEN", raising=False)
-    app = create_app()
-    app.config.update(TESTING=True, ADMIN_OPERATIONS_FACTORY=DummyOperations)
-    response = app.test_client().get(
-        "/api/v1/admin/tasks", headers={"X-Admin-Token": "anything"}
-    )
-    assert response.status_code == 503
-    assert response.json["error"]["type"] == "admin_not_configured"
-
-
-def test_task_name_and_limit_are_whitelisted(monkeypatch):
-    client = _admin_client(monkeypatch)
-    headers = {"X-Admin-Token": "correct horse"}
-    assert client.get("/api/v1/admin/job-runs?task=repair", headers=headers).status_code == 400
-    assert client.get("/api/v1/admin/job-runs?limit=0", headers=headers).status_code == 400
-    assert client.get("/api/v1/admin/job-runs?limit=201", headers=headers).status_code == 400
-
-
-def test_trigger_returns_202_and_duplicate_running_returns_structured_409(monkeypatch):
-    client = _admin_client(monkeypatch)
-    headers = {"X-Admin-Token": "correct horse"}
-    response = client.post("/api/v1/admin/tasks/sync/run", headers=headers)
-    assert response.status_code == 202
-    assert response.json["data"]["run"]["status"] == "queued"
-
-    class Blocked(DummyOperations):
-        def trigger(self, task):
-            raise AdminConflict("任务当前不能启动", blocked_reasons=["已有同类任务正在运行"])
-
-    blocked = _admin_client(monkeypatch, Blocked()).post(
-        "/api/v1/admin/tasks/sync/run", headers=headers
-    )
-    assert blocked.status_code == 409
-    assert blocked.json["error"]["blockedReasons"] == ["已有同类任务正在运行"]
+    def enqueue_analysis(self, range_key):
+        self.ranges.append(range_key)
+        return {
+            "created": True,
+            "run": {"id": "ai-1", "range": range_key, "status": "queued"},
+        }
 
 
 def _engine():
@@ -106,188 +40,371 @@ def _engine():
     return engine
 
 
-class FakeSource:
-    def __init__(self, complete_through="2026-10-01"):
-        self.complete_through = complete_through
-
-    def status(self):
-        run = {
-            "runId": "source-42",
-            "status": "succeeded",
-            "completeThrough": self.complete_through,
-        }
-        return {
-            "configured": True,
-            "available": True,
-            "latestRun": run,
-            "latestCompleteRun": run,
-            "error": None,
-        }
+def _admin_client(operations=None):
+    app = create_app()
+    app.config.update(
+        TESTING=True,
+        ADMIN_OPERATIONS_FACTORY=lambda: operations or DummyOperations(),
+    )
+    return app.test_client()
 
 
-class FakeAirflow:
-    configured = True
+def test_pipeline_defaults_to_d1_and_accepts_a_selected_range():
+    operations = DummyOperations()
+    client = _admin_client(operations)
 
-    def __init__(self, runs=None, available=True, paused=False):
-        self.runs = runs or []
-        self.available = available
-        self.paused = paused
-        self.triggered = []
+    default = client.get("/api/v1/admin/pipeline")
+    selected = client.get("/api/v1/admin/pipeline?range=d14")
 
-    def snapshot(self, dag_id, run_limit=20):
-        return {
-            "configured": True,
-            "available": self.available,
-            "isPaused": self.paused,
-            "nextRunAt": None,
-            "runs": self.runs[:run_limit],
-            "error": None if self.available else "Airflow API 暂时不可用",
-        }
-
-    def trigger(self, dag_id, *, dag_run_id, conf):
-        self.triggered.append((dag_id, dag_run_id, conf))
-        return {"dagRunId": dag_run_id, "status": "queued", "conf": conf}
+    assert default.status_code == selected.status_code == 200
+    assert default.json["data"]["selectedRange"] == "d1"
+    assert selected.json["data"]["selectedRange"] == "d14"
+    assert operations.ranges == ["d1", "d14"]
 
 
-def test_chain_state_maps_newer_upstream_to_waiting_for_sync():
+def test_analysis_run_returns_202_and_only_accepts_range():
+    operations = DummyOperations()
+    client = _admin_client(operations)
+
+    response = client.post("/api/v1/admin/analysis-runs", json={"range": "d7"})
+
+    assert response.status_code == 202
+    assert response.json["data"]["run"]["status"] == "queued"
+    assert operations.ranges == ["d7"]
+    assert client.post("/api/v1/admin/analysis-runs", json={}).status_code == 400
+    assert client.post(
+        "/api/v1/admin/analysis-runs", json={"range": "d1", "force": True}
+    ).status_code == 400
+    assert client.post("/api/v1/admin/analysis-runs", data="not-json").status_code == 400
+
+
+def test_duplicate_active_analysis_submission_returns_the_existing_run():
     engine = _engine()
-    with engine.begin() as conn:
-        conn.execute(insert(meta_kv), [{"k": "anchor", "v": "2026-09-30"}])
-    ops = AdminOperations(
-        target_engine=engine,
-        source=FakeSource("2026-10-01"),
-        airflow=FakeAirflow(),
-        environment={},
-        now=lambda: datetime(2026, 10, 2, tzinfo=timezone.utc),
-    )
-    result = ops.data_sources()
-    assert result["chainState"] == "waiting_for_sync"
-    assert result["waitingForSync"] is True
-
-
-def test_running_dag_is_rejected_before_airflow_submission():
-    airflow = FakeAirflow(runs=[{"status": "running", "dagRunId": "already-running"}])
-    ops = AdminOperations(
-        target_engine=_engine(), source=FakeSource(), airflow=airflow, environment={}
-    )
-    with pytest.raises(AdminConflict) as caught:
-        ops.trigger("sync")
-    assert "已有同类任务正在运行" in caught.value.blocked_reasons
-    assert airflow.triggered == []
-
-
-def test_airflow_timeout_degrades_to_read_only_status():
-    def timeout(*_args, **_kwargs):
-        raise TimeoutError
-
-    adapter = AirflowAdapter("https://airflow.internal", "secret", opener=timeout)
-    snapshot = adapter.snapshot("futu_radar_sync")
-    assert snapshot["configured"] is True
-    assert snapshot["available"] is False
-    assert snapshot["runs"] == []
-    assert "暂时不可用" in snapshot["error"]
-
-
-def test_errors_are_redacted_and_truncated():
-    value = "mysql://alice:password@db.local/x?token=abc password=hunter2 " + ("x" * 800)
-    cleaned = sanitize_error(value)
-    assert "alice:password" not in cleaned
-    assert "hunter2" not in cleaned
-    assert "abc" not in cleaned
-    assert len(cleaned) <= 500
-
-
-def test_upstream_adapter_only_returns_a_proven_complete_receipt():
-    engine = create_engine("sqlite://", future=True, poolclass=StaticPool)
-    source_meta = MetaData()
-    receipts = Table(
-        "futu_comments_collection_runs",
-        source_meta,
-        Column("run_id", String(250), primary_key=True),
-        Column("collection_kind", String(40), nullable=False),
-        Column("status", String(20), nullable=False),
-        Column("complete_through", Date),
-        Column("scheduled_for", DateTime),
-        Column("finished_at", DateTime),
-        Column("configured_symbol_count", Integer),
-        Column("configured_symbols_fingerprint", String(128)),
-        Column("attempted_symbol_count", Integer),
-        Column("succeeded_symbol_count", Integer),
-    )
-    source_meta.create_all(engine)
-    codes = [product["code"] for product in load_products()]
-    common = {
-        "collection_kind": "comments_all",
-        "status": "succeeded",
-        "scheduled_for": datetime(2026, 10, 1, 11, 30),
-        "finished_at": datetime(2026, 10, 1, 11, 45),
-        "configured_symbol_count": len(codes),
-        "configured_symbols_fingerprint": configured_symbols_fingerprint(codes),
-        "attempted_symbol_count": len(codes),
-    }
-    with engine.begin() as conn:
-        conn.execute(insert(receipts), [
-            {**common, "run_id": "partial-success", "complete_through": date(2026, 10, 1),
-             "succeeded_symbol_count": len(codes) - 1},
-            {**common, "run_id": "complete-success", "complete_through": date(2026, 9, 30),
-             "succeeded_symbol_count": len(codes),
-             "finished_at": datetime(2026, 10, 1, 11, 40)},
-        ])
-    status = MarketInsightStatusAdapter(engine=engine).status()
-    assert status["latestRun"]["runId"] == "partial-success"
-    assert status["latestCompleteRun"]["runId"] == "complete-success"
-
-
-def test_ai_button_requires_reports_matching_the_active_route_generation():
-    engine = _engine()
-    route_values = readiness_values()
-    now = datetime(2026, 10, 1, 12, 0)
+    now = datetime(2026, 10, 6, 1, 0, tzinfo=timezone.utc)
     with engine.begin() as conn:
         conn.execute(insert(meta_kv), [
-            {"k": "anchor", "v": "2026-10-01"},
-            *({"k": key, "v": value} for key, value in route_values.items()),
+            {"k": "ai_analysis_worker_heartbeat", "v": "2026-10-06T00:59:30Z"},
+            {
+                "k": "ai_analysis_worker_readiness",
+                "v": '{"ready":true,"error":null}',
+            },
         ])
-        conn.execute(insert(ingestion_runs).values(
-            run_id="sync-1", source="market_insight", source_run_id="source-42",
-            source_kind="all", status="succeeded", started_at=now, finished_at=now,
-            complete_through=date(2026, 10, 1),
-        ))
-    common = {
-        "promptVersion": "comment-product-v3",
-        "schemaVersion": "v2",
-        "taxonomyVersion": "v2",
-        "commentRouteVersion": route_values["comment_route_version"],
-        "productPoolDigest": route_values["comment_route_pool_digest"],
-    }
-    calibration = {
-        "batchGatePassed": True,
-        "policy": {"model": "model-1", **common, "batchSize": 5,
-                   "maxInputTokens": 8000, "maxPayloadBytes": 12288,
-                   "maxOutputTokens": 8192},
-    }
-    quality = {
-        "reportType": "comment-relevance-human-gold-v1", "sample_source": "llm",
-        "n": 400, "qualityGate": {"passed": True},
-        "policy": {"model": "returned-snapshot", "requestedModel": "model-1", **common},
-    }
-    environment = {
-        "AI_DATA_GOVERNANCE_APPROVED": "true",
-        "AI_PRIMARY_MODEL": "model-1",
-        "AI_CALIBRATION_REPORT": json.dumps(calibration),
-        "AI_QUALITY_REPORT": json.dumps(quality),
-    }
-    ops = AdminOperations(
+    operations = AdminOperations(
         target_engine=engine,
-        source=FakeSource("2026-10-01"),
-        airflow=FakeAirflow(),
-        environment=environment,
+        market_provider=object(),
+        now=lambda: now,
     )
-    analyze_task = next(item for item in ops.tasks()["items"] if item["id"] == "analyze")
-    assert analyze_task["canRun"] is True
+    client = _admin_client(operations)
 
-    quality["policy"]["productPoolDigest"] = "stale"
-    environment["AI_QUALITY_REPORT"] = json.dumps(quality)
-    blocked = next(item for item in ops.tasks()["items"] if item["id"] == "analyze")
-    assert blocked["canRun"] is False
-    assert any("人工金标" in reason for reason in blocked["blockedReasons"])
+    first = client.post("/api/v1/admin/analysis-runs", json={"range": "d1"})
+    duplicate = client.post("/api/v1/admin/analysis-runs", json={"range": "d1"})
 
+    assert first.status_code == duplicate.status_code == 202
+    assert first.json["data"]["created"] is True
+    assert duplicate.json["data"]["created"] is False
+    assert duplicate.json["data"]["run"]["id"] == first.json["data"]["run"]["id"]
+
+
+def test_analysis_submission_fails_before_queueing_when_worker_is_not_ready():
+    engine = _engine()
+    operations = AdminOperations(target_engine=engine, market_provider=object())
+
+    response = _admin_client(operations).post(
+        "/api/v1/admin/analysis-runs", json={"range": "d1"}
+    )
+
+    assert response.status_code == 503
+    assert response.json["error"]["message"] == "AI worker 未运行"
+    assert list_requests(engine) == []
+
+
+def test_removed_airflow_management_routes_are_not_registered():
+    client = _admin_client()
+
+    assert client.get("/api/v1/admin/data-sources").status_code == 404
+    assert client.get("/api/v1/admin/tasks").status_code == 404
+    assert client.get("/api/v1/admin/job-runs").status_code == 404
+    assert client.post("/api/v1/admin/tasks/analyze/run").status_code == 404
+
+
+def test_product_catalog_backend_remains_available():
+    operations = DummyOperations()
+    operations.target_engine = _engine()
+
+    response = _admin_client(operations).get("/api/v1/admin/product-catalog")
+
+    assert response.status_code == 200
+    assert response.json["data"]["available"] is True
+
+
+def test_admin_errors_keep_their_http_contract():
+    class Invalid(DummyOperations):
+        def pipeline(self, range_key):
+            raise AdminValidationError("range 无效")
+
+    class Unavailable(DummyOperations):
+        def pipeline(self, range_key):
+            raise AdminUnavailable("Radar 数据库暂时不可用")
+
+    assert _admin_client(Invalid()).get("/api/v1/admin/pipeline").status_code == 400
+    response = _admin_client(Unavailable()).get("/api/v1/admin/pipeline")
+    assert response.status_code == 503
+    assert response.json["error"]["message"] == "Radar 数据库暂时不可用"
+
+
+def test_comment_rows_reuse_pool_counts_and_preserve_zero_vs_unavailable(monkeypatch):
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv), {"k": "anchor", "v": "2026-08-25"})
+    products = [
+        {"code": "3067", "name": "后一个", "ownership": "own"},
+        {"code": "3033", "name": "前一个", "ownership": "own"},
+        {"code": "3088", "name": "无页面数值", "ownership": "peer"},
+    ]
+    pool_rows = [
+        {
+            "code": "3033", "comments": 9,
+            "commentFunnel": {
+                "rawPlatformCount": 12, "platformCount": 11, "parsedCount": 10,
+                "ruleEligibleCount": 8, "aiCompletedCount": 7, "relevantCount": 6,
+            },
+        },
+        {
+            "code": "3067", "comments": 0,
+            "commentFunnel": {
+                "rawPlatformCount": 0, "platformCount": 0, "parsedCount": 0,
+                "ruleEligibleCount": 0, "aiCompletedCount": 0, "relevantCount": 0,
+            },
+        },
+    ]
+
+    class PoolProvider:
+        def pool(self, range_key):
+            assert range_key == "d1"
+            return {"list": pool_rows}
+
+    monkeypatch.setattr("core.admin_ops.load_products", lambda **_kwargs: products)
+    result = AdminOperations(target_engine=engine, market_provider=PoolProvider()).pipeline("d1")
+
+    assert [row["code"] for row in result["comments"]] == ["3033", "3067", "3088"]
+    assert [row["rank"] for row in result["comments"]] == [1, 2, 3]
+    assert result["commentDisplayLimit"] == 10
+    assert result["analyzedProductCodes"] == ["3033", "3067"]
+    assert [row["key"] for row in result["ranges"]] == ["d1", "d2", "d7", "d14", "d30"]
+    assert result["recentRuns"] == []
+    first = result["comments"][0]
+    source = pool_rows[0]
+    assert [
+        first[key] for key in (
+            "rawPlatformCount", "platformCount", "parsedCount",
+            "ruleEligibleCount", "aiCompletedCount", "relevantCount",
+        )
+    ] == [
+        source["commentFunnel"][key] for key in (
+            "rawPlatformCount", "platformCount", "parsedCount",
+            "ruleEligibleCount", "aiCompletedCount", "relevantCount",
+        )
+    ]
+    assert first["pageCommentLabel"] == "有评论 · 9 条"
+    assert result["comments"][1]["pageCommentLabel"] == "0 条"
+    assert result["comments"][2]["pageCommentLabel"] == "暂不可用"
+
+
+def test_pipeline_orders_comments_by_volume_and_limits_ai_scope_to_top_ten(monkeypatch):
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv), {"k": "anchor", "v": "2026-08-25"})
+    products = [
+        {"code": f"{3000 + index}", "name": f"产品 {index}", "ownership": "own"}
+        for index in range(12)
+    ]
+    pool_rows = [
+        {"code": product["code"], "comments": index, "commentFunnel": {}}
+        for index, product in enumerate(products)
+    ]
+
+    class PoolProvider:
+        def pool(self, _range_key):
+            return {"list": pool_rows}
+
+    monkeypatch.setattr("core.admin_ops.load_products", lambda **_kwargs: products)
+    result = AdminOperations(target_engine=engine, market_provider=PoolProvider()).pipeline("d1")
+
+    expected = [f"{3000 + index}" for index in range(11, 1, -1)]
+    assert [row["code"] for row in result["comments"][:10]] == expected
+    assert result["analyzedProductCodes"] == expected
+    assert result["layers"]["productCount"] == 10
+
+
+def test_pipeline_refreshes_its_cached_market_provider_before_reading(monkeypatch):
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv), {"k": "anchor", "v": "2026-08-25"})
+    products = [{"code": "3033", "name": "产品一", "ownership": "own"}]
+
+    class RefreshingProvider:
+        def __init__(self):
+            self.ready = False
+
+        def refresh(self):
+            self.ready = True
+
+        def pool(self, _range_key):
+            return {
+                "list": [
+                    {
+                        "code": "3033",
+                        "comments": 12 if self.ready else None,
+                        "commentFunnel": {},
+                    }
+                ]
+            }
+
+    provider = RefreshingProvider()
+    monkeypatch.setattr("core.admin_ops.load_products", lambda **_kwargs: products)
+
+    result = AdminOperations(target_engine=engine, market_provider=provider).pipeline("d1")
+
+    assert result["analyzedProductCodes"] == ["3033"]
+    assert result["comments"][0]["pageCommentCount"] == 12
+
+
+def test_pipeline_reports_worker_heartbeat_health(monkeypatch):
+    engine = _engine()
+    now = datetime(2026, 10, 6, 1, 0, tzinfo=timezone.utc)
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv), [
+            {"k": "anchor", "v": "2026-08-25"},
+            {"k": "ai_analysis_worker_heartbeat", "v": "2026-10-06T00:59:30Z"},
+            {
+                "k": "ai_analysis_worker_readiness",
+                "v": '{"ready":true,"error":null}',
+            },
+        ])
+    monkeypatch.setattr("core.admin_ops.load_products", lambda **_kwargs: [])
+
+    class EmptyProvider:
+        def pool(self, _range_key):
+            return {"list": []}
+
+    result = AdminOperations(
+        target_engine=engine,
+        market_provider=EmptyProvider(),
+        now=lambda: now,
+    ).pipeline("d1")
+
+    assert result["worker"] == {
+        "online": True,
+        "lastSeenAt": "2026-10-06T00:59:30Z",
+        "ready": True,
+        "error": None,
+    }
+
+
+def test_pipeline_reports_missing_worker_as_offline(monkeypatch):
+    engine = _engine()
+    monkeypatch.setattr("core.admin_ops.load_products", lambda **_kwargs: [])
+
+    class EmptyProvider:
+        def pool(self, _range_key):
+            return {"list": []}
+
+    result = AdminOperations(
+        target_engine=engine,
+        market_provider=EmptyProvider(),
+    ).pipeline("d1")
+
+    assert result["worker"] == {
+        "online": False,
+        "lastSeenAt": None,
+        "ready": False,
+        "error": "AI worker 未运行",
+    }
+
+
+def test_layer_b_counts_published_empty_generations_as_complete(monkeypatch):
+    """An intentional empty result is complete, even though it has no output row."""
+
+    engine = _engine()
+    products = [
+        {"code": "3033", "name": "产品一", "ownership": "own"},
+        {"code": "3067", "name": "产品二", "ownership": "peer"},
+    ]
+    anchor = "2026-08-25"
+    metadata_rows = [{"k": "anchor", "v": anchor}]
+    for code in ("3033", "3067"):
+        for kind, _label, _locations in AI_LAYER_B:
+            metadata_rows.append(
+                {
+                    "k": synthesis_generation_key(code, "d1", kind),
+                    "v": f"{anchor}|empty-fingerprint",
+                }
+            )
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv), metadata_rows)
+
+    class PoolProvider:
+        def pool(self, _range_key):
+            return {
+                "list": [
+                    {"code": "3033", "comments": 10, "commentFunnel": {}},
+                    {"code": "3067", "comments": 5, "commentFunnel": {}},
+                ]
+            }
+
+    monkeypatch.setattr("core.admin_ops.load_products", lambda **_kwargs: products)
+    result = AdminOperations(target_engine=engine, market_provider=PoolProvider()).pipeline("d1")
+
+    assert all(row["status"] == "complete" for row in result["layers"]["layerB"])
+    assert all(row["producedPairs"] == 2 for row in result["layers"]["layerB"])
+
+
+def test_queue_deduplicates_active_range_and_claims_in_range_priority_order():
+    engine = _engine()
+    submitted = datetime(2026, 10, 5, 8, 0)
+    d30, created = enqueue(engine, "d30", now=submitted)
+    d1, _ = enqueue(engine, "d1", now=submitted + timedelta(seconds=1))
+    duplicate, duplicate_created = enqueue(engine, "d1", now=submitted + timedelta(seconds=2))
+
+    assert created is True
+    assert d30["requestedAt"] == "2026-10-05T08:00:00Z"
+    assert duplicate_created is False
+    assert duplicate["id"] == d1["id"]
+    claimed = claim_next(engine, owner="worker-1", now=submitted + timedelta(seconds=3))
+    assert claimed["range"] == "d1"
+    assert finish(engine, claimed["id"], "worker-1", "succeeded", summary={"aiRequests": 0})
+    assert claim_next(engine, owner="worker-1", now=submitted + timedelta(seconds=4))["id"] == d30["id"]
+
+
+def test_expired_request_is_recovered_and_can_continue():
+    engine = _engine()
+    submitted = datetime(2026, 10, 5, 8, 0)
+    queued, _ = enqueue(engine, "d2", now=submitted)
+    first = claim_next(engine, owner="dead-worker", now=submitted, lease_seconds=5)
+
+    recovered = claim_next(
+        engine, owner="new-worker", now=submitted + timedelta(seconds=6), lease_seconds=5
+    )
+
+    assert first["id"] == queued["id"] == recovered["id"]
+    assert recovered["attempts"] == 2
+    assert recovered["status"] == "running"
+
+
+def test_terminal_request_allows_a_new_run_for_the_same_range():
+    engine = _engine()
+    first, _ = enqueue(engine, "d7")
+    running = claim_next(engine, owner="worker-1")
+    finish(engine, running["id"], "worker-1", "failed", error="provider unavailable")
+    second, created = enqueue(engine, "d7")
+
+    assert created is True
+    assert second["id"] != first["id"]
+    history = list_requests(engine)
+    assert [row["status"] for row in history] == ["queued", "failed"]
+
+
+@pytest.mark.parametrize("range_key", ["mtd", "d90", ""])
+def test_unknown_analysis_range_is_rejected(range_key):
+    with pytest.raises(ValueError):
+        enqueue(_engine(), range_key)

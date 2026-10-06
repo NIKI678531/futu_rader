@@ -138,11 +138,10 @@ def load(_allow_missing_key=False, **overrides):
         micro_batch_size=_int("AI_MICRO_BATCH_SIZE", 5),
         max_input_tokens=_int("AI_MAX_INPUT_TOKENS", 8000),
         concurrency=_int("AI_CONCURRENCY", 4),
-        # 生产默认 v3：沿用 v2 七维 wire schema，但收紧产品身份与上下文消歧规则。
-        # v1/v2 保留给回放与对照实验。
-        prompt_version=os.getenv("AI_PROMPT_VERSION", "comment-product-v3").strip(),
-        taxonomy_version=os.getenv("AI_TAXONOMY_VERSION", "v2").strip(),
-        schema_version=os.getenv("AI_SCHEMA_VERSION", "v2").strip(),
+        # v4 separates product-quality feedback, market/trading talk and issuer opinions.
+        prompt_version=os.getenv("AI_PROMPT_VERSION", "comment-product-v4").strip(),
+        taxonomy_version=os.getenv("AI_TAXONOMY_VERSION", "product-feedback-v4").strip(),
+        schema_version=os.getenv("AI_SCHEMA_VERSION", "v3").strip(),
         structured_output=_bool("AI_STRUCTURED_OUTPUT", True),
         reasoning_effort=os.getenv("AI_REASONING_EFFORT", "low").strip(),
         store=_bool("AI_STORE", False),

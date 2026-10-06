@@ -9,7 +9,7 @@ import os
 import shutil
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import timezone
 from pathlib import Path
 
 from sqlalchemy.engine import make_url
@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from radar_db import db_url
+from radar_db.clock import now as clock_now
 
 
 def sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
@@ -32,7 +33,8 @@ def backup_sqlite(source: Path, output_dir: Path, *, now=None) -> dict:
     source = source.resolve(strict=True)
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+    audit_now = now or clock_now(timezone.utc)
+    stamp = audit_now.strftime("%Y%m%dT%H%M%SZ")
     target = output_dir / f"{source.stem}-{stamp}{source.suffix or '.sqlite'}"
     if target.exists():
         raise FileExistsError(f"Backup already exists: {target}")
@@ -58,7 +60,7 @@ def backup_sqlite(source: Path, output_dir: Path, *, now=None) -> dict:
         "backup": str(target),
         "bytes": target.stat().st_size,
         "sha256": sha256_file(target),
-        "createdAt": (now or datetime.now(timezone.utc)).isoformat(),
+        "createdAt": audit_now.isoformat(),
     }
     manifest = target.with_suffix(target.suffix + ".sha256.json")
     manifest.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

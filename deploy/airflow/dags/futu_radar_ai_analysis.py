@@ -40,7 +40,7 @@ runtime_secret = _variable("futu_radar_runtime_secret", "futu-radar-runtime")
 with DAG(
     dag_id=DAG_ID,
     description="Analyze routed ETF comments after the daily MarketInsight sync",
-    schedule="30 20 * * 1-5",
+    schedule="0 8 * * *",
     start_date=pendulum.datetime(2026, 1, 1, tz=TIMEZONE),
     catchup=False,
     max_active_runs=1,
@@ -58,9 +58,11 @@ with DAG(
         cmds=["python", "-X", "utf8", "-m", "jobs.refresh"],
         arguments=[
             "analyze",
-            "--mode", "auto",
+            "--mode", "{{ dag_run.conf.get('mode', 'auto') if dag_run else 'auto' }}",
             "--budget-date", "{{ data_interval_end.in_timezone('Asia/Hong_Kong').to_date_string() }}",
             "--anchor", "{{ dag_run.conf.get('anchor', '') if dag_run else '' }}",
+            "--codes", "{{ dag_run.conf.get('codes', '') if dag_run else '' }}",
+            "--ranges", "{{ dag_run.conf.get('ranges', '') if dag_run else '' }}",
             "--wait-for-ready",
             "--wait-timeout-seconds", "28800",
             "--batch-size", "5",

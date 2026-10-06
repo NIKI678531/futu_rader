@@ -35,19 +35,20 @@ def _v2_result(**over):
     return row
 
 
-def test_comment_product_v3_is_default_and_reuses_strict_v2_shape():
+def test_comment_product_v4_is_default_and_uses_strict_v3_shape():
     prompt = get_prompt("comment_product")
 
-    assert prompt.VERSION == "comment-product-v3"
-    assert schema_version_for(prompt) == "v2"
-    wire = schemas.batch_json_schema("comment_product", "v2")
-    item = wire["$defs"]["CommentAnnotationV2"]
+    assert prompt.VERSION == "comment-product-v4"
+    assert schema_version_for(prompt) == "v3"
+    wire = schemas.batch_json_schema("comment_product", "v3")
+    item = wire["$defs"]["CommentAnnotationV3"]
     assert item["additionalProperties"] is False
     assert set(item["required"]) == set(item["properties"])
 
 
 def test_v3_requires_full_reannotation_even_when_gap_fill_is_enabled():
     assert requires_full_reannotation("comment_product", "comment-product-v3") is True
+    assert requires_full_reannotation("comment_product", "comment-product-v4") is True
     assert requires_full_reannotation("comment_product", "comment-product-v2") is False
 
 
@@ -76,21 +77,23 @@ def test_v3_comment_jobs_bypass_the_unvalidated_local_student():
     assert job["stage"] == annotate.STAGE_LLM
 
 
-def test_production_config_defaults_to_v3_prompt_with_v2_wire_schema(monkeypatch):
+def test_production_config_defaults_to_v4_prompt_with_v3_wire_schema(monkeypatch):
     monkeypatch.setenv("AI_PRIMARY_MODEL", "test-model")
     monkeypatch.delenv("AI_PROMPT_VERSION", raising=False)
     monkeypatch.delenv("AI_SCHEMA_VERSION", raising=False)
+    monkeypatch.delenv("AI_TAXONOMY_VERSION", raising=False)
     monkeypatch.delenv("AI_MICRO_BATCH_SIZE", raising=False)
 
     cfg = config.load(_allow_missing_key=True)
 
-    assert cfg.prompt_version == "comment-product-v3"
-    assert cfg.schema_version == "v2"
+    assert cfg.prompt_version == "comment-product-v4"
+    assert cfg.schema_version == "v3"
+    assert cfg.taxonomy_version == "product-feedback-v4"
     assert cfg.micro_batch_size == 5
 
 
 def test_v3_prompt_separates_direct_identity_from_context_only_terms():
-    system = get_prompt("comment_product").SYSTEM
+    system = get_prompt("comment_product", "comment-product-v3").SYSTEM
 
     assert "`code`、`name` 与 `aliases`" in system
     assert "aliases" in system
@@ -104,7 +107,7 @@ def test_v3_prompt_separates_direct_identity_from_context_only_terms():
 
 
 def test_v3_prompt_limits_parent_chain_and_post_context_to_disambiguation():
-    system = get_prompt("comment_product").SYSTEM
+    system = get_prompt("comment_product", "comment-product-v3").SYSTEM
 
     assert "parent_comments" in system
     assert "最多三层" in system

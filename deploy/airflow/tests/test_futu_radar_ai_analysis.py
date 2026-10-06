@@ -28,7 +28,7 @@ def test_dag_contract(monkeypatch):
     dag = bag.get_dag("futu_radar_ai_analysis")
     task = dag.get_task("analyze")
     assert str(dag.timezone) == "Asia/Hong_Kong"
-    assert dag.schedule_interval == "30 20 * * 1-5"
+    assert dag.schedule_interval == "0 8 * * *"
     assert dag.catchup is False
     assert dag.max_active_runs == 1
     assert dag.is_paused_upon_creation is True
@@ -38,9 +38,11 @@ def test_dag_contract(monkeypatch):
     assert task.service_account_name == "radar-ai"
     assert task.cmds == ["python", "-X", "utf8", "-m", "jobs.refresh"]
     assert task.arguments == [
-        "analyze", "--mode", "auto", "--budget-date",
+        "analyze", "--mode", "{{ dag_run.conf.get('mode', 'auto') if dag_run else 'auto' }}", "--budget-date",
         "{{ data_interval_end.in_timezone('Asia/Hong_Kong').to_date_string() }}",
         "--anchor", "{{ dag_run.conf.get('anchor', '') if dag_run else '' }}",
+        "--codes", "{{ dag_run.conf.get('codes', '') if dag_run else '' }}",
+        "--ranges", "{{ dag_run.conf.get('ranges', '') if dag_run else '' }}",
         "--wait-for-ready",
         "--wait-timeout-seconds", "28800", "--batch-size", "5",
         "--concurrency", "2", "--max-http-attempts", "500",

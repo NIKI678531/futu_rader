@@ -977,7 +977,7 @@ def test_daily_budget_is_shared_and_hard_capped(tmp_path):
 
 
 def test_ai_request_enforces_safety_bounds():
-    assert AiRequest(date(2026, 9, 29), mode="daily").ranges == ("d1", "d2")
+    assert AiRequest(date(2026, 9, 29), mode="daily").ranges == ("d1", "d2", "d7")
     assert AiRequest(date(2026, 9, 28), mode="weekly").ranges == (
         "d1", "d2", "d7", "d14", "d30", "mtd",
     )
@@ -1068,6 +1068,83 @@ def test_automatic_analysis_checks_human_gold_before_provider_or_budget(tmp_path
             calibration_report={"batchGatePassed": True},
             quality_report={"name": "gold-v3"},
         ))
+
+
+def test_automatic_analysis_runs_each_range_top_ten_in_priority_order(tmp_path, monkeypatch):
+    from ai import config as ai_config
+    from ai import providers
+    from collection import budget as budget_module
+    from core import top_products
+    from jobs import analyze as analysis_job, full_own
+    from radar_db import comment_routes
+
+    target = engine(tmp_path)
+    cfg = ai_config.load(
+        model="test-model",
+        prompt_version="comment-product-v4",
+        schema_version="v3",
+        taxonomy_version="product-feedback-v4",
+    )
+    seen = []
+    monkeypatch.setattr(ai_config, "load", lambda: cfg)
+    monkeypatch.setattr(analysis_job, "check_calibration", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(analysis_job, "check_quality", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(comment_routes, "require_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        top_products,
+        "top_comment_products",
+        lambda _engine, range_key, **_kwargs: [
+            {"rank": 1, "code": {"d1": "3033", "d2": "3067", "d7": "2800"}[range_key], "comments": 9}
+        ],
+    )
+
+    def make_plan(_engine, args):
+        codes = args.codes.split(",")
+        seen.append((args.ranges, codes))
+        return {"codes": codes, "ranges": [args.ranges]}
+
+    monkeypatch.setattr(analysis_job, "make_plan", make_plan)
+
+    class Budget:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def reserve(self):
+            return None
+
+        def snapshot(self):
+            return {"requestsRemaining": 500}
+
+    monkeypatch.setattr(budget_module, "DailyBudget", Budget)
+    monkeypatch.setattr(
+        providers,
+        "build",
+        lambda _cfg, control: type("Provider", (), {"control": control})(),
+    )
+    monkeypatch.setattr(
+        full_own,
+        "run_manual",
+        lambda _engine, _cfg, plan, _provider: {
+            "status": "complete",
+            "products": {code: {"complete": True} for code in plan["codes"]},
+        },
+    )
+
+    result = FutuRefresh(target, None).analyze(AiRequest(
+        date(2026, 9, 25),
+        range_keys=("d7", "d1", "d2"),
+        data_governance_approved=True,
+        calibration_report={},
+        quality_report={},
+    ))
+
+    assert seen == [("d1", ["3033"]), ("d2", ["3067"]), ("d7", ["2800"])]
+    assert result.status == "complete"
+    assert result.completed_ranges == ["d1", "d2", "d7"]
+    assert result.detail["selectionLimit"] == 10
+    assert result.detail["selectedCodesByRange"] == {
+        "d1": ["3033"], "d2": ["3067"], "d7": ["2800"],
+    }
 
 
 def test_ai_result_exposes_completed_pending_ranges_and_failure_reason():

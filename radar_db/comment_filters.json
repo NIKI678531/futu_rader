@@ -1,15 +1,8 @@
 {
-  "version": "parent-feed-v1",
+  "version": "parent-feed-v2",
   "default": {
     "mode": "exact",
     "exclude_tickers": []
   },
-  "products": {
-    "3037": {
-      "mode": "exclude",
-      "exclude_tickers": [
-        "800000.HK"
-      ]
-    }
-  }
+  "products": {}
 }

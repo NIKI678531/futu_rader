@@ -87,13 +87,13 @@ def test_normalize_source_ticker(raw, expected):
     assert normalize_source_ticker(raw) == expected
 
 
-def test_default_config_is_exact_and_3037_excludes_hsi():
+def test_default_config_requires_an_exact_self_tag_for_every_product():
     config = load_comment_filter_config()
 
-    assert config.version == "parent-feed-v1"
+    assert config.version == "parent-feed-v2"
     assert len(config.digest) == 64
     assert config.policy_for("3033") == FilterPolicy("exact")
-    assert config.policy_for("3037") == FilterPolicy("exclude", ("800000.HK",))
+    assert config.policy_for("3037") == FilterPolicy("exact")
 
 
 def test_config_normalizes_deduplicates_and_hashes_semantics(tmp_path):
