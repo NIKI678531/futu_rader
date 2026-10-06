@@ -15,7 +15,7 @@ runbook §0：Key 不进代码、不进文档、不进 Git。本地放 `worker/.
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -82,6 +82,12 @@ class AiConfig:
     max_output_tokens: int = 8192
     # 新 provider 上线时默认只补缺失 kind，不替换页面已经在用的历史结论。
     fill_missing_only: bool = False
+    # Layer B（产品×区间文字生成物）专用的生成模型。分类型 provider（TypeSafe System One）
+    # 写不出总结，全部留空时 Layer B 沿用 AI_PRIMARY_*。
+    synth_provider: str = ""
+    synth_base_url: str = ""
+    synth_api_key: str = ""
+    synth_model: str = ""
 
     def redacted(self):
         """可以安全写进日志与 run 记录的形态。Key 只留尾四位，用于分辨「换过 Key 没有」。"""
@@ -147,4 +153,39 @@ def load(_allow_missing_key=False, **overrides):
         store=_bool("AI_STORE", False),
         service_tier=os.getenv("AI_SERVICE_TIER", "").strip(),
         fill_missing_only=_bool("AI_FILL_MISSING_ONLY", False),
+        synth_provider=os.getenv("AI_SYNTH_PROVIDER", "").strip(),
+        synth_base_url=os.getenv("AI_SYNTH_BASE_URL", "").strip().rstrip("/"),
+        synth_api_key=os.getenv("AI_SYNTH_API_KEY", "").strip(),
+        synth_model=os.getenv("AI_SYNTH_MODEL", "").strip(),
+    )
+
+
+def synthesis(cfg):
+    """Return the configuration Layer B generation must use.
+
+    Prompt/taxonomy/schema versions stay those of ``cfg`` because synthesis
+    reads Layer-A annotations written under them; only the transport and the
+    model change.  Without any ``AI_SYNTH_*`` value the primary config is
+    returned unchanged (same object).
+    """
+    if not (cfg.synth_provider or cfg.synth_base_url or cfg.synth_api_key or cfg.synth_model):
+        return cfg
+    missing = [
+        name for name, value in (
+            ("AI_SYNTH_BASE_URL", cfg.synth_base_url),
+            ("AI_SYNTH_API_KEY", cfg.synth_api_key),
+            ("AI_SYNTH_MODEL", cfg.synth_model),
+        ) if not value
+    ]
+    if missing:
+        raise ConfigError(
+            f"Layer B 生成模型配置不完整，缺少 {', '.join(missing)}。"
+            "要么三项都填，要么全部留空沿用 AI_PRIMARY_*。"
+        )
+    return replace(
+        cfg,
+        provider=cfg.synth_provider or "openai_compatible",
+        base_url=cfg.synth_base_url,
+        api_key=cfg.synth_api_key,
+        model=cfg.synth_model,
     )

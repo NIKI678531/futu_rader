@@ -41,3 +41,7 @@ export function runAdminAnalysis(range) {
     body: { range },
   })
 }
+
+export function runAdminFillAll() {
+  return adminRequest('/admin/analysis-runs/all', { method: 'POST' })
+}

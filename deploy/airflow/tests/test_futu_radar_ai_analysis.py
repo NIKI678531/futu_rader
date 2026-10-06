@@ -36,16 +36,7 @@ def test_dag_contract(monkeypatch):
     assert task.image.endswith("@sha256:" + ("a" * 64))
     assert task.namespace == "radar"
     assert task.service_account_name == "radar-ai"
-    assert task.cmds == ["python", "-X", "utf8", "-m", "jobs.refresh"]
-    assert task.arguments == [
-        "analyze", "--mode", "{{ dag_run.conf.get('mode', 'auto') if dag_run else 'auto' }}", "--budget-date",
-        "{{ data_interval_end.in_timezone('Asia/Hong_Kong').to_date_string() }}",
-        "--anchor", "{{ dag_run.conf.get('anchor', '') if dag_run else '' }}",
-        "--codes", "{{ dag_run.conf.get('codes', '') if dag_run else '' }}",
-        "--ranges", "{{ dag_run.conf.get('ranges', '') if dag_run else '' }}",
-        "--wait-for-ready",
-        "--wait-timeout-seconds", "28800", "--batch-size", "5",
-        "--concurrency", "2", "--max-http-attempts", "500",
-    ]
+    assert task.cmds == ["python", "-X", "utf8", "-m", "jobs.daily"]
+    assert task.arguments == ["--now", "--drain"]
     assert task.env_from[0].secret_ref.name == "radar-runtime"
 

@@ -1,9 +1,15 @@
-"""Scheduled, bounded Futu Radar AI analysis.
+"""Scheduled daily full refresh for Futu Radar (ADR-0031).
 
-The DAG consumes the 19:30 community collection/sync result.  It never scrapes
-Futu directly.  All runtime credentials and release-gate reports come from one
-Kubernetes Secret; non-secret deployment placement is configured with Airflow
+At 08:00 Asia/Hong_Kong the pod runs the same entry point as the worker's own
+cron: sync MarketInsight through the latest completed ``comments_all`` receipt
+(the previous evening's 19:30 run), sync prices, enqueue every page range and
+execute the queue inside the pod until it is empty.  Runtime credentials come
+from one Kubernetes Secret; non-secret placement is configured with Airflow
 Variables.
+
+Run either this DAG or the always-on worker's ``AI_DAILY_CRON``, not both.  If
+both fire, the queue de-duplicates active ranges and the analysis lease keeps a
+single executor, so no work is done twice.
 """
 
 from __future__ import annotations
@@ -39,7 +45,7 @@ runtime_secret = _variable("futu_radar_runtime_secret", "futu-radar-runtime")
 
 with DAG(
     dag_id=DAG_ID,
-    description="Analyze routed ETF comments after the daily MarketInsight sync",
+    description="Daily full refresh: sync, prices and every page range of AI analysis",
     schedule="0 8 * * *",
     start_date=pendulum.datetime(2026, 1, 1, tz=TIMEZONE),
     catchup=False,
@@ -50,25 +56,13 @@ with DAG(
 ) as dag:
     analyze = KubernetesPodOperator(
         task_id="analyze",
-        name="futu-radar-ai-analysis",
+        name="futu-radar-daily-refresh",
         namespace=namespace,
         service_account_name=service_account,
         image=worker_image,
         image_pull_policy="IfNotPresent",
-        cmds=["python", "-X", "utf8", "-m", "jobs.refresh"],
-        arguments=[
-            "analyze",
-            "--mode", "{{ dag_run.conf.get('mode', 'auto') if dag_run else 'auto' }}",
-            "--budget-date", "{{ data_interval_end.in_timezone('Asia/Hong_Kong').to_date_string() }}",
-            "--anchor", "{{ dag_run.conf.get('anchor', '') if dag_run else '' }}",
-            "--codes", "{{ dag_run.conf.get('codes', '') if dag_run else '' }}",
-            "--ranges", "{{ dag_run.conf.get('ranges', '') if dag_run else '' }}",
-            "--wait-for-ready",
-            "--wait-timeout-seconds", "28800",
-            "--batch-size", "5",
-            "--concurrency", "2",
-            "--max-http-attempts", "500",
-        ],
+        cmds=["python", "-X", "utf8", "-m", "jobs.daily"],
+        arguments=["--now", "--drain"],
         env_from=[
             k8s.V1EnvFromSource(
                 secret_ref=k8s.V1SecretEnvSource(name=runtime_secret)
@@ -80,4 +74,3 @@ with DAG(
         startup_timeout_seconds=600,
         retries=0,
     )
-

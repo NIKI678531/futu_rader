@@ -43,7 +43,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from ai import config  # noqa: E402
-from ai.providers import build as build_provider  # noqa: E402
+from ai.providers import build as build_provider, build_synthesis  # noqa: E402
 from jobs import annotate, audit, synthesize  # noqa: E402
 from jobs.backfill_comment_filter import prepare_comment_task_execution  # noqa: E402
 from jobs.scope_policy import require_current_exact_scope  # noqa: E402
@@ -155,12 +155,17 @@ def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=
                 ).limit(1)
             ).first()
         summary["complete"] = unfinished is None
-    supports_generation = provider is None or getattr(provider, "supports_generation", True)
+    synth_cfg, synth_provider = cfg, provider
+    if not skip_synth and not dry_run:
+        synth_cfg, synth_provider = build_synthesis(cfg, primary=provider)
+    supports_generation = synth_provider is None or getattr(synth_provider, "supports_generation", True)
     if not skip_synth and not supports_generation:
         summary["steps"].append({
             "task": "synthesize",
-            "skipped": "当前 provider 只支持分类；保留已有 Layer-B 生成结果",
+            "skipped": "没有可生成文字的模型：请在 AI_SYNTH_* 配置生成模型",
         })
+        if not dry_run:
+            summary["complete"] = False
     elif not skip_synth:
         ranges = list(ranges or synthesize.DEFAULT_RANGES)
         anchor = anchor_override or synthesize.read_anchor(engine)
@@ -171,9 +176,9 @@ def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=
             kwargs = {"workers": synth_workers} if synth_workers else {}
             st = synthesize.run(
                 engine,
-                cfg,
+                synth_cfg,
                 pairs=pairs,
-                provider=provider,
+                provider=synth_provider,
                 dry_run=dry_run,
                 scope_id=scope_id,
                 anchor_override=anchor_override,
@@ -211,10 +216,6 @@ def main(argv=None):
     ap.add_argument("--budget-requests", type=int)
     ap.add_argument("--max-http-requests", type=int)
     ap.add_argument("--max-items", type=int)
-    ap.add_argument("--calibration-report", type=Path,
-                    help="scripts.calibrate 产生且通过的批量校准报告")
-    ap.add_argument("--quality-report", type=Path,
-                    help="scripts.evaluate_gold 产生且通过的 v3 人工金标报告")
     ap.add_argument("--skip-synth", action="store_true")
     ap.add_argument("--ranges", help="Layer B 只做这些区间，如 d7,d30")
     ap.add_argument("--synth-workers", type=int, help="Layer B (code, range) 并行线程数，默认 8")
@@ -224,16 +225,6 @@ def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s")
     engine = make_engine()
     cfg = config.load(_allow_missing_key=args.dry_run)
-    if not args.dry_run:
-        # Import lazily: analyze imports full_own -> pipeline at module load time.
-        from jobs import analyze as analysis_job
-        try:
-            analysis_job.check_calibration(
-                cfg, args.calibration_report, require_singleton=True,
-            )
-            analysis_job.check_quality(cfg, args.quality_report)
-        except (ValueError, RuntimeError) as exc:
-            ap.error(str(exc))
     from ai.providers.base import RunControl, RunStopped
     from radar_db.leases import WorkerLease
     control = None if args.dry_run else RunControl(args.max_http_requests)

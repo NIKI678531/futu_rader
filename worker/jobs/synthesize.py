@@ -888,6 +888,7 @@ class Synthesizer:
 def run(engine, cfg, *, codes=None, ranges=DEFAULT_RANGES, kinds=KINDS, provider=None, dry_run=False, force=False,
         master=None, pairs=None, workers=WORKERS, scope_id=None, anchor_override=None):
     """Run Layer B concurrently by ``(code, range)`` and clear only clean pairs."""
+    cfg = config.synthesis(cfg)
     filter_config = load_comment_filter_config()
     with engine.connect() as conn:
         route_active = comment_routes_ready_on_connection(conn)
@@ -992,7 +993,7 @@ def main(argv=None):
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s")
     engine = make_engine()
-    cfg = config.load(_allow_missing_key=args.dry_run)
+    cfg = config.synthesis(config.load(_allow_missing_key=args.dry_run))
     codes = scope_codes(engine, args.scope) if args.scope else [c.strip() for c in args.codes.split(",")]
     from ai.providers.base import RunControl, RunStopped
     from radar_db.leases import WorkerLease

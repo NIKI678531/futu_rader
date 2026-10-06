@@ -22,9 +22,50 @@ def _engine():
     return engine
 
 
-def test_heartbeat_job_is_registered():
+def test_heartbeat_queue_and_daily_jobs_are_registered(monkeypatch):
+    monkeypatch.delenv("AI_DAILY_CRON", raising=False)
     jobs = build_scheduler(interval_seconds=30).get_jobs()
-    assert [j.id for j in jobs] == ["heartbeat", "admin-ai-requests"]
+    assert [j.id for j in jobs] == ["heartbeat", "admin-ai-requests", "daily-refresh"]
+
+
+def test_daily_refresh_runs_at_eight_hong_kong_time_and_can_be_switched_off(monkeypatch):
+    monkeypatch.delenv("AI_DAILY_CRON", raising=False)
+    monkeypatch.setenv("TZ", "Asia/Hong_Kong")
+    jobs = {job.id: job for job in build_scheduler(interval_seconds=30).get_jobs()}
+    trigger = jobs["daily-refresh"].trigger
+    fields = {field.name: str(field) for field in trigger.fields}
+    assert (fields["hour"], fields["minute"]) == ("8", "0")
+    assert str(trigger.timezone) == "Asia/Hong_Kong"
+
+    off = build_scheduler(interval_seconds=30, cron="off").get_jobs()
+    assert [j.id for j in off] == ["heartbeat", "admin-ai-requests"]
+
+
+def test_startup_upgrade_applies_pending_migrations(tmp_path, monkeypatch):
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import inspect
+
+    from radar_db import make_engine
+    from scheduler import ROOT, upgrade_schema
+
+    url = "sqlite:///" + (tmp_path / "radar.db").as_posix()
+    monkeypatch.setenv("RADAR_DB_URL", url)
+    config = Config()
+    config.set_main_option("script_location", str(ROOT / "radar_db" / "migrations"))
+    config.set_main_option("prepend_sys_path", str(ROOT))
+    command.upgrade(config, "0014")
+    engine = make_engine(url)
+    assert "requested_by" not in {c["name"] for c in inspect(engine).get_columns("ai_analysis_requests")}
+
+    assert upgrade_schema(engine) is True
+    assert "requested_by" in {c["name"] for c in inspect(engine).get_columns("ai_analysis_requests")}
+
+
+def test_startup_upgrade_leaves_unversioned_databases_alone():
+    from scheduler import upgrade_schema
+
+    assert upgrade_schema(_engine()) is False
 
 
 def test_interval_comes_from_the_argument():

@@ -970,10 +970,24 @@ def test_daily_budget_is_shared_and_hard_capped(tmp_path):
         "budgetDate": "2026-09-25", "requestLimit": 2, "requestsUsed": 2,
         "requestsRemaining": 0, "status": "exhausted",
     }
-    with pytest.raises(ValueError, match="policy changed"):
-        DailyBudget(target, "policy-b", 2, now=clock)
-    with pytest.raises(ValueError, match="between 1 and 500"):
-        DailyBudget(target, "policy-a", 501, now=clock)
+    with pytest.raises(ValueError, match="between 1 and 100000"):
+        DailyBudget(target, "policy-a", 100001, now=clock)
+
+
+def test_daily_budget_adopts_a_new_policy_or_limit_on_the_same_day(tmp_path):
+    target = engine(tmp_path)
+    clock = lambda: datetime(2026, 9, 24, 16, 30)  # 2026-09-25 HKT
+    first = DailyBudget(target, "policy-a", 2, now=clock)
+    first.reserve()
+    first.reserve()
+
+    raised = DailyBudget(target, "policy-b", 100000, now=clock)
+    raised.reserve()
+
+    assert raised.snapshot() == {
+        "budgetDate": "2026-09-25", "requestLimit": 100000, "requestsUsed": 3,
+        "requestsRemaining": 99997, "status": "open",
+    }
 
 
 def test_ai_request_enforces_safety_bounds():
@@ -981,8 +995,9 @@ def test_ai_request_enforces_safety_bounds():
     assert AiRequest(date(2026, 9, 28), mode="weekly").ranges == (
         "d1", "d2", "d7", "d14", "d30", "mtd",
     )
+    assert AiRequest(date(2026, 9, 25)).max_http_attempts == 100000
     with pytest.raises(ValueError, match="hard daily cap"):
-        AiRequest(date(2026, 9, 25), max_http_attempts=501)
+        AiRequest(date(2026, 9, 25), max_http_attempts=100001)
     with pytest.raises(ValueError, match="batch_size"):
         AiRequest(date(2026, 9, 25), batch_size=6)
     with pytest.raises(ValueError, match="concurrency"):
@@ -1043,34 +1058,7 @@ def test_explicit_governance_approval_opens_the_calibration_gate(tmp_path, monke
         ))
 
 
-def test_automatic_analysis_checks_human_gold_before_provider_or_budget(tmp_path, monkeypatch):
-    from ai import config as ai_config
-    from ai import providers
-    from jobs import analyze as analysis_job
-
-    cfg = ai_config.load(
-        model="gpt-5.6-luna", prompt_version="comment-product-v3",
-        schema_version="v2", taxonomy_version="v2", micro_batch_size=5,
-    )
-    monkeypatch.setattr(ai_config, "load", lambda: cfg)
-    monkeypatch.setattr(analysis_job, "check_calibration", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        analysis_job,
-        "check_quality",
-        lambda _cfg, report: (_ for _ in ()).throw(RuntimeError(f"quality boundary: {report['name']}")),
-    )
-    monkeypatch.setattr(providers, "build", lambda *_args, **_kwargs: pytest.fail("provider must not be built"))
-
-    with pytest.raises(RuntimeError, match="quality boundary: gold-v3"):
-        FutuRefresh(engine(tmp_path), None).analyze(AiRequest(
-            date(2026, 9, 25),
-            data_governance_approved=True,
-            calibration_report={"batchGatePassed": True},
-            quality_report={"name": "gold-v3"},
-        ))
-
-
-def test_automatic_analysis_runs_each_range_top_ten_in_priority_order(tmp_path, monkeypatch):
+def test_automatic_analysis_runs_each_range_selection_in_priority_order(tmp_path, monkeypatch):
     from ai import config as ai_config
     from ai import providers
     from collection import budget as budget_module
@@ -1090,9 +1078,10 @@ def test_automatic_analysis_runs_each_range_top_ten_in_priority_order(tmp_path, 
     monkeypatch.setattr(analysis_job, "check_calibration", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(analysis_job, "check_quality", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(comment_routes, "require_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.delenv("AI_OWN_TOP_LIMIT", raising=False)
     monkeypatch.setattr(
         top_products,
-        "top_comment_products",
+        "analysis_products",
         lambda _engine, range_key, **_kwargs: [
             {"rank": 1, "code": {"d1": "3033", "d2": "3067", "d7": "2800"}[range_key], "comments": 9}
         ],
@@ -1134,14 +1123,12 @@ def test_automatic_analysis_runs_each_range_top_ten_in_priority_order(tmp_path, 
         date(2026, 9, 25),
         range_keys=("d7", "d1", "d2"),
         data_governance_approved=True,
-        calibration_report={},
-        quality_report={},
     ))
 
     assert seen == [("d1", ["3033"]), ("d2", ["3067"]), ("d7", ["2800"])]
     assert result.status == "complete"
     assert result.completed_ranges == ["d1", "d2", "d7"]
-    assert result.detail["selectionLimit"] == 10
+    assert result.detail["ownTopLimit"] is None
     assert result.detail["selectedCodesByRange"] == {
         "d1": ["3033"], "d2": ["3067"], "d7": ["2800"],
     }

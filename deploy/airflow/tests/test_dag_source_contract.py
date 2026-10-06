@@ -22,17 +22,17 @@ def test_sync_dag_keeps_the_dataset_and_runtime_safety_contract():
     assert "source_run_id" in text
 
 
-def test_ai_dag_keeps_the_schedule_budget_and_runtime_contract():
+def test_ai_dag_runs_the_single_daily_entry_point():
     text = source("futu_radar_ai_analysis.py")
     assert 'schedule="0 8 * * *"' in text
     assert "max_active_runs=1" in text
     assert "is_paused_upon_creation=True" in text
     assert "@sha256:" in text
     assert "futu_radar_runtime_secret" in text
-    assert '"--concurrency", "2"' in text
-    assert '"--max-http-attempts", "500"' in text
-    assert '"--ranges", "{{ dag_run.conf.get(\'ranges\', \'\') if dag_run else \'\' }}"' in text
-    assert '"--codes", "{{ dag_run.conf.get(\'codes\', \'\') if dag_run else \'\' }}"' in text
+    assert 'cmds=["python", "-X", "utf8", "-m", "jobs.daily"]' in text
+    assert 'arguments=["--now", "--drain"]' in text
+    # 08:00 must not wait for the same day's 19:30 receipt (the old 16:00 timeout).
+    assert "--wait-for-ready" not in text and "--budget-date" not in text
 
 
 def test_hkex_catalog_dag_runs_daily_at_0700_hong_kong_time():

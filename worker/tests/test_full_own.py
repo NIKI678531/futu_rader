@@ -8,20 +8,6 @@ from ai import config
 from jobs.full_own import prepare, prioritize_scope, queue_status
 
 
-def test_full_own_cli_fails_closed_without_both_release_reports(monkeypatch):
-    from ai import config
-    from jobs import full_own
-
-    load_config = config.load
-    monkeypatch.setattr(full_own.config, "load", lambda: load_config(
-        model="gate-model", prompt_version="comment-product-v3",
-        schema_version="v2", taxonomy_version="v2", micro_batch_size=5,
-    ))
-    monkeypatch.setattr(full_own, "make_engine", lambda: pytest.fail("gate must run before database access"))
-
-    with pytest.raises(SystemExit) as exc:
-        full_own.main(["--max-http-requests", "1"])
-    assert exc.value.code == 2
 from radar_db import create_all, make_engine
 from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config
 from radar_db.leases import WorkerLease

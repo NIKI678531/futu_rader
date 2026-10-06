@@ -799,22 +799,6 @@ def test_cli_rejects_unscoped_comment_product_model_run():
     assert exc.value.code == 2
 
 
-def test_cli_rejects_scoped_comment_product_run_without_release_reports(monkeypatch):
-    gated_cfg = config.load(
-        model="gate-model", prompt_version="comment-product-v3",
-        schema_version="v2", taxonomy_version="v2", micro_batch_size=5,
-    )
-    monkeypatch.setattr(annotate, "make_engine", lambda: object())
-    monkeypatch.setattr(annotate.config, "load", lambda **_kwargs: gated_cfg)
-
-    with pytest.raises(SystemExit) as exc:
-        annotate.main([
-            "--run", "--task", "comment_product", "--scope", "scope-x",
-            "--max-http-requests", "1",
-        ])
-    assert exc.value.code == 2
-
-
 def test_cli_rejects_paid_comment_product_run_from_legacy_scope_before_provider(
         engine, cfg, monkeypatch, capsys):
     from jobs import analyze

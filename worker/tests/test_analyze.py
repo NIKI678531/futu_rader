@@ -34,6 +34,21 @@ def test_plan_uses_complete_source_day_and_deduplicates_ranges(engine):
     assert plan["modelRequestsMade"] == 0
 
 
+def test_plan_falls_back_to_current_window_when_baseline_predates_coverage(engine):
+    with engine.begin() as conn:
+        conn.execute(meta_kv.update().where(meta_kv.c.k == "window_from").values(v="2026-08-01"))
+    args = analyze.parser().parse_args(["plan", "--ranges", "d30", "--codes", "3033"])
+    with pytest.raises(ValueError, match="predates imported source coverage"):
+        analyze.make_plan(engine, args)
+
+    args.baseline_fallback = True
+    plan = analyze.make_plan(engine, args)
+
+    assert plan["currentWindowOnly"] is True and plan["baselineUnavailable"] is True
+    assert plan["from"] == "2026-07-27"
+    assert plan["priorityDays"][0] == "2026-08-25" and plan["priorityDays"][-1] == "2026-07-27"
+
+
 def test_plan_candidate_count_uses_hkt_bounds_for_utc_naive_feeds(engine):
     timestamps = (
         datetime(2026, 8, 23, 15, 59, 59),

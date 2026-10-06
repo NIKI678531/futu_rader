@@ -183,6 +183,28 @@ class TestThemesAndNegCats:
         assert t["title"] == "费率同类最低" and t["labelStatus"] == "ok" and t["evidenceIds"] == ["c100"]
         assert t["mentions"] == 8, "名字换了，数不变"
 
+    def test_dirty_pair_keeps_theme_and_category_labels_and_marks_every_view_stale(self, provider):
+        p = annotated(provider)
+        add_synth(p, [
+            {"kind": "theme_label", "subkey": "negative|spread",
+             "value": {"key": "negative|spread", "title": "点差偏大", "summary": "多人抱怨点差"}},
+            {"kind": "neg_category", "subkey": "spread",
+             "value": {"key": "spread", "title": "点差偏大", "summary": "多人抱怨点差"}},
+        ])
+        assert p.themes_for(OWN_CODE, "d1")["stale"] is False
+        p._meta[f"synth_dirty_{OWN_CODE}_d1"] = "1"
+        p._cache.clear()
+
+        themes = p.themes_for(OWN_CODE, "d1")
+        categories = p.neg_cats_for(OWN_CODE, "d1")
+
+        assert themes["stale"] is True
+        assert [t["title"] for t in themes["negative"]] == ["点差偏大"]
+        assert categories and all(row["stale"] is True for row in categories)
+        assert p.topics_for(OWN_CODE, "d1") and all(
+            row["stale"] is False for row in p.topics_for(OWN_CODE, "d1")
+        )
+
     def test_neg_categories_and_lifecycle_unknown_without_baseline(self, provider):
         p = annotated(provider)
         nc = p.neg_cats_for(OWN_CODE, "d1")
@@ -229,7 +251,7 @@ class TestTopicsAndHot:
         assert summaries[OWN_CODE]["status"] == "empty"
         assert summaries[OWN_CODE]["sample"] == 0
         assert summaries[PEER_CODE]["status"] == "unavailable"
-        assert provider.themes_for(OWN_CODE, "d1") == {"positive": [], "negative": []}
+        assert provider.themes_for(OWN_CODE, "d1") == {"positive": [], "negative": [], "stale": False}
         assert provider._completed_codes("2026-07-01", "2026-08-25") == set()
         provider._meta["data_revision"] = "new-source"
         assert provider._completed_codes("2026-08-25", "2026-08-25") == set()
@@ -269,13 +291,45 @@ class TestTopicsAndHot:
 
 
 class TestSummary:
-    def test_dirty_source_does_not_mix_old_summary_with_new_counts(self, provider):
+    def test_dirty_source_keeps_the_previous_summary_and_marks_it_stale(self, provider):
         p = annotated(provider)
         add_synth(p, [{"kind": "summary", "value": {"points": [
             {"text": "多条评论认可费率", "evidence_ids": ["c100"]}]} }])
-        assert p.summary_for(OWN_CODE, "d1")["aiStatus"] == "ok"
+        fresh = p.summary_for(OWN_CODE, "d1")
+        assert fresh["aiStatus"] == "ok" and fresh["stale"] is False
         p._meta[f"synth_dirty_{OWN_CODE}_d1"] = "1"
-        assert p.summary_for(OWN_CODE, "d1")["aiStatus"] == "unavailable"
+        p._cache.clear()
+        dirty = p.summary_for(OWN_CODE, "d1")
+        assert dirty["aiStatus"] == "ok" and dirty["stale"] is True
+        assert dirty["text"].endswith("多条评论认可费率。")
+
+    def test_generation_from_an_older_anchor_is_served_as_stale(self, provider):
+        p = annotated(provider)
+        add_synth(p, [
+            {"kind": "summary", "value": {"points": [{"text": "费率获认可", "evidence_ids": ["c100"]}]}},
+            {"kind": "hot_summary", "value": {"text": "费率获认可"}},
+        ])
+        with p._engine.begin() as conn:
+            conn.execute(update(synthesis_outputs).values(anchor="2026-08-24"))
+        for kind in ("summary", "hot_summary"):
+            p._meta[f"synth_current_{OWN_CODE}_d1_{kind}"] = f"2026-08-24|fp-{OWN_CODE}-d1-{kind}"
+        p._cache.clear()
+
+        summary = p.summary_for(OWN_CODE, "d1")
+        hot = p.hot_summaries("d1")[OWN_CODE]
+
+        assert summary["aiStatus"] == "ok" and summary["stale"] is True
+        assert hot["status"] == "ok" and hot["text"] == "费率获认可" and hot["stale"] is True
+
+    def test_generation_newer_than_the_anchor_is_ignored(self, provider):
+        p = annotated(provider)
+        add_synth(p, [{"kind": "summary", "value": {"points": [{"text": "未来结论", "evidence_ids": ["c100"]}]}}])
+        p._meta[f"synth_current_{OWN_CODE}_d1_summary"] = f"2026-08-26|fp-{OWN_CODE}-d1-summary"
+        p._cache.clear()
+
+        summary = p.summary_for(OWN_CODE, "d1")
+
+        assert summary["aiStatus"] == "unavailable" and summary["stale"] is False
 
     def test_summary_text_is_facts_plus_model_points(self, provider):
         p = annotated(provider)

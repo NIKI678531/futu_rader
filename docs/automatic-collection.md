@@ -50,44 +50,43 @@ community HTTP API. It cannot recover comments that are absent from the source
 database, so an upstream `partial` snapshot remains `partial` until the
 third-party/Airflow pipeline writes a complete replacement.
 
-Daily AI uses a persistent Hong Kong calendar-day budget:
+## Daily full refresh (08:00)
+
+One entry point keeps every page complete
+([ADR-0031](adr/0031-daily-full-refresh-single-queue.md)):
 
 ```powershell
-.venv\Scripts\python -X utf8 -m jobs.refresh analyze `
-  --mode daily `
-  --budget-date 2026-09-25 `
-  --ranges d1 `
-  --max-http-attempts 500 `
-  --batch-size 5 `
-  --concurrency 2 `
-  --calibration-report C:\secure\calibration.json `
-  --quality-report C:\secure\gold-eval-v4.json
+Set-Location worker
+.venv\Scripts\python -X utf8 -m jobs.daily --now           # enqueue; the running worker executes
+.venv\Scripts\python -X utf8 -m jobs.daily --now --drain   # also execute here until the queue is empty
 ```
 
-Use `--mode weekly` on Monday to include `d7,d14,d30,mtd`. Every provider HTTP
-attempt, including retries, reserves one row-level database allowance before the
-request. `--budget-date` identifies the scheduled analysis day; the allowance itself
-is always charged to the actual Hong Kong day of each HTTP attempt, including when a
-long run crosses midnight. Re-running the task cannot reset either day's limit.
-In Kubernetes, put the complete validated report JSON in the
-`AI_CALIBRATION_REPORT` Secret value. Local runs may instead use the file-path CLI
-option shown above. Put the independently generated human-gold report in
-`AI_QUALITY_REPORT` (or pass `--quality-report`). The latter must contain at least
-400 directly evaluated LLM rows from `comment-product-v4`, product-feedback precision
-at least 95%, recall at least 90%, and no failed content-contamination regression. Both reports
-must match the current model, prompt, schema and taxonomy. Counts are recomputed from
-the confusion matrix; a stale, edited or policy-mismatched report stops before the
-first paid request.
+The always-on worker (`python scheduler.py`) runs the same function at
+`AI_DAILY_CRON` (default `0 8 * * *`, Hong Kong time; `off` disables it):
 
-Backfills are staged by rerunning this command with the same persistent daily
-budget: full-pool `d1` first, then `d2`, then `d7`; longer ranges only start after
-those page ranges are complete. A retry does not reset the HKT-day allowance.
+1. **Sync** when `MARKET_INSIGHT_DATABASE_URL` is set: the latest successful
+   `comments_all` receipt for today or the previous evening is passed as
+   `--through-source-run-id`, so the complete date (`meta_kv.anchor`) advances.
+   Without the URL the database is the imported dump and the step is skipped.
+2. **Prices** when `FMP_API_KEY` is set.
+3. **Analysis**: `d1,d2,d7,d14,d30,mtd` are enqueued as scheduled requests and
+   executed by the worker for every active product (`AI_OWN_TOP_LIMIT=N`
+   restricts own products to the comment-volume Top N plus every peer).
 
-The same runtime Secret must set `AI_DATA_GOVERNANCE_APPROVED=true` only after the
-operator has confirmed the processing region, log retention, training-use and
-deletion-policy questions recorded in ADR-0017/0019. Missing, false or malformed
-approval fails closed before calibration and before the first provider call; it is a
-data-export authorization, not a human review gate for generated conclusions.
+A failed sync or price step never blocks analysis of the facts already in Radar.
+The step report is stored in `meta_kv.ai_daily_last_run` and shown on `/admin`.
+Each provider HTTP attempt still reserves a row in the Hong Kong day counter;
+the default limit is 100000 per day (`AI_MANUAL_MAX_HTTP_REQUESTS`).
+Calibration and human-gold reports are offline tools, not run gates.
+`AI_DATA_GOVERNANCE_APPROVED` defaults to on; set it to `false` to stop every AI
+request.
+
+Layer B (page summaries, theme names, stage opinions, competitor reasons) needs a
+model that can write text. When Layer A uses TypeSafe System One, configure
+`AI_SYNTH_BASE_URL`, `AI_SYNTH_API_KEY` and `AI_SYNTH_MODEL` (OpenAI compatible).
+
+`jobs.refresh analyze` remains available for explicit `--codes/--ranges`
+backfills and uses the same selection and run policy.
 
 ## Initial SQLite to MySQL migration
 
@@ -189,19 +188,27 @@ additive `/api/v1/meta.dataCollection` response.
 
 ## Admin control plane
 
-The independent `/admin` route has two database-backed views: the per-product
-comment funnel (using the exact `/pool` counts) and manual AI analysis. Refresh
-only reads Radar. A `d1`, `d2`, `d7`, `d14`, or `d30` run inserts one row into
-`ai_analysis_requests`; an always-on worker claims requests in that priority
-order, then runs complete Layer A + Layer B analysis for all products active at
-execution time. Duplicate active requests for one range return the existing row.
+The independent `/admin` route reads Radar only:
 
-The backend therefore needs only `RADAR_DB_URL`; it does not connect to
-MarketInsight or Airflow and does not hold AI credentials. Governance,
-calibration, quality and provider failures are recorded on the queued run by the
-worker instead of disabling the button in advance. Scheduled Airflow DAGs remain
-independent of this manual database queue. Stable input fingerprints ensure that
-unchanged results are reused and a repeat run can make zero model requests.
+- **链路检查**: worker heartbeat, Layer A model, Layer B generation model,
+  comment attribution, anchor, data mode (dump vs production) and the daily job.
+- **页面数据完整度**: for each of `d1,d2,d7,d14,d30,mtd`, how many products have
+  every Layer B kind published for the current anchor, how many are served as
+  「待更新」, and which are missing; each range has its own fill button, and
+  「一键补齐全部」 enqueues all six.
+- **评论进入**: the per-product comment funnel (the exact `/pool` counts).
+- **AI 分析**: Layer A queue counts and Layer B per kind (generated / stale /
+  missing) for the selected range.
+- **最近运行**: manual and scheduled requests with their summary, remaining
+  gaps, errors and reasons.
+
+Buttons insert rows into `ai_analysis_requests`; the always-on worker claims them
+in range priority order. Duplicate active requests for one range return the
+existing row. Buttons are disabled while no ready worker heartbeat exists, so a
+request cannot wait forever. The backend needs only `RADAR_DB_URL`; it does not
+connect to MarketInsight or Airflow and holds no AI credentials. Stable input
+fingerprints ensure unchanged results are reused and a repeat run can make zero
+model requests.
 
 ## Comment AI routing and scheduled analysis
 
@@ -222,17 +229,14 @@ digest, supersedes ineligible comment tasks, invalidates the previous quality
 claim and marks Layer B dirty. `/api/v1/meta.aiCommentRouting` exposes the active
 state without changing business endpoint shapes.
 
-Generate a fresh batch-5 calibration report and a fresh 400-row LLM-only human
-gold report after a routing-policy change. Both artifacts contain
-`commentRouteVersion` and `catalogPolicyVersion`; a valid additive catalog
-change reuses the gold set after its identity and routing regressions pass.
+Calibration and human-gold reports remain useful offline checks after a
+routing-policy change, but they no longer gate analysis (ADR-0031).
 
-Deploy `deploy/airflow/dags/futu_radar_ai_analysis.py` and configure the four
-non-secret Airflow Variables described in `deploy/airflow/README.md`. Database
-and AI credentials, governance approval, calibration JSON and gold-report JSON
-must be fields of the configured Kubernetes Secret. `RADAR_DB_URL` must be the
-same current database used by the web backend. After the 19:30 sync proof is
-visible there, the worker reads the latest `meta_kv.anchor`; backend providers
-refresh that metadata on each request, so the page and AI share one current
-window. The DAG is intentionally paused on first discovery; unpause it only
-after one successful manual run.
+In Kubernetes, deploy `deploy/airflow/dags/futu_radar_ai_analysis.py` (it runs
+`jobs.daily --now --drain`) and configure the four non-secret Airflow Variables
+described in `deploy/airflow/README.md`. Database and AI credentials must be
+fields of the configured Kubernetes Secret, and `RADAR_DB_URL` must be the same
+database used by the web backend. Backend providers refresh metadata on each
+request, so the page and AI share one current window. Enable either this DAG or
+the worker's `AI_DAILY_CRON`, not both. The DAG is paused on first discovery;
+unpause it after one successful manual run.

@@ -3,9 +3,7 @@
 Examples::
 
     python -m jobs.refresh sync --run-id "$AIRFLOW_CTX_DAG_RUN_ID"
-    python -m jobs.refresh analyze --mode daily --budget-date 2026-09-25 \
-        --calibration-report /config/calibration.json \
-        --quality-report /config/gold-eval-v3.json
+    python -m jobs.refresh analyze --mode daily --budget-date 2026-09-25
 
 Database credentials are environment-only so they cannot leak through Airflow's
 rendered Bash command or process listing.
@@ -17,7 +15,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -35,6 +33,7 @@ from collection import (
     MarketInsightMySqlAdapter,
     SyncRequest,
 )
+from collection.models import HARD_DAILY_MAX
 from jobs.import_dump import pool_codes
 from jobs.hkex_catalog import activate_pending_if_receipt_matches
 from radar_db import make_engine
@@ -68,46 +67,55 @@ def _refresh(with_source=True, through_source_run_id=None):
     return service
 
 
-def _calibration_report(explicit: Path | None):
-    """Load the calibration gate from a CLI path or the runtime Secret.
+def source_configured() -> bool:
+    return bool(os.getenv("MARKET_INSIGHT_DATABASE_URL", "").strip())
 
-    Kubernetes Secrets are normally injected as environment values, so the
-    production form is inline JSON.  A path remains supported for local runs
-    and deployments that mount a read-only Secret/ConfigMap volume.
-    """
-    if explicit is not None:
-        return explicit
-    configured = os.getenv("AI_CALIBRATION_REPORT", "").strip()
-    if not configured:
+
+def latest_closing_run(source, hkt_day: date):
+    """The newest successful ``comments_all`` receipt for ``hkt_day`` or the day before."""
+
+    closing = getattr(source, "closing_run", None)
+    if closing is None:
         return None
-    if configured.startswith("{"):
-        report = json.loads(configured)
-        if not isinstance(report, dict):
-            raise ValueError("AI_CALIBRATION_REPORT inline JSON must be an object")
-        return report
-    return Path(configured)
+    for day in (hkt_day, hkt_day - timedelta(days=1)):
+        receipt = closing(day)
+        if receipt:
+            return receipt
+    return None
 
 
-def _quality_report(explicit: Path | None):
-    """Load the human-gold release gate from a CLI path or runtime Secret."""
-    if explicit is not None:
-        return explicit
-    configured = os.getenv("AI_QUALITY_REPORT", "").strip()
-    if not configured:
-        return None
-    if configured.startswith("{"):
-        report = json.loads(configured)
-        if not isinstance(report, dict):
-            raise ValueError("AI_QUALITY_REPORT inline JSON must be an object")
-        return report
-    return Path(configured)
+def sync_once(*, mode="incremental", run_id=None, through_source_run_id=None, page_size=1000,
+              dry_run=False, feed_ids=(), service=None):
+    """One MarketInsight → Radar sync, including catalog-driven route rebuilds."""
+
+    service = service or _refresh(through_source_run_id=through_source_run_id)
+    result = service.sync(SyncRequest(
+        mode=mode,
+        run_id=run_id,
+        through_source_run_id=through_source_run_id,
+        page_size=page_size,
+        dry_run=dry_run,
+        feed_ids=tuple(feed_ids),
+    ))
+    payload = result.as_dict()
+    activated = tuple(getattr(service, "activated_catalog_codes", ()))
+    if activated and not dry_run:
+        from jobs.backfill_comment_routes import run as rebuild_comment_routes
+        route_result = rebuild_comment_routes(
+            service.target,
+            activate_routes=True,
+            preserve_quality_gate=True,
+        )
+        payload["catalogActivatedCodes"] = list(activated)
+        payload["commentRouteDigest"] = route_result["productPoolDigest"]
+    return payload
 
 
 def _data_governance_approved() -> bool:
-    """Strictly parse the automatic-analysis governance approval Secret."""
+    """AI runs unless ``AI_DATA_GOVERNANCE_APPROVED`` is explicitly ``false``."""
     configured = os.getenv("AI_DATA_GOVERNANCE_APPROVED", "").strip().lower()
     if not configured:
-        return False
+        return True
     if configured == "true":
         return True
     if configured == "false":
@@ -143,7 +151,7 @@ def _parser():
     )
     sync.add_argument("--dry-run", action="store_true")
 
-    analyze = sub.add_parser("analyze", help="run calibrated AI with a persistent HKT-day budget")
+    analyze = sub.add_parser("analyze", help="run AI with a persistent HKT-day request counter")
     analyze.add_argument("--mode", choices=("auto", "daily", "weekly"), default="auto")
     analyze.add_argument("--budget-date", type=date.fromisoformat)
     analyze.add_argument(
@@ -151,17 +159,7 @@ def _parser():
         type=_optional_date,
         help="analyze this already-complete anchor; empty means latest complete",
     )
-    analyze.add_argument(
-        "--calibration-report",
-        type=Path,
-        help="validated report path; defaults to AI_CALIBRATION_REPORT (inline JSON or path)",
-    )
-    analyze.add_argument(
-        "--quality-report",
-        type=Path,
-        help="validated 400-row human-gold report; defaults to AI_QUALITY_REPORT (inline JSON or path)",
-    )
-    analyze.add_argument("--max-http-attempts", type=int, default=500)
+    analyze.add_argument("--max-http-attempts", type=int, default=HARD_DAILY_MAX)
     analyze.add_argument("--batch-size", type=int, default=5)
     analyze.add_argument("--concurrency", type=int, default=2)
     analyze.add_argument(
@@ -184,26 +182,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "sync":
-            service = _refresh(through_source_run_id=args.through_source_run_id)
-            result = service.sync(SyncRequest(
+            payload = sync_once(
                 mode=args.mode,
                 run_id=args.run_id,
                 through_source_run_id=args.through_source_run_id,
                 page_size=args.page_size,
                 dry_run=args.dry_run,
                 feed_ids=tuple(args.feed_id),
-            ))
-            payload = result.as_dict()
-            activated = tuple(getattr(service, "activated_catalog_codes", ()))
-            if activated and not args.dry_run:
-                from jobs.backfill_comment_routes import run as rebuild_comment_routes
-                route_result = rebuild_comment_routes(
-                    service.target,
-                    activate_routes=True,
-                    preserve_quality_gate=True,
-                )
-                payload["catalogActivatedCodes"] = list(activated)
-                payload["commentRouteDigest"] = route_result["productPoolDigest"]
+            )
             print(json.dumps(payload, ensure_ascii=False, default=str))
             return 0
 
@@ -216,8 +202,6 @@ def main(argv=None):
                     "data-governance prerequisites are approved"
                 )
             budget_date = args.budget_date or clock.now(ZoneInfo("Asia/Hong_Kong")).date()
-            calibration_report = _calibration_report(args.calibration_report)
-            quality_report = _quality_report(args.quality_report)
             mode = args.mode
             if mode == "auto":
                 mode = "weekly" if budget_date.weekday() == 0 else "daily"
@@ -226,8 +210,6 @@ def main(argv=None):
                 anchor=args.anchor,
                 mode=mode,
                 data_governance_approved=data_governance_approved,
-                calibration_report=calibration_report,
-                quality_report=quality_report,
                 max_http_attempts=args.max_http_attempts,
                 batch_size=args.batch_size,
                 concurrency=args.concurrency,

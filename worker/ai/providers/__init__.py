@@ -33,3 +33,28 @@ def build(config, **kwargs):
             f"可选：{', '.join(sorted(_PROVIDERS))}"
         ) from None
     return cls(config, **kwargs)
+
+
+def generation_supported(config) -> bool:
+    """Whether the configured Layer B provider can write text (TypeSafe cannot)."""
+    from .. import config as ai_config
+
+    cls = _PROVIDERS.get(ai_config.synthesis(config).provider)
+    return cls is not None and getattr(cls, "supports_generation", True)
+
+
+def build_synthesis(config, *, primary=None, control=None):
+    """Return ``(cfg, provider)`` for Layer B generation.
+
+    Reuses ``primary`` when no dedicated ``AI_SYNTH_*`` model is configured;
+    otherwise builds the generation provider on the same ``RunControl`` so both
+    layers share one request budget.
+    """
+    from .. import config as ai_config
+
+    synth_cfg = ai_config.synthesis(config)
+    if synth_cfg is config and primary is not None:
+        return synth_cfg, primary
+    if control is None and primary is not None:
+        control = getattr(primary, "control", None)
+    return synth_cfg, build(synth_cfg, control=control)

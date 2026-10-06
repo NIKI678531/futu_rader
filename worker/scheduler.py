@@ -1,4 +1,8 @@
-"""Worker entry point for heartbeat and database-backed admin AI requests."""
+"""Worker entry point: heartbeat, the 08:00 daily refresh and the AI request queue.
+
+On start the worker upgrades an Alembic-versioned database to the current
+schema, so the backend and worker never run against an older queue table.
+"""
 
 import logging
 import os
@@ -11,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
 
 from radar_db import make_engine
@@ -29,6 +34,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+# Every 2-second queue poll would otherwise print two INFO lines.
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 log = logging.getLogger("worker")
 
 
@@ -59,12 +66,37 @@ def process_analysis_request(*, engine=None):
         )
 
 
-def build_scheduler(interval_seconds=None, poll_seconds=None, *, engine=None):
+def daily_refresh(*, engine=None):
+    from jobs.daily import run_daily
+
+    run_daily(engine=engine)
+
+
+def upgrade_schema(engine):
+    """Apply pending Alembic migrations; databases without a version table are left alone."""
+    from sqlalchemy import inspect
+
+    if "alembic_version" not in inspect(engine).get_table_names():
+        log.warning("数据库没有 alembic_version，跳过自动迁移：先按 radar_db/migrations/README.md 执行 stamp")
+        return False
+    from alembic import command
+    from alembic.config import Config
+
+    # No ini file: env.py would otherwise reconfigure logging and silence the worker.
+    config = Config()
+    config.set_main_option("script_location", str(ROOT / "radar_db" / "migrations"))
+    config.set_main_option("prepend_sys_path", str(ROOT))
+    command.upgrade(config, "head")
+    return True
+
+
+def build_scheduler(interval_seconds=None, poll_seconds=None, *, engine=None, cron=None):
     """Build the persistent worker scheduler without starting it."""
     engine = engine or make_engine()
     interval = interval_seconds or int(os.getenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", "60"))
     poll = poll_seconds or int(os.getenv("AI_REQUEST_POLL_SECONDS", "2"))
-    scheduler = BlockingScheduler(timezone=os.getenv("TZ", "Asia/Hong_Kong"))
+    timezone = os.getenv("TZ", "Asia/Hong_Kong")
+    scheduler = BlockingScheduler(timezone=timezone)
     scheduler.add_job(
         heartbeat,
         "interval",
@@ -81,11 +113,25 @@ def build_scheduler(interval_seconds=None, poll_seconds=None, *, engine=None):
         coalesce=True,
         kwargs={"engine": engine},
     )
+    from jobs.daily import daily_cron
+
+    expression = daily_cron(cron)
+    if expression:
+        scheduler.add_job(
+            daily_refresh,
+            CronTrigger.from_crontab(expression, timezone=timezone),
+            id="daily-refresh",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=6 * 3600,
+            kwargs={"engine": engine},
+        )
     return scheduler
 
 
 def main():
     engine = make_engine()
+    upgrade_schema(engine)
     scheduler = build_scheduler(engine=engine)
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: sys.exit(0))

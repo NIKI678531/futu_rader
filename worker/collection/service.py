@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time as time_module
 import uuid
 from contextlib import nullcontext
@@ -280,17 +281,13 @@ class FutuRefresh:
         from ai import config
         from ai.providers import build as build_provider
         from ai.providers.base import RunControl
-        from core.top_products import TOP_COMMENT_PRODUCT_LIMIT, top_comment_products
+        from core.top_products import analysis_products, parse_own_limit
         from jobs import analyze as analysis_job, full_own
 
         cfg = config.load()
         from dataclasses import replace
         cfg = replace(cfg, micro_batch_size=request.batch_size, concurrency=request.concurrency,
                       grouped_batches=True)
-        analysis_job.check_calibration(cfg, request.calibration_report, require_singleton=True)
-        analysis_job.check_quality(cfg, request.quality_report)
-        # Check release artifacts first, then the active route generation. All
-        # gates still run before provider construction or budget reservation.
         from radar_db.comment_routes import require_ready as require_comment_routes_ready
 
         require_comment_routes_ready(self.target)
@@ -300,14 +297,15 @@ class FutuRefresh:
         selected_codes_by_range = {}
         range_priority = {"d1": 0, "d2": 1, "d7": 2, "d14": 3, "d30": 4, "mtd": 5}
         ordered_ranges = tuple(sorted(request.ranges, key=range_priority.__getitem__))
+        own_limit = parse_own_limit(os.getenv("AI_OWN_TOP_LIMIT"))
         for range_key in ordered_ranges:
-            selected_codes = list(request.codes[:TOP_COMMENT_PRODUCT_LIMIT]) or [
+            selected_codes = list(request.codes) or [
                 row["code"]
-                for row in top_comment_products(
+                for row in analysis_products(
                     self.target,
                     range_key,
                     anchor=request.anchor,
-                    limit=TOP_COMMENT_PRODUCT_LIMIT,
+                    own_limit=own_limit,
                 )
             ]
             selected_codes_by_range[range_key] = selected_codes
@@ -318,7 +316,7 @@ class FutuRefresh:
                 "sector": None, "struct": None, "ownership": "all",
                 "anchor": request.anchor.isoformat() if request.anchor else None,
                 "anchor_mode": "latest-complete", "ranges": range_key,
-                "current_window_only": False,
+                "current_window_only": False, "baseline_fallback": True,
             })()
             plans.append((range_key, analysis_job.make_plan(self.target, args)))
         policy_hash = hashlib.sha256(_json({
@@ -376,7 +374,7 @@ class FutuRefresh:
             pending_ranges=pending_ranges,
             failure_reason=failure_reason,
             detail={
-                "selectionLimit": TOP_COMMENT_PRODUCT_LIMIT,
+                "ownTopLimit": own_limit,
                 "selectedCodesByRange": selected_codes_by_range,
                 "ranges": progress_by_range,
             },

@@ -68,6 +68,15 @@ def create_analysis_run():
     return response, 202
 
 
+@v1_bp.post("/admin/analysis-runs/all")
+def create_all_analysis_runs():
+    result = _run(lambda: _operations().enqueue_all())
+    if isinstance(result, tuple):
+        return result
+    response, _ = respond(result)
+    return response, 202
+
+
 # Product catalog operations remain available for other internal tooling even
 # though the simplified pipeline page no longer renders that management UI.
 @v1_bp.get("/admin/product-catalog")

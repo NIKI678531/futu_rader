@@ -929,28 +929,39 @@ class SqlProvider:
     #
     # 「标注过」的判据与 `_scan` 同源（`att is None` 即没标过），不另写一套。
 
+    def _published(self, code, range_key, kind):
+        """``(anchor, fingerprint)`` of the published Layer-B generation, or ``None``."""
+        if self._anchor is None:
+            return None
+        generation = self._meta.get(synthesis_generation_key(code, range_key, kind))
+        if not generation:
+            return None
+        published_anchor, separator, published_fp = generation.partition("|")
+        if (
+            separator != "|"
+            or not published_fp
+            or not published_anchor
+            or published_anchor > self._anchor.isoformat()
+        ):
+            return None
+        return published_anchor, published_fp
+
     def _synth(self, code, range_key, kind):
-        """Return only the explicitly published immutable Layer-B generation.
+        """Return the latest explicitly published immutable Layer-B generation.
 
         A generation marker selects one input fingerprint for the whole kind.
         This makes an intentional empty result authoritative and prevents old
         subkeys from resurfacing when the newly qualified material shrinks.
+
+        Neither a dirty marker nor a newer anchor hides it: until the next
+        synthesis publishes, the previous conclusion is served and ``_stale``
+        tells the page to badge it「待更新」(ADR-0031).
         """
-        if self._anchor is None:
+        published = self._published(code, range_key, kind)
+        if published is None:
             return {}
-        if self._meta.get(f"synth_dirty_{code}_{range_key}") == "1":
-            return {}
-        generation = self._meta.get(synthesis_generation_key(code, range_key, kind))
-        if not generation:
-            return {}
-        published_anchor, separator, published_fp = generation.partition("|")
-        if (
-            separator != "|"
-            or published_anchor != self._anchor.isoformat()
-            or not published_fp
-        ):
-            return {}
-        key = ("synth", code, range_key, kind, self._anchor, generation)
+        published_anchor, published_fp = published
+        key = ("synth", code, range_key, kind, published_anchor, published_fp)
         if key in self._cache:
             return self._cache[key]
         out = {}
@@ -961,7 +972,7 @@ class SqlProvider:
                     .where(
                         synthesis_outputs.c.code == code,
                         synthesis_outputs.c.range_key == range_key,
-                        synthesis_outputs.c.anchor == self._anchor.isoformat(),
+                        synthesis_outputs.c.anchor == published_anchor,
                         synthesis_outputs.c.kind == kind,
                         synthesis_outputs.c.input_fingerprint == published_fp,
                         synthesis_outputs.c.review_state != "rejected",
@@ -978,6 +989,23 @@ class SqlProvider:
             out = {}
         self._cache[key] = out
         return out
+
+    def _stale(self, code, range_key, *kinds):
+        """Whether a served generation predates the current inputs.
+
+        True only when at least one kind has a published generation and either
+        the pair is marked dirty or that generation belongs to an older anchor.
+        No generation at all is ``unavailable``, not stale.
+        """
+        dirty = self._meta.get(f"synth_dirty_{code}_{range_key}") == "1"
+        current = self._anchor.isoformat() if self._anchor else None
+        for kind in kinds:
+            published = self._published(code, range_key, kind)
+            if published is None or not self._synth(code, range_key, kind):
+                continue
+            if dirty or published[0] != current:
+                return True
+        return False
 
     def _completed_codes(self, first, last):
         progress = json.loads(self._meta.get("own_analysis_progress", "null"))
@@ -1300,6 +1328,8 @@ class SqlProvider:
                 "status": "ok", "text": row["value"]["text"], "sample": valid,
                 "tone": "pos" if net > 0 else "neg" if net < 0 else "neu", "ok": True,
                 "reviewState": row["reviewState"], "evidenceIds": row["evidenceIds"],
+                # The counts are freshly scanned while the sentence may predate them.
+                "stale": self._stale(code, range_key, "hot_summary"),
             }
         return out
 
@@ -1381,6 +1411,7 @@ class SqlProvider:
             "aiStatus": "ok" if has_model_points else "unavailable",
             "summaryMode": "ai" if has_model_points else "facts",
             "reviewState": row["reviewState"] if row else None,
+            "stale": has_model_points and self._stale(code, range_key, "summary"),
         }
 
     def themes_for(self, code, range_key):
@@ -1392,10 +1423,12 @@ class SqlProvider:
         u = self._units(code, rng)
         if u is None:
             return None
-        return core_themes.themes(
+        out = core_themes.themes(
             code, core_themes.group_by_polarity(u["units"]), self._base_units_grouped(code, rng),
             rng["buckets"], self._bucket_index(rng), self._labels(code, range_key, "theme_label", split=True),
         )
+        out["stale"] = self._stale(code, range_key, "theme_label")
+        return out
 
     def issuer_opinions(self, issuer, range_key):
         """Return deduplicated CSOP company opinions, never ETF attitudes."""
@@ -1484,10 +1517,15 @@ class SqlProvider:
         neg = [x for x in u["units"] if x["attitude"] == "negative"]
         base = self._base_units(code, rng)
         base_neg = None if base is None else [x for x in base if x["attitude"] == "negative"]
-        return core_themes.neg_categories(
+        rows = core_themes.neg_categories(
             code, neg, base_neg, rng["buckets"], self._bucket_index(rng),
             self._labels(code, range_key, "neg_category"),
         )
+        # A list has no top level: every row of one product/range shares one generation.
+        stale = self._stale(code, range_key, "neg_category")
+        for row in rows:
+            row["stale"] = stale
+        return rows
 
     def topics_for(self, code, range_key):
         if code not in self._by_code:
@@ -1512,9 +1550,13 @@ class SqlProvider:
             if baseline
             else None
         )
-        return core_topics.market_topic(
+        rows = core_topics.market_topic(
             code, u["market"], rng["buckets"], self._bucket_index(rng), label, base_units,
         )
+        stale = self._stale(code, range_key, "topic_label")
+        for row in rows:
+            row["stale"] = stale
+        return rows
 
     def stages_for(self, code, range_key):
         if code not in self._by_code:
@@ -1553,7 +1595,9 @@ class SqlProvider:
         def summary_of(s):
             return (stage_rows.get(core_stages.stage_key(s)) or {}).get("value", {}).get("summary")
 
-        return core_stages.build(code, series, rng["gran"], rng["days"], cat_of, digest_of, summary_of)
+        out = core_stages.build(code, series, rng["gran"], rng["days"], cat_of, digest_of, summary_of)
+        out["stale"] = self._stale(code, range_key, "stage_unit", "stage_summary")
+        return out
 
     def competitors_for(self, code, range_key):
         """双向：固定对位（CMAP，不经模型）＋ 模型从评论区共现识别的候选（待确认）。"""
@@ -1636,7 +1680,11 @@ class SqlProvider:
                 "reviewState": (r or {}).get("reviewState"),
             })
         items.sort(key=lambda item: (-(item["comments"] or 0), item["code"]))
-        return {"status": "ok" if items else "empty", "list": items}
+        return {
+            "status": "ok" if items else "empty", "list": items,
+            # Fixed mappings never go through the model; only generated reasons can be stale.
+            "stale": self._stale(code, range_key, "competitor_reason"),
+        }
 
     # ── 账号域：产品相关 KOL 与 KOL 其他产品观点 ─────────────────────
 

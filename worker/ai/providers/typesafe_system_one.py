@@ -17,7 +17,7 @@ import time
 import requests
 
 from .. import redact
-from ..schemas import ASPECTS, COMPLIANCE_TAGS, POST_TYPES
+from ..schemas import ASPECTS, ASPECTS_V3, COMPLIANCE_TAGS, ISSUER_ASPECTS, POST_TYPES
 from .base import Completion, PermanentError, Provider, RunStopped, TransientError, Usage
 
 log = logging.getLogger("worker.ai.provider.typesafe")
@@ -183,6 +183,84 @@ class TypeSafeSystemOneProvider(Provider):
         return PermanentError(f"HTTP {response.status_code}: {detail}")
 
 
+_ASPECT_HINTS = {
+    "fee": "管理费、费率、收费",
+    "liquidity": "成交量、流动性、买卖是否容易成交",
+    "spread": "买卖价差、点差",
+    "tracking": "跟踪误差、折溢价、是否贴合指数",
+    "dividend": "派息、分红",
+    "leverage_decay": "杠杆或反向产品的损耗",
+    "product_design": "产品结构、规则或设计",
+    "issuer_service": "发行商的客服或服务",
+    "disclosure": "信息披露、公告、透明度",
+    "trading_access": "能否买到、交易渠道、券商或平台支持",
+    "other_product": "以上之外的其他产品实质反馈",
+    "performance": "涨跌表现或回报",
+    "trading_intent": "买入、卖出、加减仓等操作意图",
+}
+_ISSUER_ASPECT_HINTS = {
+    "service": "客户服务",
+    "disclosure": "信息披露",
+    "governance": "公司治理",
+    "product_management": "产品管理",
+    "other": "其他公司层面的评价",
+}
+
+
+def _aspects_for(schema_version):
+    return ASPECTS_V3 if schema_version == "v3" else ASPECTS
+
+
+def _first_excerpt(context):
+    excerpts = context["excerpts"]
+    return next(iter(excerpts.values()), None)
+
+
+def _apply_v3_contract(result, answers, questions, context, reasons):
+    """Fill schema v3 (comment-product-v4): non-empty relevant fields and issuer subject."""
+
+    if result["relevance"] == "relevant":
+        if not result["aspects"]:
+            result["aspects"] = ["other_product"]
+        if not result["evidence"]:
+            result["evidence"] = _first_excerpt(context)
+        if not result["evidence"]:
+            result.update(relevance="needs_context", attitude=None, aspects=[], evidence=None)
+            reasons.append("没有可引用的原文，无法确认产品态度")
+    if result["compliance_tags"] and not result["compliance_evidence"]:
+        result.update(compliance_tags=[], compliance_rationale=None, compliance_evidence=None)
+        reasons.append("合规信号缺少原文依据")
+
+    combined, confidence = _read_choice(answers, questions, "issuer_relevance_attitude")
+    if combined.startswith("relevant_"):
+        relevance, attitude = "relevant", combined.removeprefix("relevant_")
+    else:
+        relevance, attitude = combined, None
+    if relevance != "irrelevant" and confidence < _LOW_CONFIDENCE:
+        reasons.append("发行商评价置信度较低")
+    issuer_aspects, issuer_evidence = [], None
+    if relevance == "relevant":
+        issuer_aspects = [
+            aspect for aspect in ISSUER_ASPECTS
+            if _read_noul(answers, f"issuer_aspect__{aspect}") >= _NOUL_YES
+        ] or ["other"]
+        if "other" in issuer_aspects and len(issuer_aspects) > 1:
+            issuer_aspects.remove("other")
+        if "issuer_evidence" in questions:
+            key, _evidence_confidence = _read_choice(answers, questions, "issuer_evidence")
+            issuer_evidence = context["excerpts"].get(key)
+        issuer_evidence = issuer_evidence or _first_excerpt(context)
+        if not issuer_evidence:
+            relevance, attitude, issuer_aspects = "needs_context", None, []
+            reasons.append("没有可引用的原文，无法确认发行商评价")
+    result.update(
+        issuer_relevance=relevance,
+        issuer_attitude=attitude,
+        issuer_aspects=issuer_aspects,
+        issuer_evidence=issuer_evidence,
+    )
+
+
 def _choice(instructions, criteria):
     return {"type": "choice", "instructions": instructions, "criteria": criteria}
 
@@ -227,11 +305,32 @@ def _questions_for(task, payload, schema_version):
                 },
             ),
         }
-        for aspect in ASPECTS:
+        for aspect in _aspects_for(schema_version):
             questions[f"aspect__{aspect}"] = _noul(
-                f"comment 是否明确评价指定 ETF 的 {aspect} 方面？",
+                f"comment 是否明确评价指定 ETF 的 {aspect} 方面"
+                + (f"（{_ASPECT_HINTS[aspect]}）" if aspect in _ASPECT_HINTS else "")
+                + "？",
                 "明确涉及该方面", "没有涉及该方面",
             )
+        if schema_version == "v3":
+            questions["issuer_relevance_attitude"] = _choice(
+                (
+                    "只判断 comment 对发行商「南方东英（CSOP）」这家公司本身的评价，"
+                    "不是对某只 ETF 的评价；只提到 ETF 名称或代码不算评价发行商。"
+                ),
+                {
+                    "relevant_positive": "明确称赞南方东英的服务、披露、治理或产品管理",
+                    "relevant_neutral": "明确谈到南方东英公司本身，但没有褒贬",
+                    "relevant_negative": "明确批评南方东英的服务、披露、治理或产品管理",
+                    "irrelevant": "没有评价南方东英这家公司",
+                    "needs_context": "提到发行商但无法判断说的是不是南方东英",
+                },
+            )
+            for aspect in ISSUER_ASPECTS:
+                questions[f"issuer_aspect__{aspect}"] = _noul(
+                    f"comment 对南方东英的评价是否涉及 {_ISSUER_ASPECT_HINTS[aspect]}？",
+                    "明确涉及", "没有涉及",
+                )
         if schema_version != "v1":
             descriptions = {
                 "regulatory_complaint": "已向或打算向证监会、SFC、消委会、金管局、港交所或警方投诉举报",
@@ -256,6 +355,11 @@ def _questions_for(task, payload, schema_version):
         if schema_version != "v1" and excerpts:
             questions["compliance_evidence"] = _choice(
                 "选择最能支撑合规关注信号的连续原文；若无信号就选 none。",
+                criteria,
+            )
+        if schema_version == "v3" and excerpts:
+            questions["issuer_evidence"] = _choice(
+                "选择最能支撑对南方东英这家公司评价的连续原文；若没有评价就选 none。",
                 criteria,
             )
         return questions, {"excerpts": excerpts}
@@ -338,14 +442,15 @@ def _map_answers(task, payload, questions, answers, context, schema_version):
         market_direction = None if market == "not_expressed" else market
 
         aspects = []
-        for aspect in ASPECTS:
+        for aspect in _aspects_for(schema_version):
             probability = _read_noul(answers, f"aspect__{aspect}")
             if probability >= _NOUL_YES:
                 aspects.append(aspect)
             if _NOUL_AMBIGUOUS_LOW <= probability <= _NOUL_AMBIGUOUS_HIGH:
                 reasons.append(f"{aspect} 维度接近阈值")
-        if "other" in aspects and len(aspects) > 1:
-            aspects.remove("other")
+        for fallback in ("other", "other_product"):
+            if fallback in aspects and len(aspects) > 1:
+                aspects.remove(fallback)
 
         if "product_evidence" in questions:
             evidence_key, evidence_confidence = _read_choice(
@@ -392,6 +497,8 @@ def _map_answers(task, payload, questions, answers, context, schema_version):
                 ),
                 "compliance_evidence": compliance_evidence,
             })
+            if schema_version == "v3":
+                _apply_v3_contract(result, answers, questions, context, reasons)
             result["needs_review"] = bool(reasons)
             result["uncertainty_reasons"] = _dedupe(reasons)
         return result

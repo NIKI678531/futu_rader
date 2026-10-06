@@ -135,6 +135,23 @@ def test_shared_v1_config_selects_matching_kol_prompt():
     assert schema_version == "v1"
 
 
+def test_comment_v4_defaults_keep_the_kol_and_post_prompts_on_their_own_schema():
+    production = config.load(
+        model="m",
+        prompt_version="comment-product-v4",
+        schema_version="v3",
+        taxonomy_version="product-feedback-v4",
+    )
+
+    kol_prompt, kol_schema = annotate.resolve("kol_comment_opinion", production)
+    post_prompt, post_schema = annotate.resolve("post_annotation", production)
+    comment_prompt, comment_schema = annotate.resolve("comment_product", production)
+
+    assert (kol_prompt.VERSION, kol_schema) == ("kol-opinion-v2", "v2")
+    assert (post_prompt.VERSION, post_schema) == ("post-annotation-v2", "v2")
+    assert (comment_prompt.VERSION, comment_schema) == ("comment-product-v4", "v3")
+
+
 def test_explicit_prompt_schema_mismatch_fails_fast():
     mismatched = config.load(
         model="m",

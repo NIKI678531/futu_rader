@@ -13,7 +13,8 @@ from sqlalchemy.exc import IntegrityError
 from .schema import ai_analysis_requests, meta_kv
 
 
-RANGE_PRIORITY = {"d1": 500, "d2": 400, "d7": 300, "d14": 200, "d30": 100}
+RANGE_PRIORITY = {"d1": 500, "d2": 400, "d7": 300, "d14": 200, "d30": 100, "mtd": 50}
+REQUESTERS = ("admin", "schedule")
 ACTIVE_STATUSES = ("queued", "running")
 TERMINAL_STATUSES = ("succeeded", "partial", "failed")
 WORKER_HEARTBEAT_KEY = "ai_analysis_worker_heartbeat"
@@ -54,6 +55,7 @@ def serialize(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "finishedAt": _iso(row.get("finished_at")),
         "summary": _json(row.get("result_json")),
         "error": row.get("error_summary"),
+        "requestedBy": row.get("requested_by") or "admin",
     }
 
 
@@ -138,7 +140,13 @@ def worker_health(
     }
 
 
-def enqueue(engine, range_key: str, *, now: datetime | None = None) -> tuple[dict, bool]:
+def enqueue(
+    engine,
+    range_key: str,
+    *,
+    requested_by: str = "admin",
+    now: datetime | None = None,
+) -> tuple[dict, bool]:
     """Enqueue one fixed range, returning ``(request, created)``.
 
     A nullable unique ``active_key`` makes duplicate active submissions safe
@@ -147,7 +155,9 @@ def enqueue(engine, range_key: str, *, now: datetime | None = None) -> tuple[dic
     """
 
     if range_key not in RANGE_PRIORITY:
-        raise ValueError("range 只允许 d1、d2、d7、d14 或 d30")
+        raise ValueError("range 只允许 d1、d2、d7、d14、d30 或 mtd")
+    if requested_by not in REQUESTERS:
+        raise ValueError("requested_by 只允许 admin 或 schedule")
     now = now or _utcnow()
     values = {
         "request_id": _request_id(now),
@@ -157,6 +167,7 @@ def enqueue(engine, range_key: str, *, now: datetime | None = None) -> tuple[dic
         "active_key": range_key,
         "attempts": 0,
         "requested_at": now,
+        "requested_by": requested_by,
     }
     try:
         with engine.begin() as conn:

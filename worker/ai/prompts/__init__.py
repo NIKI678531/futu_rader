@@ -79,9 +79,8 @@ def get(task, version=None, schema_version=None):
             for module in versions.values():
                 if SCHEMA_OF.get(module.VERSION) == schema_version:
                     return module
-            raise UnknownTask(
-                f"任务 {task!r} 没有配对 schema {schema_version!r} 的 Prompt"
-            )
+        # The shared version/schema pair belongs to another task (e.g. the
+        # comment v4 prompt's schema v3): this task keeps its own latest pair.
         return next(iter(versions.values()))
     raise UnknownTask(
         f"任务 {task!r} 没有 Prompt 版本 {version!r}，可选：{', '.join(versions)}"

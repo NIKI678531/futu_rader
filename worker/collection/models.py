@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
-from pathlib import Path
-from typing import Literal, Mapping
+from typing import Literal
 
 
 Coverage = Literal["complete", "partial", "retryable_incomplete", "unknown"]
 SyncMode = Literal["incremental", "backfill", "repair"]
 AiMode = Literal["daily", "weekly"]
+
+HARD_DAILY_MAX = 100000
 
 
 @dataclass(frozen=True)
@@ -84,9 +85,7 @@ class AiRequest:
     budget_date: date
     anchor: date | None = None
     mode: AiMode = "daily"
-    calibration_report: Path | Mapping[str, object] | None = None
-    quality_report: Path | Mapping[str, object] | None = None
-    max_http_attempts: int = 500
+    max_http_attempts: int = HARD_DAILY_MAX
     batch_size: int = 5
     concurrency: int = 2
     wait_for_ready: bool = False
@@ -98,8 +97,10 @@ class AiRequest:
     def __post_init__(self):
         if type(self.data_governance_approved) is not bool:
             raise TypeError("data_governance_approved must be an explicit bool")
-        if self.max_http_attempts < 1 or self.max_http_attempts > 500:
-            raise ValueError("max_http_attempts must be between 1 and the hard daily cap of 500")
+        if self.max_http_attempts < 1 or self.max_http_attempts > HARD_DAILY_MAX:
+            raise ValueError(
+                f"max_http_attempts must be between 1 and the hard daily cap of {HARD_DAILY_MAX}"
+            )
         if self.batch_size < 1 or self.batch_size > 5:
             raise ValueError("batch_size must be between 1 and 5")
         if self.concurrency < 1 or self.concurrency > 4:

@@ -11,7 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from ai.providers.base import RunStopped
 from radar_db.schema import ai_daily_budget
 
-HARD_DAILY_MAX = 500
+from .models import HARD_DAILY_MAX
+
 HKT = ZoneInfo("Asia/Hong_Kong")
 
 
@@ -19,10 +20,12 @@ class DailyBudget:
     """Atomically charge each attempt to the HKT day when it is made.
 
     The day is intentionally not caller supplied: otherwise two retries could
-    choose different labels and each receive a fresh 500-request allowance.
+    choose different labels and each receive a fresh daily allowance.  A run
+    with a different model/batch policy or limit on the same day adopts its
+    own values instead of failing, so the counter keeps accumulating.
     """
 
-    def __init__(self, engine, policy_hash, request_limit=500, *, now=datetime.utcnow):
+    def __init__(self, engine, policy_hash, request_limit=HARD_DAILY_MAX, *, now=datetime.utcnow):
         if request_limit < 1 or request_limit > HARD_DAILY_MAX:
             raise ValueError(f"request_limit must be between 1 and {HARD_DAILY_MAX}")
         self.engine = engine
@@ -65,10 +68,18 @@ class DailyBudget:
                 if conflict is not None:
                     raise conflict
                 raise RuntimeError("AI daily budget row was not persisted")
-        if row["policy_hash"] != self.policy_hash:
-            raise ValueError("AI policy changed within the same HKT budget day")
-        if row["request_limit"] != self.request_limit:
-            raise ValueError("AI daily request limit cannot change within the same HKT day")
+        if row["policy_hash"] != self.policy_hash or row["request_limit"] != self.request_limit:
+            limit = max(self.request_limit, int(row["requests_used"] or 0))
+            with self.engine.begin() as conn:
+                conn.execute(update(ai_daily_budget).where(
+                    ai_daily_budget.c.budget_date == budget_date
+                ).values(
+                    policy_hash=self.policy_hash,
+                    request_limit=limit,
+                    status="open" if int(row["requests_used"] or 0) < limit else "exhausted",
+                    updated_at=self.now(),
+                ))
+            self.request_limit = limit
 
     def reserve(self):
         budget_date = self._budget_date()

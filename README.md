@@ -63,8 +63,10 @@ python -m pip install -r requirements.txt
 python app.py
 ```
 
-Start the queue worker in a second terminal. The admin page only enqueues AI
-requests; without this process, runs deliberately remain queued:
+Start the worker in a second terminal. It applies pending database migrations,
+runs the daily 08:00 refresh (sync when `MARKET_INSIGHT_DATABASE_URL` is set,
+prices, then AI for every page range) and executes the requests queued from
+`/admin`; without this process, runs deliberately remain queued:
 
 ```bash
 cd worker
@@ -73,6 +75,11 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 python scheduler.py
 ```
+
+`worker/.env` needs the Layer A model (`AI_PRIMARY_*`) and, when Layer A is the
+classification-only TypeSafe provider, a text-generation model for page
+summaries (`AI_SYNTH_*`); see `worker/.env.example` and
+[ADR-0031](docs/adr/0031-daily-full-refresh-single-queue.md).
 
 Start the web application:
 
