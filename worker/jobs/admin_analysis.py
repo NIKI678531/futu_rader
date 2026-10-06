@@ -234,14 +234,16 @@ def run_analysis(range_key: str, *, engine=None) -> dict:
     missing = missing_layer_b(engine, plan["codes"], range_key, plan["anchor"])
     status = progress.get("status", "partial")
     reasons = []
-    if not generation_supported(cfg):
+    can_generate = generation_supported(cfg)
+    if not can_generate:
         reasons.append(GENERATION_MISSING)
     if plan.get("baselineUnavailable"):
         reasons.append("基准期早于库内数据起点：只分析当前区间，环比显示为数据暂不可用")
     blocked = sorted(
         code for code, row in progress.get("products", {}).items() if row.get("blocked")
     )
-    if blocked:
+    # Without a generation model every product stops at Layer B; that is the reason above.
+    if blocked and can_generate:
         reasons.append(f"{len(blocked)} 只产品仍有失败或被占用的标注任务")
     if status == "complete" and missing:
         status = "incomplete"

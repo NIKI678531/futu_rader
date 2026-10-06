@@ -198,7 +198,7 @@ export default function Admin() {
             <td className="admin-mono">
               {row.key}
               {row.missingCodes?.length > 0 && <button
-                className="is-quiet admin-inline-toggle"
+                className="is-secondary admin-inline-toggle"
                 onClick={() => setExpandedCoverage(value => value === row.key ? null : row.key)}
                 aria-expanded={expandedCoverage === row.key}
               >{expandedCoverage === row.key ? '收起' : '缺哪些'}</button>}
