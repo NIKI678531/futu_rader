@@ -147,7 +147,7 @@ def resolve(task, cfg):
     """
     prompt = get_prompt(task, cfg.prompt_version, schema_version=cfg.schema_version)
     paired = SCHEMA_OF.get(prompt.VERSION)
-    if paired != cfg.schema_version:
+    if prompt.VERSION == cfg.prompt_version and paired != cfg.schema_version:
         raise config.ConfigError(
             f"Prompt {prompt.VERSION} 配对 schema {paired}，"
             f"但 AI_SCHEMA_VERSION={cfg.schema_version}；请使用匹配版本"
