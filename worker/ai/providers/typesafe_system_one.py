@@ -141,7 +141,7 @@ class TypeSafeSystemOneProvider(Provider):
             except requests.Timeout as exc:
                 last = TransientError(f"请求超时（{self._cfg.timeout_seconds}s）")
                 last.__cause__ = exc
-            except requests.RequestException as exc:
+            except (requests.RequestException, OSError) as exc:
                 last = TransientError(f"连接失败：{exc}")
                 last.__cause__ = exc
             else:

@@ -73,6 +73,12 @@ class TestSynthSchemas:
         with pytest.raises(SchemaError, match="1–5"):
             synth.parse("summary", {"points": [point] * 6, "needs_review": False}, {"c1"})
 
+    def test_summary_prompt_is_experience_led_instead_of_polarity_led(self):
+        prompt = synth.system_prompt("summary")
+        assert synth.VERSION == "synth-v5"
+        assert "具体产品体验／使用场景／讨论现象" in prompt
+        assert "不得按「积极观点／消极观点」分组" in prompt
+
     def test_theme_rejects_generic_product_experience_title(self):
         raw = {"results": [{"key": "positive|other_product", "title": "产品整体体验获认可",
                             "summary": "评论认可该产品。",
@@ -309,7 +315,7 @@ def test_changed_annotation_changes_fingerprint_and_supersedes(engine, cfg):
     assert new["input_fingerprint"] != first["input_fingerprint"]
 
 
-def test_low_sample_writes_status_without_calling_model(engine, cfg):
+def test_low_sample_generates_one_evidenced_hot_summary_but_not_an_overall_summary(engine, cfg):
     # 把 8 条正面里的 6 条改成 rejected ⇒ 有效态度 2+4=6 < 10
     with engine.begin() as conn:
         for cid in range(100, 106):
@@ -318,9 +324,111 @@ def test_low_sample_writes_status_without_calling_model(engine, cfg):
     prov = FakeSynthProvider()
     stats = synthesize.run(engine, cfg, codes=[CODE], ranges=["d7"], provider=prov,
                            kinds=["hot_summary", "summary"])
-    assert stats["low_sample"] == 2 and prov.calls == []
+    assert stats["low_sample"] == 1
+    assert [kind for kind, _payload in prov.calls] == ["hot_summary"]
+    hot_payload = prov.calls[0][1]
+    assert hot_payload["facts"]["sampleSufficient"] is False
+    assert hot_payload["evidence"]
     hot = rows(engine, synthesis_outputs, synthesis_outputs.c.kind == "hot_summary")[0]
-    assert json.loads(hot["value_json"]) == {"status": "low_sample", "sample": 6}
+    assert json.loads(hot["value_json"])["text"] == "費率獲認可，傾向長期持有"
+    summary = rows(engine, synthesis_outputs, synthesis_outputs.c.kind == "summary")[0]
+    assert json.loads(summary["value_json"]) == {"status": "low_sample", "sample": 6}
+
+
+def test_low_sample_hot_summary_falls_back_to_a_real_evidence_quote(engine, cfg):
+    with engine.begin() as conn:
+        # Keep one neutral product-feedback row.  Theme grouping deliberately
+        # excludes neutral rows, but the home-page observation must still have
+        # one real comment to cite.
+        conn.execute(
+            annotations.update()
+            .where(annotations.c.kind == "attitude", annotations.c.target_id == 100)
+            .values(value_json='"neutral"')
+        )
+        conn.execute(
+            annotations.update()
+            .where(
+                annotations.c.kind == "attitude",
+                annotations.c.target_id.in_(range(101, 112)),
+            )
+            .values(review_state="rejected")
+        )
+
+    class MissingEvidenceProvider(FakeSynthProvider):
+        def complete_json(self, system, user, schema, schema_name):
+            self.calls.append((schema_name, json.loads(user.split("\n\n", 1)[1])))
+            return Completion(
+                data={"text": "暂无可引用证据", "evidence_ids": [], "needs_review": True},
+                model="m-snap",
+                usage=Usage(100, 40, 5, 0),
+                raw_text="",
+                response_id="x",
+            )
+
+    stats = synthesize.run(
+        engine,
+        cfg,
+        codes=[CODE],
+        ranges=["d7"],
+        provider=MissingEvidenceProvider(),
+        kinds=["hot_summary"],
+    )
+
+    hot = rows(engine, synthesis_outputs, synthesis_outputs.c.kind == "hot_summary")[0]
+    value = json.loads(hot["value_json"])
+    evidence_ids = json.loads(hot["evidence_ids_json"])
+    assert stats["errors"] == 0
+    assert value["text"].startswith("有评论提到")
+    assert len(value["text"]) <= 30
+    assert evidence_ids and value["evidence_ids"] == evidence_ids
+    assert value["needs_review"] is True
+
+
+def test_low_sample_hot_summary_can_quote_relevant_non_feedback_comment(engine, cfg):
+    with engine.begin() as conn:
+        conn.execute(
+            annotations.update()
+            .where(annotations.c.kind == "attitude")
+            .values(review_state="rejected")
+        )
+        conn.execute(
+            annotations.update()
+            .where(annotations.c.kind == "attitude", annotations.c.target_id == 100)
+            .values(review_state="pending")
+        )
+        conn.execute(
+            annotations.update()
+            .where(annotations.c.kind == "aspect", annotations.c.target_id == 100)
+            .values(value_json='["performance"]')
+        )
+
+    class MissingEvidenceProvider(FakeSynthProvider):
+        def complete_json(self, system, user, schema, schema_name):
+            payload = json.loads(user.split("\n\n", 1)[1])
+            self.calls.append((schema_name, payload))
+            return Completion(
+                data={"text": "暂无可引用证据", "evidence_ids": [], "needs_review": True},
+                model="m-snap",
+                usage=Usage(100, 40, 5, 0),
+                raw_text="",
+                response_id="x",
+            )
+
+    prov = MissingEvidenceProvider()
+    stats = synthesize.run(
+        engine,
+        cfg,
+        codes=[CODE],
+        ranges=["d7"],
+        provider=prov,
+        kinds=["hot_summary"],
+    )
+
+    hot = rows(engine, synthesis_outputs, synthesis_outputs.c.kind == "hot_summary")[0]
+    value = json.loads(hot["value_json"])
+    assert stats["errors"] == 0
+    assert value["text"].startswith("有评论提到")
+    assert json.loads(hot["evidence_ids_json"])
 
 
 def test_dry_run_calls_nothing_and_writes_nothing(engine, cfg):

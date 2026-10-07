@@ -227,6 +227,18 @@ class TestThemesAndNegCats:
 
 
 class TestTopicsAndHot:
+    def test_completed_codes_use_the_selected_ranges_persisted_progress(self, provider):
+        provider._meta["own_analysis_progress"] = json.dumps({
+            "anchor": "2026-08-25", "baselineFrom": "2026-08-22", "sourceVersion": {},
+            "products": {PEER_CODE: {"complete": True, "queue": {}}},
+        })
+        provider._meta["own_analysis_progress_d7"] = json.dumps({
+            "anchor": "2026-08-25", "baselineFrom": "2026-08-12", "sourceVersion": {},
+            "products": {OWN_CODE: {"complete": True, "queue": {}}},
+        })
+
+        assert provider._completed_codes("2026-08-19", "2026-08-25", "d7") == {OWN_CODE}
+
     def test_scope_completion_refreshes_cached_unknown_state(self, provider):
         progress = {"anchor": "2026-08-25", "baselineFrom": "2026-08-12", "sourceVersion": {},
                     "products": {OWN_CODE: {"complete": False, "queue": {}}}}
@@ -286,8 +298,13 @@ class TestTopicsAndHot:
 
     def test_hot_summary_low_sample_row_does_not_override_counts(self, provider):
         p = annotated(provider, n_pos=3, n_neg=2)
+        add_synth(p, [{"kind": "hot_summary", "value": {
+            "text": "有评论提到费率较低", "evidence_ids": ["c100"], "needs_review": False,
+        }}])
         hs = p.hot_summaries("d1")[OWN_CODE]
         assert hs["status"] == "low_sample" and hs["sample"] == 5
+        assert hs["text"] == "样本不足：有评论提到费率较低"
+        assert hs["evidenceIds"] == ["c100"]
 
 
 class TestSummary:
@@ -335,9 +352,12 @@ class TestSummary:
         p = annotated(provider)
         s = p.summary_for(OWN_CODE, "d1")
         assert s["low"] is False and s["sample"] == 12 and s["aiStatus"] == "unavailable"
-        assert s["summaryMode"] == "facts" and len(s["points"]) == 2
-        assert all("观点中" in point["text"] for point in s["points"])
-        assert "积极 8 条、消极 4 条" in s["text"] and "积极比消极多 4 条" in s["text"]
+        assert s["summaryMode"] == "facts" and 3 <= len(s["points"]) <= 5
+        assert all("积极观点中" not in point["text"] and "消极观点中" not in point["text"]
+                   for point in s["points"])
+        assert "认可 8 条、质疑 4 条" in s["text"] and "认可反馈多 4 条" in s["text"]
+        assert "讨论最集中的时间桶" in s["text"]
+        assert s["points"][-1]["text"].startswith("较") and "讨论热度" in s["text"]
         add_synth(p, [{"kind": "summary", "value": {"points": [
             {"text": "多条评论认可费率", "evidence_ids": ["c100"]},
             {"text": "点差是主要抱怨", "evidence_ids": ["c108"]}], "needs_review": False}}])

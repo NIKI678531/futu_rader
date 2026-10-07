@@ -333,7 +333,7 @@ class SectorOverview extends React.Component {
       return asc ? -d : d;
     };
     var sorted = visible.slice().sort(cmp);
-    var rows = sorted.slice(0, 10).map(function (o, i) {
+    var rows = (s.listAll ? sorted : sorted.slice(0, 10)).map(function (o, i) {
       /* `attitude` **整块**可能是 null（三态要 AI 标注，ADR-0017：标注表没建起来之前
          观测上就没有这个块）。设计源直接 `att.positive`，接真库时第一次渲染就 TypeError。
          注意不能退化成 `sampleSufficient: false` 去走「样本不足」那条分支 ——
@@ -534,11 +534,13 @@ class SectorOverview extends React.Component {
         : (s.scope === 'peer' ? '暂无相关内容 — 当前条件下没有匹配的同业产品。'
         : (s.onlyRisk ? '暂无相关内容 — 当前条件下没有需合规关注的产品。' : '暂无相关内容 — 当前搜索与筛选下没有匹配的产品。')),
       riskRef: self.riskRef, drawerBodyRef: self.drawerBodyRef,
-      listMore: false,
-      listAll: false,
-      listMoreLabel: '',
-      listToggle: () => {},
-      boardNote: SORTS[sortKey].note + ' · 仅显示前 10 只',
+      listMore: sorted.length > 10,
+      listAll: s.listAll,
+      listMoreLabel: s.listAll ? '收起，只看前 10 只' : '展开其余 ' + (sorted.length - 10) + ' 只',
+      listToggle: () => self.go({ listAll: !s.listAll, tip: null }),
+      boardNote: SORTS[sortKey].note + (sorted.length > 10
+        ? (s.listAll ? ' · 已展开全部 ' + sorted.length + ' 只' : ' · 默认显示前 10 只')
+        : ' · 共 ' + sorted.length + ' 只'),
       sortComments: mkSort('comments'), sortGrowth: mkSort('growth'),
       sortHeat: mkSort('heat'), sortNeg: mkSort('neg'), sortAtt: mkSort('att'),
       heatRef: self.heatRef,

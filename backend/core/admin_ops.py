@@ -11,7 +11,7 @@ import json
 from datetime import date, datetime, timezone
 from typing import Any, Mapping
 
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from providers import get_provider
@@ -131,6 +131,11 @@ class AdminUnavailable(AdminOpsError):
     code = "dependency_unavailable"
 
 
+class AdminBusy(AdminOpsError):
+    status_code = 409
+    code = "analysis_in_progress"
+
+
 def _json(value: Any, default: Any) -> Any:
     if value in (None, ""):
         return default
@@ -214,13 +219,23 @@ class AdminOperations:
         }
         latest_errors = {row["id"]: None for row in AI_LAYER_A}
         if scope_ids:
-            linked_to_scope = select(analysis_scope_jobs.c.job_id).where(
-                analysis_scope_jobs.c.scope_id.in_(scope_ids),
-                analysis_scope_jobs.c.job_id == annotation_jobs.c.job_id,
-            ).exists()
-            scope_filter = or_(
-                annotation_jobs.c.scope_id.in_(scope_ids), linked_to_scope
-            )
+            # Resolve the small set of relevant job ids first.  A correlated
+            # EXISTS here made SQLite scan the whole annotation queue for each
+            # admin-page refresh; on the production-sized local database that
+            # turned a status read into a 10+ second query while AI was running.
+            scoped_job_ids = {
+                job_id
+                for (job_id,) in conn.execute(
+                    select(annotation_jobs.c.job_id)
+                    .where(annotation_jobs.c.scope_id.in_(scope_ids))
+                    .union(
+                        select(analysis_scope_jobs.c.job_id).where(
+                            analysis_scope_jobs.c.scope_id.in_(scope_ids)
+                        )
+                    )
+                )
+            }
+            scope_filter = annotation_jobs.c.job_id.in_(scoped_job_ids)
             rows = conn.execute(
                 select(annotation_jobs.c.task, annotation_jobs.c.status, func.count())
                 .where(annotation_jobs.c.task.in_(tuple(task_counts)), scope_filter)
@@ -413,7 +428,17 @@ class AdminOperations:
             if callable(refresh_provider):
                 refresh_provider()
             products = load_products(engine=self.target_engine)
-            pool_data = self.market_provider.pool(range_key)
+            # The management page only needs comment counts and funnel totals.
+            # SQL providers can serve that narrow read without calculating the
+            # benchmark, negative rollups and compliance block used by /pool.
+            admin_comment_pool = getattr(
+                self.market_provider, "admin_comment_pool", None
+            )
+            pool_data = (
+                admin_comment_pool(range_key)
+                if callable(admin_comment_pool)
+                else self.market_provider.pool(range_key)
+            )
             if pool_data is MISSING:
                 raise AdminValidationError("不支持这个时间区间")
             comment_rows = self._comment_rows(pool_data, products)
@@ -601,6 +626,20 @@ class AdminOperations:
             raise AdminValidationError("range 只允许 d1、d2、d7、d14、d30 或 mtd")
         try:
             self._require_ready_worker()
+            active = list_active_requests(self.target_engine)
+            same_range = next(
+                (request for request in active if request["range"] == range_key),
+                None,
+            )
+            if same_range is not None:
+                return {"run": same_range, "created": False}
+            if active:
+                running = active[0]
+                raise AdminBusy(
+                    f"已有 {running['range'].upper()} 分析正在"
+                    f"{'运行' if running['status'] == 'running' else '排队'}；"
+                    "完成后才能提交下一个区间"
+                )
             request, created = enqueue(self.target_engine, range_key)
         except AdminOpsError:
             raise
@@ -609,17 +648,3 @@ class AdminOperations:
         except SQLAlchemyError as exc:
             raise AdminUnavailable("Radar 数据库暂时不可用") from exc
         return {"run": request, "created": created}
-
-    def enqueue_all(self) -> dict[str, Any]:
-        """「一键补齐全部」: every page range, highest priority first."""
-        try:
-            self._require_ready_worker()
-            results = [enqueue(self.target_engine, range_key) for range_key in RANGE_PRIORITY]
-        except AdminOpsError:
-            raise
-        except SQLAlchemyError as exc:
-            raise AdminUnavailable("Radar 数据库暂时不可用") from exc
-        return {
-            "runs": [request for request, _created in results],
-            "created": sum(bool(created) for _request, created in results),
-        }

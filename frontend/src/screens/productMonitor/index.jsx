@@ -16,10 +16,10 @@
      - `{{ }}` holes became JSX; `style="…"` strings are parsed by `s()` and
        `style-hover` by `hover()`. */
 import React from 'react'
-import R from '../../data/radar'
+import R, { prefetchScreen } from '../../data/radar'
 import { rgba, num, numRaw, navGroups, stamp, naBox, aiValidationNote, heatLowerBoundNote, kolDisplayLabel } from '../../lib/view'
 import { commentFunnelView } from '../../lib/commentFunnel'
-import { DEFAULT_PRODUCT_CODE, productCodeOrDefault } from '../../lib/productSelection'
+import { DEFAULT_PRODUCT_CODE, productCodeOrDefault, productSelectionFromSearch } from '../../lib/productSelection'
 import { productSummaryPoints } from '../../lib/productSummary'
 import { s } from '../../lib/dc'
 import DataUnavailable from '../../components/DataUnavailable'
@@ -55,7 +55,13 @@ export default class ProductMonitor extends React.Component {
     if (w && Math.abs(w - this.state.trendW) >= 2) this.setState({ trendW: w });
   }
 
-  constructor(props) { super(props); this.trendRef = React.createRef(); }
+  constructor(props) {
+    super(props)
+    this.trendRef = React.createRef()
+    const selection = productSelectionFromSearch(R.MASTER, R.PRESETS, window.location.search)
+    this.state = { ...this.state, ...selection }
+    prefetchScreen('product', selection)
+  }
 
   componentDidMount() {
     this._onResize = () => this.measureTrend();
@@ -101,6 +107,10 @@ export default class ProductMonitor extends React.Component {
   go(patch) {
     var st = this.state;
     if ((patch.code && patch.code !== st.code) || (patch.rangeKey && patch.rangeKey !== st.rangeKey)) {
+      prefetchScreen('product', {
+        code: patch.code || st.code,
+        rangeKey: patch.rangeKey || st.rangeKey,
+      });
       patch = Object.assign({}, patch, { loading: true, hover: null, heatHover: null, stageOpen: null, stageHover: null, riskMore: false });
       clearTimeout(this._lt);
       this._lt = setTimeout(() => this.setState({ loading: false }), 520);

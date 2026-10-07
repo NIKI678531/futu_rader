@@ -53,7 +53,7 @@ if os.path.isdir(os.path.join(REPO_ROOT, "radar_db")) and REPO_ROOT not in sys.p
 
 import clock  # noqa: E402
 from ai import config, evidence as ev, neardup, redact, schemas  # noqa: E402
-from ai.batching import BatchPolicy, pack_items
+from ai.batching import BatchPolicy, measure, pack_items
 from ai.providers.base import TruncatedOutput
 from ai.lexicon import product_aliases  # noqa: E402
 from ai.prompts import (  # noqa: E402
@@ -1061,10 +1061,47 @@ def _close_run(engine, run_id, stats, *, mark_synthesis_dirty=True):
         )
 
 
+def _compact_oversized_post(payload, prompt, schema_version, policy):
+    """Keep a deterministic head/tail excerpt when one post exceeds the gateway limit.
+
+    The job fingerprint still covers the full source text.  Evidence returned
+    from the excerpt is located against the original post before publication.
+    """
+
+    if not payload.get("content"):
+        return payload
+    schema = schemas.batch_json_schema("post_annotation", schema_version)
+
+    def fits(candidate):
+        usage = measure([candidate], prompt.SYSTEM, prompt.user_message, schema)
+        return (
+            usage["inputTokensEstimate"] <= policy.max_input_tokens
+            and usage["payloadBytes"] <= policy.max_payload_bytes
+        )
+
+    if fits(payload):
+        return payload
+    original = payload["content"]
+    marker = "\n……[正文过长，中间内容已省略]……\n"
+    low, high, best = 0, len(original), None
+    while low <= high:
+        keep = (low + high) // 2
+        head = (keep + 1) // 2
+        tail = keep // 2
+        excerpt = original[:head] + marker + (original[-tail:] if tail else "")
+        candidate = {**payload, "content": excerpt, "content_truncated": True}
+        if fits(candidate):
+            best = candidate
+            low = keep + 1
+        else:
+            high = keep - 1
+    return best or payload
+
+
 def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, local, depth=0, stop_event=None):
     """处理一批。失败时按 §11.3 二分，而不是整批判死。返回本批的局部统计。"""
     sources = _load_sources(engine, task, jobs)
-    payloads, usable = [], []
+    payloads, usable, truncated_item_ids = [], [], set()
     for job in jobs:
         src = sources.get((job["target_type"], job["target_id"]))
         has_text = src is not None and (
@@ -1087,6 +1124,15 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
                              .values(status="superseded", lease_until=None, last_error="Source input changed"))
             local["error"] += 1
             continue
+        if task == "post_annotation" and cfg.grouped_batches:
+            payload = _compact_oversized_post(
+                payload,
+                prompt,
+                schema_version,
+                BatchPolicy(1, cfg.max_input_tokens, cfg.max_payload_bytes),
+            )
+            if payload.get("content_truncated"):
+                truncated_item_ids.add(payload["item_id"])
         payloads.append(payload)
         usable.append((job, src))
 
@@ -1202,6 +1248,8 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
         if _item_id(task, job) in invalid:
             continue
         item = by_id[_item_id(task, job)]
+        if _item_id(task, job) in truncated_item_ids and hasattr(item, "needs_review"):
+            item = item.model_copy(update={"needs_review": True})
         latest = latest_sources.get((job["target_type"], job["target_id"]))
         if latest != src:
             with engine.begin() as conn:

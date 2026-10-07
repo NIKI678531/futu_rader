@@ -329,9 +329,10 @@ def test_attempts_are_max_retries_plus_one(cfg):
 
 def test_timeout_and_connection_errors_are_retried(cfg):
     s = FakeSession(requests.Timeout(), requests.ConnectionError("dns"),
+                    OSError("temporary CA bundle path unavailable"),
                     ok_response({"ok": True}))
     assert provider(cfg, s).complete_json("sys", "usr", SCHEMA, "t").data == {"ok": True}
-    assert len(s.calls) == 3
+    assert len(s.calls) == 4
 
 
 def test_retry_after_header_overrides_our_backoff(cfg):

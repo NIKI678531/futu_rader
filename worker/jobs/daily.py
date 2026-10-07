@@ -11,7 +11,9 @@ Steps, each recorded in ``meta_kv['ai_daily_last_run']``:
 1. MarketInsight sync when ``MARKET_INSIGHT_DATABASE_URL`` is set.  Without it
    the database is the imported dump and the step is reported as skipped.
 2. Price sync when ``FMP_API_KEY`` is set.
-3. Enqueue d1, d2, d7, d14, d30 and mtd as ``requested_by='schedule'``.
+3. Enqueue the short-range completion set d7, d1 and d2 as
+   ``requested_by='schedule'``.  Longer ranges are explicitly selected in the
+   management page so they cannot bury the high-priority d7 work.
 
 A failed sync or price step never blocks step 3: AI then runs on the facts
 already in the database so the pages are complete for the current anchor.
@@ -46,7 +48,7 @@ from radar_db.schema import meta_kv
 log = logging.getLogger("worker.daily")
 
 HKT = ZoneInfo("Asia/Hong_Kong")
-DAILY_RANGES = tuple(RANGE_PRIORITY)
+DAILY_RANGES = ("d7", "d1", "d2")
 LAST_RUN_KEY = "ai_daily_last_run"
 PRICE_LOOKBACK_DAYS = 59
 
@@ -160,7 +162,7 @@ def drain(engine, *, process=None, sleep=time.sleep) -> list[dict]:
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="每日全量更新：同步、行情、六个区间 AI")
+    parser = argparse.ArgumentParser(description="每日全量更新：同步、行情、D7/D1/D2 AI")
     parser.add_argument("--now", action="store_true", help="立即执行一次（否则只打印说明）")
     parser.add_argument("--drain", action="store_true", help="在本进程内把队列跑完（Airflow pod 用）")
     args = parser.parse_args(argv)

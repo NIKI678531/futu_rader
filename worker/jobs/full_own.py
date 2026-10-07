@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 for folder in (ROOT, ROOT / "worker", ROOT / "backend"):
     sys.path.insert(0, str(folder))
 
-from ai import config
+from ai import config, synth
 from ai.prompts import requires_full_reannotation
 import clock
 from core.calendar import PRESETS, build
@@ -241,7 +241,8 @@ def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
         progress = {"anchor": plan["anchor"], "baselineFrom": plan["from"],
                     "scope": "all" if set(codes) == all_codes else "selection", "ranges": plan["ranges"],
                     "sourceVersion": {key: value for key, value in state.items() if key != "anchor"},
-                    "model": cfg.model, "batchSize": cfg.micro_batch_size, "status": "running", "products": {}}
+                    "model": cfg.model, "synthVersion": synth.VERSION,
+                    "batchSize": cfg.micro_batch_size, "status": "running", "products": {}}
         progress["work"] = {
             "annotationsWritten": 0,
             "annotationsReused": 0,
@@ -397,11 +398,12 @@ def main(argv=None):
             saved = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "own_analysis_progress")).scalar()
         prior = json.loads(saved) if saved else {}
         reusable = (prior.get("anchor") == anchor.isoformat() and prior.get("model") == cfg.model
-                    and prior.get("sourceVersion", {}) == source_version)
+                    and prior.get("sourceVersion", {}) == source_version
+                    and prior.get("synthVersion") == synth.VERSION)
         progress = {"anchor": anchor.isoformat(), "baselineFrom": start.isoformat(), "products": {},
                     "status": "running", "model": cfg.model, "batchSize": cfg.micro_batch_size,
                     "sourceVersion": source_version, "scope": "all" if args.all else "own", "ranges": ranges,
-                    "student": student_enabled}
+                    "student": student_enabled, "synthVersion": synth.VERSION}
         for code, scope_id in scopes.items():
             previous = prior.get("products", {}).get(code, {})
             status = queue_status(engine, scope_id)

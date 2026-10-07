@@ -752,6 +752,51 @@ def test_a_post_with_nothing_to_summarise_still_gets_a_summary_row(posts, cfg):
     assert v["summary"] is False, "false 和摘要字符串类型不同，读取方一眼能分开"
 
 
+def test_oversized_post_uses_a_bounded_head_tail_excerpt(posts, cfg):
+    from dataclasses import replace
+
+    long_content = "开头明确表示继续持有。" + ("这是很长的帖子正文。" * 1200) + "结尾再次表示继续观察。"
+    with posts.begin() as conn:
+        conn.execute(update(feeds).where(feeds.c.feed_id == 2).values(content=long_content))
+    limited = replace(
+        cfg,
+        grouped_batches=True,
+        micro_batch_size=1,
+        max_input_tokens=8000,
+        max_payload_bytes=2500,
+    )
+    annotate.enqueue_posts(posts, limited)
+    provider = FakeProvider([lambda ids: {
+        "results": [post_item(
+            item_id,
+            summary="帖子表示继续持有并观察。",
+            evidence_spans=["开头明确表示继续持有。"],
+            needs_review=False,
+        ) for item_id in ids]
+    }])
+
+    stats = annotate.run(
+        posts,
+        limited,
+        max_items=1,
+        task="post_annotation",
+        provider=provider,
+    )
+
+    assert stats["success"] == 1 and stats["error"] == 0
+    assert len(provider.messages[0].encode("utf-8")) <= limited.max_payload_bytes
+    assert '"content_truncated": true' in provider.messages[0]
+    assert "开头明确表示继续持有。" in provider.messages[0]
+    assert "结尾再次表示继续观察。" in provider.messages[0]
+    post_type = rows(
+        posts,
+        annotations,
+        annotations.c.target_id == 2,
+        annotations.c.kind == "post_type",
+    )[0]
+    assert post_type["review_state"] == "needs_review"
+
+
 def test_a_post_that_expressed_no_action_still_gets_a_direction_row(posts, cfg):
     """`direction=null, direction_pending=false` 是 Prompt 里的第 1 种情形：
     「帖子没有表达任何操作」。同样是结论，同样不能因为值是 null 就不写。"""

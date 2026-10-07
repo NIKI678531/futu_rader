@@ -168,12 +168,12 @@ def test_parent_filter_rollout_fails_closed_before_activation(real):
         assert env["status"] in {"ok", "empty"}
 
 
-def test_locked_3037_parent_filter_acceptance_baseline(real, filtered_pool):
-    """Pin the explicitly approved 3037 rollout baseline on its frozen DB.
+def test_locked_3037_exact_parent_filter_acceptance_baseline(real, filtered_pool):
+    """Pin 3037's strict-cashtag result on the frozen DB.
 
-    Unlike the generic smoke checks in this module, these exact values are a
-    release acceptance fixture supplied with ADR-0029.  They only apply to the
-    2026-08-25 snapshot and must not make a newer database fail.
+    ADR-0029 explicitly invalidated the earlier 3037 relaxed-rule baseline.
+    This exact result applies only to the 2026-08-25 snapshot and must not make
+    a newer database fail.
     """
     import sqlite3
 
@@ -200,10 +200,10 @@ def test_locked_3037_parent_filter_acceptance_baseline(real, filtered_pool):
     funnel = product["commentFunnel"]
     assert raw_parent_count == 4_423
     assert funnel["rawPlatformCount"] == 3_494
-    assert funnel["qualifyingFeedCount"] == product["mentions"] == 238
-    assert funnel["platformCount"] == product["comments"] == 195
-    assert funnel["parsedCount"] == 177
-    assert funnel["filterExcludedPlatformCount"] == 3_299
+    assert funnel["qualifyingFeedCount"] == product["mentions"] == 0
+    assert funnel["platformCount"] == product["comments"] == 0
+    assert funnel["parsedCount"] == 0
+    assert funnel["filterExcludedPlatformCount"] == 3_494
 
 
 # ── 板块总览 ───────────────────────────────────────────────────────────

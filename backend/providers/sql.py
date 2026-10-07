@@ -187,10 +187,44 @@ class SqlProvider:
                     sorted((code, row.get("scope")) for code, row in progress.get("products", {}).items()
                            if row.get("complete") and all(status == "done" for status in row.get("queue", {}))))
 
-        catalog_changed = meta.get("product_catalog_revision") != self._meta.get("product_catalog_revision")
-        data_changed = ({key: value for key, value in meta.items() if key != "own_analysis_progress"}
-                        != {key: value for key, value in self._meta.items() if key != "own_analysis_progress"})
-        data_changed = data_changed or completion_key(meta) != completion_key(self._meta)
+        old_meta = self._meta
+        old_progress = json.loads(old_meta.get("own_analysis_progress", "null")) or {}
+        progress = json.loads(meta.get("own_analysis_progress", "null")) or {}
+        analysis_running = progress.get("status") == "running"
+        analysis_finished = (
+            old_progress.get("status") == "running" and not analysis_running
+        )
+        catalog_changed = (
+            meta.get("product_catalog_revision")
+            != old_meta.get("product_catalog_revision")
+        )
+        source_changed = (
+            ai_source_version(meta) != ai_source_version(old_meta)
+            or meta.get("anchor") != old_meta.get("anchor")
+            or meta.get("anchor_ts") != old_meta.get("anchor_ts")
+            or meta.get("price_revision") != old_meta.get("price_revision")
+            or meta.get("product_feedback_taxonomy")
+            != old_meta.get("product_feedback_taxonomy")
+        )
+        completed_product_changed = (
+            not analysis_running and completion_key(meta) != completion_key(old_meta)
+        )
+        # Layer A and Layer B revisions advance after every tiny worker batch.
+        # Clearing the full-market scan cache for each one makes the admin page
+        # rescan hundreds of thousands of rows every few seconds.  While a run
+        # is active, publish refreshed aggregates at the product completion
+        # boundary; queue counts remain live through the admin read model.
+        finished_revision_changed = not analysis_running and any(
+            meta.get(key) != old_meta.get(key)
+            for key in ("annotation_revision", "synthesis_revision")
+        )
+        data_changed = (
+            catalog_changed
+            or source_changed
+            or completed_product_changed
+            or finished_revision_changed
+            or analysis_finished
+        )
         self._meta = meta
         self._anchor = parse_anchor(meta.get("anchor"))
         if catalog_changed:
@@ -516,6 +550,30 @@ class SqlProvider:
             }
             for rb, sb in zip(rng["buckets"], s["buckets"])
         ]
+
+    def admin_comment_pool(self, range_key):
+        """Return the narrow pool slice used by the pipeline management page.
+
+        ``pool`` also builds benchmark observations, negative-theme rollups and
+        compliance totals.  None of those values are rendered by the admin
+        comment funnel, so calculating them on every five-second status poll
+        needlessly makes that page wait for the full business-page aggregate.
+        """
+
+        rng = self._filtered_range(range_key)
+        if rng is None:
+            return None
+        current = self._scan(rng["from"], rng["to"], rng)
+        return {
+            "list": [
+                {
+                    "code": product["code"],
+                    "comments": current[product["code"]]["comments"],
+                    "commentFunnel": current[product["code"]]["commentFunnel"],
+                }
+                for product in self._products
+            ]
+        }
 
     def pool(self, range_key):
         rng = self._filtered_range(range_key)
@@ -1007,8 +1065,11 @@ class SqlProvider:
                 return True
         return False
 
-    def _completed_codes(self, first, last):
-        progress = json.loads(self._meta.get("own_analysis_progress", "null"))
+    def _completed_codes(self, first, last, range_key=None):
+        progress_key = f"own_analysis_progress_{range_key}" if range_key else "own_analysis_progress"
+        progress = json.loads(self._meta.get(progress_key, "null"))
+        if not progress and range_key:
+            progress = json.loads(self._meta.get("own_analysis_progress", "null"))
         if not progress or not progress.get("baselineFrom") or not progress.get("anchor"):
             return set()
         if progress["baselineFrom"] > first or progress["anchor"] < last:
@@ -1316,10 +1377,21 @@ class SqlProvider:
             if valid == 0 and att["neutral"] == 0:
                 out[code] = {"status": "empty", "text": "暂无相关内容", "sample": 0, "ok": False}
                 continue
-            if not sample_sufficient(att["positive"], att["negative"]):
-                out[code] = {"status": "low_sample", "text": "样本不足，暂无主流观点", "sample": valid, "ok": False}
-                continue
             row = self._synth(code, range_key, "hot_summary").get(NO_SUBJECT)
+            if not sample_sufficient(att["positive"], att["negative"]):
+                if row is not None and isinstance(row["value"], dict) and row["value"].get("text"):
+                    out[code] = {
+                        "status": "low_sample",
+                        "text": f"样本不足：{row['value']['text']}",
+                        "sample": valid,
+                        "ok": False,
+                        "reviewState": row["reviewState"],
+                        "evidenceIds": row["evidenceIds"],
+                        "stale": self._stale(code, range_key, "hot_summary"),
+                    }
+                else:
+                    out[code] = {"status": "low_sample", "text": "样本不足，暂无主流观点", "sample": valid, "ok": False}
+                continue
             if row is None or not isinstance(row["value"], dict) or "text" not in row["value"]:
                 out[code] = {"status": "unavailable", "text": "数据暂不可用", "sample": valid, "ok": False}
                 continue
@@ -1346,9 +1418,16 @@ class SqlProvider:
             return None
         valid = att["positive"] + att["negative"]
         name = self._by_code[code]["name"]
-        sentences = [
-            f"数据显示，{name}（{code}）在 {rng['from']} 至 {rng['to']} 共识别到 {s['mentions']} 条去重提及。"
-        ]
+        peak_text = ""
+        if s["mentions"] and s["buckets"]:
+            peak_index, peak = max(enumerate(s["buckets"]), key=lambda pair: pair[1]["mentions"])
+            if peak["mentions"]:
+                peak_text = f"，讨论最集中的时间桶为 {rng['buckets'][peak_index]['tip']}"
+        overview_sentence = (
+            f"数据显示，{name}（{code}）在 {rng['from']} 至 {rng['to']} "
+            f"共识别到 {s['mentions']} 条去重提及{peak_text}。"
+        )
+        sentences = [overview_sentence]
         if not s["mentions"] and valid == 0 and att["neutral"] == 0:
             return {"text": "暂无相关内容 — 在所选区间内已完成检查，该产品没有识别到提及内容。",
                     "sample": 0, "low": True, "points": [], "evidenceIds": []}
@@ -1359,11 +1438,12 @@ class SqlProvider:
             sentences.append(f"原始数量为积极 {att['positive']} 条、消极 {att['negative']} 条、中性 {att['neutral']} 条。")
             return {"text": "".join(sentences), "sample": valid, "low": True, "points": [], "evidenceIds": []}
         diff = att["positive"] - att["negative"]
-        sentences.append(
-            f"产品态度分类中积极 {att['positive']} 条、消极 {att['negative']} 条、中性 {att['neutral']} 条，"
-            + ("积极与消极条数持平" if diff == 0 else f"积极比消极多 {diff} 条" if diff > 0 else f"消极比积极多 {-diff} 条")
-            + "。"
+        attitude_sentence = (
+            f"有效产品态度样本共 {valid} 条，其中认可 {att['positive']} 条、质疑 {att['negative']} 条，"
+            + ("两类反馈数量相当" if diff == 0 else f"认可反馈多 {diff} 条" if diff > 0 else f"质疑反馈多 {-diff} 条")
+            + f"；另有中性内容 {att['neutral']} 条。"
         )
+        sentences.append(attitude_sentence)
         row = self._synth(code, range_key, "summary").get(NO_SUBJECT)
         points, ev_ids = [], []
         has_model_points = False
@@ -1375,36 +1455,80 @@ class SqlProvider:
             sentences.extend(p["text"] for p in points)
             has_model_points = True
         else:
-            # Layer B 尚未生成时，不能只留两句总量。用后端已经算好的主题计数、占比、
-            # 环比与峰值补成可读摘要；这些都是事实整理，不冒充具体原因或 AI 结论。
+            # Layer B 尚未生成时仍给一份可读的综合摘要。按「产品体验」合并两种态度，
+            # 不再把正文拆成“积极观点中……”和“消极观点中……”——那会与下方观点排行
+            # 重复，却没有回答用户究竟在讨论产品的哪个环节。
             theme_rows = self.themes_for(code, range_key) or {"positive": [], "negative": []}
+            grouped = defaultdict(list)
+            for theme in theme_rows.get("positive", []) + theme_rows.get("negative", []):
+                grouped[theme.get("aspect") or theme["id"]].append(theme)
 
-            def theme_fact(polarity, theme, rank):
-                side = "积极" if polarity == "positive" else "消极"
-                rank_text = "居首" if rank == 1 else f"位列第{rank}"
-                parts = [
-                    f"{side}观点中，“{theme['title']}”{rank_text}，共 {theme['mentions']} 条，"
-                    f"占{side}内容 {theme['share']:.1f}%"
-                ]
-                change = theme.get("delta", {}).get("abs")
-                if change is not None:
-                    if change > 0:
-                        parts.append(f"较基准期增加 {change} 条")
-                    elif change < 0:
-                        parts.append(f"较基准期减少 {-change} 条")
-                    else:
-                        parts.append("与基准期持平")
-                buckets = theme.get("buckets") or []
-                if buckets and max(b.get("mentions", 0) for b in buckets) > 0:
-                    peak = max(buckets, key=lambda b: b.get("mentions", 0))
-                    parts.append(f"讨论在 {peak['label']} 最集中")
-                return "；".join(parts) + "。"
+            def focus_fact(themes):
+                themes = sorted(themes, key=lambda item: -item["mentions"])
+                aspect = themes[0].get("aspect")
+                label = core_themes.ASPECT_LABEL.get(aspect, "产品体验")
+                specific = [theme for theme in themes if theme.get("labelStatus") == "ok" and theme.get("summary")]
+                if specific:
+                    details = []
+                    for theme in specific:
+                        title = str(theme["title"]).strip().rstrip("。；")
+                        summary = str(theme["summary"]).strip().rstrip("。；")
+                        details.append(f"{title}：{summary}" if title not in summary else summary)
+                    return f"{label}方面，" + "；".join(details) + "。"
 
-            for polarity in ("negative", "positive"):
-                for rank, theme in enumerate(theme_rows.get(polarity, [])[:2], start=1):
-                    fact = theme_fact(polarity, theme, rank)
-                    points.append({"text": fact, "evidenceIds": theme.get("evidenceIds") or []})
-                    sentences.append(fact)
+                positive = next((theme for theme in themes if theme["polarity"] == "positive"), None)
+                negative = next((theme for theme in themes if theme["polarity"] == "negative"), None)
+                reactions = []
+                if positive:
+                    reactions.append(f"{positive['mentions']} 条评论表达认可")
+                if negative:
+                    reactions.append(f"{negative['mentions']} 条评论提出质疑")
+                bucket_count = max((len(theme.get("buckets") or []) for theme in themes), default=0)
+                peak_label = None
+                if bucket_count:
+                    totals = [sum((theme.get("buckets") or [])[i].get("mentions", 0)
+                                  for theme in themes if i < len(theme.get("buckets") or []))
+                              for i in range(bucket_count)]
+                    if totals and max(totals) > 0:
+                        peak_i = max(range(len(totals)), key=totals.__getitem__)
+                        peak_label = next(
+                            theme["buckets"][peak_i]["label"] for theme in themes
+                            if peak_i < len(theme.get("buckets") or [])
+                        )
+                timing = f"，相关讨论在 {peak_label} 最集中" if peak_label else ""
+                return f"{label}是本期主要讨论焦点：{'，另有 '.join(reactions)}{timing}。"
+
+            # 相同提及量下优先保留有明确产品含义的方面，避免“其他产品讨论”挤掉
+            # 跟踪、点差、派息等真正能帮助产品团队理解问题的内容。
+            ranked_groups = sorted(
+                grouped.values(),
+                key=lambda themes: (
+                    -sum(t["mentions"] for t in themes),
+                    themes[0].get("aspect") in {"other", "other_product"},
+                    themes[0].get("aspect") or "",
+                ),
+            )
+            fallback_points = [overview_sentence, attitude_sentence]
+            for themes in ranked_groups[:2]:
+                fallback_points.append(focus_fact(themes))
+                ev_ids.extend(eid for theme in themes for eid in (theme.get("evidenceIds") or []))
+
+            base = self._scan(rng["benchFrom"], rng["benchTo"])[code]
+            mentions_change = delta(s["mentions"], base["mentions"])["text"]
+            heat_change = delta(s["heat"], base["heat"])["text"]
+            fallback_points.append(
+                f"{rng['benchLabel']}（{rng['benchText']}），去重提及 {mentions_change}，讨论热度 {heat_change}。"
+            )
+            points = [
+                {"text": text, "evidenceIds": []} for text in fallback_points[:5]
+            ]
+            for index, themes in enumerate(ranked_groups[:2], start=2):
+                if index >= len(points):
+                    break
+                points[index]["evidenceIds"] = list(dict.fromkeys(
+                    eid for theme in themes for eid in (theme.get("evidenceIds") or [])
+                ))
+            sentences = [point["text"] for point in points]
         return {
             "text": "".join(sentences), "sample": valid, "low": False, "points": points,
             "evidenceIds": list(dict.fromkeys(ev_ids)),
@@ -2093,7 +2217,7 @@ class SqlProvider:
             for by_unit in self._released_window_annotations("relevance", lo, hi).values()
             for unit, row in by_unit.items()
         }
-        scanned_codes = self._completed_codes(rng["from"], rng["to"])
+        scanned_codes = self._completed_codes(rng["from"], rng["to"], rng.get("key"))
         ev = self._evidence_rows(
             [a["annotation_id"] for table in rows.values() for a in table.values()]
         )
@@ -2381,7 +2505,7 @@ class SqlProvider:
                 posted_hkt = utc_naive_to_hkt(a["posted_at"])
                 _bump_att(s, _bucket(gran, origin, posted_hkt) if nb else None, a["value"])
 
-        for code in self._completed_codes(frm, to):
+        for code in self._completed_codes(frm, to, rng.get("key") if rng else None):
             jobs = candidate_units_by_code[code]
             released = released_relevance.get(code, {})
             unresolved = any(

@@ -319,6 +319,27 @@ def test_permanent_and_retryable_http_errors(cfg):
     assert len(retry.calls) == 2
 
 
+def test_temporary_ca_bundle_os_error_is_retried(cfg):
+    attempts = 0
+
+    def respond(body):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary CA bundle path unavailable")
+        return _response(body)
+
+    payload = {
+        "item_id": "comment:12|product:3033",
+        "product": {"code": "3033"},
+        "comment": "谢谢",
+    }
+    build(cfg, session=FakeSession(respond), sleep=lambda _seconds: None).complete_annotations(
+        "kol_comment_opinion", [payload], "v2"
+    )
+    assert attempts == 2
+
+
 def test_comment_v4_schema_v3_is_answered_with_issuer_fields_and_v4_aspects(cfg):
     from ai import schemas
 

@@ -17,8 +17,9 @@
 
 ## 不调模型的情形
 
-- 有效态度（正＋负）< LOW_SAMPLE ⇒ `hot_summary` / `summary` 写 `{"status": "low_sample"}`
-  **不发请求**。PRD §3.5：样本不足不输出倾向结论。
+- 有效态度（正＋负）< LOW_SAMPLE ⇒ `summary` 写 `{"status": "low_sample"}`且不发请求；
+  `hot_summary` 只要有一条相关评论仍生成一条带证据的样本观察，但不能称为主流观点。
+  生成模型返回无效结果时，从输入证据截取一条待确认观察。PRD §3.5 的整体倾向仍不输出。
 - 桶里少于 `MIN_BUCKET` 条 ⇒ 不给它起名（core 会用 aspect 固定名兜底）。
 - 时段样本不足 ⇒ 不判类别（core 会把它并入相邻阶段）。
 
@@ -407,6 +408,7 @@ def build_summary_payload(mat, labels):
                                     labels.get("neg_category"))
     facts = {
         "attitude": {"positive": mat.pos, "negative": mat.neg, "neutral": mat.neu, "relevant": mat.relevant_count},
+        "sampleSufficient": (mat.pos + mat.neg) >= LOW_SAMPLE,
         "themes": {pol: [{"title": t["title"], "mentions": t["mentions"]} for t in th[pol][:4]] for pol in th},
         "negCategories": [{"label": c["label"], "mentions": c["mentions"]} for c in nc[:4]],
         "compliance": {"hits": len(mat.compliance_hits),
@@ -417,7 +419,7 @@ def build_summary_payload(mat, labels):
         bn = sum(1 for u in mat.base_units if u["attitude"] == "negative")
         facts["baseline"] = {"positive": bp, "negative": bn}
     evidence = []
-    for pol in ("positive", "negative"):
+    for pol in ("positive", "negative", "neutral"):
         for u in sample_evidence(grouped.get(pol, []), 8, f"sum-{pol}"):
             evidence.append({**mat.evidence_item(u), "polarity": pol})
     for h in mat.compliance_hits[:3]:
@@ -570,7 +572,13 @@ class Synthesizer:
         has_stage_material = bool(
             {"stage_unit", "stage_summary"}.intersection(kinds) and mat.stage_units
         )
-        if not mat.units and not has_stage_material and not ("topic_label" in kinds and mat.market_units):
+        has_hot_observation = bool("hot_summary" in kinds and mat.stage_units)
+        if (
+            not mat.units
+            and not has_stage_material
+            and not has_hot_observation
+            and not ("topic_label" in kinds and mat.market_units)
+        ):
             self._inc("no_material")
             for kind in kinds:
                 self._publish_empty(code, range_key, anchor, kind, "no_material")
@@ -588,12 +596,28 @@ class Synthesizer:
         for kind in ("hot_summary", "summary"):
             if kind not in kinds:
                 continue
-            if not sufficient:
+            if not sufficient and kind == "summary":
                 self._write_low_sample(code, range_key, anchor, kind, mat)
                 continue
             facts, evidence, allowed = build_summary_payload(mat, labels)
+            fallback = None
+            if not sufficient and kind == "hot_summary":
+                if not evidence:
+                    candidates = mat.units or mat.stage_units
+                    evidence = _dedupe_ev([
+                        mat.evidence_item(unit)
+                        for unit in sample_evidence(candidates, 8, "low-sample-hot")
+                    ])
+                    allowed = {item["id"] for item in evidence}
+                if evidence:
+                    fallback = lambda: self._low_sample_hot_fallback(evidence)
+                else:
+                    self._publish_empty(
+                        code, range_key, anchor, kind, "no_relevant_product_comment"
+                    )
+                    continue
             self._generate(code, range_key, anchor, kind, NO_SUBJECT, mat.ann_ids, facts, evidence, allowed,
-                           product, rng_info, lambda obj: obj.model_dump())
+                           product, rng_info, lambda obj: obj.model_dump(), fallback=fallback)
 
         if "topic_label" in kinds:
             tp = build_topic_payload(mat)
@@ -699,8 +723,23 @@ class Synthesizer:
         redact.assert_clean(payload)
         return payload
 
+    @staticmethod
+    def _low_sample_hot_fallback(evidence):
+        """Return one short, source-grounded observation when generation is invalid."""
+
+        first = evidence[0]
+        prefix = "有评论提到"
+        excerpt = " ".join(str(first.get("text") or "").split()).strip("。；;，, ")
+        text = prefix + excerpt[: max(1, 30 - len(prefix))]
+        evidence_ids = [str(first["id"])]
+        return {
+            "text": text,
+            "evidence_ids": evidence_ids,
+            "needs_review": True,
+        }, evidence_ids, "needs_review"
+
     def _generate(self, code, range_key, anchor, kind, subkey, ann_ids, facts, evidence, allowed,
-                  product, rng_info, to_value):
+                  product, rng_info, to_value, fallback=None):
         fp = fingerprint(
             kind,
             ann_ids,
@@ -719,6 +758,18 @@ class Synthesizer:
         try:
             obj = self._call(kind, self._payload(product, rng_info, facts, evidence), allowed, None)
         except (SchemaError, TransientError) as exc:
+            if fallback is not None:
+                value, ids, review = fallback()
+                self._write(code, range_key, anchor, kind, subkey, fp, value, ids, review)
+                self._publish(code, range_key, anchor, kind, fp)
+                log.warning(
+                    "%s %s %s 生成无效，已改用证据原文样本观察：%s",
+                    code,
+                    range_key,
+                    kind,
+                    str(exc)[:160],
+                )
+                return value
             self._inc("errors")
             log.warning("%s %s %s 失败：%s", code, range_key, kind, str(exc)[:200])
             return None

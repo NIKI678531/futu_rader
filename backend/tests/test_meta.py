@@ -205,6 +205,50 @@ def test_progress_alone_does_not_invalidate_expensive_data(sql_provider):
     assert sql_provider._cache["probe"] == "cached"
 
 
+def test_running_analysis_revisions_keep_expensive_scan_cache(sql_provider):
+    from radar_db.revisions import bump_revision
+    from sqlalchemy import insert
+    from radar_db.schema import meta_kv
+
+    progress = '{"status":"running","products":{"3033":{"complete":false,"queue":{"pending":1}}}}'
+    with sql_provider._engine.begin() as conn:
+        conn.execute(insert(meta_kv), [
+            {"k": "own_analysis_progress", "v": progress},
+            {"k": "own_analysis_progress_d7", "v": progress},
+        ])
+    sql_provider.refresh()
+    sql_provider._cache["probe"] = "cached"
+
+    with sql_provider._engine.begin() as conn:
+        bump_revision(conn, "annotation")
+
+    assert sql_provider.refresh() is False
+    assert sql_provider._cache["probe"] == "cached"
+
+    completed = '{"status":"running","products":{"3033":{"complete":true,"queue":{"done":1}}}}'
+    with sql_provider._engine.begin() as conn:
+        conn.execute(
+            update(meta_kv)
+            .where(meta_kv.c.k == "own_analysis_progress")
+            .values(v=completed)
+        )
+        bump_revision(conn, "synthesis")
+
+    assert sql_provider.refresh() is False
+    assert sql_provider._cache["probe"] == "cached"
+
+    terminal = '{"status":"complete","products":{"3033":{"complete":true,"queue":{"done":1}}}}'
+    with sql_provider._engine.begin() as conn:
+        conn.execute(
+            update(meta_kv)
+            .where(meta_kv.c.k == "own_analysis_progress")
+            .values(v=terminal)
+        )
+
+    assert sql_provider.refresh() is True
+    assert "probe" not in sql_provider._cache
+
+
 def test_presets_are_the_five_ranges_with_d7_default(client):
     data = client.get("/api/v1/meta").get_json()["data"]
     assert [p["key"] for p in data["presets"]] == ["d1", "d2", "d7", "d14", "d30"]
@@ -352,8 +396,8 @@ def test_post_type_rule_is_verbatim(client):
 
 
 HOT_SUMMARY_RULE = (
-    "热议总结由 AI 归纳当前日期范围内该 ETF 最主流的具体观点，须为观点而非正负面判断；"
-    "有效态度样本低于 10 条不输出。"
+    "热议总结由 AI 归纳当前日期范围内该 ETF 的具体观点，须为观点而非正负面判断；"
+    "有效态度样本低于 10 条时不输出整体倾向，但至少有一条相关评论时展示一条带原文证据的样本观察。"
 )
 
 
@@ -362,7 +406,8 @@ def test_hot_summary_rule_is_verbatim(client):
 
     「须为观点而非正负面判断」是要害：一旦有人把它实现成「整体偏正面」，这一列就变成了
     态度分类的复述，而榜单里紧挨着的正面／负面两列已经在说那件事了。
-    「低于 10 条不输出」与 thresholds.lowSample 是同一个 10（PRD §3.5），不是巧合。
+    低于阈值仍不输出整体倾向；ADR-0032 只允许展示可追溯的单条样本观察。
+    文案里的 10 与 thresholds.lowSample 是同一个阈值，不是巧合。
     """
     data = client.get("/api/v1/meta").get_json()["data"]
     assert data["rules"]["hotSummary"] == HOT_SUMMARY_RULE

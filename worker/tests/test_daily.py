@@ -33,7 +33,7 @@ def _last_run(engine):
         ).scalar_one())
 
 
-def test_daily_run_enqueues_every_page_range_as_scheduled():
+def test_daily_run_enqueues_only_the_short_range_completion_set_with_d7_first():
     engine = _engine()
 
     report = daily.run_daily(
@@ -42,9 +42,9 @@ def test_daily_run_enqueues_every_page_range_as_scheduled():
         prices=lambda _engine: {"status": "skipped"},
     )
 
-    assert [item["range"] for item in report["queued"]] == ["d1", "d2", "d7", "d14", "d30", "mtd"]
+    assert [item["range"] for item in report["queued"]] == ["d7", "d1", "d2"]
     rows = list_requests(engine)
-    assert {row["range"] for row in rows} == {"d1", "d2", "d7", "d14", "d30", "mtd"}
+    assert {row["range"] for row in rows} == {"d1", "d2", "d7"}
     assert {row["requestedBy"] for row in rows} == {"schedule"}
     assert _last_run(engine)["anchor"] == "2026-08-25"
 
@@ -58,7 +58,7 @@ def test_failed_sync_still_queues_analysis_on_existing_facts():
     report = daily.run_daily(engine, sync=broken_sync, prices=lambda _engine: {"status": "skipped"})
 
     assert report["sync"] == {"status": "failed", "error": "MarketInsight unreachable"}
-    assert len(report["queued"]) == 6
+    assert len(report["queued"]) == 3
     assert _last_run(engine)["sync"]["status"] == "failed"
 
 
@@ -70,7 +70,7 @@ def test_repeated_daily_run_reuses_active_requests():
     again = daily.run_daily(engine, **steps)
 
     assert {item["created"] for item in again["queued"]} == {False}
-    assert len(list_requests(engine)) == 6
+    assert len(list_requests(engine)) == 3
 
 
 def test_dump_mode_skips_sync_without_a_source_url(monkeypatch):

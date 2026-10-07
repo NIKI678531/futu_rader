@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { loadAdminPipeline, runAdminAnalysis, runAdminFillAll } from '../lib/adminApi'
+import { loadAdminPipeline, runAdminAnalysis } from '../lib/adminApi'
 import '../styles/admin.css'
 
 const RANGES = ['d1', 'd2', 'd7', 'd14', 'd30', 'mtd']
@@ -47,7 +47,7 @@ function scopeText(ownTopLimit) {
 }
 
 export default function Admin() {
-  const [selectedRange, setSelectedRange] = useState('d1')
+  const [selectedRange, setSelectedRange] = useState('d7')
   const [pipeline, setPipeline] = useState(null)
   const [loading, setLoading] = useState(false)
   const [submittingRange, setSubmittingRange] = useState(null)
@@ -90,11 +90,11 @@ export default function Admin() {
   async function submit(range, request) {
     setSubmittingRange(range)
     setError('')
-    if (range !== 'all') setSelectedRange(range)
+    setSelectedRange(range)
     try {
       await request()
       const serial = ++requestSerial.current
-      const next = await loadAdminPipeline(range === 'all' ? selectedRange : range)
+      const next = await loadAdminPipeline(range)
       if (serial === requestSerial.current) setPipeline(next)
     } catch (reason) {
       setError(reason.message || 'AI 分析任务提交失败')
@@ -105,7 +105,6 @@ export default function Admin() {
   }
 
   const trigger = range => submit(range, () => runAdminAnalysis(range))
-  const fillAll = () => submit('all', () => runAdminFillAll())
 
   const layers = pipeline?.layers || {}
   const ranges = pipeline?.ranges || RANGES.map(key => ({ key, activeRun: null }))
@@ -134,22 +133,10 @@ export default function Admin() {
   const missingTotal = coverage.reduce((sum, row) => sum + (row.missing || 0), 0)
   const staleTotal = coverage.reduce((sum, row) => sum + (row.stale || 0), 0)
 
-  function runLabel(key) {
-    const active = activeByRange[key]
-    if (active) return `${key} · ${STATUS_TEXT[active.status] || active.status}`
-    if (submittingRange === key) return '提交中…'
-    if (!workerOnline) return `${key} · worker 离线`
-    if (!workerReady) return `${key} · 配置未就绪`
-    return `运行 ${key}`
-  }
-
   return <main className="admin-shell">
     <header className="admin-topbar">
       <div><p className="admin-eyebrow">FUTU RADAR / ADMIN</p><h1>数据链路管理</h1></div>
       <div className="admin-actions">
-        <button onClick={fillAll} disabled={!workerReady || submittingRange === 'all'}>
-          {submittingRange === 'all' ? '提交中…' : '一键补齐全部'}
-        </button>
         <Link to="/product">查看产品页</Link>
       </div>
     </header>
@@ -167,7 +154,7 @@ export default function Admin() {
     <section className="admin-card admin-checks">
       <header className="admin-section-head">
         <div><p className="admin-eyebrow">PIPELINE / CHECKS</p><h2>链路检查</h2></div>
-        <p>每日 08:00 自动执行：同步最新数据 → 行情 → 六个区间的 Layer A 与 Layer B；也可以在下方手动补齐。</p>
+        <p>每日 08:00 自动执行：同步最新数据 → 行情 → D7、D1、D2；长区间只在下方手动选择后运行。</p>
       </header>
       <div className="admin-check-list">
         {checks.length ? checks.map(item => <div className={`admin-check is-${item.status}`} key={item.id} data-check={item.id}>
@@ -192,7 +179,7 @@ export default function Admin() {
       <div className="admin-table-wrap">
         <table className="admin-comment-table">
           <thead><tr>
-            <th>区间</th><th>应生成产品</th><th>已完成</th><th>待更新</th><th>缺失</th><th>状态</th><th>按区间补齐</th>
+            <th>区间</th><th>应生成产品</th><th>已完成</th><th>待更新</th><th>缺失</th><th>状态</th>
           </tr></thead>
           <tbody>{coverage.length ? coverage.map(row => <tr key={row.key}>
             <td className="admin-mono">
@@ -207,12 +194,7 @@ export default function Admin() {
             <td>{numberText(row.expected)}</td><td>{numberText(row.complete)}</td>
             <td>{numberText(row.stale)}</td><td>{numberText(row.missing)}</td>
             <td><StatusPill value={row.status} /></td>
-            <td><button
-              className="is-secondary"
-              onClick={() => trigger(row.key)}
-              disabled={!workerReady || Boolean(activeByRange[row.key]) || submittingRange === row.key}
-            >{runLabel(row.key)}</button></td>
-          </tr>) : <tr><td colSpan="7" className="admin-empty">{loading ? '正在读取数据库…' : '暂无完整度数据。'}</td></tr>}</tbody>
+          </tr>) : <tr><td colSpan="6" className="admin-empty">{loading ? '正在读取数据库…' : '暂无完整度数据。'}</td></tr>}</tbody>
         </table>
       </div>
     </section>
@@ -308,13 +290,25 @@ export default function Admin() {
         <article>
           <h3>Layer B · 页面文案</h3>
           <p>基于 Layer A 结果生成产品页需要的总结、标签、阶段与竞品原因。</p>
-          <div className="admin-run-buttons" aria-label="AI 分析运行区间">
-            {ranges.map(item => {
-              const busy = !workerReady || Boolean(item.activeRun) || submittingRange === item.key
-              return <button key={item.key} onClick={() => trigger(item.key)} disabled={busy}>
-                {runLabel(item.key)}
-              </button>
-            })}
+          <div className="admin-run-selector">
+            <label>
+              <span>选择时间</span>
+              <select
+                aria-label="选择 AI 分析时间"
+                value={selectedRange}
+                onChange={event => setSelectedRange(event.target.value)}
+                disabled={Boolean(hasActiveRun) || submittingRange !== null}
+              >
+                {RANGES.map(range => <option key={range} value={range}>{range}</option>)}
+              </select>
+            </label>
+            <button
+              onClick={() => trigger(selectedRange)}
+              disabled={!workerReady || Boolean(hasActiveRun) || submittingRange !== null}
+            >
+              {submittingRange === selectedRange ? '提交中…' : `运行所选区间 · ${selectedRange}`}
+            </button>
+            <small>一次只允许一个区间进入队列；优先补齐 D7，再运行 D1、D2。</small>
           </div>
           <div className="admin-layer-list">
             {layers.layerB?.map(item => <div className="admin-layer-row" key={item.id} data-ai-layer={item.id}>

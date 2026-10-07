@@ -1,6 +1,6 @@
 # ADR-0031 — 每日 08:00 全量更新、单一 AI 队列，页面数据完整优先
 
-- **状态**：已接受
+- **状态**：部分被 [ADR-0032](0032-single-range-analysis-and-low-sample-observation.md) 取代（手动队列、每日区间与区间优先级）
 - **日期**：2026-10-06
 - **取代**：[ADR-0026](0026-scheduled-ai-budget-and-calibration-gate.md) §1「等待当天
   `comments_all`」、§2 的每日 500 次硬上限、§3「批量校准或人工金标不匹配时零调用」，

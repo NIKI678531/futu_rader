@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -10,7 +11,7 @@ from app import create_app
 from core.admin_ops import AI_LAYER_B, AdminOperations, AdminUnavailable, AdminValidationError
 from radar_db.analysis_requests import claim_next, enqueue, finish, list_requests
 from radar_db.revisions import synthesis_generation_key
-from radar_db.schema import meta_kv, metadata
+from radar_db.schema import analysis_scope_jobs, annotation_jobs, meta_kv, metadata
 
 
 class DummyOperations:
@@ -103,6 +104,27 @@ def test_duplicate_active_analysis_submission_returns_the_existing_run():
     assert first.json["data"]["created"] is True
     assert duplicate.json["data"]["created"] is False
     assert duplicate.json["data"]["run"]["id"] == first.json["data"]["run"]["id"]
+
+
+def test_admin_page_allows_only_one_selected_range_in_the_queue():
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv), _ready_worker_meta())
+    client = _admin_client(
+        AdminOperations(
+            target_engine=engine,
+            market_provider=object(),
+            now=lambda: datetime(2026, 10, 6, 1, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    first = client.post("/api/v1/admin/analysis-runs", json={"range": "d7"})
+    second = client.post("/api/v1/admin/analysis-runs", json={"range": "d1"})
+
+    assert first.status_code == 202
+    assert second.status_code == 409
+    assert "D7" in second.json["error"]["message"]
+    assert [run["range"] for run in list_requests(engine)] == ["d7"]
 
 
 def test_analysis_submission_fails_before_queueing_when_worker_is_not_ready():
@@ -300,6 +322,102 @@ def test_pipeline_refreshes_its_cached_market_provider_before_reading(monkeypatc
 
     assert result["analyzedProductCodes"] == ["3033"]
     assert result["comments"][0]["pageCommentCount"] == 12
+
+
+def test_pipeline_uses_narrow_admin_comment_pool_when_provider_supports_it(monkeypatch):
+    engine = _engine()
+    products = [{"code": "3033", "name": "产品一", "ownership": "own"}]
+
+    class NarrowProvider:
+        def admin_comment_pool(self, range_key):
+            assert range_key == "d1"
+            return {
+                "list": [
+                    {"code": "3033", "comments": 4, "commentFunnel": {}}
+                ]
+            }
+
+        def pool(self, _range_key):
+            raise AssertionError("full pool aggregation must not run")
+
+    _use_products(monkeypatch, products)
+    result = AdminOperations(
+        target_engine=engine, market_provider=NarrowProvider()
+    ).pipeline("d1")
+
+    assert result["comments"][0]["pageCommentCount"] == 4
+
+
+def test_ai_layers_counts_direct_and_reused_scope_jobs():
+    engine = _engine()
+    now = datetime(2026, 10, 6, 1, 0)
+    progress = {
+        "ranges": ["d1"],
+        "status": "running",
+        "products": {
+            "3033": {"scope": "scope-direct", "complete": False},
+            "3067": {"scope": "scope-reused", "complete": False},
+        },
+    }
+    with engine.begin() as conn:
+        conn.execute(
+            insert(annotation_jobs),
+            [
+                {
+                    "job_id": 1,
+                    "target_type": "comment",
+                    "target_id": 1,
+                    "subject_code": "3033",
+                    "task": "comment_product",
+                    "input_hash": "direct",
+                    "status": "done",
+                    "priority": 0,
+                    "attempts": 0,
+                    "created_at": now,
+                    "updated_at": now,
+                    "scope_id": "scope-direct",
+                    "stage": "student",
+                },
+                {
+                    "job_id": 2,
+                    "target_type": "feed",
+                    "target_id": 2,
+                    "subject_code": "3067",
+                    "task": "post_annotation",
+                    "input_hash": "reused",
+                    "status": "failed",
+                    "priority": 0,
+                    "attempts": 1,
+                    "last_error": "provider unavailable",
+                    "created_at": now,
+                    "updated_at": now,
+                    "scope_id": "original-scope",
+                    "stage": "student",
+                },
+            ],
+        )
+        conn.execute(
+            insert(analysis_scope_jobs),
+            {"scope_id": "scope-reused", "job_id": 2},
+        )
+        layers = AdminOperations(
+            target_engine=engine, market_provider=object()
+        )._ai_layers(
+            conn,
+            {
+                "anchor": "2026-08-25",
+                "own_analysis_progress_d1": json.dumps(progress),
+            },
+            "d1",
+            [
+                {"code": "3033", "name": "产品一", "ownership": "own"},
+                {"code": "3067", "name": "产品二", "ownership": "peer"},
+            ],
+        )
+
+    layer_a = {row["id"]: row for row in layers["layerA"]}
+    assert layer_a["comment_product"]["counts"]["done"] == 1
+    assert layer_a["post_annotation"]["counts"]["failed"] == 1
 
 
 def test_pipeline_reports_worker_heartbeat_health(monkeypatch):
@@ -524,7 +642,7 @@ def test_checks_explain_what_blocks_page_data(monkeypatch):
     assert "0 8 * * *" in checks["daily"]["detail"] and "尚未运行过" in checks["daily"]["detail"]
 
 
-def test_fill_all_queues_every_page_range_once():
+def test_fill_all_route_is_removed_so_ranges_cannot_be_bulk_queued():
     engine = _engine()
     now = datetime(2026, 10, 6, 1, 0, tzinfo=timezone.utc)
     with engine.begin() as conn:
@@ -532,19 +650,19 @@ def test_fill_all_queues_every_page_range_once():
     operations = AdminOperations(target_engine=engine, market_provider=object(), now=lambda: now)
     client = _admin_client(operations)
 
-    first = client.post("/api/v1/admin/analysis-runs/all")
-    again = client.post("/api/v1/admin/analysis-runs/all")
+    response = client.post("/api/v1/admin/analysis-runs/all")
 
-    assert first.status_code == again.status_code == 202
-    assert first.json["data"]["created"] == 6 and again.json["data"]["created"] == 0
-    assert [run["range"] for run in first.json["data"]["runs"]] == ["d1", "d2", "d7", "d14", "d30", "mtd"]
-    assert len(list_requests(engine)) == 6
-
-
-def test_fill_all_refuses_without_a_ready_worker():
-    engine = _engine()
-    response = _admin_client(AdminOperations(target_engine=engine, market_provider=object())).post(
-        "/api/v1/admin/analysis-runs/all"
-    )
-    assert response.status_code == 503
+    assert response.status_code == 404
     assert list_requests(engine) == []
+
+
+def test_d7_is_claimed_before_other_ranges():
+    engine = _engine()
+    submitted = datetime(2026, 10, 6, 1, 0)
+    enqueue(engine, "d1", now=submitted)
+    enqueue(engine, "d2", now=submitted)
+    d7, _ = enqueue(engine, "d7", now=submitted)
+
+    claimed = claim_next(engine, owner="worker-1", now=submitted + timedelta(seconds=1))
+
+    assert claimed["id"] == d7["id"]

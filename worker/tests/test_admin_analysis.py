@@ -190,7 +190,7 @@ def test_failed_layer_a_jobs_get_one_more_round():
 
     from sqlalchemy import insert, select
 
-    from radar_db.schema import annotation_jobs
+    from radar_db.schema import annotation_jobs, feeds
 
     engine = _engine()
     now = datetime(2026, 10, 6)
@@ -199,6 +199,11 @@ def test_failed_layer_a_jobs_get_one_more_round():
         "created_at": now, "updated_at": now,
     }
     with engine.begin() as conn:
+        conn.execute(insert(feeds), {
+            "feed_id": 10, "code": "3033", "source_ticker": "03033.HK",
+            "posted_at": now, "feed_type": 1, "like_count": 0,
+            "comment_count": 0, "image_count": 0, "raw_json_broken": False,
+        })
         conn.execute(insert(annotation_jobs), [
             {**base, "target_id": 1, "subject_code": "3033", "task": "comment_product",
              "status": "dead", "attempts": 3, "last_error": "timeout"},
@@ -206,12 +211,17 @@ def test_failed_layer_a_jobs_get_one_more_round():
              "status": "done", "attempts": 1},
             {**base, "target_id": 3, "subject_code": "9999", "task": "comment_product",
              "status": "failed", "attempts": 1},
+            {**base, "target_type": "feed", "target_id": 10, "subject_code": "",
+             "input_hash": "post-h", "task": "post_annotation",
+             "status": "failed", "attempts": 1, "last_error": "invalid response"},
         ])
 
-    assert admin_analysis.revive_failed_jobs(engine, ["3033"]) == 1
+    assert admin_analysis.revive_failed_jobs(engine, ["3033"]) == 2
     with engine.connect() as conn:
-        rows = dict(conn.execute(select(annotation_jobs.c.target_id, annotation_jobs.c.status)).all())
-    assert rows == {1: "pending", 2: "done", 3: "failed"}
+        rows = dict(conn.execute(select(annotation_jobs.c.job_id, annotation_jobs.c.status)).all())
+    assert list(rows.values()).count("pending") == 2
+    assert list(rows.values()).count("done") == 1
+    assert list(rows.values()).count("failed") == 1
 
 
 def test_missing_layer_b_lists_kinds_not_published_for_the_anchor():

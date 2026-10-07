@@ -27,19 +27,6 @@ test('analysis submission sends only the selected range', async () => {
   assert.deepEqual(JSON.parse(request.options.body), { range: 'd7' })
 })
 
-test('fill-all submission posts to the all-ranges endpoint without a body', async () => {
-  let request
-  global.fetch = async (url, options) => {
-    request = { url, options }
-    return { ok: true, status: 202, json: async () => ({ status: 'ok', data: { created: 6, runs: [] } }) }
-  }
-  const result = await admin.runAdminFillAll()
-  assert.equal(request.url, '/api/v1/admin/analysis-runs/all')
-  assert.equal(request.options.method, 'POST')
-  assert.equal(request.options.body, undefined)
-  assert.equal(result.created, 6)
-})
-
 test('structured API errors are exposed to the page', async () => {
   global.fetch = async () => ({
     ok: false,

@@ -84,7 +84,7 @@
 
 .admin-comments { padding:22px; }
 .admin-toolbar { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-top:18px; }
-.admin-range-tabs, .admin-run-buttons { display:flex; flex-wrap:wrap; gap:8px; }
+.admin-range-tabs { display:flex; flex-wrap:wrap; gap:8px; }
 .admin-range-tabs button { min-width:54px; }
 .admin-range-tabs button.is-active { background:var(--csop-blue-700); color:#fff; }
 .admin-context-line { display:flex; flex-wrap:wrap; gap:8px 22px; margin-top:14px; color:var(--ink-500); font-size:12px; }
@@ -98,8 +98,10 @@
 .admin-page-count.is-shown { color:var(--positive-700); background:var(--positive-100); }
 .admin-page-count.is-zero { color:var(--ink-700); background:var(--ink-100); }
 .admin-page-count.is-unavailable { color:#755b1e; background:var(--warning-100); }
-.admin-run-buttons { margin-top:16px; }
-.admin-run-buttons button { flex:1 1 100px; }
+.admin-run-selector { display:grid; grid-template-columns:minmax(150px, .7fr) minmax(190px, 1fr); gap:10px; align-items:end; margin-top:16px; }
+.admin-run-selector label { display:grid; gap:6px; color:var(--ink-600); font-size:12px; font-weight:650; }
+.admin-run-selector select { width:100%; border:1px solid var(--border-2); border-radius:8px; padding:10px 12px; background:#fff; color:var(--ink-800); font:600 14px/1.2 var(--font-mono); }
+.admin-run-selector small { grid-column:1 / -1; color:var(--ink-500); font-size:12px; line-height:1.5; }
 .admin-fold-toggle { flex:none; }
 .admin-progress-panel { margin-top:14px; padding:15px 16px; border:1px solid var(--border-1); border-radius:10px; background:var(--canvas); }
 .admin-progress-head, .admin-progress-head > div, .admin-progress-meta { display:flex; align-items:center; gap:10px; }

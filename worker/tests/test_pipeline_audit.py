@@ -157,6 +157,7 @@ def test_extract_then_pipeline_end_to_end(engine, cfg, tmp_path):
 
 def test_manual_batch_workflow_is_bounded_and_second_run_sends_nothing(engine, cfg):
     from dataclasses import replace
+    from ai import synth
     from ai.providers.base import RunControl
     from jobs import analyze, full_own
 
@@ -180,6 +181,7 @@ def test_manual_batch_workflow_is_bounded_and_second_run_sends_nothing(engine, c
     worker = BoundedFake(100)
     finished = full_own.run_manual(engine, cfg, plan, worker)
     assert finished["status"] == "complete"
+    assert finished["synthVersion"] == synth.VERSION
     assert finished["products"][CODE]["complete"]
     repeated = BoundedFake(100)
     repeated_progress = full_own.run_manual(engine, cfg, plan, repeated)

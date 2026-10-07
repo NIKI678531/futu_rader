@@ -14,8 +14,9 @@ test('AI analysis actions live only in the database management page', () => {
   assert.doesNotMatch(overview, /AiAnalysisButton|分析本产品近 7 天/)
   assert.match(admin, /Layer B · 页面文案/)
   for (const range of ['d1', 'd2', 'd7', 'd14', 'd30', 'mtd']) assert.match(admin, new RegExp(`'${range}'`))
-  assert.match(admin, /`运行 \$\{key\}`/)
-  assert.match(admin, /一键补齐全部/)
+  assert.match(admin, /aria-label="选择 AI 分析时间"/)
+  assert.match(admin, /运行所选区间/)
+  assert.doesNotMatch(admin, /runAdminFillAll|一键补齐全部/)
   assert.match(admin, /页面数据完整度/)
   assert.match(admin, /链路检查/)
   assert.match(admin, /SOURCE_TEXT/)
@@ -34,13 +35,15 @@ test('AI analysis actions live only in the database management page', () => {
   assert.match(shell, /href="\/admin"[\s\S]*数据管理/)
 })
 
-test('sector leaderboard is capped at ten products without an expand-all path', () => {
+test('sector leaderboard shows ten products by default and can reveal the remainder', () => {
   const overview = read('../src/screens/sectorOverview/index.jsx')
   const productTable = read('../src/screens/sectorOverview/ProductTable.jsx')
 
-  assert.match(overview, /sorted\.slice\(0, 10\)/)
-  assert.match(overview, /仅显示前 10 只/)
-  assert.doesNotMatch(productTable, /完整榜单/)
+  assert.match(overview, /s\.listAll \? sorted : sorted\.slice\(0, 10\)/)
+  assert.match(overview, /默认显示前 10 只/)
+  assert.match(overview, /展开其余/)
+  assert.match(overview, /收起，只看前 10 只/)
+  assert.match(productTable, /aria-expanded=\{v\.listAll\}/)
 })
 
 test('comment refresh and AI runs use the database-only endpoints', () => {

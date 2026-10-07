@@ -21,7 +21,7 @@ export default function ProductTable({ v }) {
         <div onClick={v.sortNeg.go} style={s(`flex:none;width:48px;display:flex;align-items:center;justify-content:flex-end;gap:3px;cursor:pointer;font:${v.sortNeg.fw} 14px/1.4 var(--font-cjk);color:${v.sortNeg.fg}`)} className={hover('color:var(--csop-blue-600)')}>舆情<span style={s('font:600 9px/1 var(--font-mono)')}>{v.sortNeg.caret}</span></div>
         <span title={v.hotRule} style={s('flex:1.3;min-width:220px;display:flex;align-items:center;gap:6px;padding-left:10px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-800);white-space:nowrap')}>热议总结<span style={s('padding:0 6px;border-radius:9999px;background:var(--csop-blue-50);font:500 11px/1.6 var(--font-cjk);color:var(--csop-blue-700)')}>AI 生成</span></span>
       </div>
-      <div style={s('flex:none;height:540px;overflow-y:auto')}>
+      <div style={s(`flex:none;height:540px;overflow-y:${v.listAll ? 'auto' : 'hidden'}`)}>
         {v.rows.map((r) => (
           <div key={r.code} data-product-code={r.code} onClick={r.go} onMouseEnter={r.hoverIn} onMouseLeave={r.hoverOut} style={s(`display:flex;align-items:center;gap:8px;height:54px;box-sizing:border-box;padding:0 14px;background:${r.bg};border-bottom:1px solid var(--ink-100);cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
             <span style={s('flex:none;width:36px;font:500 13px/1.4 var(--font-mono);color:var(--ink-400)')}>{r.idx}</span>
@@ -78,13 +78,13 @@ export default function ProductTable({ v }) {
             </span>
           </div>
         ))}
-        {v.listMore && (
-          <div onClick={v.listToggle} style={s('display:flex;align-items:center;justify-content:center;height:38px;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);background:var(--canvas);border-bottom:1px solid var(--ink-100);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>{v.listMoreLabel}</div>
-        )}
         {v.rowsEmpty && (
           <div style={s('padding:16px;font:400 14px/1.6 var(--font-cjk);color:var(--ink-500)')}>{v.rowsEmptyText}</div>
         )}
       </div>
+      {v.listMore && (
+        <button type="button" onClick={v.listToggle} aria-expanded={v.listAll} style={s('flex:none;width:100%;height:38px;border:0;border-top:1px solid var(--ink-100);background:var(--canvas);font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>{v.listMoreLabel}</button>
+      )}
     </div>
   )
 }

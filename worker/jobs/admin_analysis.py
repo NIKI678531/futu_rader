@@ -11,7 +11,7 @@ from dataclasses import replace
 from datetime import timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 
 from ai import config
 from ai.providers import build as build_provider, generation_supported
@@ -23,7 +23,7 @@ from core.top_products import analysis_products, parse_own_limit
 from radar_db import make_engine
 from radar_db.analysis_requests import RANGE_PRIORITY, claim_next, finish, renew, requeue
 from radar_db.revisions import synthesis_generation_key
-from radar_db.schema import annotation_jobs, meta_kv
+from radar_db.schema import annotation_jobs, feeds, meta_kv
 
 import clock
 
@@ -135,19 +135,29 @@ def revive_failed_jobs(engine, codes) -> int:
     """Give failed/dead Layer-A jobs of these products one more round (attempts reset)."""
 
     codes = list(codes)
-    revived = 0
     with engine.begin() as conn:
-        for offset in range(0, len(codes), 500):
-            revived += int(conn.execute(
-                update(annotation_jobs)
-                .where(
-                    annotation_jobs.c.subject_code.in_(codes[offset:offset + 500]),
-                    annotation_jobs.c.task.in_(REVIVED_TASKS),
-                    annotation_jobs.c.status.in_(("failed", "dead")),
-                )
-                .values(status="pending", attempts=0, lease_until=None)
-            ).rowcount or 0)
-    return revived
+        feed_ids = select(feeds.c.feed_id).where(feeds.c.code.in_(codes))
+        job_ids = [job_id for (job_id,) in conn.execute(
+            select(annotation_jobs.c.job_id).where(
+                annotation_jobs.c.task.in_(REVIVED_TASKS),
+                annotation_jobs.c.status.in_(("failed", "dead")),
+                or_(
+                    annotation_jobs.c.subject_code.in_(codes),
+                    and_(
+                        annotation_jobs.c.task == "post_annotation",
+                        annotation_jobs.c.target_type == "feed",
+                        annotation_jobs.c.target_id.in_(feed_ids),
+                    ),
+                ),
+            )
+        )]
+        if not job_ids:
+            return 0
+        return int(conn.execute(
+            update(annotation_jobs)
+            .where(annotation_jobs.c.job_id.in_(job_ids))
+            .values(status="pending", attempts=0, lease_until=None, last_error=None)
+        ).rowcount or 0)
 
 
 def missing_layer_b(engine, codes, range_key, anchor) -> list[dict]:

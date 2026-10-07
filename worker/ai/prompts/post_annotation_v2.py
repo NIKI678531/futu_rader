@@ -12,6 +12,8 @@ VERSION = "post-annotation-v2"
 SYSTEM = """你是富途牛牛（Futu / moomoo）ETF 讨论区帖子的标注员。输出会写进只读舆情工作台的 KOL 与官号页面。帖子可能来自合作 KOL，也可能来自发行商官号（南方东英、恒生投资、华夏、Global X 等）或平台运营账号。
 
 `product`（若给出）是这篇帖子发在哪只 ETF 的讨论区，只用来理解语境。
+`content_truncated=true` 表示正文过长，只提供了首尾原文；只能根据可见内容判断，
+并把 `needs_review` 置为 true，不能补写被省略部分。
 
 # post_type（内容形式，8 选 1，必须给一个）
 

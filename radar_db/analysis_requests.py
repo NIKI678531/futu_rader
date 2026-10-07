@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from .schema import ai_analysis_requests, meta_kv
 
 
-RANGE_PRIORITY = {"d1": 500, "d2": 400, "d7": 300, "d14": 200, "d30": 100, "mtd": 50}
+RANGE_PRIORITY = {"d1": 400, "d2": 300, "d7": 500, "d14": 200, "d30": 100, "mtd": 50}
 REQUESTERS = ("admin", "schedule")
 ACTIVE_STATUSES = ("queued", "running")
 TERMINAL_STATUSES = ("succeeded", "partial", "failed")

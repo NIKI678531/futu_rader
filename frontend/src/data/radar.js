@@ -51,7 +51,7 @@ const DEFAULT_RANGE = 'd7'
 const product = (code, tail, rangeKey) =>
   `/products/${encodeURIComponent(code)}/${tail}` + qs({ range: rangeKey || DEFAULT_RANGE })
 
-export function prefetchScreen(screen, { rangeKey = DEFAULT_RANGE, kol } = {}) {
+export function prefetchScreen(screen, { rangeKey = DEFAULT_RANGE, kol, code } = {}) {
   const requests = [() => read('/meta'), () => migrated.buildRange(rangeKey)]
   if (screen === 'official') requests.push(() => migrated.officialPosts(rangeKey))
   if (screen === 'kol' || screen === 'kolDetail') requests.push(() => migrated.kolImpact(rangeKey))
@@ -59,6 +59,23 @@ export function prefetchScreen(screen, { rangeKey = DEFAULT_RANGE, kol } = {}) {
   if (screen === 'sector') {
     requests.push(() => migrated.pool(rangeKey), () => migrated.ranks(rangeKey),
       () => read('/hot-summaries' + qs({ range: rangeKey })))
+  }
+  if (screen === 'product' && code) {
+    requests.push(
+      () => migrated.pool(rangeKey),
+      () => migrated.ranks(rangeKey),
+      () => migrated.benchmark(code, rangeKey),
+      () => migrated.summaryFor(code, rangeKey),
+      () => migrated.themesFor(code, rangeKey, 'positive'),
+      () => migrated.issuerOpinions(rangeKey),
+      () => migrated.negCatsFor(code, rangeKey),
+      () => migrated.competitorsFor(code, rangeKey),
+      () => migrated.complianceFor(code, rangeKey),
+      () => migrated.topicsFor(code, rangeKey),
+      () => migrated.kolMentionsFor(code, rangeKey),
+      () => migrated.candlesFor(code, rangeKey),
+      () => migrated.stagesFor(code, rangeKey),
+    )
   }
   for (const request of requests) {
     try { request() } catch (error) {

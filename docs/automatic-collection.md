@@ -69,9 +69,11 @@ The always-on worker (`python scheduler.py`) runs the same function at
    `--through-source-run-id`, so the complete date (`meta_kv.anchor`) advances.
    Without the URL the database is the imported dump and the step is skipped.
 2. **Prices** when `FMP_API_KEY` is set.
-3. **Analysis**: `d1,d2,d7,d14,d30,mtd` are enqueued as scheduled requests and
-   executed by the worker for every active product (`AI_OWN_TOP_LIMIT=N`
-   restricts own products to the comment-volume Top N plus every peer).
+3. **Analysis**: `d7,d1,d2` are enqueued as scheduled requests, in that priority
+   order, and executed by the worker for every active product. `d14,d30,mtd`
+   are started manually, one range at a time, from the admin page.
+   (`AI_OWN_TOP_LIMIT=N` restricts own products to the comment-volume Top N plus
+   every peer.)
 
 A failed sync or price step never blocks analysis of the facts already in Radar.
 The step report is stored in `meta_kv.ai_daily_last_run` and shown on `/admin`.
