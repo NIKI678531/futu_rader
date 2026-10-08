@@ -63,6 +63,13 @@ def summary_for(code, range_key):
     return get_provider().summary_for(code, range_key)
 
 
+def market_outlook(code, range_key):
+    """产品页市场风向：按灰度范围返回产品相关情绪与 AI 摘要。"""
+    if range_key not in VALID_KEYS:
+        return MISSING
+    return get_provider().market_outlook(code, range_key)
+
+
 def themes_for(code, range_key):
     """正负主题：`{positive: [...], negative: [...]}`，各自按提及数降序。
 
@@ -73,10 +80,10 @@ def themes_for(code, range_key):
     return get_provider().themes_for(code, range_key)
 
 
-def issuer_opinions(issuer, range_key):
+def issuer_opinions(code, range_key):
     if range_key not in VALID_KEYS:
         return MISSING
-    return get_provider().issuer_opinions(issuer, range_key)
+    return get_provider().issuer_opinions(code, range_key)
 
 
 def neg_cats_for(code, range_key):

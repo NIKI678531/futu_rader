@@ -8,8 +8,6 @@ export default function Topics({ v }) {
         <div style={s('display:flex;align-items:baseline;gap:11px')}>
           <span style={s('font:600 18px/1.3 var(--font-cjk)')}>产品话题情绪</span>
           <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>市场方向、指数涨跌与宏观事件等不计入产品积极／消极态度的讨论在此呈现</span>
-          {v.partialData && <span style={s('padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>部分数据</span>}
-          {v.topicsStale && <span title={v.staleTitle} style={s('padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>AI 生成 · 待更新</span>}
         </div>
       </div>
       {v.hasTopics && (

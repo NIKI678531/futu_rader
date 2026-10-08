@@ -140,6 +140,9 @@ def test_sync_is_idempotent_and_advances_only_declared_complete_day(tmp_path):
         assert conn.execute(select(func.count()).select_from(comments)).scalar_one() == 1
         assert conn.execute(select(func.count()).select_from(users)).scalar_one() == 1
         assert conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar_one() == "2026-09-20"
+        assert conn.execute(select(meta_kv.c.v).where(
+            meta_kv.c.k == "data_max_ts"
+        )).scalar_one() == "2026-09-20 10:00:00"
         revision = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "data_revision")).scalar_one()
         run = conn.execute(select(ingestion_runs)).mappings().one()
         assert run["source_kind"] == "all"
@@ -156,6 +159,26 @@ def test_sync_is_idempotent_and_advances_only_declared_complete_day(tmp_path):
     assert repeated.changed_codes == []
     with target.connect() as conn:
         assert conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "data_revision")).scalar_one() == revision
+
+
+def test_incremental_pages_advance_data_max_ts_monotonically(tmp_path):
+    target = engine(tmp_path)
+    newer = feed_observation(1, datetime(2026, 9, 21, 6))
+    newer.feed["posted_at"] = datetime(2026, 9, 21, 5)  # 13:00 HKT
+    older = feed_observation(2, datetime(2026, 9, 21, 7))
+    older.feed["posted_at"] = datetime(2026, 9, 20, 8)  # prior HKT day
+
+    FutuRefresh(target, MemorySourceAdapter({"feeds": [newer]})).sync(
+        SyncRequest(run_id="newer-page")
+    )
+    FutuRefresh(target, MemorySourceAdapter({"feeds": [older]})).sync(
+        SyncRequest(run_id="older-page")
+    )
+
+    with target.connect() as conn:
+        assert conn.execute(select(meta_kv.c.v).where(
+            meta_kv.c.k == "data_max_ts"
+        )).scalar_one() == "2026-09-21 13:00:00"
 
 
 def test_duplicate_feed_observation_cannot_change_its_original_section(tmp_path):
@@ -995,6 +1018,7 @@ def test_ai_request_enforces_safety_bounds():
     assert AiRequest(date(2026, 9, 28), mode="weekly").ranges == (
         "d1", "d2", "d7", "d14", "d30", "mtd",
     )
+    assert AiRequest(date(2026, 9, 28), range_keys=("d0",)).ranges == ("d0",)
     assert AiRequest(date(2026, 9, 25)).max_http_attempts == 100000
     with pytest.raises(ValueError, match="hard daily cap"):
         AiRequest(date(2026, 9, 25), max_http_attempts=100001)
@@ -1592,6 +1616,22 @@ def test_partial_source_run_can_sync_without_completion_proof_schema(tmp_path):
 
     assert result.complete_through is None
     assert adapter.complete_through("important-1") is None
+
+
+def test_intraday_source_preflight_requires_composite_keyset_indexes(tmp_path):
+    source_engine = receipt_source_engine(
+        tmp_path,
+        full_run_receipt(),
+    )
+    adapter = MarketInsightMySqlAdapter(source_engine, {"3033"})
+
+    assert adapter.incremental_index_gaps() == [
+        "futu_comments_feeds(scraped_at,feed_id)",
+        "futu_comments_feeds(detail_updated_at,feed_id)",
+        "futu_comments_users(scraped_at,user_id)",
+    ]
+    with pytest.raises(SourceSchemaError, match="required keyset indexes"):
+        adapter.require_incremental_indexes()
 
 
 def test_market_insight_adapter_uses_stable_keyset_and_all_run_watermark(tmp_path, monkeypatch):

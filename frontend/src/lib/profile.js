@@ -13,10 +13,10 @@
  *
  * 它也不违反铁律 1。铁律 1 管的是口径公式 —— 讨论热度、评论去重、基准区间、情绪净值、
  * 积极／消极占比、环比、阶段合并、样本阈值。这里数的是「这批帖子里提自家的有几篇」，而「这批」
- * 就是筛选出来的可见集，按设计本来就该随筛选重算。真正的口径（全量 leaders）由后端在
- * kolImpact 里算好下发，KOL 详情页用的是那一份。
+ * 就是筛选出来的可见集，按设计本来就该随筛选重算。后端仍下发完整帖子与兼容用的
+ * leaders；两个 KOL 页面都在各自可见的帖子集上聚合，详情页再按浏览量总和定顺序。
  *
- * ## 拷贝自 design/radar-data.js 的 kolProfile()，只有一处有意偏差
+ * ## 拷贝自 design/radar-data.js 的 kolProfile()，有三处有意偏差
  *
  * 20% 的「兼」阈值、typeOrder 的排序、top 取互动最高的一篇 —— 这些都直接印在页面上
  * （styleTag「X为主 · 兼Y」是 PRD §4.4 M3 的逐字要求）。改设计源时照拷，别照着新行为重写。
@@ -36,10 +36,14 @@
  *
  * 判据是「**有一篇**不知道」，不是「全都不知道」—— 与 `add` 同一个语义：分布里少一票，
  * 谁是第一名就不确定了。
+ *
+ * **偏差三：浏览量合计同样传播未知。** 声量排名默认按每位 KOL 全部可见帖子的浏览量
+ * 合计排序；任一篇没有浏览量，整份合计就保持 null 并排在已知值之后，不能伪装成 0。
  */
 import { POST_TYPES, TYPE_BY_KEY, descN } from './view'
+import { sumPostViews } from './kolMetrics'
 
-/* 一位 KOL 的区间画像：篇数、自家 / 竞品 / 双方篇数、互动合计、类型分布与主要类型。campFn 可换判定口径 */
+/* 一位 KOL 的区间画像：篇数、自家 / 竞品 / 双方篇数、互动与浏览合计、类型分布及主要类型。campFn 可换判定口径 */
 export function kolProfile(name, ps, campFn) {
   var cf = campFn || function (p) { return p.camp; };
   var tc = {}; POST_TYPES.forEach(function (t) { tc[t.k] = 0; });
@@ -61,7 +65,7 @@ export function kolProfile(name, ps, campFn) {
   var second = tc[order[1]] > 0 && tc[order[1]] >= n * 0.2 ? ' · 兼' + TYPE_BY_KEY[order[1]].label : '';
   return {
     kol: name, n: n, own: own, peer: peer, both: both, ownAny: own + both, peerAny: peer + both,
-    engagement: eng, comments: cm,
+    engagement: eng, comments: cm, views: sumPostViews(ps),
     typeCounts: typeNa ? null : tc,
     typeOrder: typeNa ? null : order,
     topType: typeNa ? null : order[0],

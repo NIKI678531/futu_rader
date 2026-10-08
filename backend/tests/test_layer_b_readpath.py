@@ -280,6 +280,30 @@ class TestTopicsAndHot:
                        "value": {"title": "恒指方向争论", "summary": "多条评论看空大市。"}}])
         assert p.topics_for(OWN_CODE, "d1")[0]["title"] == "恒指方向争论"
 
+    def test_market_outlook_uses_topic_label_and_keeps_current_product_first(self, provider):
+        assert provider.market_outlook(OWN_CODE, "d1") is None
+        p = annotated(provider)
+        pending = p.market_outlook(OWN_CODE, "d1")
+        assert pending["list"][0] == {
+            "code": OWN_CODE,
+            "name": p._by_code[OWN_CODE]["name"],
+            "status": "unavailable",
+            "sentiment": "bearish",
+            "sentimentLabel": "看空",
+            "summary": None,
+        }
+        assert len(pending["list"]) <= 5
+        assert len({row["code"] for row in pending["list"]}) == len(pending["list"])
+
+        add_synth(p, [{
+            "kind": "topic_label", "subkey": "market",
+            "value": {"title": "恒指方向争论", "summary": "多条评论看空大市。"},
+        }])
+        generated = p.market_outlook(OWN_CODE, "d1")["list"][0]
+        assert generated["status"] == "ok"
+        assert generated["sentiment"] == "bearish"
+        assert generated["summary"] == "多条评论看空大市。"
+
     def test_hot_summary_three_states(self, provider):
         p = annotated(provider)
         hs = p.hot_summaries("d1")[OWN_CODE]

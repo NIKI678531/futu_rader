@@ -17,7 +17,6 @@ export default function KolList({ v }) {
             <span style={s('flex:none;width:210px')}>KOL</span>
             <span style={s('flex:none;width:92px;text-align:right')}>相关内容</span>
             <span style={s('flex:none;width:126px;padding-left:14px;box-sizing:border-box')}>最近提及</span>
-            <span style={s('flex:none;width:92px')}>主要态度</span>
             <span style={s('flex:1;min-width:0')}>代表内容摘录</span>
             <span style={s('flex:none;width:96px;text-align:right')}>原文证据</span>
           </div>
@@ -33,7 +32,6 @@ export default function KolList({ v }) {
               </div>
               <span style={s('flex:none;width:92px;text-align:right;font:600 16px/1.3 var(--font-mono);color:var(--ink-900)')}>{k.count}</span>
               <span style={s('flex:none;width:126px;padding-left:14px;box-sizing:border-box;font:500 13px/1.4 var(--font-mono);color:var(--ink-600)')}>{k.last}</span>
-              <span style={s('flex:none;width:92px')}><span style={s(`padding:2px 9px;border-radius:9999px;background:${k.abg};font:600 12px/1.6 var(--font-cjk);color:${k.afg}`)}>{k.att}</span></span>
               <span style={s('flex:1;min-width:0;font:400 13px/1.6 var(--font-cjk);color:var(--ink-700);overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{k.excerpt}</span>
               <span style={s('flex:none;width:96px;text-align:right;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600)')}>证据 {k.evidence} 条 →</span>
             </div>
@@ -42,7 +40,7 @@ export default function KolList({ v }) {
             {v.kolMoreVisible && (
               <span onClick={v.kolToggle} style={s('flex:none;font:500 13px/1.6 var(--font-cjk);color:var(--csop-blue-600);cursor:pointer;white-space:nowrap')}>{v.kolMoreLabel}</span>
             )}
-            <span style={s('font:400 12px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>KOL 身份来自已核验名单与账号映射，不按活跃度或粉丝数推断；相关原帖与 KOL 页面使用同一来源，模型确认的评论观点作为补充证据；同一条内容只计一次。有效态度少于 3 条不输出主要态度。</span>
+            <span style={s('font:400 12px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>KOL 身份来自已核验名单与账号映射，不按活跃度或粉丝数推断；相关原帖与 KOL 页面使用同一来源，模型确认的评论观点作为补充证据；同一条内容只计一次。</span>
           </div>
         </>
       )}

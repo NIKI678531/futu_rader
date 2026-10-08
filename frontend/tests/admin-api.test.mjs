@@ -15,6 +15,16 @@ test('pipeline reads one range without browser credentials', async () => {
   assert.equal('X-Admin-Token' in request.options.headers, false)
 })
 
+test('pipeline can request the current-day range', async () => {
+  let request
+  global.fetch = async (url, options) => {
+    request = { url, options }
+    return { ok: true, status: 200, json: async () => ({ status: 'ok', data: { comments: [] } }) }
+  }
+  await admin.loadAdminPipeline('d0')
+  assert.equal(request.url, '/api/v1/admin/pipeline?range=d0')
+})
+
 test('analysis submission sends only the selected range', async () => {
   let request
   global.fetch = async (url, options) => {
@@ -25,6 +35,16 @@ test('analysis submission sends only the selected range', async () => {
   assert.equal(request.url, '/api/v1/admin/analysis-runs')
   assert.equal(request.options.method, 'POST')
   assert.deepEqual(JSON.parse(request.options.body), { range: 'd7' })
+})
+
+test('analysis submission preserves the current-day range key', async () => {
+  let request
+  global.fetch = async (url, options) => {
+    request = { url, options }
+    return { ok: true, status: 202, json: async () => ({ status: 'ok', data: { run: { status: 'queued' } } }) }
+  }
+  await admin.runAdminAnalysis('d0')
+  assert.deepEqual(JSON.parse(request.options.body), { range: 'd0' })
 })
 
 test('structured API errors are exposed to the page', async () => {

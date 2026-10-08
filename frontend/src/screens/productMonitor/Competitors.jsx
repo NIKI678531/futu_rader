@@ -1,15 +1,14 @@
 import { s } from '../../lib/dc'
 import { ThumbUp, ThumbDown } from './Attitude'
 
-/* 关联竞品观点 — 每张卡片一只关联产品，正／负两栏各自可打开证据侧栏 */
+/* 关联产品观点 — 每张卡片一只关联产品，正／负两栏各自可打开证据侧栏 */
 export default function Competitors({ v }) {
   return (
     <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06)')}>
       <div style={s('display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 20px;border-bottom:1px solid var(--border-1)')}>
         <div style={s('display:flex;align-items:baseline;gap:11px')}>
-          <span style={s('font:600 18px/1.3 var(--font-cjk)')}>关联竞品观点</span>
+          <span style={s('font:600 18px/1.3 var(--font-cjk)')}>关联产品观点</span>
           <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>{v.compScopeText} · 按当前区间筛后评论量降序</span>
-          {v.compsStale && <span title={v.staleTitle} style={s('padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>AI 生成 · 待更新</span>}
         </div>
         <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>共 {v.compCount} 只关联产品</span>
       </div>

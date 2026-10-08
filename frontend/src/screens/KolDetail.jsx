@@ -7,16 +7,17 @@
    （见 out.stats 上方，与 lib/profile.js 同一处偏差）。 */
 import React from 'react'
 import R, { prefetchScreen } from '../data/radar'
-import { num, conf2, typeStyle, md, shell, rgba, CAMP, POST_TYPES, reviewBadge, needsReview, kolDisplayLabel } from '../lib/view'
+import { num, conf2, typeStyle, md, shell, rgba, CAMP, reviewBadge, needsReview, kolDisplayLabel } from '../lib/view'
 import { kolProfile } from '../lib/profile'
+import { compareKolReach, kolProductComposition } from '../lib/kolMetrics'
 import { s, hover } from '../lib/dc'
 import Shell from '../components/Shell'
+import DatePresetTabs from '../components/DatePresetTabs'
 import withTransition from '../components/withTransition'
 import DcLink from '../components/DcLink'
 
 class KolDetail extends React.Component {
   static defaultProps = {
-    lowConfidence: 0.7,
     campRule: '挂载标的 ∪ 正文提及',
   }
 
@@ -29,11 +30,9 @@ class KolDetail extends React.Component {
     this.state = {
       rangeKey: q.range || 'd7',
       kol: q.kol || null,
-      sel: q.post || null,
-      openOps: {}
+      sel: q.post || null
     };
-    /* 首次 render 之前把本屏端点并行发出去（radar.js `urlsFor`）。URL 没指定 KOL 时观点表
-       要等 kolImpact 回来才知道取谁的，那一个不在清单里。 */
+    /* 首次 render 之前把本屏端点并行发出去（radar.js `prefetchScreen`）。 */
     prefetchScreen('kolDetail', { rangeKey: this.state.rangeKey, kol: this.state.kol });
   }
   data() { return R.kolImpact(this.state.rangeKey); }
@@ -49,11 +48,19 @@ class KolDetail extends React.Component {
   /* AI 标注整块未生成（ADR-0017 §4，sql provider 下恒为真） */
   annNa(p) { return p.postType == null; }
 
-  /* 当前 KOL：URL 未指定时取排名第一位 */
+  rankedProfiles() {
+    var self = this, byKol = {};
+    this.data().posts.forEach(function (p) { (byKol[p.kol] = byKol[p.kol] || []).push(p); });
+    return Object.keys(byKol)
+      .map(function (name) { return kolProfile(name, byKol[name], function (p) { return self.camp(p); }); })
+      .sort(compareKolReach);
+  }
+
+  /* 当前 KOL：URL 未指定时取浏览量声量排名第一位 */
   kolName() {
-    var M = this.data();
     if (this.state.kol) return this.state.kol;
-    return M.leaders.length ? M.leaders[0].kol : '';
+    var ranked = this.rankedProfiles();
+    return ranked.length ? ranked[0].kol : '';
   }
   myPosts() {
     var k = this.kolName();
@@ -67,27 +74,9 @@ class KolDetail extends React.Component {
     return ps.filter(function (p) { return p.id === id; })[0] || ps[0];
   }
 
-  exportCsv(rows, kol) {
-    var head = ['产品', '产品名称', '发行商', '归属', '观点', '类型', '操作', '置信度', '日期', '时间', '互动量', '原帖链接'];
-    var esc = function (v) { return '"' + String(v == null ? '' : v).split('"').join('""') + '"'; };
-    var lines = [head.map(esc).join(',')];
-    rows.forEach(function (r) {
-      lines.push([r.code, r.name, r.issuer, r.own ? '南方东英' : '竞品', r.summary, r.typeLabel, r.direction || '未提及操作', r.confidence, r.dateText, r.timeText, r.engagement, r.url].map(esc).join(','));
-    });
-    var blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
-    var a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = kol + '-其他产品观点及操作.csv';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
-  }
-
   renderVals() {
     var s = this.state, self = this;
-    this.LC = this.props.lowConfidence != null ? this.props.lowConfidence : 0.7;
-    /* 切区间会触发新的 kolImpact／kolOpinions 取数；进 transition 让旧内容留着（withTransition.jsx）。 */
+    /* 切区间会触发新的 kolImpact 取数；进 transition 让旧内容留着（withTransition.jsx）。 */
     var out = shell('accounts', 'kol', s, function (x) { self.props.startTransition(function () { self.setState(x); }); });
     var M = this.data();
     var kol = this.kolName();
@@ -95,8 +84,13 @@ class KolDetail extends React.Component {
     var p0 = this.selPost();
     var prof = kolProfile(kol, ps, function (p) { return self.camp(p); });
     var secOf = function (k) { return R.SECTORS.filter(function (x) { return x.k === k; })[0] || R.SECTORS[0]; };
-    var campsOf = function (p) { var c = self.camp(p); return c === 'both' ? [CAMP.own, CAMP.competitor] : [CAMP[c] || CAMP.none]; };
+    var ownershipOf = function (p) {
+      if (p.ownership === 'own') return CAMP.own;
+      if (p.ownership === 'peer') return Object.assign({}, CAMP.competitor, { label: '其他公司' });
+      return { k: 'unknown', label: '暂不可用', bg: 'var(--ink-100)', fg: 'var(--ink-500)' };
+    };
     var issuerShort = function (x) { return x === 'CSOP 南方东英' ? '南方东英' : x; };
+    var etfCode = function (x) { return x === '—' || /\.HK$/i.test(x) ? x : x + '.HK'; };
     var pct = function (n, d) { return d ? Math.round(n / d * 100) + '%' : '—'; };
     /* 正文分句在标注块里（ADR-0017 §4），sql 下整块是 null —— `null.map` 直接抛。
        返回空数组会让展开后的原文框变成一个没有任何说明的空框，所以调用点另发 hasText。 */
@@ -110,7 +104,6 @@ class KolDetail extends React.Component {
     out.kolName = kol;
     out.rangeText = M.range.text;
     out.postCount = String(ps.length);
-    out.lcText = this.LC.toFixed(2);
     out.hasStyle = !!prof.styleTag;
     out.styleTag = prof.styleTag;
 
@@ -120,15 +113,15 @@ class KolDetail extends React.Component {
       return { label: kolDisplayLabel(t) };
     });
 
-    /* 上一位 / 下一位：沿声量排名顺序翻页 */
-    var order = M.leaders.map(function (l) { return l.kol; });
+    /* 上一位 / 下一位：沿浏览量声量排名顺序翻页。 */
+    var order = this.rankedProfiles().map(function (l) { return l.kol; });
     var at = order.indexOf(kol);
     var prev = at > 0 ? order[at - 1] : null;
     var next = at >= 0 && at < order.length - 1 ? order[at + 1] : null;
     out.prevFg = prev ? 'var(--ink-700)' : 'var(--ink-300)';
     out.nextFg = next ? 'var(--ink-700)' : 'var(--ink-300)';
-    out.prevGo = function () { if (prev) self.setState({ kol: prev, sel: null, openOps: {} }); };
-    out.nextGo = function () { if (next) self.setState({ kol: next, sel: null, openOps: {} }); };
+    out.prevGo = function () { if (prev) self.setState({ kol: prev, sel: null }); };
+    out.nextGo = function () { if (next) self.setState({ kol: next, sel: null }); };
 
     var codes = {}; ps.forEach(function (p) { p.mentioned.forEach(function (m) { codes[m.code] = 1; }); });
     var pendingN = ps.filter(function (p) { return self.pending(p); }).length;
@@ -178,7 +171,7 @@ class KolDetail extends React.Component {
            判定依据提示保留为同一个文本节点，避免视觉回归工具把标点误判成结构变化。 */
         evidenceNote: p.evidenceIdx == null ? ' · 判定依据尚未生成' : ' · 高亮句为判定依据',
         open: on, hasText: p.fullText != null, sentences: on ? sentencesOf(p) : [],
-        camps: campsOf(p),
+        ownership: ownershipOf(p),
         likes: num(p.likes), comments: num(p.comments), shares: num(p.shares), eng: num(p.engagement),
         url: p.url, stop: function (e) { e.stopPropagation(); },
         bg: on ? 'var(--csop-blue-50)' : (i % 2 ? 'var(--canvas)' : '#fff'),
@@ -219,7 +212,7 @@ class KolDetail extends React.Component {
           bg: on ? 'var(--csop-blue-50)' : 'transparent',
           label: (i % step === 0 || on || DAYS <= 7) ? md(d) : '',
           lfg: on ? 'var(--csop-blue-700)' : 'var(--ink-400)', lfw: on ? '600' : '500',
-          title: md(d) + ' · 只提自家 ' + e.own + ' · 双方 ' + e.both + ' · 只提竞品 ' + e.peer,
+          title: md(d) + ' · 只提自家 ' + e.own + ' · 双方 ' + e.both + ' · 只提其他公司 ' + e.peer,
           go: function () { var q = ps.filter(function (p) { return p.day === d; }).sort(function (a, b) { return a.t - b.t; })[0]; if (q) self.setState({ sel: q.id }); }
         });
       })(i);
@@ -228,7 +221,7 @@ class KolDetail extends React.Component {
     out.campCells = [
       { label: '只提自家', value: String(prof.own), fg: '#2361AD' },
       { label: '双方都提', value: String(prof.both), fg: '#3674C2' },
-      { label: '只提竞品', value: String(prof.peer), fg: 'var(--ink-600)' }
+      { label: '只提其他公司', value: String(prof.peer), fg: 'var(--ink-600)' }
     ];
     /* 跟随当前高亮帖子展示竞品主数据；柱图改用「仅挂载标的」口径时，
        详情也只看第一个（挂载）产品，避免图与说明两套口径。 */
@@ -242,67 +235,31 @@ class KolDetail extends React.Component {
       return { code: m.code + '.HK', name: m.name, issuer: issuerShort(m.issuer) };
     });
 
-    /* 右下：8 类构成 */
-    var tot = ps.length || 1;
-    /* typeCounts 只要有一篇没标注就整份是 null（lib/profile.js 偏差二）—— 按 8 类拆的
-       构成图在那时没有任何一格是可信的，整块换成缺失态，而不是画一张全 0 的图：
-       全 0 的柱状图长得和「这段时间他真没发过这几类」一模一样。 */
-    out.typeNa = prof.typeCounts == null;
-    out.pendingNote = out.typeNa ? '类型标注尚未生成'
-      : (pendingN ? pendingN + ' 篇置信度低于 ' + this.LC.toFixed(2) + ' 已计入但标「待确认」' : '全部类型置信度达标');
-    out.typeBar = out.typeNa ? [] : POST_TYPES.map(function (t) {
-      var n = prof.typeCounts[t.k];
-      return { key: t.k, pct: (n / tot * 100).toFixed(2), color: t.bar, title: t.label + ' ' + n + ' 篇' };
-    });
-    out.typeRows = out.typeNa ? [] : POST_TYPES.map(function (t) {
-      var n = prof.typeCounts[t.k];
-      return { key: t.k, label: t.label, color: n ? t.bar : 'var(--ink-200)', n: String(n), pct: n ? Math.round(n / tot * 100) + '%' : '—', fg: n ? 'var(--ink-800)' : 'var(--ink-400)' };
-    });
-
-    /* 其他产品观点及操作 */
-    var TONE = {
-      pos: ['var(--positive-100)', 'var(--positive-700)'],
-      neg: ['var(--negative-100)', 'var(--negative-700)'],
-      neu: ['var(--ink-100)', 'var(--ink-700)']
-    };
-    /* `kolOpinions` 整份可以是 null：观点、操作、情绪净值三项全部来自 AI 标注，一条都
-       算不出来时后端回 null 而不是 []（sql.py::kol_opinions）—— 空列表是在说「他对别的
-       产品没有观点」，那是个结论。这里必须分开：null → 缺失态，[] → 空态。 */
-    var opRows = R.kolOpinions(kol, s.rangeKey);
-    out.opsNa = opRows == null;
-    out.opsEmpty = opRows != null && opRows.length === 0;
-    out.opCount = opRows == null ? '暂不可用' : String(opRows.length);
-    out.ops = (opRows || []).map(function (r, i) {
-      /* 同一 KOL 可以在多条评论里谈同一产品，code 不是行标识。
-         优先使用后端按内容单元生成的唯一 id；兼容旧数据时才用组合键。 */
-      var rowKey = r.id || [r.code, r.dateText, r.timeText, i].join(':');
-      var open = !!s.openOps[rowKey];
-      var tn = TONE[r.actionTone] || TONE.neu, st = typeStyle(r.postType);
+    /* 右下：按每篇帖子的主 ETF 做互斥归属统计；不把正文里的次要提及重复计数。 */
+    var composition = kolProductComposition(ps);
+    var ownEnd = composition.total ? composition.own / composition.total * 100 : 0;
+    var otherEnd = composition.total ? (composition.own + composition.other) / composition.total * 100 : 0;
+    out.productPie = composition.total
+      ? 'conic-gradient(#2361AD 0 ' + ownEnd + '%, #9AA7B8 ' + ownEnd + '% ' + otherEnd + '%, #DDE3EB ' + otherEnd + '% 100%)'
+      : 'var(--ink-100)';
+    out.productTotal = String(composition.total);
+    out.ownershipRows = [
+      { key: 'own', label: '南方东英产品', n: String(composition.own), pct: composition.ownPct == null ? '—' : composition.ownPct + '%', color: '#2361AD' },
+      { key: 'other', label: '其他公司产品', n: String(composition.other), pct: composition.otherPct == null ? '—' : composition.otherPct + '%', color: '#9AA7B8' }
+    ];
+    if (composition.unknown) {
+      out.ownershipRows.push({ key: 'unknown', label: '归属暂不可用', n: String(composition.unknown), pct: composition.unknownPct + '%', color: '#DDE3EB' });
+    }
+    out.otherCompanies = composition.companies.map(function (company) {
       return {
-        key: rowKey,
-        code: r.code + '.HK', name: r.name, issuer: issuerShort(r.issuer),
-        ownLabel: r.own ? '自家' : '竞品',
-        ownBg: r.own ? 'var(--csop-blue-600)' : 'var(--csop-silver-200)', ownFg: r.own ? '#fff' : 'var(--ink-700)',
-        summary: r.summary, excerpt: r.excerpt,
-        type: st.label, tbg: st.bg, tfg: st.fg,
-        hasDir: !!r.direction, direction: r.direction, actBg: tn[0], actFg: tn[1],
-        pending: r.confidence == null ? null : r.confidence < self.LC, conf: conf2(r.confidence),
-        date: r.dateText, time: r.timeText,
-        engagement: num(r.engagement), url: r.url,
-        open: open,
-        linkLabel: open ? '收起' : '原文',
-        linkBg: open ? 'var(--csop-blue-50)' : '#fff',
-        linkBc: open ? 'var(--csop-blue-600)' : 'var(--border-2)',
-        linkFg: open ? 'var(--csop-blue-700)' : 'var(--csop-blue-600)',
-        bg: i % 2 ? 'var(--canvas)' : '#fff',
-        toggle: function () {
-          var nx = Object.assign({}, self.state.openOps);
-          if (nx[rowKey]) delete nx[rowKey]; else nx[rowKey] = 1;
-          self.setState({ openOps: nx });
-        }
+        issuer: issuerShort(company.issuer),
+        n: String(company.n),
+        pct: company.pct == null ? '—' : company.pct + '%',
+        products: company.products.map(function (product) {
+          return { code: etfCode(product.code), name: product.name, n: String(product.n), pct: product.pct == null ? '—' : product.pct + '%' };
+        })
       };
     });
-    out.csvGo = function () { self.exportCsv(opRows || [], kol); };
     return out;
   }
 
@@ -313,12 +270,8 @@ class KolDetail extends React.Component {
       <div data-screen-label="KOL 详情" style={s('width:100%;min-width:1200px;min-height:100vh;box-sizing:border-box;background:var(--canvas);font-family:var(--font-cjk);color:var(--ink-900);font-size:14px')}>
 
         <Shell vals={v}>
-          <div style={s('display:flex;align-items:center;gap:12px;min-height:48px;padding:7px 24px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1);flex-wrap:wrap')}>
-            <div style={s('display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden;background:#fff')}>
-              {v.presets.map((p) => (
-                <div key={p.label} onClick={p.go} style={s(`padding:6px 14px;font:${p.fw} 14px/1.4 var(--font-cjk);color:${p.fg};background:${p.bg};cursor:pointer;border-right:1px solid var(--border-1);transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>{p.label}</div>
-              ))}
-            </div>
+          <div data-shell-filter style={s('display:flex;align-items:center;gap:12px;min-height:48px;box-sizing:border-box;padding:7px 24px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1);flex-wrap:wrap')}>
+            <DatePresetTabs presets={v.presets} />
             <div style={s('display:flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 14px/1.4 var(--font-mono);color:var(--ink-700);white-space:nowrap')}>
               <span>{v.rangeFrom}</span><span style={s('color:var(--ink-300)')}>→</span><span>{v.rangeTo}</span>
             </div>
@@ -384,7 +337,7 @@ class KolDetail extends React.Component {
                       <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:9px 14px;width:74px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>时间 · ETF</th>
                       <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:9px 6px;width:72px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>类型</th>
                       <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:9px 8px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>AI 摘要</th>
-                      <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:9px 6px;width:56px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>阵营</th>
+                      <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:9px 6px;width:72px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>ETF 归属</th>
                       <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:9px 14px 9px 6px;width:88px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>互动 · 原帖</th>
                     </tr>
                   </thead>
@@ -429,11 +382,7 @@ class KolDetail extends React.Component {
                           )}
                         </td>
                         <td style={s('padding:11px 6px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
-                          <div style={s('display:flex;flex-direction:column;align-items:flex-start;gap:3px')}>
-                            {p.camps.map((c) => (
-                              <span key={c.label} style={s(`padding:2px 8px;border-radius:9999px;background:${c.bg};font:600 12px/1.5 var(--font-cjk);color:${c.fg};white-space:nowrap`)}>{c.label}</span>
-                            ))}
-                          </div>
+                          <span style={s(`display:inline-block;padding:2px 8px;border-radius:9999px;background:${p.ownership.bg};font:600 12px/1.5 var(--font-cjk);color:${p.ownership.fg};white-space:nowrap`)}>{p.ownership.label}</span>
                         </td>
                         <td style={s('padding:11px 14px 11px 6px;vertical-align:top;text-align:right;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
                           <div title={`赞 ${p.likes} · 评 ${p.comments} · 转 ${p.shares}`} style={s('font:600 13px/1.5 var(--font-mono);color:var(--ink-800)')}>{p.eng}</div>
@@ -450,14 +399,14 @@ class KolDetail extends React.Component {
             <div style={s('display:flex;flex-direction:column;gap:20px;min-width:0')}>
               <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06)')}>
                 <div style={s('padding:16px 20px;border-bottom:1px solid var(--border-1)')}>
-                  <div style={s('font:600 18px/1.3 var(--font-cjk)')}>自家 vs 竞品发帖时间线</div>
+                  <div style={s('font:600 18px/1.3 var(--font-cjk)')}>南方东英 vs 其他公司发帖时间线</div>
                   <div style={s('margin-top:5px;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>按天 · 每格一篇 · {v.chartNote}</div>
                 </div>
                 <div style={s('padding:16px 20px 14px')}>
                   <div style={s('display:flex;align-items:center;gap:14px;margin-bottom:12px;flex-wrap:wrap')}>
                     <div style={s('display:flex;align-items:center;gap:6px')}><span style={s('width:12px;height:12px;border-radius:2px;background:#2361AD')}></span><span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-600)')}>只提自家</span></div>
                     <div style={s('display:flex;align-items:center;gap:6px')}><span style={s('width:12px;height:12px;border-radius:2px;background:#7DA5DC')}></span><span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-600)')}>双方都提</span></div>
-                    <div style={s('display:flex;align-items:center;gap:6px')}><span style={s('width:12px;height:12px;border-radius:2px;background:#B7BFC9')}></span><span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-600)')}>只提竞品</span></div>
+                    <div style={s('display:flex;align-items:center;gap:6px')}><span style={s('width:12px;height:12px;border-radius:2px;background:#B7BFC9')}></span><span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-600)')}>只提其他公司</span></div>
                   </div>
                   <div style={s(`display:flex;align-items:flex-end;gap:${v.colGap}px;height:172px;border-bottom:1px solid var(--border-2)`)}>
                     {v.days.map((d) => (
@@ -483,7 +432,7 @@ class KolDetail extends React.Component {
                   </div>
                   {v.chartCompetitors.length > 0 && (
                     <div data-testid="kol-chart-competitor-details" style={s('margin-top:10px;padding:9px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);display:flex;align-items:flex-start;gap:10px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>
-                      <span style={s('flex:none;font-weight:600;color:var(--ink-700)')}>竞品详细信息</span>
+                          <span style={s('flex:none;font-weight:600;color:var(--ink-700)')}>其他公司产品</span>
                       <span style={s('min-width:0;display:flex;gap:6px 14px;flex-wrap:wrap')}>
                         {v.chartCompetitors.map((p) => (
                           <span key={p.code}>{p.name}（{p.code}） · 发行商：{p.issuer}</span>
@@ -494,107 +443,58 @@ class KolDetail extends React.Component {
                 </div>
               </div>
 
-              <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06)')}>
+              <div data-testid="kol-product-composition" style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06)')}>
                 <div style={s('padding:16px 20px;border-bottom:1px solid var(--border-1)')}>
-                  <div style={s('font:600 18px/1.3 var(--font-cjk)')}>帖子类型构成</div>
-                  <div style={s('margin-top:5px;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>区间内 {v.postCount} 篇按 8 类归类 · {v.pendingNote}</div>
+                  <div style={s('font:600 18px/1.3 var(--font-cjk)')}>产品归属构成</div>
+                  <div style={s('margin-top:5px;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>按每篇帖子的主 ETF 归属统计 · 共 {v.postCount} 篇</div>
                 </div>
-                {v.typeNa ? (
-                  <div style={s('padding:28px 20px;text-align:center;font:400 14px/1.7 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>暂不可用<div style={s('margin-top:6px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400)')}>帖子类型标注尚未生成，构成比例无法计算</div></div>
-                ) : (
-                <div style={s('padding:16px 20px 12px')}>
-                  <div style={s('display:flex;height:22px;border-radius:5px;overflow:hidden;background:var(--ink-100);margin-bottom:12px')}>
-                    {v.typeBar.map((b) => (
-                      <div key={b.key} title={b.title} style={s(`width:${b.pct}%;height:100%;background:${b.color}`)}></div>
-                    ))}
-                  </div>
-                  <div style={s('display:grid;grid-template-columns:1fr 1fr;gap:0 20px')}>
-                    {v.typeRows.map((t) => (
-                      <div key={t.key} style={s('display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--ink-100)')}>
-                        <span style={s(`flex:none;width:9px;height:9px;border-radius:2px;background:${t.color}`)}></span>
-                        <span style={s(`flex:1;font:500 13px/1.4 var(--font-cjk);color:${t.fg}`)}>{t.label}</span>
-                        <span style={s(`flex:none;font:600 13px/1.4 var(--font-mono);color:${t.fg}`)}>{t.n}</span>
-                        <span style={s('flex:none;width:38px;text-align:right;font:400 12px/1.4 var(--font-mono);color:var(--ink-400)')}>{t.pct}</span>
+                <div style={s('padding:18px 20px 16px')}>
+                  <div style={s('display:flex;align-items:center;gap:22px')}>
+                    <div style={s(`flex:none;width:142px;height:142px;border-radius:50%;background:${v.productPie};display:flex;align-items:center;justify-content:center`)}>
+                      <div style={s('width:82px;height:82px;border-radius:50%;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 0 0 1px var(--border-1)')}>
+                        <span style={s('font:600 24px/1 var(--font-mono);color:var(--ink-900)')}>{v.productTotal}</span>
+                        <span style={s('margin-top:6px;font:500 12px/1.2 var(--font-cjk);color:var(--ink-400)')}>篇帖子</span>
                       </div>
-                    ))}
+                    </div>
+                    <div style={s('flex:1;min-width:0')}>
+                      {v.ownershipRows.map((row) => (
+                        <div key={row.key} style={s('display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--ink-100)')}>
+                          <span style={s(`flex:none;width:10px;height:10px;border-radius:2px;background:${row.color}`)}></span>
+                          <span style={s('flex:1;font:500 13px/1.4 var(--font-cjk);color:var(--ink-700)')}>{row.label}</span>
+                          <span style={s('font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{row.n} 篇</span>
+                          <span style={s('flex:none;width:42px;text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-600)')}>{row.pct}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={s('margin-top:16px;padding-top:14px;border-top:1px solid var(--border-1)')}>
+                    <div style={s('font:600 13px/1.4 var(--font-cjk);color:var(--ink-700);margin-bottom:8px')}>其他公司及产品</div>
+                    {v.otherCompanies.length ? (
+                      <div style={s('display:flex;flex-direction:column;gap:10px')}>
+                        {v.otherCompanies.map((company) => (
+                          <div key={company.issuer} style={s('padding:10px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas)')}>
+                            <div style={s('display:flex;align-items:baseline;justify-content:space-between;gap:8px')}>
+                              <span style={s('font:600 13px/1.4 var(--font-cjk);color:var(--ink-800)')}>{company.issuer}</span>
+                              <span style={s('font:500 12px/1.4 var(--font-mono);color:var(--ink-500)')}>{company.n} 篇 · {company.pct}</span>
+                            </div>
+                            <div style={s('margin-top:7px;display:flex;flex-direction:column;gap:5px')}>
+                              {company.products.map((product) => (
+                                <div key={product.code} style={s('display:flex;align-items:flex-start;justify-content:space-between;gap:10px;font:400 12px/1.5 var(--font-cjk);color:var(--ink-600)')}>
+                                  <span style={s('min-width:0;text-wrap:pretty')}>{product.name}（{product.code}）</span>
+                                  <span style={s('flex:none;font-family:var(--font-mono);color:var(--ink-500)')}>{product.n} 篇 · {product.pct}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={s('padding:10px 12px;border-radius:6px;background:var(--canvas);font:400 13px/1.5 var(--font-cjk);color:var(--ink-400)')}>本区间没有以其他公司产品为主 ETF 的帖子</div>
+                    )}
                   </div>
                 </div>
-                )}
               </div>
             </div>
-          </div>
-
-          <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06)')}>
-            <div style={s('display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 22px;border-bottom:1px solid var(--border-1)')}>
-              <div style={s('min-width:0')}>
-                <div style={s('font:600 18px/1.3 var(--font-cjk)')}>其他产品观点及操作</div>
-                <div style={s('margin-top:5px;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>{v.opCount} 条 · 该 KOL 在评论与转发中提到的其他产品（竞品 + 南方东英其他产品），一条内容一行；类型与操作方向由 AI 识别，点「原文」核对</div>
-              </div>
-              {!v.opsNa && !v.opsEmpty && (
-                <div onClick={v.csvGo} style={s('flex:none;display:flex;align-items:center;gap:7px;padding:8px 15px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 14px/1.4 var(--font-cjk);color:var(--ink-700);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>导出 CSV</div>
-              )}
-            </div>
-            {v.opsNa ? (
-              <div style={s('padding:34px 22px;text-align:center;font:400 14px/1.7 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>暂不可用<div style={s('margin-top:6px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400)')}>观点、操作与情绪净值均来自 AI 标注，尚未生成 —— 这不等于「他没有提到其他产品」</div></div>
-            ) : v.opsEmpty ? (
-              <div style={s('padding:34px 22px;text-align:center;font:400 14px/1.7 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>暂无相关内容<div style={s('margin-top:6px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400)')}>当前区间未识别到该 KOL 对其他产品的有效观点或操作</div></div>
-            ) : (
-            <table>
-              <thead>
-                <tr style={s('background:var(--canvas-alt)')}>
-                  <th style={s('text-align:left;padding:11px 22px;width:104px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>产品</th>
-                  <th style={s('text-align:left;padding:11px 10px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>观点（AI 摘要）</th>
-                  <th style={s('text-align:left;padding:11px 10px;width:176px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>类型 · 操作</th>
-                  <th style={s('text-align:left;padding:11px 10px;width:96px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>日期</th>
-                  <th style={s('text-align:right;padding:11px 10px;width:76px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>互动量</th>
-                  <th style={s('text-align:right;padding:11px 22px;width:88px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>链接</th>
-                </tr>
-              </thead>
-              <tbody>
-                {v.ops.map((o) => (
-                  <tr key={o.key} style={s(`background:${o.bg}`)}>
-                    <td style={s('padding:14px 22px;vertical-align:top;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
-                      <div style={s('font:600 14px/1.4 var(--font-mono);color:var(--ink-900)')}>{o.code}</div>
-                      <div style={s(`margin-top:4px;display:inline-block;padding:1px 7px;border-radius:9999px;background:${o.ownBg};font:600 11px/1.5 var(--font-cjk);color:${o.ownFg}`)}>{o.ownLabel}</div>
-                    </td>
-                    <td style={s('padding:14px 10px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
-                      <div style={s('font:400 14px/1.65 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>{o.summary}</div>
-                      <div style={s('margin-top:5px;font:400 12px/1.4 var(--font-cjk);color:var(--ink-400);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{o.name} · {o.issuer}</div>
-                      {o.open && (
-                        <div style={s('margin-top:10px;padding:11px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-700);text-wrap:pretty')}>{o.excerpt}</div>
-                      )}
-                    </td>
-                    <td style={s('padding:14px 10px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
-                      <div style={s('display:flex;align-items:center;gap:6px;flex-wrap:wrap')}>
-                        <span style={s(`display:inline-flex;padding:3px 9px;border-radius:4px;background:${o.tbg};font:600 12px/1.6 var(--font-cjk);color:${o.tfg};white-space:nowrap`)}>{o.type}</span>
-                        {o.hasDir && (
-                          <>
-                            <span style={s('font:400 13px/1.6 var(--font-cjk);color:var(--ink-400)')}>·</span>
-                            <span style={s(`display:inline-flex;padding:3px 9px;border-radius:4px;background:${o.actBg};font:600 12px/1.6 var(--font-cjk);color:${o.actFg};white-space:nowrap`)}>{o.direction}</span>
-                          </>
-                        )}
-                      </div>
-                      {o.pending && (
-                        <div style={s('margin-top:5px;display:inline-block;padding:0 6px;border-radius:9999px;background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500)')}>待确认 {o.conf}</div>
-                      )}
-                    </td>
-                    <td style={s('padding:14px 10px;vertical-align:top;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
-                      <div style={s('font:500 13px/1.5 var(--font-mono);color:var(--ink-700)')}>{o.date}</div>
-                      <div style={s('font:400 12px/1.5 var(--font-mono);color:var(--ink-400)')}>{o.time}</div>
-                    </td>
-                    <td style={s('padding:14px 10px;vertical-align:top;text-align:right;border-bottom:1px solid var(--ink-100);font:600 14px/1.5 var(--font-mono);color:var(--ink-800)')}>{o.engagement}</td>
-                    <td style={s('padding:14px 22px;vertical-align:top;text-align:right;border-bottom:1px solid var(--ink-100)')}>
-                      <div style={s('display:inline-flex;flex-direction:column;align-items:stretch;gap:6px')}>
-                        <a href={o.url} target="_blank" rel="noopener" style={s('display:inline-flex;align-items:center;justify-content:center;padding:5px 12px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>原帖 ↗</a>
-                        <span onClick={o.toggle} style={s(`display:inline-flex;align-items:center;justify-content:center;padding:5px 12px;border:1px solid ${o.linkBc};border-radius:6px;background:${o.linkBg};font:500 13px/1.4 var(--font-cjk);color:${o.linkFg};cursor:pointer;white-space:nowrap`)} className={hover('background:var(--csop-blue-50)')}>{o.linkLabel}</span>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            )}
-            <div style={s('padding:14px 22px;border-top:1px solid var(--border-1);font:400 13px/1.7 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>「类型」与「操作」为同一套 8 类枚举下的两层标注：操作类帖子（晒单 / 操作宣告）附买卖方向；行情解读等观点类如识别出持有 / 观望意向也一并标出。低信心结果标「待确认」；未经本业务校准时不展示数值置信度。</div>
           </div>
         </div>
       </div>

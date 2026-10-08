@@ -3,6 +3,16 @@
     "aiValidation": "none",
     "presets": [
       {
+        "key": "d0",
+        "days": 1,
+        "label": "当天",
+        "gran": "hour",
+        "granLabel": "按小时",
+        "bucketCount": 24,
+        "benchLabel": "较昨日同期",
+        "trendTitle": "日内舆情与价格趋势"
+      },
+      {
         "key": "d1",
         "days": 1,
         "label": "昨日",

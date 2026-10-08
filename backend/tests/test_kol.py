@@ -2,8 +2,8 @@
 
 `kolProfile` 故意没有端点（ADR-0015、core/kol.py）：PRD §4.3 M5 要求声量排名随前端
 筛选重算，画像是「当前可见帖子子集」上的聚合，不是一个能用查询参数表达的东西。
-下面 test_leaders_are_the_unfiltered_profiles 钉住的是 leaders 的**全量**语义 ——
-它是 KOL 详情页排序用的那份，不是 KOL 影响力页表格里那份。
+下面 test_leaders_are_the_unfiltered_profiles 钉住的是 leaders 的**全量兼容**语义；
+当前 KOL 两页按下发的 posts 聚合浏览量，不把这份兼容画像误当成筛后排名。
 """
 
 from urllib.parse import quote
@@ -111,7 +111,7 @@ def test_longer_range_has_more_posts(client):
     assert len(d30) > len(d1)
 
 
-# ── kolOpinions(kol, range)：其他产品观点及操作 ──────────────────────────
+# ── kolOpinions(kol, range)：兼容保留的其他产品观点 API ─────────────────
 
 
 @pytest.fixture
@@ -145,8 +145,8 @@ def test_opinions_unknown_range_is_404(client, a_kol):
 def test_opinions_unknown_kol_is_404_not_an_empty_table(client):
     """名单里没这个人 → 404。**不是** 200 + `[]`。
 
-    两者在页面上天差地别：空数组会渲染成「这位 KOL 一条观点也没有」，而事实是
-    我们根本不认识这个名字（铁律 2 的同一条边界，换到资源这一层）。
+    空数组会宣称「这位 KOL 一条观点也没有」，而事实是我们根本不认识这个名字
+    （铁律 2 的同一条边界，换到资源这一层）。
     """
     r = client.get("/api/v1/kol/查无此人/opinions?range=d7")
     assert r.status_code == 404
@@ -154,17 +154,17 @@ def test_opinions_unknown_kol_is_404_not_an_empty_table(client):
 
 @pytest.mark.parametrize(
     "field",
-    # 表格六列 + 展开原文 + CSV 导出直接消费的字段。
+    # 兼容响应的完整行字段；既有调用方仍可消费。
     ["code", "name", "issuer", "own", "sector", "sectorName", "summary", "excerpt",
      "action", "actionTone", "direction", "postType", "typeLabel", "confidence",
      "dateText", "timeText", "engagement", "url", "net"],
 )
-def test_opinion_row_carries_every_field_the_table_needs(client, a_kol, field):
+def test_opinion_row_carries_every_compatibility_field(client, a_kol, field):
     assert field in ops(client, a_kol, "?range=d7")["data"][0]
 
 
 def test_opinions_exclude_products_already_in_the_post_table(client, a_kol):
-    """「其他产品」的「其他」：发帖记录里出现过的产品不在这张表里重复列出（PRD §4.4）。"""
+    """「其他产品」的「其他」：发帖记录里出现过的产品不在兼容响应里重复列出。"""
     posted = {
         p["code"]
         for p in client.get("/api/v1/kol/impact?range=d7").get_json()["data"]["posts"]

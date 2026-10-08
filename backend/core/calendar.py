@@ -13,10 +13,13 @@
 `posted_at`（2026-08-26），由调用方传进来。
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
-# PRD §3.1 的五个预设。顺序与 design/radar-data.js 的 PRESETS 一致。
+# PRD §3.1 的预设。d0 是真实数据通道增加的「当天」区间；其余顺序与
+# design/radar-data.js 的 PRESETS 一致。调用方必须把 d0 的「当前数据日」作为
+# anchor 传入，不允许在这里读系统时间。
 PRESETS = {
+    "d0": (1, "当天"),
     "d1": (1, "昨日"),
     "d2": (2, "近 2 天"),
     "d7": (7, "近 7 天"),
@@ -42,7 +45,15 @@ def _dow_index(d):
     return (d.weekday() + 1) % 7
 
 
-def build(key, anchor, *, days_override=None):
+def _data_through_text(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat(timespec="seconds") + " HKT"
+    return str(value)
+
+
+def build(key, anchor, *, days_override=None, data_through=None):
     """返回 `key` 这个预设区间在 `anchor` 这一天的完整描述。
 
     `anchor` 是 `datetime.date`（「最近一个完整自然日」）。返回结构与设计源
@@ -106,7 +117,7 @@ def build(key, anchor, *, days_override=None):
             )
             w += 1
 
-    return {
+    result = {
         "key": key,
         "days": days,
         "from": _iso(frm),
@@ -124,6 +135,22 @@ def build(key, anchor, *, days_override=None):
         "benchLabel": "较昨日同期" if days <= 2 else "较上一等长区间",
         "trendTitle": "日内舆情与价格趋势" if days <= 2 else "区间舆情与价格趋势",
     }
+    if key == "d0" or data_through is not None:
+        through = _data_through_text(data_through)
+        benchmark_through = None
+        if isinstance(data_through, datetime):
+            benchmark_through = _data_through_text(data_through - timedelta(days=1))
+        result.update(
+            {
+                # d0 及其「昨日同期」基准天都可能只截取到某个时刻。
+                # 管理页和图表用这两个字段
+                # 区分「已观测至此」与未来小时，不把后者填成 0。
+                "partial": True,
+                "dataThrough": through,
+                "benchmarkThrough": benchmark_through,
+            }
+        )
+    return result
 
 
 def parse_anchor(s):

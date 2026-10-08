@@ -9,7 +9,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import MetaData, Table, and_, func, or_, select
+from sqlalchemy import MetaData, Table, and_, func, inspect, or_, select
 from sqlalchemy.exc import NoSuchTableError
 
 from radar_db.comment_filter import normalize_source_ticker, source_ticker_to_code
@@ -145,6 +145,34 @@ class MarketInsightMySqlAdapter:
         if stream == "users":
             return self.users, self.users.c.scraped_at, self.users.c.user_id
         raise ValueError(f"Unknown source stream: {stream}")
+
+    def incremental_index_gaps(self) -> list[str]:
+        """Return missing source-side composite indexes for keyset paging."""
+        requirements = (
+            (self.feeds.name, ("scraped_at", "feed_id")),
+            (self.feeds.name, ("detail_updated_at", "feed_id")),
+            (self.users.name, ("scraped_at", "user_id")),
+        )
+        inspector = inspect(self.engine)
+        by_table = {}
+        gaps = []
+        for table_name, columns in requirements:
+            if table_name not in by_table:
+                by_table[table_name] = [
+                    tuple(item.get("column_names") or ())
+                    for item in inspector.get_indexes(table_name)
+                ]
+            if not any(index[:len(columns)] == columns for index in by_table[table_name]):
+                gaps.append(f"{table_name}({','.join(columns)})")
+        return gaps
+
+    def require_incremental_indexes(self) -> None:
+        """Fail before a frequent intraday run can degrade into table scans."""
+        gaps = self.incremental_index_gaps()
+        if gaps:
+            raise SourceSchemaError(
+                "MarketInsight is missing required keyset indexes: " + ", ".join(gaps)
+            )
 
     def high_watermark(self, stream, through_source_run_id=None):
         table, timestamp_col, id_col = self._stream(stream)

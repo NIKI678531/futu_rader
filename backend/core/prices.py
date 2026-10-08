@@ -43,6 +43,7 @@ def candles_for(code, range_key):
 
     `status` 为 `'unavailable'` 时整份都是空 K（该产品没有价格数据源）；为 `'ok'` 时
     仍可能有空桶（休市），两者的区别在每根 K 的 `note` 上。`missing` 是空桶计数。
+    `source` 与 `adjustment` 由当前已验证行情标的下发，不由接口层猜测。
     """
     if range_key not in VALID_KEYS:
         return MISSING

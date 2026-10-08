@@ -4,16 +4,14 @@ import { readFileSync } from 'node:fs'
 
 const source = (path) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8')
 
-test('product monitor keeps the relevant lower-bound text in the visible funnel', () => {
+test('product monitor keeps the relevant lower-bound text in the KPI without a visible funnel', () => {
   const index = source('screens/productMonitor/index.jsx')
   const overview = source('screens/productMonitor/Overview.jsx')
 
-  assert.match(index, /step\.key === 'relevant' \? funnel\.relevantText/)
-  assert.match(index, /var partialData = funnel\.partial;/)
-  assert.match(index, /commentFunnelQualifyingFeeds/)
-  assert.match(index, /commentFunnelFilterExcluded/)
-  assert.match(overview, /合格父帖/)
-  assert.match(overview, /父帖筛选剔除平台评论/)
+  assert.match(index, /label: '相关评论数', value: funnel\.relevantText/)
+  assert.doesNotMatch(index, /commentFunnelSteps|commentFunnelAvailable/)
+  assert.doesNotMatch(overview, /评论分析漏斗|commentFunnel/)
+  assert.doesNotMatch(overview, /合格父帖|父帖筛选剔除平台评论/)
 })
 
 test('sector product surfaces show filtered and related comment counts together', () => {

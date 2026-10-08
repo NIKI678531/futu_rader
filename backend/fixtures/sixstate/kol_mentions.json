@@ -105,7 +105,7 @@
     "lastMentionedAt": "2026-09-01 20:03",
     "mentionCommentCount": 5,
     "productCode": "3033",
-    "representativeExcerpt": "有效提及五条以上：足够下结论，这一格该显示态度标签。"
+    "representativeExcerpt": "有效提及五条：该 KOL 在相关评论区持续讨论该产品。"
    },
    {
     "dominantAttitude": null,
@@ -157,7 +157,7 @@
     "lastMentionedAt": "2026-09-01 20:03",
     "mentionCommentCount": 2,
     "productCode": "3033",
-    "representativeExcerpt": "有效提及不足三条：这一格不输出主要态度，也不能拿一个倾向充数。"
+    "representativeExcerpt": "有效提及两条：该 KOL 在当前区间留下少量相关观点。"
    }
   ],
   "scope": "合作 KOL 名单",

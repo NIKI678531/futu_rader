@@ -34,6 +34,57 @@ def test_plan_uses_complete_source_day_and_deduplicates_ranges(engine):
     assert plan["modelRequestsMade"] == 0
 
 
+def test_today_plan_uses_the_observed_partial_day_not_the_complete_anchor(engine):
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k="data_max_ts", v="2026-08-26 09:00:00"))
+        conn.execute(insert(feeds).values(
+            feed_id=900,
+            code="3033",
+            posted_at=datetime(2026, 8, 26, 1),  # 09:00 HKT on the partial day
+            feed_type=1,
+            like_count=0,
+            comment_count=1,
+            image_count=0,
+            raw_json_broken=False,
+        ))
+        conn.execute(insert(comments).values(
+            comment_id=900,
+            feed_id=900,
+            content="ETF",
+            author_uid="today-reader",
+        ))
+
+    args = analyze.parser().parse_args(["plan", "--ranges", "d0", "--codes", "3033"])
+    plan = analyze.make_plan(engine, args)
+
+    assert plan["anchor"] == "2026-08-26"
+    assert plan["sourceCompleteThrough"] == "2026-08-25"
+    assert plan["from"] == "2026-08-25"
+    assert plan["priorityDays"] == ["2026-08-26", "2026-08-25"]
+    assert plan["windows"] == [{
+        "key": "d0",
+        "from": "2026-08-26",
+        "to": "2026-08-26",
+        "benchFrom": "2026-08-25",
+        "benchTo": "2026-08-25",
+    }]
+    assert plan["candidateComments"] == 1
+
+
+def test_today_plan_refuses_to_publish_an_empty_unsynchronised_day(engine):
+    args = analyze.parser().parse_args(["plan", "--ranges", "d0", "--codes", "3033"])
+
+    with pytest.raises(ValueError, match="d0"):
+        analyze.make_plan(engine, args)
+
+
+def test_today_must_be_planned_as_one_range(engine):
+    args = analyze.parser().parse_args(["plan", "--ranges", "d0,d1", "--codes", "3033"])
+
+    with pytest.raises(ValueError, match="single range"):
+        analyze.make_plan(engine, args)
+
+
 def test_plan_falls_back_to_current_window_when_baseline_predates_coverage(engine):
     with engine.begin() as conn:
         conn.execute(meta_kv.update().where(meta_kv.c.k == "window_from").values(v="2026-08-01"))

@@ -3,7 +3,8 @@ from datetime import datetime
 from sqlalchemy import create_engine, insert
 from sqlalchemy.pool import StaticPool
 
-from core.top_products import top_comment_products
+from core.data_clock import analysis_range_anchor
+from core.top_products import analysis_products, top_comment_products
 from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config
 from radar_db.schema import feed_mentions, feeds, meta_kv, metadata
 
@@ -113,7 +114,7 @@ def test_analysis_products_limits_only_own_products(monkeypatch):
 
 
 def test_unlimited_selection_does_not_need_comment_counts(monkeypatch):
-    from core.top_products import analysis_products, parse_own_limit
+    from core.top_products import parse_own_limit
 
     rows = analysis_products(_analysis_engine(monkeypatch, filter_ready=False), "d1")
 
@@ -121,3 +122,37 @@ def test_unlimited_selection_does_not_need_comment_counts(monkeypatch):
     assert {row["comments"] for row in rows} == {None}
     assert parse_own_limit("") is None and parse_own_limit("0") is None
     assert parse_own_limit(" 15 ") == 15
+
+
+def test_d0_selection_uses_the_latest_observed_hkt_data_day(monkeypatch):
+    engine = _analysis_engine(monkeypatch)
+    with engine.begin() as conn:
+        conn.execute(insert(feeds), {
+            "feed_id": 4,
+            "code": "3033",
+            "source_ticker": "03033.HK",
+            # 2026-08-26 04:00 HKT
+            "posted_at": datetime(2026, 8, 25, 20),
+            "feed_type": 1,
+            "like_count": 0,
+            "comment_count": 6,
+            "image_count": 0,
+            "raw_json_broken": False,
+        })
+        conn.execute(insert(feed_mentions), {
+            "feed_id": 4,
+            "raw_ticker": "03033.HK",
+            "market": "HK",
+            "occurrences": 1,
+        })
+
+    assert analysis_range_anchor(engine, "d0") == datetime(2026, 8, 26).date()
+    rows = analysis_products(engine, "d0")
+    assert rows[0]["code"] == "3033"
+    assert rows[0]["comments"] == 6
+
+
+def test_d0_without_a_new_data_day_does_not_publish_fake_zero_counts(monkeypatch):
+    rows = analysis_products(_analysis_engine(monkeypatch), "d0")
+    assert rows
+    assert {row["comments"] for row in rows} == {None}

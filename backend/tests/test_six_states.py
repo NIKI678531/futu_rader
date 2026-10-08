@@ -228,8 +228,8 @@ def test_leader_totals_are_null_when_any_post_count_is_null(sixstate_client):
     """**合计对 null 有传染性。** 有一篇的评论数取不到，这位 KOL 的合计就是未知。
 
     把 null 当 0 加进去，得到的是一个看着完全正常、只是偏小的数字 —— 比渲染成 NaN
-    坏得多，因为根本看不出来。KOL 详情页直接读这份 leaders（工单 07），所以后端下发的
-    全量画像必须先守住这条；前端按可见集重算的那一份守在 lib/profile.js（ADR-0015）。
+    坏得多，因为根本看不出来。后端下发的全量兼容画像先守住这条；当前 KOL 两页按 posts
+    重算的可见集画像守在 lib/profile.js（ADR-0015）。
     """
     data = sixstate_client.get("/api/v1/kol/impact?range=d7").get_json()["data"]
     leader = data["leaders"][0]
@@ -275,10 +275,9 @@ def test_leader_type_profile_is_null_when_any_post_is_unannotated(sixstate_clien
         assert leader[field] is None, field
 
 
-# ── 账号域第三页：KOL 详情 ──────────────────────────────────────────────
+# ── 兼容保留的 KOL opinions 端点 ───────────────────────────────────────
 #
-# 发帖记录用的是上面那份 kol_impact 样本（同一位 KOL、同样 5 篇），这里只补它多出来的
-# 那张表：「其他产品观点及操作」。它只有互动量一个数值位，但那一格上两种含义都要能演。
+# 当前页面不再请求这份数据；端点仍需守住真零与未知的线协议，供既有调用方使用。
 
 
 def opinions(sixstate_client):
@@ -299,8 +298,8 @@ def test_two_nulls_in_one_row_mean_different_things(sixstate_client):
     """`engagement=None` 与 `net=None` 都是 null，但不是同一件事。
 
     前者是「平台计数没采到」（PRD §3.6 暂不可用），后者是「有效态度评论不足阈值，
-    不下结论」（样本不足）。页面上只看得见前者 —— `net` 此刻没有渲染位，六态护栏
-    够不着它，所以由这里钉住。两者都不许变成 0：`engagement=0` 是「没人互动」，
+    不下结论」（样本不足）。当前页面不消费这两个字段，所以由 API 测试直接钉住。
+    两者都不许变成 0：`engagement=0` 是「没人互动」，
     `net=0` 是「褒贬正好抵消」，都是结论，我们一个都没得出。
     """
     rows = opinions(sixstate_client)

@@ -13,9 +13,9 @@ PRD §5 逐字：区间与桶由**后端下发，前端不自行算桶**。这�
 from providers import get_provider
 from providers.sentinel import MISSING
 
-# PRD §3.1 的五个预设。未知 key 不做兜底回落——静默回落到 d7 会让前端以为自己拿到了
+# PRD §3.1 的预设，加上「当天」d0。未知 key 不做兜底回落——静默回落到 d7 会让前端以为自己拿到了
 # 请求的区间，图表横轴和标题却是另一段时间。
-VALID_KEYS = ("d1", "d2", "d7", "d14", "d30", "mtd")
+VALID_KEYS = ("d0", "d1", "d2", "d7", "d14", "d30", "mtd")
 
 
 def build_range(key):

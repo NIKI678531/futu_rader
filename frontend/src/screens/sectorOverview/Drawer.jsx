@@ -18,11 +18,6 @@ function ThemeCard({ t, accent, tint }) {
 /* 快速详情抽屉 — opened by a table row, a treemap tile or a 前 3 entry. The panel itself
    is always mounted so the slide-in transform animates; only its contents are conditional.
    Every link in here hands off to 产品监控 with the code, range and anchor pre-set. */
-/* 「待更新」小徽章：这块汇总的底层标注已更新、汇总还没重新生成（后端 `stale: true`）。 */
-function StaleChip({ title }) {
-  return <span title={title} style={s('padding:1px 7px;border-radius:9999px;background:var(--warning-100);font:600 11px/1.6 var(--font-cjk);color:var(--warning-700);letter-spacing:0;white-space:nowrap')}>AI 生成 · 待更新</span>
-}
-
 export default function Drawer({ v }) {
   const sel = v.sel
 
@@ -66,7 +61,7 @@ export default function Drawer({ v }) {
                   {sel.sampleOk
                     ? <span style={s('padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>有效样本 {sel.sample} 条</span>
                     : <span style={s('padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>有效样本 {sel.sample}</span>}
-                  <span title={sel.sumStale ? sel.staleTitle : undefined} style={s('padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700)')}>{sel.sumAiLabel}</span>
+                  <span style={s('padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700)')}>{sel.sumAiLabel}</span>
                 </div>
               </div>
 
@@ -120,11 +115,9 @@ export default function Drawer({ v }) {
                 </div>
               </div>
 
-              {/* 各块顶层 `stale === true` 才渲染的小徽章（标注已更新、汇总待重新生成）；demo 下没有这个键。 */}
               <div style={s('display:flex;align-items:center;gap:8px;margin-bottom:10px')}>
                 <span style={s('font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)')}>积极 ／ 消极观点</span>
-                {sel.partialData && <span style={s('padding:1px 7px;border-radius:9999px;background:var(--warning-100);font:600 11px/1.6 var(--font-cjk);color:var(--warning-700);letter-spacing:0;white-space:nowrap')}>{sel.coverageLabel}</span>}
-                {sel.themesStale && <StaleChip title={sel.staleTitle} />}
+                {sel.partialData && sel.coverageLabel && <span style={s('padding:1px 7px;border-radius:9999px;background:var(--warning-100);font:600 11px/1.6 var(--font-cjk);color:var(--warning-700);letter-spacing:0;white-space:nowrap')}>{sel.coverageLabel}</span>}
               </div>
               <div style={s('display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px')}>
                 <div>
@@ -172,7 +165,7 @@ export default function Drawer({ v }) {
                 </div>
                 <div style={s('border:1px solid var(--border-1);border-radius:6px;padding:13px 14px')}>
                   <div style={s('display:flex;align-items:center;justify-content:space-between;margin-bottom:8px')}>
-                    <span style={s('display:flex;align-items:center;gap:6px;font:500 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>整体态度{sel.partialData && <span style={s('padding:1px 6px;border-radius:9999px;background:var(--warning-100);font:600 10px/1.5 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>{sel.coverageLabel}</span>}</span>
+                    <span style={s('display:flex;align-items:center;gap:6px;font:500 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>整体态度{sel.partialData && sel.coverageLabel && <span style={s('padding:1px 6px;border-radius:9999px;background:var(--warning-100);font:600 10px/1.5 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>{sel.coverageLabel}</span>}</span>
                     <span style={s(`font:500 12px/1.4 var(--font-cjk);color:${sel.netFg}`)}>{sel.net}</span>
                   </div>
                   <div style={s('display:flex;height:22px;border-radius:4px;overflow:hidden;background:var(--ink-100);margin-bottom:8px')}>
@@ -239,7 +232,6 @@ export default function Drawer({ v }) {
 
               <div style={s('display:flex;align-items:center;gap:8px;margin-bottom:10px')}>
                 <span style={s('font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)')}>负面舆情摘要</span>
-                {sel.negCatsStale && <StaleChip title={sel.staleTitle} />}
               </div>
               {sel.hasNegCats && (
                 <div style={s('margin-bottom:20px')}>
@@ -263,8 +255,7 @@ export default function Drawer({ v }) {
               )}
 
               <div style={s('display:flex;align-items:center;gap:8px;margin-bottom:10px')}>
-                <span style={s('font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)')}>关联竞品观点 · 前 3</span>
-                {sel.compsStale && <StaleChip title={sel.staleTitle} />}
+                <span style={s('font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)')}>关联产品观点 · 前 3</span>
               </div>
               {sel.hasComps && (
                 <div>

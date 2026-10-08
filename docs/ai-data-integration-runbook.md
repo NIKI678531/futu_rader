@@ -1830,7 +1830,7 @@ L1 词表种子（实现时**按四种写法各写一份**，并允许词表版�
 公开数据只能让模型「见过中文金融社区」，不能让它知道「3033 的点差」算产品负面而
 「恒指要跌」不算。
 
-## 23. 全自家产品与 FMP 行情自动链路（2026-09-14）
+## 23. AI 分析链路与完整活跃产品池行情同步（2026-09-14）
 
 ### 23.1 运行入口与边界
 
@@ -1860,7 +1860,7 @@ worker\.venv\Scripts\python.exe -X utf8 worker\jobs\full_own.py --watch --max-it
 - 本轮现场备份为 `%LOCALAPPDATA%\futu-radar\backups\radar-before-full-own-20260914-191830.db`，已通过 SQLite `quick_check`。
 - 数据库迁移至 `0007`：新增 scope 关联、运行租约、行情事实、来源快照和现行标注查询索引。不得重复导入/重建已有瘦库。
 
-### 23.2 FMP 行情
+### 23.2 FMP 主源与 Yahoo Finance 回退行情
 
 密钥只放在被忽略的 `worker/.env` 或环境变量 `FMP_API_KEY`，禁止 `VITE_` 前缀、日志、URL导出、测试fixture保存密钥。
 `FMP_BASE_URL` 必须为 `https://financialmodelingprep.com/stable`，不要带 Markdown 链接括号。
@@ -1869,16 +1869,30 @@ worker\.venv\Scripts\python.exe -X utf8 worker\jobs\full_own.py --watch --max-it
 worker\.venv\Scripts\python.exe -X utf8 worker\jobs\sync_prices.py --from 2026-06-27 --to 2026-08-25
 ```
 
-默认全自家；`--codes 3033,2802` 可定向；成功窗口幂等跳过，`--force` 重新同步而非删除旧数据。
-全产品 worker 在存在 FMP 配置时每小时同步一次。API 查询只读本地行情表，不现场调用 FMP。
+行情同步默认覆盖完整活跃产品池（`own`＋`peer`）；`--codes 3033,2802` 可定向；成功窗口幂等跳过，`--force` 重新同步而非删除旧数据。
+行情同步任务在存在 FMP 配置时每小时执行一次。API 查询只读本地行情表，不现场调用 FMP
+或 Yahoo Finance。`sync_prices.py` 先验证 FMP 的精确产品身份；FMP 返回
+`instrument_not_verified` 时可探测 `yfinance`。FMP 身份已验证时，只有本次请求范围内所有
+30 分钟分块都明确为 `no_data_returned`，日线与分时请求没有任何鉴权、网络、解析、
+`invalid_bar`／`all_bars_invalid` 等其他错误，且没有一条真实 FMP 分时 K，才可探测 Yahoo。
+Yahoo 必须通过精确身份校验，且日度、30 分钟两档的所有分块都成功并返回真实 K 线，才能在
+单个数据库事务中写入两档数据并激活整只产品的 Yahoo 来源；否则保留 FMP。一次同步与一次
+API 响应只使用该产品选定的一个来源，不用 Yahoo Finance 填补 FMP 的局部缺口，也不为缺失
+时段合成零成交小时 K 线。
+
+这条“两档完整＋单事务激活”规则只用于替换已有活动来源。首次接入且库里没有活动来源时，
+严格身份验证通过的来源可写入实际取得的日度或 30 分钟档位并直接激活；缺少的档位继续记录为
+`unavailable`，不阻止已取得档位服务页面。
 
 - 先用 profile 验证标的、港股交易所、HKD及ETF身份；不能单凭补零拼代码就使用结果。
-- 日线使用 `historical-price-eod/full`，小时图由 `historical-chart/30min` 聚合；默认补齐最近两个完整数据日的分钟线。
+- FMP 缺少标的时，Yahoo Finance 候选同样必须验证精确 symbol、HKD、HKEX、ETF 与香港时区；验证失败保持不可用。
+- 日线使用所选来源的日度 OHLC，小时图由所选来源的 30 分钟原始 OHLC 按交易所时段聚合；默认补齐最近两个完整数据日的分钟线。
+- Yahoo 的高／低价包络偏差不超过 0.5% 时，只校正 H／L，O／C 永不改写；超限坏行单独隔离并保留其他有效 K，一个分块没有任何有效行时记为 `all_bars_invalid`。
 - `price_bars.timestamp` 是标准化的港交所本地时间，`session_date` 为 HKT 交易日；不与 UTC 朴素时间混用。
-- `price_instruments` 保存验证映射，`price_syncs` 保存窗口状态和原因，`price_bars` 保存 OHLCV 与拆股调整口径。
-- 本轮已实测 3033、2802、7226 的月度与小时 K；7709 日线有值，分钟历史返回空。
-- 全池初轮约 19 只日线、17 只分钟线同步成功；其他产品分别为映射未验证或空响应，后续同步结果以 `price_syncs` 为准，不能声称 61 只行情均已覆盖。
-- 空响应不等同于休市或确认没有该标的；权限错误、无历史、缺分段均不补零。失败不覆盖已存在的有效价格。
+- `price_instruments` 保存产品当前选定的验证映射与 provider，`price_syncs` 保存窗口状态和原因，`price_bars` 保存 provider、OHLCV 与拆股调整口径；API 将来源标识传给 UI 如实展示。
+- 回退接入前已实测 3033、2802、7226 的 FMP 月度与小时 K；7709 日线有值，分钟历史返回空。
+- 回退接入前的 FMP 全池初轮约 19 只日线、17 只分钟线同步成功；接入后的实际覆盖以后续 `price_syncs` 为准，不能在未检查前声称完整活跃产品池行情均已覆盖。
+- 空响应不等同于休市或确认没有该标的；权限错误、无历史、缺分段均不补零、不插值。失败不覆盖已存在的有效价格，也不得改用指数、其他产品或相近代码。
 - XHKG 日历使用 `exchange-calendars==4.11.2`、`pandas==2.3.3`；不要自行升级至 Pandas 3，已实测会错误识别合法交易日。
 
 ### 23.3 转发与热度

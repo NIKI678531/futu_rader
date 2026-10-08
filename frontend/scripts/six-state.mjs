@@ -53,7 +53,7 @@ const OFFICIAL = [
     name: '① 真零仍然显示 0（反向断言）',
     why: '`0` 是「已取得数据且确实为零」的专用值。矫枉过正把真零也抹掉，等于换一个方向撒谎。',
     marker: '互动为零的帖子',
-    around: 220,
+    card: true,
     want: ['赞 0 · 评 0 · 转 0'],
     reject: ['赞 数据暂不可用'],
   },
@@ -61,7 +61,7 @@ const OFFICIAL = [
     name: '② null 显示「数据暂不可用」，绝不显示 0 —— 本文件的红线',
     why: '铁律 2。这条挂了，整套护栏就等于没有。',
     marker: '平台计数字段未回传',
-    around: 220,
+    card: true,
     want: ['赞 数据暂不可用 · 评 数据暂不可用 · 转 数据暂不可用'],
     reject: ['赞 0', '评 0', '转 0', '赞  · 评'],
   },
@@ -74,25 +74,25 @@ const OFFICIAL = [
       + '置信度也不再跟在徽章后面：它是模型自报的数，与「有没有人看过」不是一件事，'
       + '挂在同一枚徽章上会被读成一件（数值仍在下面那行「类型置信度」与 CSV 里）。',
     marker: '模型自报存疑：标签照挂',
-    around: 220,
+    card: true,
     want: ['AI 生成 · 待确认', '类型置信度 0.42'],
     reject: ['待确认 0.42', '已核验'],
   },
   {
     name: '④ 模型没有自报存疑的不标「待确认」',
-    why: '反面断言。见谁都标一遍，这个徽章就没信息量了。这一篇该挂的是 pending 那一档，'
-      + '而它没有可定位的判定依据句（evidenceIdx = -1），所以退成「AI 生成」而不是'
-      + '「AI 生成 · 可追溯原文」—— 指不到原文就不能这么承诺（ADR-0019 §2）。',
+    why: '反面断言。见谁都标一遍，这个徽章就没信息量了。这一篇的 reviewState 是 pending，'
+      + '且 fixture 有可定位的判定依据（evidenceIdx = 0），因此应显示「AI 生成 · 可追溯原文」，'
+      + '但不能显示「待确认」（ADR-0019 §2）。',
     marker: '模型没有自报存疑',
-    around: 220,
-    want: ['赞 88 · 评 9 · 转 4', 'AI 生成'],
-    reject: ['待确认', '已核验', 'AI 生成 · 可追溯原文'],
+    card: true,
+    want: ['赞 88 · 评 9 · 转 4', 'AI 生成 · 可追溯原文'],
+    reject: ['待确认', '已核验'],
   },
   {
     name: '⑤ 没摘要是「暂无内容」，不是「暂不可用」',
     why: '「查过了确实没有」和「应该有但没取到」是两套文案，不可互换（PRD §3.6）。',
     marker: '暂无摘要 · 图片帖，第一期不覆盖图片内容',
-    around: 220,
+    card: true,
     want: ['赞 5 · 评 0 · 转 0'],
     reject: ['数据暂不可用'],
   },
@@ -175,9 +175,16 @@ const KOL = [
     name: '⑥ 合计里混进 null 要传染成「数据暂不可用」，不能当 0 加进去',
     why: '铁律 2 在聚合层的样子。少算一篇的合计不会报错、不会变形，只是偏小 —— '
       + '这是最难被发现的一种撒谎，也是唯一需要专门断言的一种。',
-    window: ['6/0', '详情 →'],
+    window: ['6/1', '详情 →'],
     want: ['数据暂不可用'],
     reject: ['10', '12'],
+  },
+  {
+    name: '⑦ 浏览量合计里混进 null 也必须显示「数据暂不可用」',
+    why: '浏览量是新的默认声量排序键；任一帖子浏览量缺失时不能用其余帖子的部分和冒充总量。'
+      + '这一格用独立 DOM 标记定位，避免被同一行评论量的缺失文案误判为通过。',
+    selector: '[data-testid="kol-leader-views"]:has-text("数据暂不可用")',
+    selectorCount: 1,
   },
   {
     /* 这一条与⑥共用一个窗口（排名表的那一行），盯的却是隔壁一格：**主要类型**。
@@ -189,7 +196,7 @@ const KOL = [
       + '而 NaN 排序不会告诉你它选不出来 —— 它会非常自信地给你一个答案。'
       + 'DATA_PROVIDER=sql 下每篇 postType 都是 null（ADR-0017），这一列会整列挂上'
       + '我们从没算过的结论。',
-    window: ['6/0', '详情 →'],
+    window: ['6/1', '详情 →'],
     want: ['暂不可用'],
     reject: ['行情解读', '晒单', '其他'],
   },
@@ -287,23 +294,6 @@ const KOL_DETAIL = [
     reject: ['赞 0', '57', '73'],
   },
   {
-    name: '⑦ 其他产品观点表：真零是 0',
-    why: '这张表只有互动量一个数值位，两条断言分别钉住它的两种含义：'
-      + '全填 0 会被 ⑧ 抓住，全填「数据暂不可用」会被这一条抓住。',
-    marker: '互动量确实是 0',
-    // 制表符是 innerText 序列化表格单元格的分隔符。带上它才能把「互动量这一格是 0」
-    // 与同一行里的 9998、2026、14:08 这些含 0 的字串分开。
-    want: ['\t0\t'],
-    reject: ['数据暂不可用'],
-  },
-  {
-    name: '⑧ 其他产品观点表：null 是「数据暂不可用」',
-    why: '同一列、同一个渲染分支，正反两面都得钉住，否则「全填 0」和「全填暂不可用」都能过。',
-    marker: '互动量未回传',
-    want: ['数据暂不可用'],
-    reject: [],
-  },
-  {
     /* 这一行是页面配的 open 点开的那一篇（openUnannotated），所以窗口里有原文面板。 */
     name: '⑨ 整块标注未生成：类型、摘要、原文、判定依据四处各说各的',
     why: '这四处在 DATA_PROVIDER=sql 下**同时**缺失，却各有各的正确说法，'
@@ -313,18 +303,16 @@ const KOL_DETAIL = [
       + '一条断言盯四处，是因为它们必须**一起**改口：留下任意一处，'
       + '页面上就会出现「类型：其他」配「原文暂不可用」这种自相矛盾的组合。',
     marker: '摘要暂不可用 · AI 标注尚未生成',
-    want: ['暂不可用', '9/2/1', '原文暂不可用：正文分句尚未生成。', '类型置信度 数据暂不可用 · 判定依据尚未生成'],
+    want: ['暂不可用', '9/2/1', '原文暂不可用：正文分句尚未生成。', '类型尚未生成 · 判定依据尚未生成'],
     reject: ['其他', '待确认', '高亮句为判定依据', '暂无摘要 · 图片帖，第一期不覆盖图片内容'],
   },
   {
-    name: '⑩ 有一篇没标注 → 类型构成整块「暂不可用」，不是一张全 0 的构成图',
-    why: '八类里少一票，没有任何一格是可信的。画成全 0 的构成图，长得和'
-      + '「这段时间他真没发过这几类」一模一样 —— 而后者是个结论。'
-      + '这里同时钉住小字跟着改口：留着「全部类型置信度达标」，'
-      + '等于替一批从没跑过的标注宣布了质检通过。',
-    window: ['帖子类型构成', '其他产品观点及操作'],
-    want: ['类型标注尚未生成', '暂不可用', '帖子类型标注尚未生成，构成比例无法计算'],
-    reject: ['全部类型置信度达标', '行情解读', '晒单', '0%'],
+    name: '⑩ 产品归属构成只读主 ETF 事实，不依赖 AI 类型标注',
+    why: '产品归属来自主 ETF 主数据。即使有帖子尚未生成 AI 类型，饼图仍应给出真实占比，'
+      + '不能跟旧的帖子类型构成一起退成「暂不可用」。',
+    scope: '[data-testid="kol-product-composition"]',
+    want: ['产品归属构成', '按每篇帖子的主 ETF 归属统计', '南方东英产品', '100%', '其他公司及产品'],
+    reject: ['帖子类型构成', '其他产品观点及操作', '帖子类型标注尚未生成，构成比例无法计算'],
   },
   {
     /* 整页断言（没有 window）：「AI 画像」全页仅此一处，就是那枚徽章自己。 */
@@ -347,9 +335,13 @@ const KOL_DETAIL = [
   },
   {
     name: '⑬ 右侧时间线穿透到竞品名称与发行商',
-    why: '「竞品」阵营标签只说明它不是自家产品；当前高亮帖子下还应显示具体产品、代码和发行商。',
+    why: '时间线的「只提其他公司」分类只说明它不是自家产品；当前高亮帖子下还应显示具体产品、代码和发行商。',
+    before: async (page) => {
+      await page.getByText('互动为零的帖子：赞、评、转都确实是 0，不是缺数据。', { exact: true }).click()
+      await page.getByText('其他公司产品', { exact: true }).first().waitFor({ timeout: 30_000 })
+    },
     page: true,
-    window: ['竞品详细信息', '帖子类型构成'],
+    window: ['其他公司产品', '产品归属构成'],
     want: ['盈富基金（2800.HK） · 发行商：恒生投资'],
     reject: [],
   },
@@ -394,6 +386,14 @@ const SECTOR = [
     window: ['最近更新', 'CSOP产品讨论热度'],
     want: ['数据暂不可用'],
     reject: ['HKT'],
+  },
+  {
+    name: '⑤ 已有 5 条以上评论但未识别到积极／消极态度 → 灰条',
+    why: '板块榜单的 5 条只是小条展示门槛，不是整体倾向门槛。'
+      + '六态样本 3442 有 52 条筛后评论，但积极／消极均为 0；'
+      + '这时应画灰色占位条，不应回退成「样本不足」文字。LOW_SAMPLE=10 仍只决定是否输出整体倾向。',
+    selector: 'xpath=//span[normalize-space(text())="3442"]/parent::div//span[@role="img" and @aria-label="未识别到积极或消极态度"]',
+    selectorCount: 1,
   },
 ]
 
@@ -440,40 +440,52 @@ const SECTOR_DRAWER_WORDING = [
   },
 ]
 
-/* 打开当前舆情总结的原文证据侧栏。等待的对象必须是**只有打开后才有**的字：点了个没
-   反应的元素同样会得到一屏没有红线违规的文本，那是假绿（screen-diff 上踩过两次）。
-   两个页面等的不是同一句 —— 有证据的那页等证据行的「展开单帖详情」，空态那页等空态
-   本身，它们恰恰互斥。 */
-const openEvidence = (settled) => async (page) => {
-  await page.getByText(/^查看原文证据 \d+ 条 →$/).first().click()
-  await page.getByText(settled, { exact: false }).first().waitFor({ timeout: 30_000 })
-}
-
 /* 展开「整块 AI 标注未生成」的那一篇。两页各有一套自己的渲染 —— KOL 影响力是右侧抽屉，
    KOL 详情是行内展开 —— 同一个坑要各钉一次。等待的对象同样必须是**只有展开后才有**的
-   字（理由见 openEvidence）：点了个没反应的元素会得到一屏没有红线违规的文本，那是假绿。
+   字：点了个没反应的元素会得到一屏没有红线违规的文本，那是假绿。
    两页等的是同一句，因为两处缺失态文案本来就该一致。 */
 const openUnannotated = async (page) => {
   await page.getByText('摘要暂不可用 · AI 标注尚未生成').first().click()
   await page.getByText('原文暂不可用：正文分句尚未生成。').first().waitFor({ timeout: 30_000 })
 }
 
+/* 卡片内的原文开关是稳定的 DOM 边界；用它取最近祖先，不再依赖
+   「标记前后各 220 字」这种会穿过紧凑卡片的字符数窗口。 */
+const officialCard = (marker) => marker.locator(
+  'xpath=ancestor-or-self::div[.//span[normalize-space(.)="原文" or normalize-space(.)="收起原文"]][1]',
+)
+
+const officialCardText = async (page, markerText) => {
+  const marker = page.getByText(markerText, { exact: false }).first()
+  if (await marker.count() === 0) return null
+  const card = officialCard(marker)
+  return await card.count() === 0 ? null : card.innerText()
+}
+
+/* 官号卡的类型置信度只在展开原文后出现，先展开 needs_review 样本。 */
+const openOfficialNeedsReview = async (page) => {
+  const marker = page.getByText('模型自报存疑：标签照挂，但要标出来它没把握。', { exact: true })
+  const card = officialCard(marker)
+  await card.getByText('原文', { exact: true }).click()
+  await card.getByText('类型置信度 0.42', { exact: false }).waitFor({ timeout: 30_000 })
+}
+
 /* 产品监控 · 账号口径未核验的产品（?code= 直接定位，不靠点击）。 */
 const PRODUCT_ACCOUNTS = [
   {
-    name: '① 活跃账号数取不到 → 「数据暂不可用」，且说清楚为什么',
+    name: '① 活跃账号数取不到 → 「数据暂不可用」且不保留旧注脚',
     why: 'PRD §5 点名了这个字段：账号口径没核验过的产品，这一格不能显示 0。'
       + '0 会被读成「区间内没有账号讨论过它」，而实际是我们还没算这只产品的账号数。'
-      + '注脚也要跟着换 —— 留着「区间内发布或评论过的独立账号」等于给一个不存在的数配了口径说明。',
-    window: ['活跃账号数', '全市场评论量排名'],
-    want: ['数据暂不可用', '暂不可用', '该产品的账号口径尚未核验'],
-    reject: ['0', '区间内发布或评论过的独立账号'],
+      + '顶部 KPI 的辅助说明已按页面批注删除，旧口径文案不能继续占位。',
+    window: ['活跃账号数', '全市场筛后评论量排名'],
+    want: ['数据暂不可用', '暂不可用'],
+    reject: ['0', '该产品的账号口径尚未核验', '区间内发布或评论过的独立账号'],
   },
   {
     name: '② 隔壁字段没被带走（反向断言）',
     why: '一个字段取不到不代表整张卡片都不可信。讨论热度那一格必须照常显示数字 —— '
       + '整条 KPI 带一片「暂不可用」，看的人会以为这只产品整体没采到数。',
-    window: ['区间内被识别为讨论该 ETF 的评论条数', '活跃账号数'],
+    window: ['相关评论数', '活跃账号数'],
     want: ['讨论热度'],
     reject: ['数据暂不可用'],
   },
@@ -505,7 +517,7 @@ const PRODUCT_ACCOUNTS = [
       + '这一态说的是「还没跑」；说成「区间内该 ETF 没有讨论」就是替一只真有人在聊的产品'
       + '宣布了没人聊 —— 而它的热度折线明明就在同一块面板里有高度。',
     window: ['热度变化与阶段观点', '产品话题情绪'],
-    want: ['数据暂不可用 — 阶段观点尚未生成，热度序列与分时段观点会在下一批次采集后输出。'],
+    want: ['AI 阶段观点待分析 — 下方仅展示数据库中的原始热度；积极／消极与分阶段观点暂不可用。'],
     reject: ['暂无相关内容 — 当前日期范围内该 ETF 没有讨论，不输出阶段观点。', '样本不足'],
   },
 ]
@@ -541,23 +553,11 @@ const PRODUCT_ATTITUDE = [
       + '一句是「查过了，名单里没人提过它」，一句是「这张表我们查不了」。合并成一句，'
       + '产品团队就分不出「这只 ETF 没有 KOL 讨论」和「我们还不知道有没有」。',
     window: ['已识别 KOL 范围', '积极 ／ 消极整体态度'],
-    want: ['暂无相关内容 — 当前区间未发现已识别 KOL 在相关评论区提及该产品。'],
+    want: ['暂无相关内容 — 当前区间未发现已识别 KOL 的相关帖子或评论观点。'],
     reject: ['KOL 身份名单或账号映射尚未核验'],
   },
   {
-    /* 这一条要求侧栏是打开的（页面配了 open），所以它读的是抽屉里的字。 */
-    name: '⑤ 证据为空数组 → 空态「暂无相关内容」，不是一张空卡片',
-    why: '`[]` 的意思是「查过了，这个筛选范围内没有可展示的原文」。渲染成空白抽屉，'
-      + '看的人会以为是没加载出来接着刷新；渲染成「数据暂不可用」，则是把一个确切的'
-      + '结论说成不知道。空态那句话是这里唯一诚实的说法（PRD §4.1 逐字）。',
-    /* 侧栏是整页最后一段，后面没有可以当右边界的字，所以这条走整页，靠三句话自己收紧：
-       「0 条结果」证明它数过了（closed 态压根不渲染这枚徽章），空态那句是 PRD §4.1 逐字，
-       整页找不到「展开单帖详情」证明一张卡都没渲染。 */
-    want: ['0 条结果', '暂无相关内容 — 当前筛选范围内没有可展示的原文证据。'],
-    reject: ['展开单帖详情'],
-  },
-  {
-    name: '⑥ 阶段样本不足 → 说「样本不足」，既不是「暂不可用」也不是「没有讨论」',
+    name: '⑤ 阶段样本不足 → 说「样本不足」，既不是「暂不可用」也不是「没有讨论」',
     why: '同一个 `sentiment: null` 在这块面板上有三种说法，这一条钉的是选对了哪一种。'
       + '「暂不可用」是阶段观点没跑出来（3469 那页演的），「没有讨论」是区间内真没人聊，'
       + '而这一段是**跑过了、有讨论、只是不够下结论**（PRD §3.5）。合并任意两种，'
@@ -568,7 +568,7 @@ const PRODUCT_ATTITUDE = [
     reject: ['暂不可用', '暂无相关内容'],
   },
   {
-    name: '⑦ 产品态度统一使用「积极／消极」文案',
+    name: '⑥ 产品态度统一使用「积极／消极」文案',
     why: '「赞／踩」容易被理解成平台互动；这一块展示的是 AI 分类的产品态度。',
     page: true,
     window: ['积极 ／ 消极整体态度', '重点舆情'],
@@ -576,66 +576,40 @@ const PRODUCT_ATTITUDE = [
     reject: ['积极 ／ 赞', '消极 ／ 踩', '赞／踩为', '赞踩比'],
   },
   {
-    name: '⑧ 产品话题情绪说明不再使用「赞踩」',
+    name: '⑦ 产品话题情绪说明不再使用「赞踩」',
     why: '产品话题与产品态度的边界需要沿用同一套「积极／消极」术语。',
     page: true,
-    window: ['产品话题情绪', '关联竞品观点'],
+    window: ['产品话题情绪', '关联产品观点'],
     want: ['不计入产品积极／消极态度的讨论'],
     reject: ['产品赞踩'],
   },
 ]
 
-/* 产品监控 · 原文证据与 KOL 主要态度。这一页的六态全在两处：产品相关 KOL 表的「主要
-   态度」列（<3 条不输出），和打开的证据侧栏里每张卡的计数位。 */
-const PRODUCT_EVIDENCE = [
+/* 产品监控 · 新顶部契约。旧的 P7 要点与其证据入口已被市场风向表取代；
+   讨论热度是唯一保留辅助说明的 KPI，而且默认收起。 */
+const PRODUCT_OVERVIEW = [
   {
-    name: '① 主要态度样本足 → 照常给结论（反向断言）',
-    why: '没有这一条，「整列都填暂不可用」也能过。红线是双向的：该说的时候要说。',
-    split: ' 条 →',
-    marker: '有效提及五条以上',
-    want: ['积极'],
-    reject: ['暂不可用', '样本不足'],
+    name: '① 市场风向表取代评论漏斗与旧舆情要点',
+    why: '顶部只保留 KPI 与多产品市场行情摘要；旧评论漏斗和单产品要点不应继续出现。',
+    page: true,
+    window: ['筛后评论量', '产品相关 KOL'],
+    want: ['产品市场风向与热议', '情绪', '总结'],
+    reject: ['评论分析漏斗', '当前舆情总结', '查看原文证据'],
   },
   {
-    name: '② 主要态度 < 3 条 → 「暂不可用」，不是 0、不是空白、不是随手挑一个方向',
-    why: 'PRD §5 表 P8「主要态度（<3 条不输出）」＋ §3.6：字段级 null 一律是「暂不可用」。'
-      + '少数几条帖子推不出一个人的倾向，硬填一个极性就是替这位 KOL 说了句他没说过的话。'
-      + '这里同时钉住长短两套文案没被顺手统一 —— 这一格是**短徽章**「暂不可用」，'
-      + '不是数值位的长文案「数据暂不可用」。',
-    split: ' 条 →',
-    marker: '有效提及不足三条',
-    want: ['暂不可用'],
-    reject: ['数据暂不可用', '样本不足', '积极', '消极', '中性'],
-  },
-  {
-    name: '③ 证据卡：真零仍然显示 0（反向断言）',
-    why: '这条原帖确实没人评论没人互动。矫枉过正把真零也抹掉，等于换个方向撒谎。',
-    split: '展开单帖详情',
-    marker: '互动为零的原帖',
-    want: ['评论 0', '互动 0'],
-    reject: ['暂不可用'],
-  },
-  {
-    name: '④ 证据卡：计数取不到 → 短徽章「暂不可用」，绝不是 0',
-    why: '铁律 2 在证据侧栏的落点。这两格是页面上离原帖最近的数字，填 0 会被直接读成'
-      + '「这条帖子没人理」——而它可能是这个区间里最热的一条。',
-    split: '展开单帖详情',
-    marker: '平台计数字段未回传',
-    want: ['评论 暂不可用', '互动 暂不可用'],
-    reject: ['评论 0', '互动 0', '数据暂不可用'],
-  },
-  {
-    name: '⑤ 同一张卡上长短两套文案并存，没有被顺手统一',
-    why: '作者名取不到时渲染的是长文案「数据暂不可用」，而隔壁计数位是短徽章「暂不可用」'
-      + '（PRD §3.6 与 §3.1／§5 delta 契约，两套不可互换）。把它们统一成一句是很自然的'
-      + '「整理」，而那会让页面上再也分不出这两个位置的语气差别。',
-    split: '展开单帖详情',
-    marker: '作者名未回传',
-    want: ['数据暂不可用', '评论 7', '互动 19'],
+    name: '② 讨论热度注释可以点击展开',
+    why: '长公式不常驻 KPI 卡片，只在用户点讨论热度的信息按钮后显示。',
+    before: async (page) => {
+      await page.getByRole('button', { name: '查看讨论热度说明' }).click()
+      await page.getByRole('note').waitFor({ timeout: 30_000 })
+    },
+    page: true,
+    window: ['讨论热度', '活跃账号数'],
+    want: ['讨论热度 ＝ 评论量 ＋ 0.3 × 点赞 ＋ 1 × 转发'],
     reject: [],
   },
   {
-    name: '⑥ 有行情源的产品照常画 K 线（反向断言）',
+    name: '③ 有行情源的产品照常画 K 线（反向断言）',
     why: '红线是双向的。没有这一条，「所有产品都挂价格数据暂不可用」也能让 3469 那页全绿 ——'
       + '而那是把整个产品线的价格轨道一起关掉。这里同时钉住脚注跟着状态换：'
       + 'ok 态说的是「非交易时段与休市日不补造 K 线」（周末那两根空 K 是**对的**），'
@@ -643,16 +617,6 @@ const PRODUCT_EVIDENCE = [
     window: ['实线为当前区间', '热度变化与阶段观点'],
     want: ['价格 HKD', '行情粒度为日 K、价格单位 HKD，非交易时段与休市日不补造 K 线'],
     reject: ['价格数据暂不可用', '不以指数或其他产品价格替代'],
-  },
-  {
-    name: '⑦ P7 元信息里有一句「未经人工验证」的如实声明',
-    why: 'ADR-0019 §4：三处必须一致 —— `/meta` 的 `aiValidation`、板块总览 S6、产品监控 P7。'
-      + '这一块顶上挂着「AI 生成 · 可追溯原文」，而「可追溯原文」说的是能回到原文，'
-      + '不是有人核过。两句话必须同时在场：只有徽章，读的人会默认上线前被人看过。'
-      + '文案跟 `/meta` 走而不是写死在屏幕里，否则改了一处另外两处就开始撒谎。',
-    window: ['更新时间', '查看原文证据'],
-    want: ['AI 结论由模型自动生成，未经人工验证；每条可回到原文。'],
-    reject: ['已核验', '准确率'],
   },
 ]
 
@@ -697,20 +661,19 @@ const PAGES = [
   {
     label: '产品监控 · 态度样本全零',
     path: '/product?code=3442',
-    open: openEvidence('暂无相关内容 — 当前筛选范围内没有可展示的原文证据。'),
     cases: PRODUCT_ATTITUDE,
     offline: ['数据暂不可用', '暂无相关内容', '全市场评论量排名', '讨论热度'],
   },
   {
-    label: '产品监控 · KOL 提及与原文证据',
+    label: '产品监控 · 市场风向与热度注释',
     path: '/product?code=3033',
-    open: openEvidence('展开单帖详情'),
-    cases: PRODUCT_EVIDENCE,
+    cases: PRODUCT_OVERVIEW,
     offline: ['数据暂不可用', '暂无相关内容', '全市场评论量排名', '讨论热度'],
   },
   {
     label: '官号动态',
     path: '/official',
+    open: openOfficialNeedsReview,
     cases: OFFICIAL,
     /* 屏级错误时页面上不该再有的东西：这几句各自代表「某处渲染出了真数据」。 */
     offline: ['数据暂不可用', '暂无相关内容', '原帖 ↗', '提及 ETF'],
@@ -736,7 +699,7 @@ const PAGES = [
        第一行的反向断言会撞上头部 KPI 里那句「赞 数据暂不可用 · 评 …」。
        ⑥ 要看的正是被切掉的那段，所以它带 page:true 走整页。 */
     body: '时间 · ETF',
-    offline: ['数据暂不可用', '暂无相关内容', '原帖 ↗', '导出 CSV'],
+    offline: ['数据暂不可用', '暂无相关内容', '原帖 ↗', '产品归属构成'],
   },
 ]
 
@@ -768,7 +731,8 @@ async function main() {
     if (browser) await browser.close()
     for (const p of procs) if (p) kill(p)
   }
-  process.exit(fail.length ? 1 : 0)
+  /* 管道化 stdout 时直接 process.exit() 可能截断失败报告，CI 会只看到退出码 1。 */
+  process.exitCode = fail.length ? 1 : 0
 }
 
 async function checkPage(browser, pg, fail) {
@@ -802,7 +766,40 @@ async function checkPage(browser, pg, fail) {
 
     for (const c of pg.cases) {
       const name = `${pg.label} ${c.name}`
-      const win = windowOf(c.page ? text : body, c)
+      let caseText = text
+      let caseBody = body
+      if (c.before) {
+        await c.before(page)
+        await page.waitForTimeout(100)
+        caseText = await page.evaluate(() => document.body.innerText)
+        if (pg.body) {
+          const at = caseText.indexOf(pg.body)
+          caseBody = at < 0 ? caseText : caseText.slice(at + pg.body.length)
+        } else {
+          caseBody = caseText
+        }
+      }
+      if (c.scope) {
+        const scopes = page.locator(c.scope)
+        const actual = await scopes.count()
+        if (actual !== 1) {
+          fail.push({ name, detail: `DOM 范围断言失败：${c.scope} 实际 ${actual} 处，期望 1 处`, why: c.why })
+          continue
+        }
+        caseText = await scopes.first().innerText()
+        caseBody = caseText
+      }
+      if (c.selector) {
+        const actual = await page.locator(c.selector).count()
+        const expected = c.selectorCount ?? 1
+        if (actual !== expected) {
+          fail.push({ name, detail: `DOM 断言失败：${c.selector} 实际 ${actual} 处，期望 ${expected} 处`, why: c.why })
+        }
+        continue
+      }
+      const win = c.card
+        ? await officialCardText(page, c.marker)
+        : windowOf(c.page ? caseText : caseBody, c)
       if (win == null) {
         const how = c.marker ? `定位标记「${c.marker}」` : `窗口「${c.window.join('」…「')}」`
         fail.push({ name, detail: `找不到${how}——六态样本没渲染出来`, why: c.why })

@@ -10,7 +10,7 @@
 | `neg_category` | S10 负面舆情摘要／P9 消极卡 | 每个负面 aspect 桶 | 具体问题名＋详细摘要＋1–3 条理由 |
 | `stage_unit` | P12 阶段观点 | 每个足量时段的计数与证据 | 7 类之一＋≤40 字摘要 |
 | `stage_summary` | P12 阶段观点 | 合并后的阶段（多时段） | ≤40 字总结 |
-| `topic_label` | P13 产品话题情绪 | 市场方向三色计数与证据 | 标题 ≤16 字＋摘要 ≤40 字 |
+| `topic_label` | P13／市场风向表 | 市场方向三色计数与证据 | 标题 ≤16 字＋行情摘要 ≤100 字 |
 | `competitor_reason` | P14 关联竞品 | 竞品在本产品评论区的共现证据 | 喜欢／质疑原因各 ≤3 条 |
 
 ## 三条硬约束（schema＋validator 双保险）
@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from .schemas import SchemaError, _strictify
 
-VERSION = "synth-v5"
+VERSION = "synth-v6"
 
 KINDS = ("hot_summary", "summary", "theme_label", "neg_category", "stage_unit",
          "stage_summary", "topic_label", "competitor_reason")
@@ -191,7 +191,7 @@ class TopicLabel(BaseModel):
     @model_validator(mode="after")
     def _rules(self):
         _max_len(self.title, 16, "topic.title")
-        _max_len(self.summary, 40, "topic.summary")
+        _max_len(self.summary, 100, "topic.summary")
         _no_ratio(self.title, "topic.title")
         _no_ratio(self.summary, "topic.summary")
         return self
@@ -350,11 +350,13 @@ SYSTEMS = {
 
     "topic_label": _COMMON + """
 
-# 任务：给「产品话题情绪」起名
+# 任务：生成产品的市场风向摘要
 
 `facts.topic` 是区间内谈市场方向、指数涨跌、宏观事件而**没有评价产品本身**的评论集合，带看多／看空／无方向计数与证据。输出：
 - `title`：**不超过 16 字**，点出讨论围绕的具体话题（如「恒科反弹持续性」「美联储议息预期」）。
-- `summary`：**不超过 40 字**，概括多空各自在说什么。
+- `summary`：**不超过 100 字**的独立行情摘要，供「市场风向」表直接展示。先交代讨论呈现的看多／看空／观望取向，再写支撑该取向的具体事件、数据预期、行业因素或主要分歧；没有证据时不得补造驱动因素。
+- 可以转述「评论预期上涨／回落」「讨论认为……」，但不能把群体观点写成系统自己的预测，也不能给出买卖建议。
+- 这里只总结市场、指数、行业或成分股方向，不评价 ETF 的费率、点差、跟踪误差等产品体验。
 - `evidence_ids`。""",
 
     "competitor_reason": _COMMON + """

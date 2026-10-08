@@ -33,6 +33,14 @@ def ranges_touching(anchor, changed_from, changed_to):
         changed_from, changed_to = changed_to, changed_from
 
     touched = []
+    # d0 is the partial current data day immediately after the latest complete
+    # day. Its comparison day is the complete-day anchor itself, so a change in
+    # either date invalidates today's synthesis without pretending d0 == d1.
+    # The latest observed data day is normally anchor+1, but an interrupted
+    # completion feed can leave the complete anchor farther behind. Any fact
+    # at or after that boundary may affect d0 or its prior-day benchmark.
+    if changed_to >= anchor:
+        touched.append("d0")
     for key, days in (*_RANGE_DAYS, ("mtd", anchor.day)):
         current_from = anchor - timedelta(days=days - 1)
         benchmark_from = current_from - timedelta(days=days)
@@ -96,7 +104,7 @@ def ai_source_version(values):
     return result
 
 
-def mark_synthesis(conn, codes, dirty, ranges=("d1", "d2", "d7", "d14", "d30", "mtd")):
+def mark_synthesis(conn, codes, dirty, ranges=("d0", "d1", "d2", "d7", "d14", "d30", "mtd")):
     for code in set(codes):
         if not code:
             continue

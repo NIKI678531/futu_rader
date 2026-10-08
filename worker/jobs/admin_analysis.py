@@ -21,7 +21,14 @@ from collection.models import HARD_DAILY_MAX
 from jobs import analyze, daily, full_own, refresh, synthesize
 from core.top_products import analysis_products, parse_own_limit
 from radar_db import make_engine
-from radar_db.analysis_requests import RANGE_PRIORITY, claim_next, finish, renew, requeue
+from radar_db.analysis_requests import (
+    RANGE_PRIORITY,
+    claim_next,
+    finish,
+    promote_followups,
+    renew,
+    requeue,
+)
 from radar_db.revisions import synthesis_generation_key
 from radar_db.schema import annotation_jobs, feeds, meta_kv
 
@@ -120,6 +127,7 @@ def runtime_readiness() -> dict:
         "ownTopLimit": limit,
         "dataMode": "production" if refresh.source_configured() else "dump",
         "dailyCron": daily.daily_cron(),
+        "intradayCron": daily.intraday_cron(),
     }
 
 
@@ -183,7 +191,7 @@ def run_analysis(range_key: str, *, engine=None) -> dict:
     """Run one range's selected products through both AI layers until nothing is left."""
 
     if range_key not in RANGE_PRIORITY:
-        raise ValueError("range 只允许 d1、d2、d7、d14、d30 或 mtd")
+        raise ValueError("range 只允许 d0、d1、d2、d7、d14、d30 或 mtd")
     engine = engine or make_engine()
     cfg = validated_runtime_config()
     limit = own_top_limit()
@@ -285,6 +293,7 @@ def process_next(*, engine=None, runner=None, owner: str | None = None) -> dict 
 
     engine = engine or make_engine()
     owner = owner or uuid.uuid4().hex
+    promote_followups(engine)
     request = claim_next(
         engine, owner=owner, lease_seconds=LEASE_SECONDS
     )

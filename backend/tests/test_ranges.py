@@ -6,10 +6,10 @@
 
 import pytest
 
-RANGE_KEYS = ["d1", "d2", "d7", "d14", "d30"]
+RANGE_KEYS = ["d0", "d1", "d2", "d7", "d14", "d30"]
 
 
-def test_all_five_presets_are_available(client):
+def test_all_six_presets_are_available(client):
     for key in RANGE_KEYS:
         r = client.get(f"/api/v1/ranges/{key}")
         assert r.status_code == 200, key
@@ -81,6 +81,14 @@ def test_benchmark_window_is_adjacent_and_equal_length(client):
 def test_anchor_is_frozen(client):
     """演示锚点冻结在 2026-09-01（ADR-0012）。跨日仍返回同一区间，否则逐字比对会随机红。"""
     assert client.get("/api/v1/ranges/d7").get_json()["data"]["to"] == "2026-09-01"
+
+
+def test_demo_today_uses_the_frozen_current_data_time_not_the_complete_day(client):
+    data = client.get("/api/v1/ranges/d0").get_json()["data"]
+    assert data["to"] == "2026-09-02"
+    assert data["benchTo"] == "2026-09-01"
+    assert data["partial"] is True
+    assert data["dataThrough"] == "2026-09-02T09:00:00 HKT"
 
 
 def test_unknown_preset_is_a_404_not_a_silent_fallback(client):

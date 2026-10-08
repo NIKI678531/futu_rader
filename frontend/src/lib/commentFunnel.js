@@ -15,7 +15,6 @@ export function commentFunnelView(funnel) {
     return {
       available: false,
       partial: true,
-      dataLabel: '数据暂不可用',
       relevantText: '数据暂不可用',
       steps: [],
       sourceCoverageText: '数据暂不可用',
@@ -39,7 +38,6 @@ export function commentFunnelView(funnel) {
   return {
     available: true,
     partial,
-    dataLabel: partial ? '部分数据' : '已完成',
     relevantText: relevant == null
       ? '数据暂不可用'
       : `${partial ? '≥ ' : ''}${relevant.toLocaleString('en-US')}`,

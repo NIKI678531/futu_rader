@@ -46,6 +46,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+if str(REPO_ROOT / "backend") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 import clock  # noqa: E402
 from ai import config, neardup, prefilter  # noqa: E402
@@ -58,6 +60,8 @@ from collection.exact import (  # noqa: E402
 )
 from jobs import annotate  # noqa: E402
 from jobs.import_dump import pool_codes  # noqa: E402
+from core.calendar import PRESETS, build as build_range  # noqa: E402
+from core.data_clock import analysis_range_anchor  # noqa: E402
 from radar_db import make_engine  # noqa: E402
 from radar_db.comment_filter import (  # noqa: E402
     load_comment_filter_config,
@@ -84,7 +88,7 @@ log = logging.getLogger("worker.extract")
 MASTER = REPO_ROOT / "backend" / "fixtures" / "demo" / "master.json"
 REPORT_DIR = REPO_ROOT / ".scratch" / "llm-90d"
 
-RANGE_DAYS = {"d1": 1, "d2": 2, "d7": 7, "d14": 14, "d30": 30}
+RANGE_DAYS = {key: days for key, (days, _label) in PRESETS.items() if days is not None}
 
 
 def new_scope_id():
@@ -116,11 +120,21 @@ def resolve_window(args, engine):
     """返回 `(date_from, date_to_inclusive)`。`--range` 相对 `meta_kv.anchor`，与页面同一锚点。"""
     if args.range:
         with engine.connect() as conn:
-            anchor = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar()
-        if not anchor:
+            meta = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v)).all())
+        complete = meta.get("anchor")
+        if not complete:
             raise SystemExit("meta_kv 里没有 anchor：先跑 import_dump / etl")
-        to = datetime.strptime(anchor[:10], "%Y-%m-%d")
-        frm = to - timedelta(days=RANGE_DAYS[args.range] - 1)
+        range_anchor = analysis_range_anchor(
+            engine,
+            args.range,
+            complete,
+            meta=meta,
+        )
+        if range_anchor is None:
+            raise SystemExit("当天数据尚未同步，d0 暂无可抽取数据")
+        window = build_range(args.range, range_anchor)
+        frm = datetime.strptime(window["from"], "%Y-%m-%d")
+        to = datetime.strptime(window["to"], "%Y-%m-%d")
         return frm, to
     if not (getattr(args, "from_") and args.to):
         raise SystemExit("需要 --from 与 --to，或 --range")

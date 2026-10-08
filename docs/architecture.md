@@ -129,7 +129,7 @@ ETL 会先删除现有事实表，再以 2,000 行一批提交新数据。这个
 | 板块总览 | `Cannot read properties of null (reading 'positive')` | [`sectorOverview/index.jsx`](../frontend/src/screens/sectorOverview/index.jsx) 直接读取 `o.attitude.positive`，而 SQL provider 明确返回 `attitude: None`。 |
 | 产品监控 | 同上 | [`productMonitor/index.jsx`](../frontend/src/screens/productMonitor/index.jsx) 直接读取 `o.attitude`。 |
 | KOL 影响力 | `Cannot read properties of undefined (reading 'group')` | 帖子 `postType` 尚未标注，页面仍按已识别类型访问映射。 |
-| KOL 详情 | `Cannot read properties of null (reading 'length')` | `kolOpinions()` 返回 `None`，页面直接读取 `opRows.length`；类型画像也依赖尚未生成的 `typeCounts`。 |
+| KOL 详情 | 已修复；旧版曾报 `Cannot read properties of null (reading 'length')` | 当前页面不再请求或展示 `kolOpinions()`，类型画像也已对缺失 `typeCounts` 做空值适配。 |
 | 官号动态 | `em.own.map is not a function` | demo 契约中的 `own/peer` 是数组，SQL provider 返回数字，且缺少 `total/postCount`，属于独立的 provider 契约错误。 |
 
 此外：
@@ -173,8 +173,8 @@ ETL 会先删除现有事实表，再以 2,000 行一批提交新数据。这个
 |---|---|---|
 | 板块总览 | 产品池、评论量、赞转、热度、活跃账号、全市场排名、环比 | 态度、热议总结、主题、负面类别、合规关注、自动竞品候选 |
 | 产品监控 | 产品主数据、数量 KPI、热度/活跃趋势、固定竞品映射 | 产品总结、态度、观点主题、话题情绪、KOL 代表摘录、合规、阶段观点 |
-| KOL 影响力 | KOL 帖子、提及产品、阵营、互动量、声量排名 | 帖子类型、操作方向、摘要、类型画像 |
-| KOL 详情 | 帖子与时间线、阵营/互动统计 | 风格画像、类型构成、其他产品观点与操作 |
+| KOL 影响力 | KOL 帖子、提及产品、主 ETF 归属、互动量、按浏览量的声量排名 | 帖子类型、操作方向、摘要、类型画像 |
+| KOL 详情 | 帖子与时间线、主 ETF 归属、产品归属饼图、其他公司与具体产品明细、互动统计 | 风格画像、帖子类型、操作方向与摘要 |
 | 官号动态 | 官号帖子、ETF 提及、阵营、互动量 | 帖子类型、操作方向、摘要、依据句 |
 
 第一批 AI 上线应优先完成“评论相关性＋产品态度”和“帖子类型＋方向＋摘要”。它们能解锁最多核心模块。主题、阶段、合规和竞品候选建立在这些原子标签之上，不应先让 LLM直接生成整页汇总。

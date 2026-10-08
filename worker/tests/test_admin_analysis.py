@@ -55,6 +55,26 @@ def test_worker_runs_the_requested_range_and_persists_success_summary():
     assert stored["summary"]["reused"] == 1080
 
 
+def test_today_request_has_queue_priority_and_reaches_the_worker():
+    engine = _engine()
+    enqueue(engine, "d7")
+    today, created = enqueue(engine, "d0")
+    seen = []
+
+    result = process_next(
+        engine=engine,
+        owner="worker-today",
+        runner=lambda range_key: seen.append(range_key) or {
+            "status": "complete",
+            "errors": 0,
+        },
+    )
+
+    assert created is True
+    assert result["id"] == today["id"]
+    assert seen == ["d0"]
+
+
 def test_worker_persists_partial_and_failed_results():
     engine = _engine()
     enqueue(engine, "d2")

@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom'
 import { loadAdminPipeline, runAdminAnalysis } from '../lib/adminApi'
 import '../styles/admin.css'
 
-const RANGES = ['d1', 'd2', 'd7', 'd14', 'd30', 'mtd']
+const RANGES = ['d0', 'd1', 'd2', 'd7', 'd14', 'd30', 'mtd']
+const RANGE_TEXT = { d0: '当天（D0）' }
 const STATUS_TEXT = {
   queued: '排队中', running: '运行中', succeeded: '成功', partial: '部分完成',
   failed: '失败', complete: '已完成', waiting: '待处理', not_started: '尚未开始',
@@ -23,6 +24,10 @@ function dateTime(value) {
   if (!value) return '—'
   const parsed = new Date(value)
   return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString('zh-HK', { hour12: false })
+}
+
+function rangeText(value) {
+  return RANGE_TEXT[value] || value
 }
 
 function StatusPill({ value }) {
@@ -154,7 +159,7 @@ export default function Admin() {
     <section className="admin-card admin-checks">
       <header className="admin-section-head">
         <div><p className="admin-eyebrow">PIPELINE / CHECKS</p><h2>链路检查</h2></div>
-        <p>每日 08:00 自动执行：同步最新数据 → 行情 → D7、D1、D2；长区间只在下方手动选择后运行。</p>
+        <p>香港时间 08:00 同步最新数据和行情，依次运行 D7 → D1 → D2；13:00、15:00 增量同步当天数据并运行 D0。D14、D30、MTD 仅手动运行。</p>
       </header>
       <div className="admin-check-list">
         {checks.length ? checks.map(item => <div className={`admin-check is-${item.status}`} key={item.id} data-check={item.id}>
@@ -168,22 +173,22 @@ export default function Admin() {
       <header className="admin-section-head">
         <div><p className="admin-eyebrow">PAGES / COMPLETENESS</p><h2>页面数据完整度</h2></div>
         <div className="admin-section-side">
-          <p>覆盖范围：{scopeText(pipeline?.ownTopLimit)}。待更新的结论照常显示在页面上并标「待更新」；缺失的才是页面上的空位。</p>
+          <p>覆盖范围：{scopeText(pipeline?.ownTopLimit)}。需重算的结论照常显示在业务页，不再附加新鲜度徽章；缺失的才是页面上的空位。</p>
         </div>
       </header>
       <div className="admin-context-line">
         <span>数据 anchor：{text(pipeline?.anchor)}</span>
-        <span>缺失 {numberText(missingTotal)} 个产品区间 · 待更新 {numberText(staleTotal)} 个</span>
-        <span>上次每日任务：{dateTime(pipeline?.daily?.startedAt)}</span>
+        <span>缺失 {numberText(missingTotal)} 个产品区间 · 需重算 {numberText(staleTotal)} 个</span>
+        <span>上次 08:00 任务：{dateTime(pipeline?.daily?.startedAt)}</span>
       </div>
       <div className="admin-table-wrap">
         <table className="admin-comment-table">
           <thead><tr>
-            <th>区间</th><th>应生成产品</th><th>已完成</th><th>待更新</th><th>缺失</th><th>状态</th>
+            <th>区间</th><th>应生成产品</th><th>已完成</th><th>需重算</th><th>缺失</th><th>状态</th>
           </tr></thead>
           <tbody>{coverage.length ? coverage.map(row => <tr key={row.key}>
             <td className="admin-mono">
-              {row.key}
+              {rangeText(row.key)}
               {row.missingCodes?.length > 0 && <button
                 className="is-secondary admin-inline-toggle"
                 onClick={() => setExpandedCoverage(value => value === row.key ? null : row.key)}
@@ -218,7 +223,7 @@ export default function Admin() {
             className={selectedRange === range ? 'is-active' : 'is-secondary'}
             aria-pressed={selectedRange === range}
             onClick={() => { setSelectedRange(range); setCommentsExpanded(false) }}
-          >{range}</button>)}
+          >{rangeText(range)}</button>)}
         </div>
         <button className="is-secondary" onClick={() => refresh()} disabled={loading}>
           {loading ? '刷新中…' : '刷新评论状态'}
@@ -249,11 +254,11 @@ export default function Admin() {
 
     <section className="admin-card admin-ai">
       <header className="admin-section-head">
-        <div><p className="admin-eyebrow">DATABASE → LAYER A → LAYER B</p><h2>AI 分析 · {selectedRange}</h2></div>
+        <div><p className="admin-eyebrow">DATABASE → LAYER A → LAYER B</p><h2>AI 分析 · {rangeText(selectedRange)}</h2></div>
         <p>处理{scopeText(pipeline?.ownTopLimit)}；没有评论的产品不会产生模型请求，输入未变化的结果直接复用。</p>
       </header>
       <div className="admin-ai-summary">
-        <Metric label="分析 anchor" value={layers.anchor} /><Metric label="当前区间" value={layers.range || selectedRange} />
+        <Metric label="分析 anchor" value={layers.anchor} /><Metric label="当前区间" value={rangeText(layers.range || selectedRange)} />
         <Metric label="本轮产品" value={layers.productCount} /><Metric label="待重算产品" value={layers.dirtyPairs} />
       </div>
 
@@ -299,16 +304,16 @@ export default function Admin() {
                 onChange={event => setSelectedRange(event.target.value)}
                 disabled={Boolean(hasActiveRun) || submittingRange !== null}
               >
-                {RANGES.map(range => <option key={range} value={range}>{range}</option>)}
+                {RANGES.map(range => <option key={range} value={range}>{rangeText(range)}</option>)}
               </select>
             </label>
             <button
               onClick={() => trigger(selectedRange)}
               disabled={!workerReady || Boolean(hasActiveRun) || submittingRange !== null}
             >
-              {submittingRange === selectedRange ? '提交中…' : `运行所选区间 · ${selectedRange}`}
+              {submittingRange === selectedRange ? '提交中…' : `运行所选区间 · ${rangeText(selectedRange)}`}
             </button>
-            <small>一次只允许一个区间进入队列；优先补齐 D7，再运行 D1、D2。</small>
+            <small>一次只允许一个区间进入队列；D0 每日 13:00、15:00 自动运行，也可在此手动补跑。</small>
           </div>
           <div className="admin-layer-list">
             {layers.layerB?.map(item => <div className="admin-layer-row" key={item.id} data-ai-layer={item.id}>
@@ -318,7 +323,7 @@ export default function Admin() {
               </div>
               <div className="admin-layer-state">
                 <StatusPill value={item.status} />
-                <span>已生成 {item.producedPairs || 0} / {item.expectedPairs || 0} · 待更新 {item.stalePairs || 0} · 缺失 {item.missingPairs || 0}</span>
+                <span>已生成 {item.producedPairs || 0} / {item.expectedPairs || 0} · 需重算 {item.stalePairs || 0} · 缺失 {item.missingPairs || 0}</span>
               </div>
             </div>)}
           </div>
@@ -335,7 +340,7 @@ export default function Admin() {
         const summary = run.summary || {}
         const reasons = summary.reasons || []
         return <tr key={run.id}>
-          <td className="admin-mono">{run.range}</td><td>{SOURCE_TEXT[run.requestedBy] || '手动'}</td>
+          <td className="admin-mono">{rangeText(run.range)}</td><td>{SOURCE_TEXT[run.requestedBy] || '手动'}</td>
           <td><StatusPill value={run.status} /></td><td>{dateTime(run.requestedAt)}</td>
           <td>{summary.productsCompleted == null || summary.productsTotal == null ? '—' : `${summary.productsCompleted} / ${summary.productsTotal}`}</td>
           <td>{numberText(summary.aiRequests)}</td><td>{numberText(summary.annotationsWritten)}</td>

@@ -20,6 +20,7 @@ from ai import config, synth
 from ai.prompts import requires_full_reannotation
 import clock
 from core.calendar import PRESETS, build
+from core.data_clock import analysis_range_anchor
 from jobs import annotate, classify, extract, pipeline
 from jobs.backfill_comment_filter import prepare_comment_task_execution
 from radar_db import make_engine
@@ -44,6 +45,18 @@ from radar_db.scope_jobs import scope_condition
 from radar_db.time_windows import utc_naive_to_hkt
 
 log = logging.getLogger("worker.full_own")
+COMPLETE_RANGES = tuple(key for key in PRESETS if key != "d0")
+
+
+def product_code_sets(products, *, include_all_analysis):
+    """Keep analysis scope configurable while prices always cover the pool."""
+    price_codes = [row["code"] for row in products]
+    analysis_codes = [
+        row["code"]
+        for row in products
+        if include_all_analysis or row["ownership"] == "own"
+    ]
+    return analysis_codes, price_codes
 
 
 def _prepare_comment_execution(engine, *, supersede=False):
@@ -83,7 +96,7 @@ def prepare(engine, cfg, anchor, codes, *, ranges=None, optimized=False, page_si
         source_version = ai_source_version(dict(conn.execute(
             select(meta_kv.c.k, meta_kv.c.v)
         ).all()))
-    windows = [build(key, anchor) for key in (ranges or PRESETS)]
+    windows = [build(key, anchor) for key in (ranges or COMPLETE_RANGES)]
     start = min(date.fromisoformat(window["benchFrom"] if include_baseline else window["from"])
                 for window in windows)
     end = datetime.combine(anchor, time.min)
@@ -350,7 +363,7 @@ def main(argv=None):
     parser.add_argument("--student-model-dir", help="学生权重目录（默认 STUDENT_MODEL_DIR）")
     parser.add_argument("--no-student", action="store_true", help="不开学生推理，评论任务全部放行主模型")
     parser.add_argument("--all", action="store_true")
-    parser.add_argument("--ranges", default=",".join(PRESETS))
+    parser.add_argument("--ranges", default=",".join(COMPLETE_RANGES))
     parser.add_argument("--max-http-requests", type=int, required=True)
     parser.add_argument("--sync-prices", action="store_true")
     args = parser.parse_args(argv)
@@ -379,11 +392,21 @@ def main(argv=None):
         parser.error(str(exc))
     with engine.connect() as conn:
         measured = date.fromisoformat(conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar_one())
-    anchor = date.fromisoformat(args.anchor) if args.anchor else measured
-    if anchor != measured:
-        raise SystemExit("Anchor must match the complete source day; no synthetic month end")
+    complete_anchor = measured
+    if ranges == ["d0"]:
+        if args.anchor:
+            raise SystemExit("d0 always follows the latest observed data day; do not pass --anchor")
+        anchor = analysis_range_anchor(engine, "d0", complete_anchor)
+        if anchor is None:
+            raise SystemExit("当天数据尚未同步，d0 暂无可分析数据")
+    else:
+        if "d0" in ranges:
+            raise SystemExit("d0 must be analyzed as a single range")
+        anchor = date.fromisoformat(args.anchor) if args.anchor else measured
+        if anchor != measured:
+            raise SystemExit("Anchor must match the complete source day; no synthetic month end")
     products = load_products(engine=engine)
-    codes = [row["code"] for row in products if args.all or row["ownership"] == "own"]
+    codes, price_codes = product_code_sets(products, include_all_analysis=args.all)
     ownership = {row["code"]: row["ownership"] for row in products}
     with WorkerLease(engine, "own-analysis") as lease, control.interruptible():
         emit(engine, "orchestrator", f"Starting LLM analysis for {len(codes)} products: {','.join(ranges)}")
@@ -439,7 +462,7 @@ def main(argv=None):
             )
 
         def tick():
-            nonlocal scopes, start, anchor, source_version, order
+            nonlocal scopes, start, anchor, complete_anchor, source_version, order
             if control.stop_event.is_set():
                 progress["status"] = control.reason
                 progress["batchRun"] = control.snapshot()
@@ -458,9 +481,20 @@ def main(argv=None):
                 current_source = ai_source_version(dict(conn.execute(
                     select(meta_kv.c.k, meta_kv.c.v)
                 ).all()))
-            if current_source != source_version or (not args.anchor and current_anchor != anchor.isoformat()):
+            if current_source != source_version or (
+                not args.anchor and current_anchor != complete_anchor.isoformat()
+            ):
+                complete_anchor = date.fromisoformat(current_anchor)
                 if not args.anchor:
-                    anchor = date.fromisoformat(current_anchor)
+                    anchor = analysis_range_anchor(
+                        engine,
+                        "d0" if ranges == ["d0"] else ranges[0],
+                        complete_anchor,
+                    )
+                    if anchor is None:
+                        progress["status"] = "today_data_unavailable"
+                        save_progress(engine, progress)
+                        return
                 scopes, start = prepare(engine, cfg, anchor, codes, ranges=ranges)
                 student_state["scopes"] = scopes
                 source_version = current_source
@@ -470,7 +504,7 @@ def main(argv=None):
                     prioritize_scope(engine, scope_id, anchor, own=ownership[product_code] == "own")
                     progress["products"][product_code] = {"scope": scope_id, "queue": queue_status(engine, scope_id), "complete": False}
                 save_progress(engine, progress)
-            if current_anchor != anchor.isoformat():
+            if current_anchor != complete_anchor.isoformat():
                 progress["status"] = "source_changed"
                 save_progress(engine, progress)
                 return
@@ -532,7 +566,16 @@ def main(argv=None):
                 if args.sync_prices and os.getenv("FMP_API_KEY"):
                     from jobs.sync_prices import sync
                     from market_data.fmp import FmpClient
-                    scheduler.add_job(lambda: sync(engine, FmpClient(), codes, start, anchor, force=True),
+                    from market_data.yahoo import YahooFinanceClient
+                    scheduler.add_job(lambda: sync(
+                        engine,
+                        FmpClient(),
+                        price_codes,
+                        start,
+                        anchor,
+                        force=True,
+                        fallback_client=YahooFinanceClient(),
+                    ),
                                       "interval", hours=1, max_instances=1, coalesce=True)
                 scheduler.add_job(tick, "interval", seconds=5, max_instances=1, coalesce=True,
                                   next_run_time=clock.now())

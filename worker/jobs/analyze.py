@@ -21,6 +21,7 @@ from ai.batching import BatchPolicy, pack_items, measure
 from ai.providers import build as build_provider
 from ai.providers.base import RunControl
 from core.calendar import PRESETS, build
+from core.data_clock import analysis_range_anchor
 from jobs import annotate, extract, full_own
 from radar_db import make_engine
 from radar_db.comment_routes import (
@@ -93,16 +94,26 @@ def make_plan(engine, args):
     if not meta.get("anchor"):
         raise ValueError("No complete source day; import source data first")
     complete = date.fromisoformat(meta["anchor"][:10])
-    anchor = date.fromisoformat(args.anchor) if args.anchor else complete
-    if args.anchor_mode == "calendar-yesterday":
-        if args.anchor:
-            raise ValueError("Use either --anchor or --anchor-mode")
-        anchor = clock.now(ZoneInfo("Asia/Hong_Kong")).date() - timedelta(days=1)
-    if anchor > complete:
-        raise ValueError(f"Requested {anchor}, but source is complete only through {complete}")
     ranges = list(dict.fromkeys(value.strip() for value in args.ranges.split(",") if value.strip()))
     if not ranges or set(ranges) - set(PRESETS):
         raise ValueError("Unsupported ranges")
+    today = ranges == ["d0"]
+    if "d0" in ranges and not today:
+        raise ValueError("d0 must be analyzed as a single range")
+    if today:
+        if args.anchor or args.anchor_mode != "latest-complete":
+            raise ValueError("d0 always follows the latest observed data day; do not pass --anchor")
+        anchor = analysis_range_anchor(engine, "d0", complete, meta=meta)
+        if anchor is None:
+            raise ValueError("当天数据尚未同步，d0 暂无可分析数据")
+    else:
+        anchor = date.fromisoformat(args.anchor) if args.anchor else complete
+        if args.anchor_mode == "calendar-yesterday":
+            if args.anchor:
+                raise ValueError("Use either --anchor or --anchor-mode")
+            anchor = clock.now(ZoneInfo("Asia/Hong_Kong")).date() - timedelta(days=1)
+        if anchor > complete:
+            raise ValueError(f"Requested {anchor}, but source is complete only through {complete}")
     windows = sorted((build(key, anchor) for key in ranges), key=lambda window: window["days"])
     current_only = bool(getattr(args, "current_window_only", False))
     first = min(window["from"] if current_only else window["benchFrom"] for window in windows)
@@ -115,7 +126,7 @@ def make_plan(engine, args):
         if not current_only:
             current_only, baseline_unavailable = True, True
             first = min(window["from"] for window in windows)
-    if anchor != complete and not meta.get("window_from"):
+    if not today and anchor != complete and not meta.get("window_from"):
         raise ValueError("Historical replay requires a declared window_from")
     days = []
     for window in windows:
@@ -129,7 +140,8 @@ def make_plan(engine, args):
                     days.append(day.isoformat())
                 day -= timedelta(days=1)
     codes = [row["code"] for row in products]
-    lo, hi = hkt_range_utc_naive(first, anchor)
+    last = max(date.fromisoformat(window["to"]) for window in windows)
+    lo, hi = hkt_range_utc_naive(first, last)
     route_active = comment_routes_ready(meta)
     with engine.connect() as conn:
         if route_active:

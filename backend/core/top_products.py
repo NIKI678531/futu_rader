@@ -17,6 +17,7 @@ from datetime import date
 from sqlalchemy import func, select
 
 from core.calendar import build, parse_anchor
+from core.data_clock import analysis_range_anchor
 from radar_db.comment_filter import (
     is_filter_ready,
     load_comment_filter_config,
@@ -77,10 +78,11 @@ def top_comment_products(
 
     config = load_comment_filter_config()
     require_filter_ready(engine, config)
-    anchor_date = _anchor_date(engine, anchor)
-    if anchor_date is None:
+    complete_anchor = _anchor_date(engine, anchor)
+    range_anchor = analysis_range_anchor(engine, range_key, complete_anchor)
+    if range_anchor is None:
         return []
-    counts = _comment_counts(engine, range_key, anchor_date, codes, config)
+    counts = _comment_counts(engine, range_key, range_anchor, codes, config)
 
     ordered = sorted(codes, key=lambda code: (-counts.get(code, 0), code))[:limit]
     return [
@@ -120,14 +122,15 @@ def analysis_products(
     codes = [str(product["code"]) for product in products]
     if not codes:
         return []
-    anchor_date = _anchor_date(engine, anchor)
+    complete_anchor = _anchor_date(engine, anchor)
+    range_anchor = analysis_range_anchor(engine, range_key, complete_anchor)
     config = load_comment_filter_config()
     counts: dict[str, int] | None = None
-    if anchor_date is not None:
+    if range_anchor is not None:
         with engine.connect() as conn:
             meta = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v)).all())
         if is_filter_ready(meta, config):
-            counts = _comment_counts(engine, range_key, anchor_date, codes, config)
+            counts = _comment_counts(engine, range_key, range_anchor, codes, config)
     if own_limit is not None and counts is None:
         require_filter_ready(engine, config)
         return []

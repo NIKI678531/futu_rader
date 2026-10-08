@@ -1,6 +1,8 @@
 import json
 import os
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine, insert, select
 from sqlalchemy.pool import StaticPool
@@ -9,7 +11,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from jobs import daily, refresh  # noqa: E402
+from jobs.admin_analysis import process_next  # noqa: E402
 from radar_db.analysis_requests import claim_next, finish, list_requests  # noqa: E402
+from radar_db.product_catalog import load_products  # noqa: E402
 from radar_db.schema import meta_kv, metadata  # noqa: E402
 
 
@@ -73,6 +77,78 @@ def test_repeated_daily_run_reuses_active_requests():
     assert len(list_requests(engine)) == 3
 
 
+def test_intraday_slots_enqueue_d0_idempotently_and_coalesce_an_active_followup():
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k="data_max_ts", v="2026-10-08 15:00:00"))
+    steps = {
+        "sync": lambda _at: {"status": "succeeded", "mode": "incremental"},
+        "prices": lambda _engine, _day: {"status": "ok"},
+    }
+    hkt = ZoneInfo("Asia/Hong_Kong")
+
+    first = daily.run_intraday(
+        engine,
+        scheduled_at=datetime(2026, 10, 8, 13, 0, tzinfo=hkt),
+        **steps,
+    )
+    duplicate = daily.run_intraday(
+        engine,
+        scheduled_at=datetime(2026, 10, 8, 13, 30, tzinfo=hkt),
+        **steps,
+    )
+    second_slot = daily.run_intraday(
+        engine,
+        scheduled_at=datetime(2026, 10, 8, 15, 0, tzinfo=hkt),
+        **steps,
+    )
+
+    assert first["queued"][0]["created"] is True
+    assert duplicate["analysis"]["status"] == "deduplicated"
+    assert second_slot["analysis"] == {
+        "status": "followup_queued",
+        "followupRequested": True,
+    }
+    assert len(list_requests(engine)) == 1
+
+    seen = []
+    runner = lambda range_key: seen.append(range_key) or {"status": "complete", "errors": 0}
+    assert process_next(engine=engine, owner="slot-13", runner=runner)["status"] == "succeeded"
+    assert process_next(engine=engine, owner="slot-15", runner=runner)["status"] == "succeeded"
+    assert seen == ["d0", "d0"]
+    assert len(list_requests(engine)) == 2
+
+
+def test_intraday_sync_uses_a_stable_hourly_id_and_incremental_keyset_path(monkeypatch):
+    monkeypatch.setenv("MARKET_INSIGHT_DATABASE_URL", "mysql+pymysql://source/market_insight")
+    captured = {}
+    service = type("Service", (), {"source": object()})()
+    monkeypatch.setattr(refresh, "_refresh", lambda: service)
+    monkeypatch.setattr(
+        refresh,
+        "sync_once",
+        lambda **kwargs: captured.update(kwargs) or {
+            "status": "succeeded",
+            "complete_through": "2026-10-07",
+            "rows_read": 3,
+            "inserted": 2,
+            "updated": 1,
+        },
+    )
+
+    result = daily.intraday_sync_step(
+        datetime(2026, 10, 8, 13, 0, tzinfo=ZoneInfo("Asia/Hong_Kong"))
+    )
+
+    assert captured == {
+        "mode": "incremental",
+        "run_id": "intraday-20261008-13",
+        "service": service,
+    }
+    assert result["mode"] == "incremental"
+    assert result["rowsRead"] == 3
+
+
 def test_dump_mode_skips_sync_without_a_source_url(monkeypatch):
     monkeypatch.delenv("MARKET_INSIGHT_DATABASE_URL", raising=False)
     monkeypatch.delenv("FMP_API_KEY", raising=False)
@@ -83,6 +159,41 @@ def test_dump_mode_skips_sync_without_a_source_url(monkeypatch):
 
     assert report["sync"]["status"] == "skipped" and report["sync"]["mode"] == "dump"
     assert report["prices"]["status"] == "skipped"
+
+
+def test_price_step_wires_yfinance_as_the_fmp_identity_fallback(monkeypatch):
+    from jobs import sync_prices
+    from market_data import fmp, yahoo
+
+    monkeypatch.setenv("FMP_API_KEY", "test-key")
+    primary, fallback, captured = object(), object(), {}
+    monkeypatch.setattr(fmp, "FmpClient", lambda: primary)
+    monkeypatch.setattr(yahoo, "YahooFinanceClient", lambda: fallback)
+
+    def fake_sync(engine, client, codes, start, end, **kwargs):
+        captured.update(
+            engine=engine,
+            client=client,
+            codes=codes,
+            start=start,
+            end=end,
+            kwargs=kwargs,
+        )
+        return []
+
+    monkeypatch.setattr(sync_prices, "sync", fake_sync)
+    engine = _engine()
+    report = daily.price_step(engine)
+
+    assert report["status"] == "ok"
+    assert captured["engine"] is engine
+    assert captured["client"] is primary
+    assert captured["kwargs"]["fallback_client"] is fallback
+    assert captured["end"].isoformat() == "2026-08-25"
+    assert captured["start"].isoformat() == "2026-06-27"
+    expected = load_products(engine=engine)
+    assert captured["codes"] == [product["code"] for product in expected]
+    assert {product["ownership"] for product in expected} == {"own", "peer"}
 
 
 def test_production_sync_goes_through_the_latest_closing_receipt(monkeypatch):

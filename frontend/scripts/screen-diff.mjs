@@ -56,6 +56,9 @@ const EXTERNAL_API = process.env.API_ORIGIN || null
 const API_ORIGIN = EXTERNAL_API || 'http://127.0.0.1:8017'
 const REACT_ORIGIN = 'http://localhost:5177'
 const DESIGN_ORIGIN = 'http://localhost:5174'
+/* 2026-10-08 用户要求先在五个业务页加入“当天”前端占位，数据与后端逻辑后补。
+   旧设计源保持只读；只按专用属性移除这一枚按钮，其余日期档位仍逐字比较。 */
+const TODAY_PLACEHOLDER_SELECTOR = '[data-screen-diff-new="today-range-placeholder"]'
 
 /* 榜单行、热力图色块、Top3 卡都是「点一下把 sel 设成这个代码」，所以按代码的**完整文字**
    选中第一个即可，点到哪一个都打开同一只产品的抽屉。3033 是评论量第一，任何筛选态下都在。
@@ -79,29 +82,48 @@ const openSectorNotes = async (page) => {
     .waitFor({ timeout: 30_000 })
 }
 
-/* 产品监控的原文证据侧栏。默认状态下它是空的（挂载着但没内容），而 `evidenceFor` 的
-   四个参数——产品代码、ctxKey、极性、条数——全部只在这里生效。不点开就等于这个端点
-   一次都没被比对到。「查看原文证据 N 条 →」是当前舆情总结那张卡的入口（ctxKey 尾巴是
-   `sum`、极性中性）；等「展开单帖详情」，那是证据行渲染出来才有的字。 */
-const openProductEvidence = async (page) => {
-  await page.getByText(/^查看原文证据 \d+ 条 →$/).first().click()
-  await page.getByText('展开单帖详情', { exact: true }).first().waitFor({ timeout: 30_000 })
-}
-
-/* 产品相关 KOL 默认只显示前 5 位，而 3033 的第 9 位（2 条提及）是这一页唯一一个
-   `dominantAttitude === null` 的样本 —— 下面白名单那条有意偏差的现场。不展开，它和
-   设计源的差异就永远不会被这个 harness 看见。 */
+/* 产品相关 KOL 默认只显示前 5 位。「主要态度」列删除后仍保留展开态比对，
+   避免只验到前五行、让后续 KOL 的文案或链接回归漏过。 */
 const openProductKols = async (page) => {
   await page.getByText(/^展开全部 \d+ 位$/).first().click()
   await page.getByText('收起，只看前 5 位', { exact: true }).first().waitFor({ timeout: 30_000 })
+}
+
+/* 2026-10-08 起移植版默认按浏览量排，并新增浏览量列。旧设计源没有这项；镜像对照时
+   两边都切到仍然共享的「按篇数」，再只移除移植版新增的控件／列，让原有榜单行继续逐字比。 */
+const compareKolByPosts = async (page) => {
+  await page.getByText('按篇数', { exact: true }).click()
 }
 
 /* 路由 → 设计源文件。与 src/lib/routes.js 的 PATH_BY_FILE 同一份对应关系；
    设计源静态站没有 index.html，必须访问具体 .dc.html 路径。 */
 const SCREENS = [
   { path: '/official', file: 'official-activity.dc.html', label: '官号动态' },
-  { path: '/kol', file: 'kol-activity.dc.html', label: 'KOL 影响力' },
-  { path: '/kol/detail', file: 'kol-detail.dc.html', label: 'KOL 详情' },
+  {
+    path: '/kol', file: 'kol-activity.dc.html', label: 'KOL 影响力',
+    prepare: compareKolByPosts,
+    omitSelectors: {
+      react: [
+        '[data-screen-diff-new="kol-view-sort"]',
+        '[data-screen-diff-new="kol-view-column"]',
+      ],
+    },
+  },
+  {
+    path: '/kol/detail', file: 'kol-detail.dc.html', label: 'KOL 详情',
+    /* 默认账号现在也跟着浏览量排名变化。固定同一账号，避免把“选中了不同的人”误报成
+       页面移植差异；仍保留真实的 URL 深链流程。 */
+    query: `?kol=${encodeURIComponent('守猪逮兔估值模型')}&range=d7`,
+    /* 同一批注用产品归属饼图替换旧类型构成，并删除整块其他产品观点。只从逐字镜像检查
+       移除这些有意重做／删除的卡片；其余头卡、帖子、时间线仍逐字比。 */
+    omitSections: {
+      react: [{ heading: '产品归属构成', up: 2 }],
+      design: [
+        { heading: '帖子类型构成', up: 2 },
+        { heading: '其他产品观点及操作', up: 3 },
+      ],
+    },
+  },
   {
     path: '/sector',
     file: 'sector-overview.dc.html',
@@ -116,7 +138,6 @@ const SCREENS = [
     file: 'product-monitor.dc.html',
     label: '产品监控',
     views: [
-      { label: '原文证据侧栏', act: openProductEvidence },
       { label: '产品相关 KOL 全部展开', act: openProductKols },
     ],
   },
@@ -150,6 +171,88 @@ const SCREENS = [
  *      对应条目应当删掉，而不是永久留着。
  */
 const WHITELIST = [
+  {
+    screen: '/kol',
+    side: 'react',
+    match: /^(提及范围|ETF 归属|自家 \/ 其他)$/,
+    source: '2026-10-08 用户浏览器批注 1',
+    note:
+      '发帖表和榜单筛选把容易误解为立场的「阵营」改称「提及范围」；主 ETF 相邻列则改为'
+      + '「ETF 归属」，榜单分布标题相应改成「自家 / 其他」。只豁免移植版的新词组。',
+  },
+  {
+    screen: '/kol',
+    side: 'design',
+    match: /^(阵营|自家 \/ 竞品)$/,
+    source: '2026-10-08 用户浏览器批注 1',
+    note: '旧设计源只读；只豁免被上述三个新词组取代的旧标题。',
+  },
+  {
+    screen: '/kol',
+    side: 'react',
+    match: /^其他公司$/,
+    source: '2026-10-08 用户浏览器批注 1',
+    note:
+      '发帖表的 ETF 归属由整篇 camp 双标签改成主 ETF ownership 单标签：自家 ETF 只显示'
+      + '「自家」，其余发行商只显示「其他公司」。这里只豁免移植版的新标签。',
+  },
+  {
+    screen: '/kol',
+    side: 'design',
+    match: /^(自家|竞品)$/,
+    source: '2026-10-08 用户浏览器批注 1',
+    note: '旧设计源的整篇 camp 可能渲染两枚标签；只豁免被主 ETF 单标签替换掉的旧标签节点。',
+  },
+  {
+    screen: '/kol/detail',
+    side: 'react',
+    match: /^(ETF 归属|南方东英 vs 其他公司发帖时间线|只提其他公司)$/,
+    source: '2026-10-08 用户浏览器批注 1、4',
+    note:
+      '详情表同步改为主 ETF 的单一归属标签；时间线把对立式「竞品」措辞改成中性的'
+      + '「其他公司」。这里只豁免移植版的新词组。',
+  },
+  {
+    screen: '/kol/detail',
+    side: 'design',
+    match: /^(阵营|自家 vs 竞品发帖时间线|只提竞品)$/,
+    source: '2026-10-08 用户浏览器批注 1、4',
+    note:
+      '旧设计源只读；只豁免被详情页新归属／时间线措辞取代的旧词组。饼图替换本身在'
+      + 'SCREENS.omitSections 中隔离并由六态契约验证。',
+  },
+  {
+    screen: '/product',
+    side: 'design',
+    match: /^(主要态度|积极|消极|中性|样本不足)$/,
+    source: '2026-10-07 用户浏览器批注 2',
+    note:
+      '产品相关 KOL 表整列删除「主要态度」，因此只豁免设计源一侧的表头和该列单元格。'
+      + '`side: design` 防止同样的态度词在移植版其他位置被误放行。',
+  },
+  {
+    screen: '/product',
+    side: 'design',
+    match: /^KOL 身份来自已核验名单与账号映射，不按活跃度或粉丝数推断；提及需含产品代码、标准名称、已核验简称或明确语义指代，并保留命中依据；仅发过相关原帖但未在评论区提及该产品的 KOL 不计入；同一条评论只计一次。提及少于 3 条不输出主要态度。$/,
+    source: '2026-10-07 用户浏览器批注 2',
+    note: '设计源的 KOL 表脚注仍宣告已删除的「主要态度」低样本规则；精确限定整个旧文本节点。',
+  },
+  {
+    screen: '/product',
+    side: 'react',
+    match: /^KOL 身份来自已核验名单与账号映射，不按活跃度或粉丝数推断；相关原帖与 KOL 页面使用同一来源，模型确认的评论观点作为补充证据；同一条内容只计一次。$/,
+    source: '2026-10-07 用户浏览器批注 2',
+    note: '移植版表脚保留来源与去重说明，但不再展示与已删列相关的低样本句；精确限定整个新文本节点。',
+  },
+  {
+    screen: '/sector',
+    side: 'design',
+    match: /^样本不足$/,
+    source: '2026-10-07 用户浏览器批注 5／ADR-0033',
+    note:
+      '板块榜单自 5 条筛后评论起展示态度小条；达到门槛但没有可识别的积极／消极态度时改为灰条，'
+      + '所以仅豁免设计源一侧的「样本不足」文本。LOW_SAMPLE=10 仍是整体倾向门槛。',
+  },
   {
     screen: '/product',
     match: /^(积极／消极为 AI 对内容中产品态度的分类，不是 Futu 平台的互动行为|赞／踩为 AI 对内容中产品态度的分类，不是 Futu 平台的点赞／点踩行为|积极|积极 ／ 赞|消极|消极 ／ 踩|中性内容不进入积极／消极占比；占比分母为积极＋消极＝|中性内容不进入赞踩比；赞踩比分母为积极＋消极＝|市场方向、指数涨跌与宏观事件等不计入产品积极／消极态度的讨论在此呈现|市场方向、指数涨跌与宏观事件等不计入产品赞踩的讨论在此呈现|(积极|赞) \d+|(消极|踩) \d+)$/,
@@ -188,19 +291,6 @@ const WHITELIST = [
   },
   {
     screen: '/product',
-    match: /^(暂不可用|样本不足)$/,
-    source: 'PRD §3.6 六态表 ／ §5 表 P8「主要态度（<3 条不输出）」／ 本期 spec',
-    note:
-      '产品相关 KOL 的「主要态度」列：有效提及少于 3 条时后端下发 null。设计源把这个'
-      + 'null 渲染成「样本不足」，而 PRD §3.6 把「样本不足」留给了另一态——有样本、'
-      + '低于判定阈值、因此不下结论；字段级 null 一律是「暂不可用」。两句话在六态表里'
-      + '是不同的两行，混用会让人以为我们量过了。移植版按 PRD 渲染「暂不可用」。'
-      + '（同一页脚注那句「提及少于 3 条不输出主要态度」逐字保留，它解释的是规则本身。）'
-      + '3033 · d7 只有第 9 位 KOL（2 条）落在这一态，所以只有在「产品相关 KOL 全部'
-      + '展开」这个视图里才会各豁免一处。',
-  },
-  {
-    screen: '/product',
     match: /^AI 结论由模型自动生成，未经人工验证；每条可回到原文。$/,
     source: 'ADR-0019 §4「如实声明」／PRD §4.2 P7',
     note:
@@ -223,9 +313,7 @@ const WHITELIST = [
     screen,
     /* /kol 的行徽章带置信度（「待确认 0.62」）、详情弹层里是光秃秃的「待确认」；
        /kol/detail 的发帖表是光秃秃的，/official 的带置信度。三页各取所需，不写成一条
-       大而全的正则：`待确认 0.62` 这个形态在 /kol/detail 的「提及其他产品」表里两边**都**
-       渲染（那一块还按老的置信度规则走，见 KolDetail.jsx:266），把它一并豁免会顺手把那块
-       将来的回归也一起盖掉。 */
+       大而全的正则，避免把页面其他位置单独渲染的置信度数字也一起豁免。 */
     match: screen === '/kol/detail'
       ? /^(AI 生成( · (可追溯原文|待确认))?|待确认)$/
       : screen === '/official'
@@ -247,8 +335,9 @@ const WHITELIST = [
 ]
 
 /* 抓一页的文本片段序列 ＋ 站外链接序列。act 是可选的展开操作（见顶部「展开态」）。 */
-async function grab(page, url, act) {
+async function grab(page, url, prepare, act, omitSections = [], omitSelectors = []) {
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
+  if (prepare) await prepare(page)
   /* 操作要在稳定等待**之前**做：点击本身会触发新的取数（移植版这边是新的 read()），
      等待的对象是操作之后的终态。Playwright 的 click 自带可见性等待，够它渲染出来。 */
   if (act) await act(page)
@@ -262,6 +351,29 @@ async function grab(page, url, act) {
     stable = len === last ? stable + 1 : 0
     last = len
     await page.waitForTimeout(250)
+  }
+
+  /* 设计源镜像只读；大模块被产品要求整体替换时，从两边移除对应卡片再比较其余页面。
+     `up` 是标题文本节点所在元素到卡片根元素的层数。严格要求唯一命中，DOM 漂移时测试
+     会直接失败，而不是悄悄少比较一个区域。 */
+  for (const section of omitSections) {
+    const heading = page.getByText(section.heading, { exact: true })
+    const count = await heading.count()
+    if (count !== 1) {
+      throw new Error(`${url} 无法唯一定位待排除模块「${section.heading}」（命中 ${count} 个）`)
+    }
+    await heading.evaluate((node, levels) => {
+      let root = node
+      for (let i = 0; i < levels; i++) root = root && root.parentElement
+      if (!root) throw new Error(`待排除模块向上 ${levels} 层后没有根元素`)
+      root.remove()
+    }, section.up)
+  }
+  for (const selector of omitSelectors) {
+    const nodes = page.locator(selector)
+    const count = await nodes.count()
+    if (!count) throw new Error(`${url} 找不到待排除的新元素：${selector}`)
+    await nodes.evaluateAll((items) => items.forEach((item) => item.remove()))
   }
 
   return page.evaluate(() => {
@@ -324,8 +436,11 @@ function lcsDiff(a, b) {
   return ops.filter((o) => o.op !== '=')
 }
 
-function exempt(screenPath, text) {
-  return WHITELIST.find((w) => (!w.screen || w.screen === screenPath) && w.match.test(text))
+function exempt(screenPath, diff) {
+  const side = diff.op === '-' ? 'react' : 'design'
+  return WHITELIST.find((w) => (!w.screen || w.screen === screenPath)
+    && (!w.side || w.side === side)
+    && w.match.test(diff.text))
 }
 
 async function up(origin, command, args, { cwd, env = {} }) {
@@ -408,15 +523,30 @@ try {
       const errors = []
       page.on('pageerror', (e) => errors.push(String(e)))
 
-      const react = await grab(page, REACT_ORIGIN + s.path, view && view.act)
-      const design = await grab(page, `${DESIGN_ORIGIN}/${s.file}`, view && view.act)
+      const query = s.query || ''
+      const react = await grab(
+        page,
+        REACT_ORIGIN + s.path + query,
+        s.prepare,
+        view && view.act,
+        (s.omitSections && s.omitSections.react) || [],
+        [TODAY_PLACEHOLDER_SELECTOR].concat((s.omitSelectors && s.omitSelectors.react) || []),
+      )
+      const design = await grab(
+        page,
+        `${DESIGN_ORIGIN}/${s.file}${query}`,
+        s.prepare,
+        view && view.act,
+        (s.omitSections && s.omitSections.design) || [],
+        (s.omitSelectors && s.omitSelectors.design) || [],
+      )
       await page.close()
 
       const textDiff = lcsDiff(react.text, design.text)
       const linkDiff = lcsDiff(react.links, design.links)
       const real = {
-        文字: textDiff.filter((d) => !exempt(s.path, d.text)),
-        站外链接: linkDiff.filter((d) => !exempt(s.path, d.text)),
+        文字: textDiff.filter((d) => !exempt(s.path, d)),
+        站外链接: linkDiff.filter((d) => !exempt(s.path, d)),
       }
       const waived = textDiff.length + linkDiff.length - real.文字.length - real.站外链接.length
       const bad = real.文字.length + real.站外链接.length

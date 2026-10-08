@@ -43,7 +43,7 @@ export default function Kpis({ v }) {
         <div style={s('display:flex;align-items:baseline;gap:8px;margin-bottom:8px')}>
           <span style={s('font:500 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>舆情管理</span>
           <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>CSOP 自家产品</span>
-          {k2.partialData && (
+          {k2.partialData && k2.coverageLabel && (
             <span style={s('margin-left:auto;padding:1px 6px;border-radius:999px;background:#FFF7E6;font:500 10px/1.5 var(--font-cjk);color:#9A6700;white-space:nowrap')}>{k2.coverageLabel}</span>
           )}
         </div>

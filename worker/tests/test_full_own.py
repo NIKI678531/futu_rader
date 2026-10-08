@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from ai import config
-from jobs.full_own import prepare, prioritize_scope, queue_status
+from jobs.full_own import prepare, prioritize_scope, product_code_sets, queue_status
 
 
 from radar_db import create_all, make_engine
@@ -22,6 +22,18 @@ def _mark_filter_ready(engine):
             {"k": key, "v": value}
             for key, value in filter_readiness_values(load_comment_filter_config()).items()
         ])
+
+
+def test_price_sync_uses_all_products_without_expanding_default_analysis_scope():
+    products = [
+        {"code": "3033", "ownership": "own"},
+        {"code": "2800", "ownership": "peer"},
+    ]
+
+    analysis_codes, price_codes = product_code_sets(products, include_all_analysis=False)
+
+    assert analysis_codes == ["3033"]
+    assert price_codes == ["3033", "2800"]
 
 
 def test_prepare_reuses_scopes_and_leases_exclude_other_workers(tmp_path):
@@ -130,6 +142,72 @@ def test_selected_ranges_only_queue_their_current_and_baseline_windows(tmp_path)
     with engine.connect() as conn:
         targets = set(conn.execute(select(annotation_jobs.c.target_id)).scalars())
     assert targets == {2, 3}
+
+
+def test_today_prepare_includes_partial_day_and_yesterday_baseline(tmp_path):
+    engine = make_engine("sqlite:///" + (tmp_path / "today.db").as_posix())
+    create_all(engine)
+    _mark_filter_ready(engine)
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv), [
+            {"k": "anchor", "v": "2026-08-25"},
+            {"k": "data_max_ts", "v": "2026-08-26 09:00:00"},
+        ])
+        for feed_id, posted_at in (
+            (1, datetime(2026, 8, 25, 3)),
+            (2, datetime(2026, 8, 26, 1)),
+        ):
+            conn.execute(insert(feeds).values(
+                feed_id=feed_id,
+                code="3033",
+                source_ticker="03033.HK",
+                posted_at=posted_at,
+                feed_type=1,
+                title="$03033.HK$",
+                content="$03033.HK$ ETF",
+                like_count=0,
+                comment_count=1,
+                image_count=0,
+                raw_json_broken=False,
+            ))
+            conn.execute(insert(comments).values(
+                comment_id=feed_id,
+                feed_id=feed_id,
+                content="ETF fee",
+                author_uid=f"today-{feed_id}",
+            ))
+            conn.execute(insert(mentions), [
+                {"feed_id": feed_id, "code": "3033", "source": source, "in_pool": True}
+                for source in ("anchor", "body")
+            ])
+            conn.execute(insert(feed_mentions).values(
+                feed_id=feed_id,
+                raw_ticker="03033.HK",
+                market="HK",
+                occurrences=1,
+            ))
+    cfg = config.load(
+        model="test",
+        prompt_version="comment-product-v2",
+        schema_version="v2",
+        taxonomy_version="v2",
+    )
+
+    scopes, start = prepare(
+        engine,
+        cfg,
+        date(2026, 8, 26),
+        ["3033"],
+        ranges=["d0"],
+    )
+
+    assert start == date(2026, 8, 25)
+    with engine.connect() as conn:
+        scope = conn.execute(
+            select(analysis_scopes).where(analysis_scopes.c.scope_id == scopes["3033"])
+        ).mappings().one()
+    assert scope["date_from"] == datetime(2026, 8, 25)
+    assert scope["date_to"] == datetime(2026, 8, 26)
 
 
 def test_optimized_prepare_matches_candidates_and_reuses_scopes(tmp_path):

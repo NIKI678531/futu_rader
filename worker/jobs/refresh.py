@@ -168,7 +168,7 @@ def _parser():
     )
     analyze.add_argument(
         "--ranges",
-        help="optional comma-separated ranges (d1,d2,d7,d14,d30,mtd)",
+        help="optional comma-separated ranges (d0,d1,d2,d7,d14,d30,mtd)",
     )
     analyze.add_argument("--wait-for-ready", action="store_true")
     analyze.add_argument("--wait-timeout-seconds", type=int, default=28800)

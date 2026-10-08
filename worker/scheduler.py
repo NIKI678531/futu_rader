@@ -72,6 +72,12 @@ def daily_refresh(*, engine=None):
     run_daily(engine=engine)
 
 
+def intraday_refresh(*, engine=None):
+    from jobs.daily import run_intraday
+
+    run_intraday(engine=engine)
+
+
 def upgrade_schema(engine):
     """Apply pending Alembic migrations; databases without a version table are left alone."""
     from sqlalchemy import inspect
@@ -90,7 +96,14 @@ def upgrade_schema(engine):
     return True
 
 
-def build_scheduler(interval_seconds=None, poll_seconds=None, *, engine=None, cron=None):
+def build_scheduler(
+    interval_seconds=None,
+    poll_seconds=None,
+    *,
+    engine=None,
+    cron=None,
+    intraday_expression=None,
+):
     """Build the persistent worker scheduler without starting it."""
     engine = engine or make_engine()
     interval = interval_seconds or int(os.getenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", "60"))
@@ -113,7 +126,7 @@ def build_scheduler(interval_seconds=None, poll_seconds=None, *, engine=None, cr
         coalesce=True,
         kwargs={"engine": engine},
     )
-    from jobs.daily import daily_cron
+    from jobs.daily import daily_cron, intraday_cron
 
     expression = daily_cron(cron)
     if expression:
@@ -124,6 +137,17 @@ def build_scheduler(interval_seconds=None, poll_seconds=None, *, engine=None, cr
             max_instances=1,
             coalesce=True,
             misfire_grace_time=6 * 3600,
+            kwargs={"engine": engine},
+        )
+    intraday = intraday_cron(intraday_expression)
+    if intraday:
+        scheduler.add_job(
+            intraday_refresh,
+            CronTrigger.from_crontab(intraday, timezone=timezone),
+            id="intraday-refresh",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=2 * 3600,
             kwargs={"engine": engine},
         )
     return scheduler

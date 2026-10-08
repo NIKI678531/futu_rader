@@ -9,7 +9,7 @@ K 线三者的对齐就全错了，而错法是安静的。
 """
 
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -47,6 +47,19 @@ def test_benchmark_window_is_adjacent_and_equal_length(key):
         r["days"] - 1
     )
     assert (date.fromisoformat(r["from"]) - date.fromisoformat(r["benchTo"])).days == 1
+
+
+def test_today_range_carries_partial_cutoff_and_same_time_benchmark():
+    through = datetime(2026, 9, 2, 9, 17, 3)
+    result = build("d0", through.date(), data_through=through)
+
+    assert result["label"] == "当天"
+    assert result["from"] == result["to"] == "2026-09-02"
+    assert result["benchFrom"] == result["benchTo"] == "2026-09-01"
+    assert result["partial"] is True
+    assert result["dataThrough"] == "2026-09-02T09:17:03 HKT"
+    assert result["benchmarkThrough"] == "2026-09-01T09:17:03 HKT"
+    assert len(result["buckets"]) == 24
 
 
 def test_no_fallback_to_today_when_the_anchor_is_missing():

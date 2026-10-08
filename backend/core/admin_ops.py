@@ -16,6 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from providers import get_provider
 from providers.sentinel import MISSING
+from core.data_clock import analysis_range_anchor
 from core.top_products import TOP_COMMENT_PRODUCT_LIMIT, analysis_products
 from radar_db import make_engine
 from radar_db import clock
@@ -73,6 +74,7 @@ AI_LAYER_B = (
 
 MISSING_CODE_LIMIT = 40
 LAST_DAILY_RUN_KEY = "ai_daily_last_run"
+LAST_INTRADAY_RUN_KEY = "ai_intraday_last_run"
 
 
 def _dirty_codes(meta: Mapping[str, Any], range_key: str) -> set[str]:
@@ -102,7 +104,7 @@ def layer_b_states(
         for code in codes:
             generation = meta.get(synthesis_generation_key(code, range_key, kind))
             published, _, fingerprint = str(generation or "").partition("|")
-            if not fingerprint or not published or (anchor and published > anchor):
+            if not anchor or not fingerprint or not published or published > anchor:
                 missing.append(code)
             elif published == anchor and code not in dirty:
                 fresh.append(code)
@@ -268,7 +270,13 @@ class AdminOperations:
             for definition in AI_LAYER_A
         ]
 
-        anchor = str(meta.get("anchor") or "")
+        effective_anchor = analysis_range_anchor(
+            self.target_engine,
+            range_key,
+            meta.get("anchor"),
+            meta=meta,
+        )
+        anchor = effective_anchor.isoformat() if effective_anchor else ""
         states = layer_b_states(meta, codes, range_key, anchor)
         dirty_codes = _dirty_codes(meta, range_key) & set(codes)
         analysis_running = progress.get("status") == "running" and range_key in progress_ranges
@@ -422,7 +430,7 @@ class AdminOperations:
 
     def pipeline(self, range_key: str) -> dict[str, Any]:
         if range_key not in RANGE_PRIORITY:
-            raise AdminValidationError("range 只允许 d1、d2、d7、d14、d30 或 mtd")
+            raise AdminValidationError("range 只允许 d0、d1、d2、d7、d14、d30 或 mtd")
         try:
             refresh_provider = getattr(self.market_provider, "refresh", None)
             if callable(refresh_provider):
@@ -482,28 +490,47 @@ class AdminOperations:
         return {
             "generatedAt": _iso(observed_at),
             "anchor": meta.get("anchor"),
+            "dataThrough": meta.get("data_max_ts"),
             "selectedRange": range_key,
+            "selectedRangeAnchor": layers.get("anchor"),
             "comments": comment_rows,
             "commentDisplayLimit": TOP_COMMENT_PRODUCT_LIMIT,
             "analyzedProductCodes": top_codes,
             "ownTopLimit": own_limit,
             "layers": layers,
-            "coverage": self._coverage(meta, codes_by_range, range_states),
+            "coverage": self._coverage(
+                meta,
+                codes_by_range,
+                range_states,
+                target_engine=self.target_engine,
+            ),
             "checks": self._checks(meta, health, [str(p["code"]) for p in products]),
             "daily": _json(meta.get(LAST_DAILY_RUN_KEY), None),
+            "intraday": _json(meta.get(LAST_INTRADAY_RUN_KEY), None),
             "worker": health,
             "ranges": range_states,
             "recentRuns": runs,
         }
 
     @staticmethod
-    def _coverage(meta, codes_by_range, range_states):
+    def _coverage(meta, codes_by_range, range_states, *, target_engine=None):
         """Completion of every page range: products fully fresh, served stale, or missing."""
 
-        anchor = str(meta.get("anchor") or "")
+        complete_anchor = str(meta.get("anchor") or "")
         active = {row["key"]: row.get("activeRun") for row in range_states}
         rows = []
         for range_key in RANGE_PRIORITY:
+            effective_anchor = (
+                analysis_range_anchor(
+                    target_engine,
+                    range_key,
+                    complete_anchor,
+                    meta=meta,
+                )
+                if target_engine is not None
+                else None
+            )
+            anchor = effective_anchor.isoformat() if effective_anchor else ""
             codes = codes_by_range.get(range_key) or []
             states = layer_b_states(meta, codes, range_key, anchor)
             missing = {code for state in states.values() for code in state["missing"]}
@@ -532,6 +559,7 @@ class AdminOperations:
     def _checks(meta, health, codes):
         readiness = _json(meta.get(WORKER_READINESS_KEY), {})
         daily = _json(meta.get(LAST_DAILY_RUN_KEY), {}) or {}
+        intraday = _json(meta.get(LAST_INTRADAY_RUN_KEY), {}) or {}
         filter_ready = is_filter_ready(meta, load_comment_filter_config())
         routes_ready = comment_routes_ready(meta, codes)
         checks = [
@@ -602,6 +630,25 @@ class AdminOperations:
                     )
                 ),
             },
+            {
+                "id": "intraday",
+                "label": "当天定时分析",
+                "status": "info" if readiness.get("intradayCron") else "fail",
+                "detail": (
+                    (
+                        f"{readiness['intradayCron']}（香港时间）"
+                        if readiness.get("intradayCron")
+                        else "已关闭（AI_INTRADAY_CRON=off）"
+                    )
+                    + (
+                        f" · 上次 {intraday.get('startedAt')}"
+                        f"，数据日 {intraday.get('dataDate') or '未知'}"
+                        f"，同步 {(intraday.get('sync') or {}).get('status')}"
+                        if intraday.get("startedAt")
+                        else " · 尚未运行过"
+                    )
+                ),
+            },
         ]
         return checks
 
@@ -623,7 +670,7 @@ class AdminOperations:
 
     def enqueue_analysis(self, range_key: str) -> dict[str, Any]:
         if range_key not in RANGE_PRIORITY:
-            raise AdminValidationError("range 只允许 d1、d2、d7、d14、d30 或 mtd")
+            raise AdminValidationError("range 只允许 d0、d1、d2、d7、d14、d30 或 mtd")
         try:
             self._require_ready_worker()
             active = list_active_requests(self.target_engine)

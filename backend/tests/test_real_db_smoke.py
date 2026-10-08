@@ -40,6 +40,8 @@ import sys
 
 import pytest
 
+from core.price_bars import session_slots
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 
@@ -289,6 +291,31 @@ def test_product_endpoints_all_answer_on_real_data(real, busiest_code):
     body(real, f"/api/v1/products/{busiest_code}/evidence?ctx={RANGE}%7Csum&polarity=neutral")
 
 
+def test_7747_d7_candles_publish_matching_ohlc(real):
+    """7747 的产品页必须拿到它自己在 d7 区间内的真实日 K。
+
+    这是产品监控页的公开 API 接缝：URL 固定产品代码，桶标签固定来自同一份 d7 区间，
+    五个交易日都应有完整 OHLC；周末两桶按契约保留为空，而不是整份 unavailable。
+    """
+    rng = body(real, f"/api/v1/ranges/{RANGE}")
+    candles = body(real, f"/api/v1/products/7747/candles?range={RANGE}")
+
+    if (candles["status"] == "unavailable"
+            and candles.get("reason") == "instrument_not_verified"):
+        pytest.xfail("FMP does not verify 7747.HK or 07747.HK")
+
+    assert candles["status"] == "ok"
+    assert candles["currency"] == "HKD"
+    assert [row["bucket"] for row in candles["list"]] == [row["tip"] for row in rng["buckets"]]
+    filled = [row for row in candles["list"] if row["open"] is not None]
+    expected_sessions = sum(bool(session_slots(row["day"])) for row in rng["buckets"])
+    assert len(filled) == expected_sessions
+    for row in filled:
+        assert all(row[field] > 0 for field in ("open", "high", "low", "close"))
+        assert row["low"] <= min(row["open"], row["close"])
+        assert max(row["open"], row["close"]) <= row["high"]
+
+
 def test_unknown_product_is_404_not_a_screen_of_unavailable(real):
     """查不到的产品代码回 404，不是 200 + 一屏「暂不可用」（providers/sentinel.py）。"""
     res = real.get(f"/api/v1/products/0000-not-a-code/summary?range={RANGE}")
@@ -299,8 +326,8 @@ def test_unknown_product_is_404_not_a_screen_of_unavailable(real):
 def test_ai_and_quote_fields_preserve_real_availability(real, busiest_code):
     """态度、摘要、K 线在 `sql` 下是 `None`，不是 0，也不是空串。
 
-    这是 ADR-0017 的现状：标注管线还没铺满，行情源还没接。页面必须因此显示
-    「暂不可用」而不是「0」或者一条平的 K 线。
+    标注管线可能尚未铺满，个别产品在所选日期也可能未上市或零成交。页面必须因此显示
+    真实缺失态，而不是「0」或者一条平的 K 线。
     """
     bench = body(real, f"/api/v1/products/{busiest_code}/benchmark?range={RANGE}")
 
@@ -319,7 +346,7 @@ def test_ai_and_quote_fields_preserve_real_availability(real, busiest_code):
         for field in ("positive", "neutral", "negative"):
             assert bucket[field] is None or isinstance(bucket[field], (int, float))
 
-    # 行情源还没接（ADR-0017）：K 线整块为 None，不是一条平的零线。
+    # 行情按当前产品的已验证来源返回；缺少真实成交时仍是 None，不是一条平的零线。
     candles = body(real, f"/api/v1/products/{busiest_code}/candles?range={RANGE}")
     if candles is not None:
         rng = body(real, f"/api/v1/ranges/{RANGE}")
@@ -381,11 +408,10 @@ def test_kol_posts_keep_their_platform_counts(real):
 
 
 def test_kol_opinions_is_null_not_an_empty_list(real):
-    """「其他产品观点」在 `sql` 下是 `None`。
+    """兼容 opinions 端点在 `sql` 下是 `None`。
 
     空列表是一句**结论**：「他对别的产品没有观点」。而真相是这需要 AI 标注才判得出来，
-    现在根本没查过。两者在 JS 里都是假值，但页面文案一个是「暂无相关内容」一个是
-    「暂不可用」—— 说错了就是替一个没做过的判断背书。
+    现在根本没查过。兼容调用方也不能把两者混成同一个响应。
     """
     name = body(real, f"/api/v1/kol/impact?range={RANGE}")["leaders"][0]["kol"]
     from urllib.parse import quote

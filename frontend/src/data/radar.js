@@ -41,7 +41,24 @@
  *   下面出现的 `key || 'd7'` 是**参数默认值**，与设计源 `rangeKey || DEFAULT_KEY` 逐字
  *   一致，改的是「你没告诉我要哪段区间」，不是「后端没给我值」—— 两回事。
  */
-import { read, qs } from '../lib/api'
+import { invalidate, read, qs } from '../lib/api'
+import { withTodayPlaceholder } from '../lib/datePresets'
+import {
+  isTodayRange,
+  todayBenchmark,
+  todayCandles,
+  todayCompetitors,
+  todayCompliance,
+  todayEtfMentions,
+  todayIssuerOpinions,
+  todayKolImpact,
+  todayKolMentions,
+  todayOfficialPosts,
+  todayPool,
+  todayRange,
+  todayRanks,
+  todayStages,
+} from './todayPlaceholder'
 
 /* 设计源的 DEFAULT_KEY。屏幕不传区间时用它。 */
 const DEFAULT_RANGE = 'd7'
@@ -51,23 +68,27 @@ const DEFAULT_RANGE = 'd7'
 const product = (code, tail, rangeKey) =>
   `/products/${encodeURIComponent(code)}/${tail}` + qs({ range: rangeKey || DEFAULT_RANGE })
 
+export function invalidateMarketOutlook(code, rangeKey) {
+  if (isLocalToday(rangeKey)) return
+  invalidate(product(code, 'market-outlook', rangeKey))
+}
+
 export function prefetchScreen(screen, { rangeKey = DEFAULT_RANGE, kol, code } = {}) {
   const requests = [() => read('/meta'), () => migrated.buildRange(rangeKey)]
   if (screen === 'official') requests.push(() => migrated.officialPosts(rangeKey))
   if (screen === 'kol' || screen === 'kolDetail') requests.push(() => migrated.kolImpact(rangeKey))
-  if (screen === 'kolDetail' && kol) requests.push(() => migrated.kolOpinions(kol, rangeKey))
   if (screen === 'sector') {
     requests.push(() => migrated.pool(rangeKey), () => migrated.ranks(rangeKey),
-      () => read('/hot-summaries' + qs({ range: rangeKey })))
+      () => isLocalToday(rangeKey) ? null : read('/hot-summaries' + qs({ range: rangeKey })))
   }
   if (screen === 'product' && code) {
     requests.push(
       () => migrated.pool(rangeKey),
       () => migrated.ranks(rangeKey),
       () => migrated.benchmark(code, rangeKey),
-      () => migrated.summaryFor(code, rangeKey),
+      () => migrated.marketOutlook(code, rangeKey),
       () => migrated.themesFor(code, rangeKey, 'positive'),
-      () => migrated.issuerOpinions(rangeKey),
+      () => migrated.issuerOpinions(code, rangeKey),
       () => migrated.negCatsFor(code, rangeKey),
       () => migrated.competitorsFor(code, rangeKey),
       () => migrated.complianceFor(code, rangeKey),
@@ -90,22 +111,31 @@ const migrated = {
   /* buildRange(key) → GET /ranges/{key}
      区间、时间桶、基准区间、各处文案全部后端下发。PRD §5 逐字：前端不自行算桶。 */
   buildRange(key) {
-    return read(`/ranges/${encodeURIComponent(key || DEFAULT_RANGE)}`)
+    const rangeKey = key || DEFAULT_RANGE
+    return isLocalToday(rangeKey) ? todayRange(meta()) : read(`/ranges/${encodeURIComponent(rangeKey)}`)
   },
 
   /* kolImpact(range) → GET /kol/impact?range=
      一次拿整个区间的帖子全集：四级级联筛选、类型多选、表内关键词都是同一份帖子上的
      子集运算，按筛选组合切端点会变成组合爆炸（ADR-0003）。 */
   kolImpact(rangeKey) {
-    return read('/kol/impact' + qs({ range: rangeKey || DEFAULT_RANGE }))
+    return todayReady(
+      rangeKey,
+      () => read('/kol/impact' + qs({ range: rangeKey || DEFAULT_RANGE })),
+      () => todayKolImpact(meta()),
+    )
   },
 
   /* kolOpinions(kol, range) → GET /kol/{kol}/opinions?range=
      这位 KOL 对发帖记录之外的产品的观点。每行的 `net` 在样本不足时是 null，原样穿到
      渲染层 —— 换成 0 就成了「中性」，而中性是个我们并没有得出的结论（PRD §3.5）。 */
   kolOpinions(kol, rangeKey) {
-    return read(
-      `/kol/${encodeURIComponent(kol)}/opinions` + qs({ range: rangeKey || DEFAULT_RANGE }),
+    return todayReady(
+      rangeKey,
+      () => read(
+        `/kol/${encodeURIComponent(kol)}/opinions` + qs({ range: rangeKey || DEFAULT_RANGE }),
+      ),
+      () => [],
     )
   },
 
@@ -114,7 +144,11 @@ const migrated = {
      池上的子集运算。`globalMax`（热力图色阶标尺）和 `own`（自家 KPI 汇总及其三个环比）
      都在里面，屏幕不再自己遍历 61 只求和 —— 那段求和里有三处 `|| 0`（铁律 2）。 */
   pool(rangeKey) {
-    return read('/pool' + qs({ range: rangeKey || DEFAULT_RANGE }))
+    return todayReady(
+      rangeKey,
+      () => read('/pool' + qs({ range: rangeKey || DEFAULT_RANGE })),
+      () => todayPool(meta()),
+    )
   },
 
   /* ranks(range) → GET /ranks?range=
@@ -122,14 +156,22 @@ const migrated = {
      搜索参数：接了就迟早有人传，而排名按可见集重算的那一刻，「第 12 名」就不再是一个
      能对外引用的事实了。 */
   ranks(rangeKey) {
-    return read('/ranks' + qs({ range: rangeKey || DEFAULT_RANGE }))
+    return todayReady(
+      rangeKey,
+      () => read('/ranks' + qs({ range: rangeKey || DEFAULT_RANGE })),
+      () => todayRanks(meta()),
+    )
   },
 
   /* benchmark(code, range) → GET /products/{code}/benchmark?range=
      每个字段是内嵌 delta `{text, short, abs, pct, dir}`；`base` 是基准期完整观测；
      `buckets` 与 `base.buckets` 逐桶对齐，供趋势图悬停用（悬停不可能每次打一趟接口）。 */
   benchmark(code, rangeKey) {
-    return read(product(code, 'benchmark', rangeKey))
+    return todayReady(
+      rangeKey,
+      () => read(product(code, 'benchmark', rangeKey)),
+      () => todayBenchmark(meta(), code),
+    )
   },
 
   /* observe(code, range, salt?) —— **没有端点**，也不该有。
@@ -147,6 +189,7 @@ const migrated = {
      串行往返（read() 未命中抛 Promise，Suspense 解决一个才轮到下一个）。
      `ok` 为 false 时 text 已经是该状态的文案，屏幕直接渲染，不按 status 再拼一遍。 */
   hotSummaryFor(code, rangeKey) {
+    if (isLocalToday(rangeKey)) return null
     /* 整池那份**自己**可能是 null（`DATA_PROVIDER=sql` 下热议总结要 AI 归纳，
        `providers/sql.py::hot_summaries` 整块返回 None）。`null[code]` 是硬 TypeError，
        整个板块总览当场白屏、错误边界报「页面渲染失败」—— 而后端好好的，只是这一栏
@@ -159,30 +202,46 @@ const migrated = {
 
   /* summaryFor(code, range) → GET /products/{code}/summary?range= */
   summaryFor(code, rangeKey) {
+    if (isLocalToday(rangeKey)) return null
     return read(product(code, 'summary', rangeKey))
+  },
+
+  /* marketOutlook(code, range) → GET /products/{code}/market-outlook?range=
+     当前产品排在第一行，再带四只本区间讨论最活跃的产品。产品、行情情绪和摘要都由后端
+     组装；前端只负责把 `{product, sentiment, summary}` 三列画出来。 */
+  marketOutlook(code, rangeKey) {
+    if (isLocalToday(rangeKey)) return null
+    return read(product(code, 'market-outlook', rangeKey))
   },
 
   /* themesFor(code, range, polarity) → GET /products/{code}/themes?range=
      端点一次给 `{positive, negative}`，这里按极性取。设计源的三参签名原样保留 ——
      调用点从来都是正负各取一次，拆成两个端点等于白挨一次串行往返。 */
   themesFor(code, rangeKey, polarity) {
+    if (isLocalToday(rangeKey)) return null
     /* 同 hotSummaryFor：主题聚类整块要 AI（`providers/sql.py::themes_for` 返回 None），
        `null['positive']` 是硬 TypeError，产品监控整页白屏。 */
     const both = read(product(code, 'themes', rangeKey))
     return both == null ? null : both[polarity]
   },
 
-  issuerOpinions(rangeKey) {
-    return read('/issuers/csop/opinions' + qs({ range: rangeKey || DEFAULT_RANGE }))
+  issuerOpinions(code, rangeKey) {
+    return todayReady(
+      rangeKey,
+      () => read(product(code, 'issuer-opinions', rangeKey)),
+      () => todayIssuerOpinions(),
+    )
   },
 
   themesStale(code, rangeKey) {
+    if (isLocalToday(rangeKey)) return null
     const both = read(product(code, 'themes', rangeKey))
     return both == null ? null : both.stale
   },
 
   /* negCatsFor(code, range) → GET /products/{code}/negative-categories?range= */
   negCatsFor(code, rangeKey) {
+    if (isLocalToday(rangeKey)) return null
     return read(product(code, 'negative-categories', rangeKey))
   },
 
@@ -190,19 +249,28 @@ const migrated = {
      `{status, list}`：'unavailable'（传播关系取不到）与 'empty'（确实没有对位竞品）
      在页面上是两句话，别在这一层合并成「list 为空」。 */
   competitorsFor(code, rangeKey) {
-    return read(product(code, 'competitors', rangeKey))
+    return todayReady(
+      rangeKey,
+      () => read(product(code, 'competitors', rangeKey)),
+      () => todayCompetitors(),
+    )
   },
 
   /* complianceFor(code, range) → GET /products/{code}/compliance?range=
      `{status, list}`：同业产品是 'na'（字段不适用），风险识别没接上是 'unavailable'。 */
   complianceFor(code, rangeKey) {
-    return read(product(code, 'compliance', rangeKey))
+    return todayReady(
+      rangeKey,
+      () => read(product(code, 'compliance', rangeKey)),
+      () => todayCompliance(meta(), code),
+    )
   },
 
   /* topicsFor(code, range) → GET /products/{code}/topics?range=
      热议话题，按提及数降序（排序在后端）。d1 有八成产品是空数组——那是「这段时间
      没人聊它」，页面渲染「暂无内容」，不是 0 条话题里挑出来的 0。 */
   topicsFor(code, rangeKey) {
+    if (isLocalToday(rangeKey)) return null
     return read(product(code, 'topics', rangeKey))
   },
 
@@ -211,7 +279,11 @@ const migrated = {
      **原样穿到渲染层**去触发「暂不可用」：这里补一个极性，就是替这位 KOL 说了一句
      他没说过的话（PRD §5 表 P8）。 */
   kolMentionsFor(code, rangeKey) {
-    return read(product(code, 'kol-mentions', rangeKey))
+    return todayReady(
+      rangeKey,
+      () => read(product(code, 'kol-mentions', rangeKey)),
+      () => todayKolMentions(),
+    )
   },
 
   /* evidenceFor(code, ctxKey, polarity, count) → GET /products/{code}/evidence?ctx=&polarity=&n=
@@ -221,6 +293,7 @@ const migrated = {
      `Math.max(1, Math.min(12, count || 6))` 属于口径，前端不再算一遍（铁律 1）。
      关联竞品面板传的 code 是**竞品自己**的代码，取的是竞品的原文，不是本产品的。 */
   evidenceFor(code, ctxKey, polarity, count) {
+    if (isLocalToday(String(ctxKey).split('|')[0])) return []
     return read(
       `/products/${encodeURIComponent(code)}/evidence` +
         qs({ ctx: ctxKey, polarity: polarity, n: count }),
@@ -228,12 +301,17 @@ const migrated = {
   },
 
   /* candlesFor(code, range) → GET /products/{code}/candles?range=
-     `{status, granularity, granLabel, currency, list, missing}`，每根 K 对着
+     `{status, source, granularity, granLabel, currency, list, missing}`，其中
+     `source` 是 API 下发的可见数据源名称（例如 FMP／Yahoo Finance），每根 K 对着
      `buildRange(range).buckets` 的一个桶。空 K 的 open/high/low/close 是 **null**，
      一路穿到画布 —— 这一层补一个 0，图上就会画出一根掉到零的 K 线（铁律 2）。
      `status` 为 'ok' 时仍可能有空桶（休市），两种空的区别在每根 K 的 `note` 上。 */
   candlesFor(code, rangeKey) {
-    return read(product(code, 'candles', rangeKey))
+    return todayReady(
+      rangeKey,
+      () => read(product(code, 'candles', rangeKey)),
+      () => todayCandles(),
+    )
   },
 
   /* stagesFor(code, range) → GET /products/{code}/stages?range=
@@ -245,20 +323,32 @@ const migrated = {
      `status` 为 'unavailable' 时没有 `threshold`／`unitCount` 这两个键 —— 屏幕里那句
      `SG.threshold || R.LOW_SAMPLE` 兜的正是这一态。 */
   stagesFor(code, rangeKey) {
-    return read(product(code, 'stages', rangeKey))
+    return todayReady(
+      rangeKey,
+      () => read(product(code, 'stages', rangeKey)),
+      () => todayStages(meta(), code),
+    )
   },
 
   /* officialPosts(range) → GET /officials/posts?range= */
   officialPosts(rangeKey) {
-    return read('/officials/posts' + qs({ range: rangeKey || DEFAULT_RANGE }))
+    return todayReady(
+      rangeKey,
+      () => read('/officials/posts' + qs({ range: rangeKey || DEFAULT_RANGE })),
+      () => todayOfficialPosts(),
+    )
   },
 
   /* etfMentionsFor(account, range) → GET /officials/{account}/etf-mentions?range=
      口径按出现次数累加（ETF_MENTION_RULE），**与市场域的评论去重语义相反**，别混用。 */
   etfMentionsFor(account, rangeKey) {
-    return read(
-      `/officials/${encodeURIComponent(account)}/etf-mentions` +
-        qs({ range: rangeKey || DEFAULT_RANGE }),
+    return todayReady(
+      rangeKey,
+      () => read(
+        `/officials/${encodeURIComponent(account)}/etf-mentions` +
+          qs({ range: rangeKey || DEFAULT_RANGE }),
+      ),
+      () => todayEtfMentions(),
     )
   },
 }
@@ -276,6 +366,21 @@ const migrated = {
  * 命名值得保留；转换收敛在下面这几行里，不散进屏幕。
  */
 const meta = () => read('/meta')
+
+/* `d0` is frontend-only until the backend advertises that key in /meta. Once it
+   does, every method above automatically falls through to the real endpoint. */
+const isLocalToday = (rangeKey) =>
+  isTodayRange(rangeKey) && !meta().presets.some((preset) => preset.key === rangeKey)
+
+/* A new current day can be advertised before its first fact reaches the
+   database. In that state the backend returns data=null instead of inventing
+   zeroes. Keep the normal component tree renderable with the rollout's
+   null-filled shape; a real d0 response always wins as soon as it exists. */
+function todayReady(rangeKey, loadRemote, loadUnavailable) {
+  if (isLocalToday(rangeKey)) return loadUnavailable()
+  const value = loadRemote()
+  return isTodayRange(rangeKey) && value == null ? loadUnavailable() : value
+}
 
 /* R.MASTER 在产品监控页一次渲染里被读十几次，R.SECTORS 在 KOL 页每行读两次，每次
    重建一遍是白费力气。按源数组的**身份**记忆：read() 命中缓存时返回的是同一个数组，
@@ -319,7 +424,14 @@ const constants = {
   get DEFAULT_RANGE() { return meta().defaultRange },
   get UPDATED() { return meta().updatedAt },
   get PRESETS() {
-    return meta().presets.map((p) => ({ k: p.key, days: p.days, label: p.label }))
+    return withTodayPlaceholder(
+      meta().presets.map((p) => ({
+        k: p.key,
+        days: p.days,
+        label: p.label,
+        screenDiffNew: p.key === 'd0',
+      })),
+    )
   },
   get ETF_MENTION_RULE() { return meta().rules.etfMention },
   get TYPE_RULE() { return meta().rules.postType },

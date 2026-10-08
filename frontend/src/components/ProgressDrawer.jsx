@@ -331,7 +331,7 @@ function DrawerBody() {
             row('L2 主模型队列', queueText(snapshot.queue ? snapshot.queue.llm : null)),
             row('帖子标注任务', countsText(snapshot.tasks ? snapshot.tasks.post_annotation : null)),
             row('KOL 评论观点任务', countsText(snapshot.tasks ? snapshot.tasks.kol_comment_opinion : null)),
-            row('待更新汇总产品', snapshot.synthesis ? na(snapshot.synthesis.dirtyProducts) + ' 只（已有产出 ' + na(snapshot.synthesis.productsWithOutputs) + ' 只）' : '暂不可用'),
+            row('需重算汇总产品', snapshot.synthesis ? na(snapshot.synthesis.dirtyProducts) + ' 只（已有产出 ' + na(snapshot.synthesis.productsWithOutputs) + ' 只）' : '暂不可用'),
             row('当前吞吐（5 分钟）', rateText(snapshot.throughput ? snapshot.throughput.itemsPerSec5m : null)),
             row('预计剩余', etaText(snapshot.throughput ? snapshot.throughput.etaSeconds : null)),
             error != null ? row('最近一次刷新', '失败 —— ' + String(error.message || error), T.err) : null,

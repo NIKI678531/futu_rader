@@ -24,12 +24,16 @@ def _engine():
 
 def test_heartbeat_queue_and_daily_jobs_are_registered(monkeypatch):
     monkeypatch.delenv("AI_DAILY_CRON", raising=False)
+    monkeypatch.delenv("AI_INTRADAY_CRON", raising=False)
     jobs = build_scheduler(interval_seconds=30).get_jobs()
-    assert [j.id for j in jobs] == ["heartbeat", "admin-ai-requests", "daily-refresh"]
+    assert [j.id for j in jobs] == [
+        "heartbeat", "admin-ai-requests", "daily-refresh", "intraday-refresh",
+    ]
 
 
 def test_daily_refresh_runs_at_eight_hong_kong_time_and_can_be_switched_off(monkeypatch):
     monkeypatch.delenv("AI_DAILY_CRON", raising=False)
+    monkeypatch.delenv("AI_INTRADAY_CRON", raising=False)
     monkeypatch.setenv("TZ", "Asia/Hong_Kong")
     jobs = {job.id: job for job in build_scheduler(interval_seconds=30).get_jobs()}
     trigger = jobs["daily-refresh"].trigger
@@ -38,7 +42,25 @@ def test_daily_refresh_runs_at_eight_hong_kong_time_and_can_be_switched_off(monk
     assert str(trigger.timezone) == "Asia/Hong_Kong"
 
     off = build_scheduler(interval_seconds=30, cron="off").get_jobs()
-    assert [j.id for j in off] == ["heartbeat", "admin-ai-requests"]
+    assert [j.id for j in off] == ["heartbeat", "admin-ai-requests", "intraday-refresh"]
+
+
+def test_intraday_refresh_runs_at_thirteen_and_fifteen_hong_kong_time(monkeypatch):
+    monkeypatch.delenv("AI_INTRADAY_CRON", raising=False)
+    monkeypatch.setenv("TZ", "Asia/Hong_Kong")
+    jobs = {job.id: job for job in build_scheduler(interval_seconds=30).get_jobs()}
+    trigger = jobs["intraday-refresh"].trigger
+    fields = {field.name: str(field) for field in trigger.fields}
+
+    assert (fields["hour"], fields["minute"]) == ("13,15", "0")
+    assert str(trigger.timezone) == "Asia/Hong_Kong"
+
+    off = build_scheduler(
+        interval_seconds=30,
+        cron="off",
+        intraday_expression="off",
+    ).get_jobs()
+    assert [job.id for job in off] == ["heartbeat", "admin-ai-requests"]
 
 
 def test_startup_upgrade_applies_pending_migrations(tmp_path, monkeypatch):

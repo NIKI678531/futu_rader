@@ -59,9 +59,6 @@ export default function Attitude({ v }) {
         <div style={s('display:flex;align-items:baseline;gap:11px')}>
           <span style={s('font:600 18px/1.3 var(--font-cjk)')}>积极 ／ 消极整体态度</span>
           <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>积极／消极为 AI 对内容中产品态度的分类，不是 Futu 平台的互动行为</span>
-          {v.partialData && <span style={s('padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>部分数据</span>}
-          {/* 主题聚类顶层 `stale === true`（标注已更新、汇总待重新生成）才渲染；demo 下没有这个键。 */}
-          {v.themesStale && <span title={v.staleTitle} style={s('padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>AI 生成 · 待更新</span>}
         </div>
         <span style={s(`font:600 14px/1.4 var(--font-cjk);color:${v.netFg}`)}>{v.netText}</span>
       </div>
@@ -167,19 +164,20 @@ export default function Attitude({ v }) {
       {v.showIssuerOpinions && <section style={s('margin:0 20px 20px;padding:16px;border:1px solid var(--csop-blue-200);border-radius:7px;background:var(--csop-blue-50)')}>
         <div style={s('display:flex;align-items:baseline;gap:12px;margin-bottom:10px')}>
           <strong style={s('font:600 15px/1.4 var(--font-cjk);color:var(--csop-blue-800)')}>南方东英发行商观点</strong>
-          <span style={s('font:400 12px/1.5 var(--font-cjk);color:var(--ink-600)')}>公司级评价独立去重，不计入当前 ETF 产品态度</span>
+          <span style={s('font:400 12px/1.5 var(--font-cjk);color:var(--ink-600)')}>仅展示与当前 ETF 明确关联的评价；同一评论只展示一次</span>
+          {v.issuerMoreVisible && <button type="button" aria-expanded={v.issuerExpanded} aria-controls="issuer-opinion-list" onClick={v.issuerToggle} style={s('margin-left:auto;padding:0;border:0;background:transparent;font:500 13px/1.5 var(--font-cjk);color:var(--csop-blue-600);cursor:pointer')}>{v.issuerMoreLabel}</button>}
         </div>
-        {v.issuerUnavailable && <div style={s('color:var(--ink-500)')}>数据暂不可用 — 发行商观点尚未完成 v4 分析。</div>}
-        {v.issuerEmpty && <div style={s('color:var(--ink-500)')}>暂无相关内容 — 区间内未识别到南方东英公司级评价。</div>}
-        {v.issuerRows?.map(row => <article key={row.id} style={s('padding:10px 0;border-top:1px solid var(--csop-blue-200)')}>
-          <div style={s('display:flex;gap:8px;align-items:center;margin-bottom:5px')}>
-            <span style={s(`font:600 12px/1.5 var(--font-cjk);color:${row.color}`)}>{row.attitude}</span>
-            <span style={s('font:500 12px/1.5 var(--font-cjk);color:var(--ink-600)')}>{row.aspects}</span>
-            <span style={s('margin-left:auto;font:400 11px/1.5 var(--font-mono);color:var(--ink-400)')}>{row.time}</span>
-          </div>
-          <div style={s('font:400 13px/1.65 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>“{row.original}”</div>
-          <div style={s('margin-top:4px;font:400 11px/1.5 var(--font-cjk);color:var(--ink-500)')}>原评论 · {row.author} · 证据 {row.evidence}{row.sourceUrl && <> · <a href={row.sourceUrl} target="_blank" rel="noreferrer">查看原文</a></>}</div>
-        </article>)}
+        <div id="issuer-opinion-list">
+          {v.issuerRows?.map(row => <article key={row.id} style={s('padding:10px 0;border-top:1px solid var(--csop-blue-200)')}>
+            <div style={s('display:flex;gap:8px;align-items:center;margin-bottom:5px')}>
+              <span style={s(`font:600 12px/1.5 var(--font-cjk);color:${row.color}`)}>{row.attitude}</span>
+              <span style={s('font:500 12px/1.5 var(--font-cjk);color:var(--ink-600)')}>{row.aspects}</span>
+              <span style={s('margin-left:auto;font:400 11px/1.5 var(--font-mono);color:var(--ink-400)')}>{row.time}</span>
+            </div>
+            <div style={s('font:400 13px/1.65 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>“{row.original}”</div>
+            <div style={s('margin-top:4px;font:400 11px/1.5 var(--font-cjk);color:var(--ink-500)')}>原评论 · {row.author} · 证据 {row.evidence}{row.sourceUrl && <> · <a href={row.sourceUrl} target="_blank" rel="noreferrer">查看原文</a></>}</div>
+          </article>)}
+        </div>
       </section>}
     </div>
   )

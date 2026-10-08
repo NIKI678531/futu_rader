@@ -467,7 +467,7 @@ ai_analysis_requests = Table(
     Column("requested_by", String(20), nullable=False, default="admin", server_default="admin"),
     UniqueConstraint("active_key", name="uq_ai_analysis_requests_active_range"),
     CheckConstraint(
-        "range_key IN ('d1','d2','d7','d14','d30','mtd')",
+        "range_key IN ('d0','d1','d2','d7','d14','d30','mtd')",
         name="ck_ai_analysis_requests_range",
     ),
     CheckConstraint(
@@ -523,7 +523,7 @@ synthesis_outputs = Table(
     metadata,
     Column("synthesis_id", AUTO_PK, primary_key=True, autoincrement=True),
     Column("code", String(10), nullable=False),
-    Column("range_key", String(10), nullable=False),  # d1|d2|d7|d14|d30
+    Column("range_key", String(10), nullable=False),  # d0|d1|d2|d7|d14|d30|mtd
     Column("anchor", String(10), nullable=False),  # 'YYYY-MM-DD'，来自 meta_kv
     # 'hot_summary'|'summary'|'theme_label'|'neg_category'|'stage'|'topic_label'|'competitor_reason'
     Column("kind", String(30), nullable=False),

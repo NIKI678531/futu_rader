@@ -34,3 +34,57 @@ test('kol and official cards omit the requested explanatory copy', () => {
   assert.doesNotMatch(kol, /「自家 \/ 竞品」是该 KOL 区间内/)
   assert.doesNotMatch(official, /提及 ETF 按出现次数统计，只含 ETF，不含个股/)
 })
+
+test('visible application surfaces do not use the legacy freshness wording', () => {
+  const visibleSurfaces = [
+    'components/ProgressDrawer.jsx',
+    'screens/Admin.jsx',
+    'screens/productMonitor/Attitude.jsx',
+    'screens/productMonitor/Competitors.jsx',
+    'screens/productMonitor/Topics.jsx',
+    'screens/sectorOverview/Drawer.jsx',
+    'screens/sectorOverview/index.jsx',
+  ]
+
+  for (const path of visibleSurfaces) {
+    assert.doesNotMatch(source(path), /待更新/, path)
+  }
+  assert.match(source('components/ProgressDrawer.jsx'), /需重算汇总产品/)
+  assert.match(source('screens/Admin.jsx'), /需重算/)
+})
+
+test('product-related KOL rows omit the main-attitude presentation', () => {
+  const list = source('screens/productMonitor/KolList.jsx')
+  const monitor = source('screens/productMonitor/index.jsx')
+
+  assert.doesNotMatch(list, /主要态度/)
+  assert.doesNotMatch(list, /k\.(?:att|abg|afg)\b/)
+  assert.doesNotMatch(list, /有效态度少于/)
+  assert.doesNotMatch(monitor, /dominantLabel/)
+  assert.match(monitor, /var ATT_STYLE = \{/)
+  assert.match(monitor, /ATT_STYLE\[st\.sentiment\]/)
+})
+
+test('business pages omit the generic partial-data label without erasing coverage state', () => {
+  const visibleSurfaces = [
+    'screens/productMonitor/Overview.jsx',
+    'screens/productMonitor/Attitude.jsx',
+    'screens/productMonitor/Topics.jsx',
+    'screens/productMonitor/index.jsx',
+    'screens/sectorOverview/Drawer.jsx',
+    'screens/sectorOverview/Kpis.jsx',
+    'screens/sectorOverview/ProductTable.jsx',
+    'screens/sectorOverview/index.jsx',
+  ]
+
+  for (const path of visibleSurfaces) {
+    assert.doesNotMatch(source(path), /部分数据/, path)
+  }
+
+  // The product KPI still renders the relevant-comment lower bound; the
+  // removed funnel and generic badge no longer leak their auxiliary state.
+  assert.doesNotMatch(source('screens/productMonitor/Overview.jsx'), /commentFunnelDataLabel/)
+  assert.match(source('screens/productMonitor/index.jsx'), /value: funnel\.relevantText/)
+  assert.doesNotMatch(source('screens/productMonitor/index.jsx'), /commentFunnelSteps|commentFunnelAvailable/)
+  assert.match(source('screens/sectorOverview/index.jsx'), /partialData: commentFunnel\.partial/)
+})

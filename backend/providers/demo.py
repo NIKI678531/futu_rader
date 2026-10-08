@@ -27,7 +27,11 @@ import json
 import os
 import re
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
+
+from core import topics as core_topics
+from core.calendar import build
 
 # 哨兵本体搬去了 providers/sentinel.py —— sql provider 也要用它，而 sql 去 import demo
 # 是说不通的（两个平行实现，谁都不该依赖另一个）。这里 re-export 只为了让
@@ -108,6 +112,22 @@ class DemoProvider:
                 return t[key]
         return MISSING
 
+    def _range_lookup(self, table, *parts):
+        """Return unavailable for the known d0 range when no demo fact exists.
+
+        The frozen design fixture predates d0.  Reusing d1/d7 numbers would
+        fabricate current-day facts, while MISSING would incorrectly turn a
+        valid range into a 404.  ``None`` preserves the public unavailable
+        contract until a dedicated d0 fixture exists.
+        """
+        value = self._lookup(table, *parts)
+        return None if value is MISSING and parts and parts[-1] == "d0" else value
+
+    def _product_range_lookup(self, table, code, range_key):
+        if not any(str(item.get("code")) == str(code) for item in self.master().get("products", [])):
+            return MISSING
+        return self._range_lookup(table, code, range_key)
+
     def _doc(self, name):
         """整份文档，不按参数键查表（主数据用）。场景目录优先。"""
         return self._tables(name)[0]
@@ -148,6 +168,17 @@ class DemoProvider:
         return self._doc("master")
 
     def build_range(self, key):
+        if key == "d0":
+            updated = self.master().get("updatedAt")
+            if not updated:
+                return None
+            try:
+                data_through = datetime.strptime(
+                    str(updated).removesuffix(" HKT"), "%Y-%m-%d %H:%M"
+                )
+            except ValueError:
+                return None
+            return build("d0", data_through.date(), data_through=data_through)
         return self._lookup("ranges", key)
 
     @staticmethod
@@ -177,7 +208,9 @@ class DemoProvider:
         }
 
     def pool(self, range_key):
-        data = self._lookup("pool", range_key)
+        data = self._range_lookup("pool", range_key)
+        if data is None:
+            return None
         if data is MISSING:
             return MISSING
         own = data["own"]
@@ -199,10 +232,12 @@ class DemoProvider:
         }
 
     def ranks(self, range_key):
-        return self._lookup("ranks", range_key)
+        return self._range_lookup("ranks", range_key)
 
     def benchmark(self, code, range_key):
-        data = self._lookup("benchmark", code, range_key)
+        data = self._product_range_lookup("benchmark", code, range_key)
+        if data is None:
+            return None
         if data is MISSING:
             return MISSING
         return {**data, "base": self._with_comment_funnel(data["base"])}
@@ -213,14 +248,60 @@ class DemoProvider:
         按产品切端点，板块总览那张 120 行的榜单就是 120 次串行往返 ——
         每行调一次 `hotSummaryFor`，而同步 Suspense 一次只能解决一个。
         """
-        return self._lookup("hot_summaries", range_key)
+        return self._range_lookup("hot_summaries", range_key)
 
     def summary_for(self, code, range_key):
-        return self._lookup("summaries", code, range_key)
+        return self._product_range_lookup("summaries", code, range_key)
+
+    def market_outlook(self, code, range_key):
+        """按灰度口径返回当前产品，或当前产品加四只高讨论产品。
+
+        直接投影已有 ``topics`` fixture，不新增一份会与话题数据漂移的
+        market-outlook fixture。
+        """
+        products = self.master().get("products", [])
+        by_code = {str(product["code"]): product for product in products}
+        if code not in by_code:
+            return MISSING
+
+        scope = core_topics.market_outlook_scope(code)
+        if scope == "product":
+            value = self.topics_for(code, range_key)
+            topics = None if value is MISSING else value
+            count = core_topics.market_discussion_count(topics)
+            if count is None:
+                return None
+            if count <= 0:
+                return {"scope": scope, "list": []}
+            return {
+                "scope": scope,
+                "list": [core_topics.market_outlook_row(by_code[code], topics)],
+            }
+
+        topics_by_code = {}
+        for candidate in by_code:
+            value = self.topics_for(candidate, range_key)
+            topics_by_code[candidate] = None if value is MISSING else value
+        counts = {
+            candidate: core_topics.market_discussion_count(value)
+            for candidate, value in topics_by_code.items()
+        }
+        selected = core_topics.select_market_outlook_codes(products, code, counts)
+        if selected is None:
+            return None
+        if not selected:
+            return {"scope": scope, "list": []}
+        return {
+            "scope": scope,
+            "list": [
+                core_topics.market_outlook_row(by_code[candidate], topics_by_code[candidate])
+                for candidate in selected
+            ]
+        }
 
     def themes_for(self, code, range_key):
         """一次给两个极性 `{positive, negative}`。调用点从来都是正负各取一次。"""
-        value = self._lookup("themes", code, range_key)
+        value = self._product_range_lookup("themes", code, range_key)
         if value is not None and value is not MISSING:
             for rows in value.values():
                 for row in rows:
@@ -228,25 +309,29 @@ class DemoProvider:
                     row.setdefault("keyPoints", [])
         return value
 
-    def issuer_opinions(self, issuer, range_key):
-        if issuer != "csop":
+    def issuer_opinions(self, code, range_key):
+        product = next((item for item in self.master().get("products", [])
+                        if item.get("code") == code), None)
+        if product is None:
             return MISSING
+        if product.get("ownership") != "own":
+            return {"status": "na", "issuer": product.get("issuer"), "counts": None, "list": []}
         return {"status": "unavailable", "issuer": "南方东英", "counts": None, "list": []}
 
     def neg_cats_for(self, code, range_key):
-        return self._lookup("neg_cats", code, range_key)
+        return self._product_range_lookup("neg_cats", code, range_key)
 
     def competitors_for(self, code, range_key):
-        return self._lookup("competitors", code, range_key)
+        return self._product_range_lookup("competitors", code, range_key)
 
     def compliance_for(self, code, range_key):
-        return self._lookup("compliance", code, range_key)
+        return self._product_range_lookup("compliance", code, range_key)
 
     def topics_for(self, code, range_key):
-        return self._lookup("topics", code, range_key)
+        return self._product_range_lookup("topics", code, range_key)
 
     def kol_mentions_for(self, code, range_key):
-        return self._lookup("kol_mentions", code, range_key)
+        return self._product_range_lookup("kol_mentions", code, range_key)
 
     def evidence_for(self, code, ctx_key, polarity, n):
         """证据侧栏。参数键 `<code>|<ctxKey>|<polarity>`，其中 ctxKey 自带区间前缀。
@@ -258,19 +343,23 @@ class DemoProvider:
         设计源排序用的比较器在时间相同时返回 -1 而不是 0，同分钟两条谁在前取决于 V8 的
         实现，Python 这边重排一次就会和页面对不上。所以这里只按下标取，不排序。
         """
+        if not any(str(item.get("code")) == str(code) for item in self.master().get("products", [])):
+            return MISSING
+        if ctx_key.split("|")[0] == "d0":
+            return None
         pack = self._lookup("evidence_" + ctx_key.split("|")[0], code, ctx_key, polarity)
         if pack is MISSING:
             return MISSING
         return [pack["items"][i] for i in pack["orders"][n - 1]]
 
     def candles_for(self, code, range_key):
-        return self._lookup("candles", code, range_key)
+        return self._product_range_lookup("candles", code, range_key)
 
     def heat_series_for(self, code, range_key):
-        return self._lookup("heat_series", code, range_key)
+        return self._product_range_lookup("heat_series", code, range_key)
 
     def stages_for(self, code, range_key):
-        return self._lookup("stages", code, range_key)
+        return self._product_range_lookup("stages", code, range_key)
 
     def daily_for(self, code):
         """日度评论量／活跃账号／价格序列。四个契约函数里唯一**不吃区间**的一个 ——
@@ -278,13 +367,17 @@ class DemoProvider:
         return self._lookup("daily", code)
 
     def kol_impact(self, range_key):
-        return self._lookup("kol_impact", range_key)
+        return self._range_lookup("kol_impact", range_key)
 
     def kol_opinions(self, kol, range_key):
-        return self._lookup("kol_opinions", kol, range_key)
+        if not any(item.get("name") == kol for item in self.master().get("kols", [])):
+            return MISSING
+        return self._range_lookup("kol_opinions", kol, range_key)
 
     def official_posts(self, range_key):
-        posts = self._lookup("official_posts", range_key)
+        posts = self._range_lookup("official_posts", range_key)
+        if posts is None:
+            return None
         if posts is MISSING:
             return MISSING
         try:
@@ -346,6 +439,8 @@ class DemoProvider:
         if official is None:
             return MISSING
         posts = self.official_posts(range_key)
+        if posts is None:
+            return None
         if posts is MISSING:
             return MISSING
 

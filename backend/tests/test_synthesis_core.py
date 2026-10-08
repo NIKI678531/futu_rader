@@ -209,6 +209,73 @@ class TestTopics:
         rng = build("d7", datetime(2026, 8, 25).date())
         assert topics.market_topic("3033", [], rng["buckets"], bucket_index_for(rng)) == []
 
+    @pytest.mark.parametrize(("counts", "sentiment", "label"), [
+        ((8, 1, 1), "bullish", "看多"),
+        ((4, 3, 3), "neutral_bullish", "中性偏看多"),
+        ((3, 3, 4), "neutral", "中性"),
+        ((3, 4, 3), "neutral_bearish", "中性偏看空"),
+        ((1, 8, 1), "bearish", "看空"),
+    ])
+    def test_market_sentiment_has_five_deterministic_levels(self, counts, sentiment, label):
+        assert topics.classify_market_sentiment(*counts) == {
+            "sentiment": sentiment, "sentimentLabel": label,
+        }
+
+    def test_market_sentiment_does_not_turn_unknown_or_empty_into_neutral(self):
+        unavailable = {"sentiment": None, "sentimentLabel": None}
+        assert topics.classify_market_sentiment(None, 2, 1) == unavailable
+        assert topics.classify_market_sentiment(0, 0, 0) == unavailable
+
+    def test_market_outlook_selection_preserves_pool_states_and_current_first(self):
+        products = [{"code": code} for code in ("1000", "1001", "1002", "1003", "1004", "1005")]
+        assert topics.select_market_outlook_codes(
+            products, "1000", {product["code"]: None for product in products},
+        ) is None
+        assert topics.select_market_outlook_codes(
+            products, "1000", {product["code"]: 0 for product in products},
+        ) == []
+        selected = topics.select_market_outlook_codes(
+            products, "1000",
+            {"1000": None, "1001": 3, "1002": 8, "1003": 3, "1004": 0, "1005": None},
+        )
+        assert selected == ["1000", "1002", "1001", "1003", "1004"]
+
+    def test_7709_market_outlook_selection_is_scoped_to_current_product(self):
+        products = [{"code": "7709"}, {"code": "3033"}]
+        assert topics.market_outlook_scope("7709") == "product"
+        assert topics.market_outlook_scope("3033") == "market"
+        assert topics.select_market_outlook_codes(
+            products, "7709", {"7709": 3, "3033": 99},
+        ) == ["7709"]
+        assert topics.select_market_outlook_codes(
+            products, "7709", {"7709": 0, "3033": 99},
+        ) == []
+        assert topics.select_market_outlook_codes(
+            products, "7709", {"7709": None, "3033": 99},
+        ) is None
+
+    def test_market_outlook_row_keeps_unavailable_empty_and_generated_apart(self):
+        product = {"code": "3033", "name": "恒指 ETF"}
+        assert topics.market_outlook_row(product, None) == {
+            "code": "3033", "name": "恒指 ETF", "status": "unavailable",
+            "sentiment": None, "sentimentLabel": None, "summary": None,
+        }
+        assert topics.market_outlook_row(product, [])["status"] == "empty"
+        pending = topics.market_outlook_row(product, [{
+            "id": "3033-tp-market", "mentions": 4, "positive": 3,
+            "negative": 1, "neutral": 0, "labelStatus": "unavailable",
+            "summary": "这是确定性后端占位句。",
+        }])
+        assert pending["sentiment"] == "bullish"
+        assert pending["status"] == "unavailable" and pending["summary"] is None
+        generated = topics.market_outlook_row(product, [{
+            "id": "3033-tp-market", "mentions": 4, "positive": 3,
+            "negative": 1, "neutral": 0, "labelStatus": "ok",
+            "summary": "美联储降息预期推动讨论偏多。",
+        }])
+        assert generated["status"] == "ok"
+        assert generated["summary"] == "美联储降息预期推动讨论偏多。"
+
 
 # ── stages ─────────────────────────────────────────────────────────────
 

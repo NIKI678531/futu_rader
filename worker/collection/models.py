@@ -111,7 +111,7 @@ class AiRequest:
         if any(not value.isdigit() for value in codes):
             raise ValueError("codes must contain numeric product codes")
         ranges = tuple(dict.fromkeys(str(value).strip() for value in self.range_keys if str(value).strip()))
-        supported = {"d1", "d2", "d7", "d14", "d30", "mtd"}
+        supported = {"d0", "d1", "d2", "d7", "d14", "d30", "mtd"}
         if set(ranges) - supported:
             raise ValueError("range_keys contains an unsupported range")
         object.__setattr__(self, "codes", codes)

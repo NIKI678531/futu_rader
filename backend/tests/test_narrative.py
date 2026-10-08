@@ -1,5 +1,5 @@
-"""市场域叙述组 —— hot-summaries / summary / themes / negative-categories /
-competitors / compliance（PRD §5）。
+"""市场域叙述组 —— hot-summaries / summary / themes / issuer-opinions /
+negative-categories / competitors / compliance（PRD §5）。
 
 基础组回答「有多少条讨论」，这一组回答「讨论在说什么」。于是断言的重心也不一样：
 基础组盯的是数（铁律 3 的排名、色阶），这一组盯的是**状态与措辞**。
@@ -13,7 +13,10 @@ import pytest
 
 RANGE_KEYS = ["d1", "d2", "d7", "d14", "d30"]
 
-PER_PRODUCT = ["summary", "themes", "negative-categories", "competitors", "compliance"]
+PER_PRODUCT = [
+    "summary", "market-outlook", "themes", "issuer-opinions", "negative-categories",
+    "competitors", "compliance",
+]
 
 
 def hot(client, qs="?range=d7"):
@@ -69,13 +72,17 @@ def test_unknown_range_is_404_everywhere(client, own_code):
         assert r.status_code == 404, tail
 
 
-def test_csop_issuer_opinions_are_a_separate_resource(client):
-    response = client.get("/api/v1/issuers/csop/opinions?range=d7")
+def test_csop_issuer_opinions_are_scoped_to_one_product(client, own_code):
+    response = client.get(f"/api/v1/products/{own_code}/issuer-opinions?range=d7")
     assert response.status_code == 200
     assert response.get_json()["data"] == {
-        "status": "unavailable", "issuer": "南方东英", "counts": None, "list": [],
+        "status": "unavailable",
+        "issuer": "南方东英",
+        "counts": None,
+        "list": [],
     }
-    assert client.get("/api/v1/issuers/unknown/opinions?range=d7").status_code == 404
+    assert client.get("/api/v1/products/unknown/issuer-opinions?range=d7").status_code == 404
+    assert client.get("/api/v1/issuers/csop/opinions?range=d7").status_code == 404
 
 
 def test_unknown_product_is_404_not_an_empty_narrative(client):
@@ -92,6 +99,28 @@ def test_unknown_product_is_404_not_an_empty_narrative(client):
 
 def test_deterministic(client, own_code):
     assert get(client, own_code, "themes") == get(client, own_code, "themes")
+
+
+def test_7709_market_outlook_only_contains_7709_related_discussion(client):
+    data = get(client, "7709", "market-outlook")["data"]
+    assert data["scope"] == "product"
+    assert [row["code"] for row in data["list"]] == ["7709"]
+    assert all(set(row) == {
+        "code", "name", "status", "sentiment", "sentimentLabel", "summary",
+    } for row in data["list"])
+    assert all(row["status"] == "ok" for row in data["list"])
+    assert all(row["sentiment"] in {
+        "bullish", "neutral_bullish", "neutral", "neutral_bearish", "bearish",
+    } for row in data["list"])
+    assert all(row["sentimentLabel"] and row["summary"] for row in data["list"])
+
+
+def test_market_outlook_rollout_does_not_change_other_product_pages(client):
+    data = get(client, "3033", "market-outlook")["data"]
+    assert data["scope"] == "market"
+    assert data["list"][0]["code"] == "3033"
+    assert len(data["list"]) == 5
+    assert any(row["code"] != "3033" for row in data["list"])
 
 
 # ── 热议总结：整池一份 ──────────────────────────────────────────────────

@@ -27,7 +27,8 @@ def session_slots(day):
     return result
 
 
-def aggregate_prices(rng, bars, currency="HKD", reason=None):
+def aggregate_prices(rng, bars, *, currency, source, adjustment, reason=None):
+    """Aggregate stored facts without inventing their provider provenance."""
     granularity = {"hour": "1h", "day": "1d", "week": "1w"}[rng["gran"]]
     index = {row["timestamp"]: row for row in bars}
     output = []
@@ -47,8 +48,12 @@ def aggregate_prices(rng, bars, currency="HKD", reason=None):
             note = "休市日" if rng["gran"] == "day" else "整周休市"
         values = {field: None for field in ("open", "high", "low", "close")}
         if expected:
-            if all(timestamp in index for timestamp in expected):
-                rows = [index[timestamp] for timestamp in expected]
+            rows = sorted(
+                (index[timestamp] for timestamp in expected if timestamp in index),
+                key=lambda row: row["timestamp"],
+            )
+            complete = bool(rows) if rng["gran"] == "hour" else len(rows) == len(expected)
+            if complete:
                 values = {"open": float(rows[0]["open"]), "high": float(max(row["high"] for row in rows)),
                           "low": float(min(row["low"] for row in rows)), "close": float(rows[-1]["close"])}
                 note = ""
@@ -60,5 +65,5 @@ def aggregate_prices(rng, bars, currency="HKD", reason=None):
         "status": "ok" if available else "unavailable", "granularity": granularity,
         "granLabel": {"1h": "小时 K", "1d": "日 K", "1w": "周 K"}[granularity],
         "currency": currency, "list": output, "missing": len(output) - available,
-        "source": "FMP", "adjustment": "split_adjusted", "reason": reason,
+        "source": source, "adjustment": adjustment, "reason": reason,
     }

@@ -19,6 +19,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, REPO)
 
 from radar_db import create_all, make_engine  # noqa: E402
+from radar_db.analysis_requests import enqueue  # noqa: E402
 from radar_db.schema import annotation_jobs, annotations, metadata  # noqa: E402
 
 alembic = pytest.importorskip("alembic", reason="迁移测试需要 alembic")
@@ -79,6 +80,19 @@ def test_indexes_and_constraints_match(migrated, created):
         assert ({c["name"] for c in mi.get_check_constraints(table)}
                 == {c["name"] for c in ci.get_check_constraints(table)}), (
             f"{table} CHECK 约束不一致 —— 状态与预算上限依赖它们")
+
+
+def test_feeds_has_a_global_posted_at_index_for_legacy_d0_cutoff(migrated):
+    indexes = {item["name"] for item in inspect(migrated).get_indexes("feeds")}
+
+    assert "ix_feeds_posted_at" in indexes
+
+
+def test_migrated_analysis_queue_accepts_today_range(migrated):
+    request, created = enqueue(migrated, "d0")
+
+    assert created is True
+    assert request["range"] == "d0"
 
 
 def test_old_single_table_annotations_is_gone(migrated):

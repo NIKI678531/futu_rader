@@ -8,8 +8,10 @@ import {
   CAMP, POST_TYPES, TYPE_BY_KEY, DIRECTIONS, DIR_BY_KEY,
 } from '../lib/view'
 import { kolProfile } from '../lib/profile'
+import { compareKolReach } from '../lib/kolMetrics'
 import { s, hover, focus } from '../lib/dc'
 import Shell from '../components/Shell'
+import DatePresetTabs from '../components/DatePresetTabs'
 import withTransition from '../components/withTransition'
 import DcLink from '../components/DcLink'
 
@@ -24,7 +26,7 @@ class KolActivity extends React.Component {
   constructor(props) {
     super(props);
     this.state = {
-      rangeKey: 'd7', sort: 'eng', leaderSort: 'n', sel: null,
+      rangeKey: 'd7', sort: 'eng', leaderSort: 'views', sel: null,
       etf: 'ALL', kol: 'ALL', post: 'ALL', types: [], dirs: [],
       etfMenu: false, kolMenu: false, postMenu: false, typeMenu: false,
       /* 表内筛选：发帖记录（q / camp / onlyPending / tTypeMenu）与声量排名（lq / lCamp / lType） */
@@ -71,8 +73,8 @@ class KolActivity extends React.Component {
   exportCsv(list, summary, filename) {
     var self = this;
     var esc = function (v) { v = v == null ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.split('"').join('""') + '"' : v; };
-    var campLabel = function (p) { var c = self.camp(p); return c === 'both' ? '自家+竞品' : (CAMP[c] || CAMP.none).label; };
-    var head = ['重点KOL', 'KOL标签', '发帖时间', 'ETF代码', 'ETF名称', '发行商', '内容形式', '操作方向', '类型置信度', '是否待确认', 'AI摘要', '阵营', '提及产品(全部代码)', '赞', '评论数', '转发', '原帖链接'];
+    var ownershipLabel = function (p) { return p.ownership === 'own' ? '自家' : (p.ownership === 'peer' ? '其他公司' : '数据暂不可用'); };
+    var head = ['重点KOL', 'KOL标签', '发帖时间', 'ETF代码', 'ETF名称', '发行商', '内容形式', '操作方向', '类型置信度', '是否待确认', 'AI摘要', 'ETF归属', '提及产品(全部代码)', '赞', '评论数', '转发', '原帖链接'];
     /* 导出的缺失格写「数据暂不可用」，不写空。CSV 里的空单元格在 Excel 里与
        「这里确实没有」长得一模一样，而这份文件会被拿去做判断、甚至再统计一遍。
        页面上分得开的两件事，落到文件里也得分得开。 */
@@ -83,7 +85,7 @@ class KolActivity extends React.Component {
       return [p.kol, p.tags.split(',').join(' / '), p.day + ' ' + p.time.slice(6), p.code + '.HK', p.name, p.issuer,
         cell(p.typeLabel), ann ? na : (p.directionPending ? '待确认' : (p.dir ? p.dir.label : '')),
         conf2(p.confidence), pd == null ? na : (pd ? '是' : '否'),
-        ann ? na : (p.hasSummary ? p.summary : '（图片帖，无摘要）'), campLabel(p),
+        ann ? na : (p.hasSummary ? p.summary : '（图片帖，无摘要）'), ownershipLabel(p),
         p.mentioned.map(function (m) { return m.code + '.HK'; }).join(' '),
         cell(p.likes), cell(p.comments), cell(p.shares), p.url].map(esc).join(',');
     }));
@@ -134,7 +136,16 @@ class KolActivity extends React.Component {
     var etfPosts = this.postsForEtf(M);
     var sp = this.scoped(M);
     var secOf = function (k) { return R.SECTORS.filter(function (x) { return x.k === k; })[0] || R.SECTORS[0]; };
-    var campsOf = function (p) { var c = self.camp(p); return c === 'both' ? [CAMP.own, CAMP.competitor] : [CAMP[c] || CAMP.none]; };
+    /* 这枚标签描述左侧主 ETF，不描述整篇正文还提过什么产品。 */
+    var ownershipOf = function (p) {
+      if (p.ownership === 'own') return CAMP.own;
+      if (p.ownership === 'peer') return Object.assign({}, CAMP.competitor, { label: '其他公司' });
+      return { k: 'unknown', label: '暂不可用', bg: 'var(--ink-100)', fg: 'var(--ink-500)' };
+    };
+    var mentionBadgesOf = function (p) {
+      var c = self.camp(p);
+      return c === 'both' ? [CAMP.own, CAMP.competitor] : [CAMP[c] || CAMP.none];
+    };
     var issuerShort = function (x) { return x === 'CSOP 南方东英' ? '南方东英' : x; };
     var pct = function (n, d) { return d ? Math.round(n / d * 100) + '%' : '—'; };
     out.clamp = String(clamp); out.clampH = String(clamp * 22);
@@ -277,7 +288,7 @@ class KolActivity extends React.Component {
       + (picked.length ? ' × ' + picked.join('、') : '');
     out.closeSel = function () { self.setState({ sel: null }); };
 
-    /* 发帖记录表内筛选：关键词 × 阵营 × 仅待确认，只作用于表格，KPI 仍按上方范围 */
+    /* 发帖记录表内筛选：关键词 × 提及范围（camp）× 仅待确认，只作用于表格，KPI 仍按上方范围 */
     var qq = norm(s.q);
     var hay = function (p) {
       return norm([p.kol, p.tags, p.code, p.name, p.issuer, p.summary]
@@ -349,7 +360,7 @@ class KolActivity extends React.Component {
     var campName = CAMPS.filter(function (x) { return x[0] === s.camp; })[0][1];
     var hasAnyFilter = out.hasScope || out.hasTf;
     var csvSummary = ['日期范围 ' + range.from + ' ～ ' + range.to + '（' + range.label + '）', 'ETF ' + (s.etf === 'ALL' ? '全部' : s.etf), 'KOL ' + (s.kol === 'ALL' ? '全部' : s.kol),
-      '帖子 ' + (s.post === 'ALL' ? '全部' : s.post), '类型 ' + (picked.length ? picked.join('、') : '全部'), '关键词 ' + (qq || '—'), '阵营 ' + campName,
+      '帖子 ' + (s.post === 'ALL' ? '全部' : s.post), '类型 ' + (picked.length ? picked.join('、') : '全部'), '关键词 ' + (qq || '—'), '提及范围 ' + campName,
       '仅待确认 ' + (s.onlyPending ? '是' : '否'), '排序 ' + (s.sort === 'eng' ? '按互动' : '按时间'), '共 ' + list.length + ' 条', '数据更新 ' + M.updated].join(' · ');
     var csvName = 'KOL发帖记录_' + range.from + '_' + range.to + (hasAnyFilter ? '_筛选' : '') + '.csv';
     out.exportCsv = function () { if (list.length) self.exportCsv(list, csvSummary, csvName); };
@@ -373,7 +384,7 @@ class KolActivity extends React.Component {
            「暂无摘要 · 图片帖」—— 替一篇可能全是文字的帖子宣布了它只有图片。 */
         summary: p.hasSummary ? p.summary : '',
         noSummary: p.hasSummary === false, summaryNa: self.annNa(p),
-        camps: campsOf(p),
+        ownership: ownershipOf(p),
         likes: num(p.likes), comments: num(p.comments), shares: num(p.shares),
         url: p.url, stop: function (e) { e.stopPropagation(); },
         bg: p.id === s.sel ? 'var(--csop-blue-50)' : (i % 2 ? 'var(--canvas)' : '#fff'),
@@ -387,21 +398,22 @@ class KolActivity extends React.Component {
     var byK = {};
     basePosts.forEach(function (p) { (byK[p.kol] = byK[p.kol] || []).push(p); });
     var leaders = Object.keys(byK).map(function (k) { return kolProfile(k, byK[k], function (p) { return self.camp(p); }); });
-    /* `n`（篇数）永远数得出来；`comments` 是合计，有一篇没采到就整份未知，所以它走
-       descN：评论量未知的 KOL 排最后，而不是被 `b.comments - a.comments` 当成 0 排进
-       「最不被讨论」那一头 —— 那一头是一个结论，这里要的是「还不知道」。 */
-    if (s.leaderSort === 'n') leaders.sort(function (a, b) { return b.n - a.n || descN(a.comments, b.comments); });
-    else leaders.sort(function (a, b) { return descN(a.comments, b.comments) || b.n - a.n; });
-    out.leaderSorts = [['n', '按篇数'], ['eng', '按评论量']].map(function (x) {
+    /* `n`（篇数）永远数得出来；`views` / `comments` 是合计，有一篇没采到就整份未知。
+       浏览量由 compareKolReach、评论量由 descN 把未知 KOL 排最后，而不是当成 0 排进
+       「触达／讨论最少」那一头 —— 那一头是一个结论，这里要的是「还不知道」。 */
+    if (s.leaderSort === 'views') leaders.sort(compareKolReach);
+    else if (s.leaderSort === 'n') leaders.sort(function (a, b) { return b.n - a.n || descN(a.comments, b.comments) || compareKolReach(a, b); });
+    else leaders.sort(function (a, b) { return descN(a.comments, b.comments) || b.n - a.n || compareKolReach(a, b); });
+    out.leaderSorts = [['views', '按浏览量'], ['n', '按篇数'], ['eng', '按评论量']].map(function (x) {
       var on = s.leaderSort === x[0];
       return {
         label: x[1], go: function () { self.setState({ leaderSort: x[0] }); },
         fw: on ? 600 : 400, fg: on ? '#fff' : 'var(--ink-600)', bg: on ? 'var(--csop-blue-600)' : '#fff'
       };
     });
-    out.leaderSortNote = s.leaderSort === 'n' ? '按篇数降序' : '按评论量降序';
+    out.leaderSortNote = s.leaderSort === 'views' ? '按浏览量降序' : (s.leaderSort === 'n' ? '按篇数降序' : '按评论量降序');
 
-    /* 排名表内筛选：KOL 名称 / 标签 × 阵营 × 主要类型 */
+    /* 排名表内筛选：KOL 名称 / 标签 × 提及范围（camp）× 主要类型 */
     var lqq = norm(s.lq);
     var lBase = leaders.filter(function (l) {
       if (lqq && norm(l.kol + ' ' + (l.posts[0] ? l.posts[0].tags : '')).indexOf(lqq) < 0) return false;
@@ -449,7 +461,7 @@ class KolActivity extends React.Component {
         kol: l.kol, n: String(l.n),
         ownW: (l.own / mxN * 100).toFixed(1), bothW: (l.both / mxN * 100).toFixed(1), peerW: (l.peer / mxN * 100).toFixed(1),
         ownAny: String(l.ownAny), peerAny: String(l.peerAny),
-        eng: num(l.comments),
+        views: num(l.views), eng: num(l.comments),
         type: st.label, tbg: st.bg, tfg: st.fg,
         fw: on ? 600 : 500,
         dot: on ? 'var(--csop-blue-600)' : 'var(--csop-silver-400)',
@@ -479,8 +491,8 @@ class KolActivity extends React.Component {
            帖子上，而下面的原文里一句高亮都没有。三态要分开写。 */
         evidenceNote: p0.evidenceIdx == null ? '判定依据尚未生成'
           : (p0.evidenceIdx >= 0 ? '判定依据的原句已在下方原文中标出' : '本篇无可标注的判定依据句'),
-        camps: campsOf(p0),
-        campNote: self.primaryOnly() ? '阵营按挂载标的判定（当前口径）' : '阵营按挂载标的 ∪ 正文提及判定',
+        camps: mentionBadgesOf(p0),
+        campNote: self.primaryOnly() ? '产品提及按挂载标的判定（当前口径）' : '产品提及按挂载标的 ∪ 正文提及判定',
         hasSwitch: sameKol.length > 1, switchN: String(sameKol.length),
         switch: sameKol.map(function (q) {
           var on = q.id === p0.id;
@@ -567,12 +579,8 @@ class KolActivity extends React.Component {
       <div data-screen-label="KOL 影响力" style={s('width:100%;min-width:1200px;min-height:100vh;box-sizing:border-box;background:var(--canvas);font-family:var(--font-cjk);color:var(--ink-900);font-size:14px')}>
 
         <Shell vals={v}>
-          <div style={s('display:flex;align-items:center;gap:12px;min-height:48px;padding:7px 24px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1);flex-wrap:wrap')}>
-            <div style={s('display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden;background:#fff')}>
-              {v.presets.map((p) => (
-                <div key={p.label} onClick={p.go} style={s(`padding:6px 14px;font:${p.fw} 14px/1.4 var(--font-cjk);color:${p.fg};background:${p.bg};cursor:pointer;border-right:1px solid var(--border-1);transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>{p.label}</div>
-              ))}
-            </div>
+          <div data-shell-filter style={s('display:flex;align-items:center;gap:12px;min-height:48px;box-sizing:border-box;padding:7px 24px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1);flex-wrap:wrap')}>
+            <DatePresetTabs presets={v.presets} />
 
             <div style={s('position:relative;flex:none')}>
               <div onClick={v.etfToggle} style={s(`display:flex;align-items:center;gap:8px;padding:6px 11px;border:1px solid ${v.etfBc};border-radius:6px;background:${v.etfBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
@@ -710,7 +718,7 @@ class KolActivity extends React.Component {
                 )}
               </div>
               <div style={s('flex:none;display:flex;align-items:center;gap:7px')}>
-                <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>阵营</span>
+                <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>提及范围</span>
                 <div style={s('display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden;background:#fff')}>
                   {v.camps.map((f) => (
                     <div key={f.label} onClick={f.go} style={s(`padding:5px 11px;font:${f.fw} 13px/1.4 var(--font-cjk);color:${f.fg};background:${f.bg};cursor:pointer;border-right:1px solid var(--border-1)`)}>{f.label}</div>
@@ -734,7 +742,7 @@ class KolActivity extends React.Component {
                     <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:88px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>ETF</th>
                     <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:118px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>类型</th>
                     <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 10px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>AI 摘要</th>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:96px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>阵营</th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:96px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>ETF 归属</th>
                     <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 6px;width:132px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>赞 / 评 / 转</th>
                     <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 16px 10px 6px;width:84px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>原帖</th>
                   </tr>
@@ -778,11 +786,7 @@ class KolActivity extends React.Component {
                         )}
                       </td>
                       <td style={s('padding:11px 6px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
-                        <div style={s('display:flex;flex-wrap:wrap;gap:3px')}>
-                          {r.camps.map((c) => (
-                            <span key={c.label} style={s(`padding:2px 8px;border-radius:9999px;background:${c.bg};font:600 12px/1.5 var(--font-cjk);color:${c.fg};white-space:nowrap`)}>{c.label}</span>
-                          ))}
-                        </div>
+                        <span style={s(`display:inline-block;padding:2px 8px;border-radius:9999px;background:${r.ownership.bg};font:600 12px/1.5 var(--font-cjk);color:${r.ownership.fg};white-space:nowrap`)}>{r.ownership.label}</span>
                       </td>
                       <td style={s('padding:11px 6px;vertical-align:top;text-align:right;font:500 13px/1.6 var(--font-mono);color:var(--ink-700);border-bottom:1px solid var(--ink-100);white-space:nowrap')}>{r.likes} / {r.comments} / {r.shares}</td>
                       <td style={s('padding:11px 16px 11px 6px;vertical-align:top;text-align:right;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
@@ -802,7 +806,7 @@ class KolActivity extends React.Component {
                 <span style={s('font:600 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>排序</span>
                 <div style={s('display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden')}>
                   {v.leaderSorts.map((f) => (
-                    <div key={f.label} onClick={f.go} style={s(`padding:5px 11px;font:${f.fw} 13px/1.4 var(--font-cjk);color:${f.fg};background:${f.bg};cursor:pointer;border-right:1px solid var(--border-1)`)}>{f.label}</div>
+                    <div key={f.label} data-screen-diff-new={f.label === '按浏览量' ? 'kol-view-sort' : undefined} onClick={f.go} style={s(`padding:5px 11px;font:${f.fw} 13px/1.4 var(--font-cjk);color:${f.fg};background:${f.bg};cursor:pointer;border-right:1px solid var(--border-1)`)}>{f.label}</div>
                   ))}
                 </div>
               </div>
@@ -810,7 +814,7 @@ class KolActivity extends React.Component {
             <div style={s('display:flex;align-items:center;gap:10px;padding:10px 20px;border-bottom:1px solid var(--border-1);background:var(--canvas);flex-wrap:wrap')}>
               <input type="text" value={v.lq} onChange={v.setLq} placeholder="搜 KOL 名称 / 标签" style={s(`flex:none;width:220px;height:30px;box-sizing:border-box;padding:0 10px;border:1px solid ${v.lqBc};border-radius:6px;background:#fff;font:400 13px/1.4 var(--font-cjk);color:var(--ink-800);outline:none`)} className={focus('border-color:var(--csop-blue-600);box-shadow:0 0 0 2px var(--csop-blue-100)')} />
               <div style={s('flex:none;display:flex;align-items:center;gap:7px')}>
-                <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>阵营</span>
+                <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>提及范围</span>
                 <div style={s('display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden;background:#fff')}>
                   {v.lCamps.map((f) => (
                     <div key={f.label} onClick={f.go} style={s(`padding:5px 11px;font:${f.fw} 13px/1.4 var(--font-cjk);color:${f.fg};background:${f.bg};cursor:pointer;border-right:1px solid var(--border-1)`)}>{f.label}</div>
@@ -850,24 +854,25 @@ class KolActivity extends React.Component {
             <div style={s('display:grid;grid-template-columns:1fr 1fr;gap:0 26px;padding:6px 20px 4px')}>
               {v.leaderCols.map((col) => (
                 <div key={col.key} style={s('min-width:0')}>
-                  <div style={s('display:flex;align-items:center;gap:10px;padding:7px 0 8px;border-bottom:1px solid var(--border-1)')}>
+                  <div style={s('display:flex;align-items:center;gap:8px;padding:7px 0 8px;border-bottom:1px solid var(--border-1)')}>
                     <span style={s('flex:none;width:22px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>#</span>
                     <span style={s('flex:1;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>KOL</span>
                     <span style={s('flex:none;width:28px;text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>篇</span>
-                    <span style={s('flex:none;width:150px;padding-left:12px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>自家 / 竞品</span>
-                    <span style={s('flex:none;width:62px;text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>评论量</span>
-                    <span style={s('flex:none;width:76px;padding-left:10px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>主要类型</span>
-                    <span style={s('flex:none;width:58px')}></span>
+                    <span style={s('flex:none;width:120px;padding-left:8px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>自家 / 其他</span>
+                    <span data-screen-diff-new="kol-view-column" style={s('flex:none;width:68px;text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>浏览量</span>
+                    <span style={s('flex:none;width:52px;text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>评论量</span>
+                    <span style={s('flex:none;width:68px;padding-left:6px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>主要类型</span>
+                    <span style={s('flex:none;width:54px')}></span>
                   </div>
                   {col.rows.map((l) => (
-                    <div key={l.key} onClick={l.go} style={s(`display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--ink-100);background:${l.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
+                    <div key={l.key} onClick={l.go} style={s(`display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--ink-100);background:${l.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
                       <span style={s(`flex:none;width:22px;font:600 13px/1.4 var(--font-mono);color:${l.rankFg}`)}>{l.rank}</span>
                       <div style={s('flex:1;min-width:0;display:flex;align-items:center;gap:6px')}>
                         <span style={s(`flex:none;width:7px;height:7px;border-radius:9999px;background:${l.dot}`)}></span>
                         <span style={s(`font:${l.fw} 14px/1.4 var(--font-cjk);color:var(--ink-800);white-space:nowrap;overflow:hidden;text-overflow:ellipsis`)}>{l.kol}</span>
                       </div>
                       <span style={s('flex:none;width:28px;text-align:right;font:500 13px/1.4 var(--font-mono);color:var(--ink-600)')}>{l.n}</span>
-                      <div style={s('flex:none;width:150px;display:flex;align-items:center;gap:8px;padding-left:12px')}>
+                      <div style={s('flex:none;width:120px;display:flex;align-items:center;gap:6px;padding-left:8px')}>
                         <div style={s('flex:1;height:8px;display:flex;background:var(--ink-100);border-radius:3px;overflow:hidden')}>
                           <div style={s(`width:${l.ownW}%;height:100%;background:var(--csop-blue-600)`)}></div>
                           <div style={s(`width:${l.bothW}%;height:100%;background:var(--csop-blue-300)`)}></div>
@@ -875,9 +880,10 @@ class KolActivity extends React.Component {
                         </div>
                         <span style={s('flex:none;width:44px;text-align:right;font:600 12px/1.4 var(--font-mono);color:var(--ink-700)')}>{l.ownAny}/{l.peerAny}</span>
                       </div>
-                      <span style={s('flex:none;width:62px;text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{l.eng}</span>
-                      <span style={s('flex:none;width:76px;padding-left:10px;box-sizing:border-box')}><span style={s(`display:inline-block;padding:1px 7px;border-radius:4px;background:${l.tbg};font:600 11px/1.6 var(--font-cjk);color:${l.tfg};white-space:nowrap`)}>{l.type}</span></span>
-                      <DcLink href={l.href} onClick={l.stop} style={s('flex:none;width:58px;box-sizing:border-box;text-align:center;padding:3px 0;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>详情 →</DcLink>
+                      <span data-testid="kol-leader-views" data-screen-diff-new="kol-view-column" style={s('flex:none;width:68px;text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{l.views}</span>
+                      <span style={s('flex:none;width:52px;text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{l.eng}</span>
+                      <span style={s('flex:none;width:68px;padding-left:6px;box-sizing:border-box')}><span style={s(`display:inline-block;padding:1px 7px;border-radius:4px;background:${l.tbg};font:600 11px/1.6 var(--font-cjk);color:${l.tfg};white-space:nowrap`)}>{l.type}</span></span>
+                      <DcLink href={l.href} onClick={l.stop} style={s('flex:none;width:54px;box-sizing:border-box;text-align:center;padding:3px 0;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>详情 →</DcLink>
                     </div>
                   ))}
                 </div>

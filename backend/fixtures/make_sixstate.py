@@ -213,11 +213,11 @@ def build_kol():
              mentioned=donor["mentioned"] + [peer_mention], camp="both",
              summary="互动为零的帖子：赞、评、转都确实是 0，不是缺数据。"),
 
-        # ② 暂不可用 —— 三个计数字段都取不到。这一条同时钉住**聚合**：
-        #    声量排名里这位 KOL 的评论量合计必须也是「数据暂不可用」，不是把 null 当 0 加进去，
+        # ② 暂不可用 —— 平台互动与浏览字段都取不到。这一条同时钉住**聚合**：
+        #    声量排名里这位 KOL 的评论量、浏览量合计必须也是「数据暂不可用」，不是把 null 当 0 加进去，
         #    更不是 NaN。少数一篇的合计冒充总数，比直接说不知道更难被发现。
         make("sixstate-kol-null", likes=None, comments=None, shares=None,
-             engagement=None, confidence=0.95, reviewState="pending", hasSummary=True,
+             engagement=None, views=None, confidence=0.95, reviewState="pending", hasSummary=True,
              summary="平台计数字段未回传：三个数都应该有值，但当前取不到。"),
 
         # ③ 待确认（方向）—— 操作类帖子但方向置信度不足。
@@ -265,14 +265,13 @@ def build_kol():
              fullText=None, evidenceIdx=None, typeEvidence=None, reviewState=None),
     ]
 
-    # leaders 是**全量**画像榜，KOL 详情页拿它定「声量排名第一」与上一位／下一位的顺序。
-    # 这里手写：把 kolProfile 在 Python 里再实现一遍，正是 ADR-0015 拒绝的那件事
-    # （它的唯一实现在 frontend/src/lib/profile.js）。数值一眼可核。
+    # leaders 是**全量兼容**画像榜。当前 KOL 两页基于 posts 调用前端唯一的 kolProfile，
+    # 这里不在 Python 里重复实现它（ADR-0015）；只保留端点原有兼容形状，数值一眼可核。
     # comments 是 None 而不是 0+7+3+0+2=12：其中一篇的评论数取不到，合计就是未知。
     #
     # 类型五项一起是 None，与 `providers/sql.py::_leaders` 对齐：判据是「**有一篇**
     # 不知道」而不是「全都不知道」——⑥ 那篇没标注，谁是这位 KOL 的主要类型就不确定了。
-    # 写成 {market: 5} 少数一篇，画出来的构成图看着完全正常、只是分母不对；写成
+    # 写成 {market: 5} 少数一篇，算出的主要类型看着完全正常、只是分母不对；写成
     # {market: 5, null: 1} 更糟，那是给界面递了一个叫「null」的类型。
     leader = {
         "kol": kol,
@@ -309,13 +308,11 @@ def build_kol():
 
 
 def build_opinions(kol):
-    """KOL 详情页「其他产品观点及操作」表的六态样本。
+    """兼容保留的 KOL opinions 端点六态样本。
 
-    这张表只有一个数值位（互动量），所以它只演两态 —— 真零与暂不可用。剩下的态
-    在同一页的发帖记录表里演（build_kol），不必在这儿重复一遍。
+    端点不再由 KOL 详情页消费，但线协议仍演真零与暂不可用两态。
 
-    `net`（情绪净值）在这张表里也带上了 null 与非 null 两种，但**页面不渲染它**：
-    它是 CSV 与将来的态度视图要用的字段，六态护栏够不着，由
+    `net`（情绪净值）也带上 null 与非 null 两种；当前页面不渲染它，由
     backend/tests/test_kol.py::test_net_is_null_when_the_sample_is_too_thin 钉住。
     """
     src = load("kol_opinions")[f"{kol}|{RANGE}"]
@@ -347,16 +344,15 @@ def build_opinions(kol):
 
 
 def build_kol_mentions():
-    """产品监控「产品相关 KOL」表的六态样本 —— 三只产品各演一种「没有主要态度」。
+    """产品监控「产品相关 KOL」表的三种可用性样本。
 
     这一组的要害是**三件事长得很像**：
 
-      3033 有表、但某一行的主要态度取不到 → 那一格「暂不可用」（短徽章）
+      3033 有已识别 KOL 的相关帖子或评论观点 → 正常列表
       3469 整张表取不到（KOL 身份映射没接上） → 「数据暂不可用 — KOL 身份名单或账号映射尚未核验。」
       3442 查过了，名单里没人提过它           → 「暂无相关内容 — 当前区间未发现已识别 KOL……」
 
-    三句话在页面上不可互换：第一句是一格，后两句是整张表；后两句一个是「查不了」、
-    一个是「查过了没有」。合并任意两句，读的人都会得出一个我们没得出的结论。
+    后两句一个是「查不了」、一个是「查过了没有」，在页面上不可互换。
     """
     src = load("kol_mentions")["3033|" + RANGE]
     donor = src["list"][0]
@@ -382,15 +378,11 @@ def build_kol_mentions():
             "status": "ok",
             "scope": src["scope"],
             "list": [
-                # ① 样本够：照常给结论。没有这条反向断言，「整列都填暂不可用」也能过。
+                # 两行分别覆盖较多与较少相关内容；表格均只展示内容事实，不输出 KOL 态度结论。
                 row("六态对照 · 提及五条", 5, "positive", "积极",
-                    "有效提及五条以上：足够下结论，这一格该显示态度标签。"),
-                # ② 样本不足：后端给 null（PRD §5 表 P8「主要态度（<3 条不输出）」）。
-                #    页面渲染短徽章「暂不可用」——不是 0、不是空白、更不是随手挑一个方向。
-                #    KOL 名和摘要里都不能出现方向词或「样本不足」四个字：这一行整段都会被
-                #    反向断言扫过，样本自己带上要拒绝的字，撞的是自己（已经撞过一次）。
+                    "有效提及五条：该 KOL 在相关评论区持续讨论该产品。"),
                 row("六态样本 · 提及两条", 2, None, None,
-                    "有效提及不足三条：这一格不输出主要态度，也不能拿一个倾向充数。"),
+                    "有效提及两条：该 KOL 在当前区间留下少量相关观点。"),
             ],
         },
         # 整张表取不到：字段应有值，但 KOL 身份名单／账号映射尚未核验。

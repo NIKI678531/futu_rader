@@ -16,11 +16,12 @@
      - `{{ }}` holes became JSX; `style="…"` strings are parsed by `s()` and
        `style-hover` by `hover()`. */
 import React from 'react'
-import R, { prefetchScreen } from '../../data/radar'
-import { rgba, num, numRaw, navGroups, stamp, naBox, aiValidationNote, heatLowerBoundNote, kolDisplayLabel } from '../../lib/view'
+import R, { invalidateMarketOutlook, prefetchScreen } from '../../data/radar'
+import { rgba, num, numRaw, navGroups, stamp, naBox, heatLowerBoundNote, kolDisplayLabel } from '../../lib/view'
 import { commentFunnelView } from '../../lib/commentFunnel'
 import { DEFAULT_PRODUCT_CODE, productCodeOrDefault, productSelectionFromSearch } from '../../lib/productSelection'
-import { productSummaryPoints } from '../../lib/productSummary'
+import { issuerOpinionView } from '../../lib/attitudeDisplay'
+import { priceSourceDisclosure, priceSourceLabel } from '../../lib/priceDisplay'
 import { s } from '../../lib/dc'
 import DataUnavailable from '../../components/DataUnavailable'
 import Shell from '../../components/Shell'
@@ -43,7 +44,7 @@ export default class ProductMonitor extends React.Component {
 
   state = {
     code: DEFAULT_PRODUCT_CODE, rangeKey: 'd7', selOpen: false, q: '', pq: '', secF: 'all', newF: 'all',
-    posMore: false, negMore: false, panel: null, post: null, hover: null, loading: false,
+    posMore: false, negMore: false, issuerMore: false, panel: null, post: null, hover: null, loading: false,
     legend: { comments: 1, inter: 1, active: 1, pos: 1, neg: 1, px: 1 }, kolMore: false, riskMore: false,
     /* 热度变化与阶段观点：折线悬停桶 / 展开的阶段 / 悬停的阶段 */ heatHover: null, stageOpen: null, stageHover: null,
     /* 两块图表的绘图宽度：按面板实际宽度测量，随窗口变化重算，不再固定 1344 */ trendW: 1344
@@ -111,7 +112,7 @@ export default class ProductMonitor extends React.Component {
         code: patch.code || st.code,
         rangeKey: patch.rangeKey || st.rangeKey,
       });
-      patch = Object.assign({}, patch, { loading: true, hover: null, heatHover: null, stageOpen: null, stageHover: null, riskMore: false });
+      patch = Object.assign({}, patch, { loading: true, hover: null, heatHover: null, stageOpen: null, stageHover: null, riskMore: false, issuerMore: false });
       clearTimeout(this._lt);
       this._lt = setTimeout(() => this.setState({ loading: false }), 520);
     }
@@ -200,8 +201,8 @@ export default class ProductMonitor extends React.Component {
     var range = R.buildRange(s.rangeKey);
     var cur = R.observe(s.code, s.rangeKey).buckets;
     var base = R.observe(s.code, s.rangeKey, 'bench').buckets;
-    /* 行情源还没接（ADR-0017）⇒ 整块 null。`px.status` 会直接 TypeError，而这里是
-       canvas 绘制路径 —— 崩在这儿连错误边界都接不到一个有意义的位置。 */
+    /* 已验证行情源仍可能因未上市或零成交而返回空值。`px.status` 会直接 TypeError，
+       而这里是 canvas 绘制路径 —— 崩在这儿连错误边界都接不到一个有意义的位置。 */
     var px = naBox(R.candlesFor(s.code, s.rangeKey));
     var pxOk = !!lg.px && px.status === 'ok';
 
@@ -356,7 +357,6 @@ export default class ProductMonitor extends React.Component {
     var P = R.pool(s.rangeKey);
     var o = R.observe(code, s.rangeKey);
     var funnel = commentFunnelView(o.commentFunnel);
-    var partialData = funnel.partial;
     var bench = R.benchmark(code, s.rangeKey);
     var rk = R.ranks(s.rangeKey);
     /* `attitude` 整块可能为 null（三态要 AI 标注，ADR-0017）。设计源直接 `att.positive`，
@@ -370,6 +370,9 @@ export default class ProductMonitor extends React.Component {
       var on = p.k === s.rangeKey;
       return {
         label: p.label, go: () => self.go({ rangeKey: p.k, panel: null, post: null, hover: null }),
+        placeholder: p.placeholder,
+        screenDiffNew: p.screenDiffNew,
+        active: on,
         fw: on ? 600 : 400, fg: on ? 'var(--csop-blue-700)' : 'var(--ink-600)',
         bg: on ? 'var(--csop-blue-50)' : '#fff'
       };
@@ -480,8 +483,9 @@ export default class ProductMonitor extends React.Component {
     var posThemes = (s.posMore ? posAll : posAll.slice(0, 3)).map(function (t) { return themeRow(t); });
     var negThemes = (s.negMore ? negAll : negAll.slice(0, 3)).map(function (t) { return themeRow(t); });
 
-    var issuerOpinions = o.ownership === 'own' ? R.issuerOpinions(s.rangeKey) : null;
-    var issuerRows = issuerOpinions?.list?.map(function (row) {
+    var issuerOpinions = o.ownership === 'own' ? R.issuerOpinions(code, s.rangeKey) : null;
+    var issuerView = issuerOpinionView(issuerOpinions?.list, s.issuerMore);
+    var issuerRows = issuerView.rows.map(function (row) {
       return {
         id: row.id, attitude: row.attitudeLabel,
         color: row.attitude === 'positive' ? 'var(--positive-700)' : (row.attitude === 'negative' ? 'var(--negative-700)' : 'var(--ink-600)'),
@@ -554,26 +558,22 @@ export default class ProductMonitor extends React.Component {
     /* 本轮新增：价格 K 线、产品相关 KOL、重点舆情（需合规关注）—— 均随 code + rangeKey 同步重算，不残留上一只产品的数据 */
     var px = naBox(R.candlesFor(code, s.rangeKey));
     var pxOn = !!s.legend.px;
+    var pxSource = priceSourceLabel(px);
     var candleMode = self.props.candleColor || 'greenUp';
     var candleUpTip = candleMode === 'redUp' ? '#F3A6A6' : '#8FE3B8', candleDnTip = candleMode === 'redUp' ? '#8FE3B8' : '#F3A6A6';
     var kolRes = naBox(R.kolMentionsFor(code, s.rangeKey));
     var kolAll = kolRes.list, kolShow = s.kolMore ? kolAll : kolAll.slice(0, 5);
+    /* Shared by the stage and evidence drawers below. The KOL table no longer renders
+       a main-attitude column, but those two surfaces still need the polarity palette. */
     var ATT_STYLE = {
       positive: ['var(--positive-100)', 'var(--positive-700)'],
       negative: ['var(--negative-100)', 'var(--negative-700)'],
       neutral: ['var(--ink-100)', 'var(--ink-600)']
     };
     var kolRows = kolShow.map(function (k) {
-      var st = k.dominantAttitude ? ATT_STYLE[k.dominantAttitude] : ['var(--canvas-alt)', 'var(--ink-500)'];
-      var attitudeSampleCount = (k.evidence || []).filter(function (e) { return e.attitude != null; }).length;
       return {
         name: k.kolName, type: kolDisplayLabel(k.kolTypeLabel), tags: String(k.kolTags || '').split(',').join(' · '),
         count: String(k.mentionCommentCount), last: k.lastMentionedAt,
-        /* 证据里可以直接数出有效态度：不足 3 条是已知的低样本，不再误报成数据缺失。 */
-        att: k.dominantLabel == null
-          ? (attitudeSampleCount < 3 ? '样本不足' : '暂不可用')
-          : k.dominantLabel,
-        abg: st[0], afg: st[1],
         excerpt: k.representativeExcerpt || '暂无相关内容', evidence: String(k.evidenceCount),
         detailHref: 'kol-detail.dc.html?kol=' + encodeURIComponent(k.kolName) + '&range=' + encodeURIComponent(s.rangeKey),
         stop: function (e) { e.stopPropagation(); },
@@ -624,14 +624,32 @@ export default class ProductMonitor extends React.Component {
       return o.code.toLowerCase().indexOf(pqQ) >= 0 || o.name.toLowerCase().indexOf(pqQ) >= 0;
     }).sort(function (a, b) { return b.mentions - a.mentions; }) : [];
 
-    /* 总结要 AI 归纳（`providers/sql.py::summary_for`）⇒ 整块 null。
-       `String(null.text)` 是硬 TypeError；而退成空字符串又会让右栏「有效样本」写出
-       「0 条」—— 那是铁律 2 明令禁止的那种谎。所以这里立旗标，值位统一走长文案。 */
-    var sum = R.summaryFor(code, s.rangeKey);
-    var sumNa = sum == null;
-    if (sumNa) sum = { text: '', sample: null, low: false };
-    /* 优先展示结构化 AI 要点；旧数据才按句拆 text，且统一限制为 5 条。 */
-    var sumPts = productSummaryPoints(sum);
+    /* 市场风向是独立返回，不再把 P7 产品评价硬拼成行情摘要。7709 先灰度为只看当前
+       产品：后端按 subject_code 收窄，前端再过滤一次，以兼容尚未重启的旧后端缓存。 */
+    var marketOutlook = R.marketOutlook(code, s.rangeKey);
+    var marketOutlookNa = marketOutlook == null;
+    var marketOutlookProductScoped = marketOutlook?.scope === 'product' || code === '7709';
+    var marketOutlookSourceRows = marketOutlookNa ? [] : marketOutlook.list.filter(function (row) {
+      return !marketOutlookProductScoped || row.code === code;
+    });
+    var marketOutlookRows = marketOutlookSourceRows.map(function (row) {
+      var palette = {
+        bullish: ['var(--positive-100)', 'var(--positive-700)'],
+        neutral_bullish: ['var(--positive-100)', 'var(--positive-700)'],
+        neutral: ['var(--ink-100)', 'var(--ink-700)'],
+        neutral_bearish: ['var(--negative-100)', 'var(--negative-700)'],
+        bearish: ['var(--negative-100)', 'var(--negative-700)']
+      }[row.sentiment] || ['var(--ink-100)', 'var(--ink-500)'];
+      return {
+        code: row.code,
+        name: row.name,
+        sentiment: row.sentimentLabel || (row.status === 'empty' ? '暂无结论' : '暂不可用'),
+        sentimentBg: palette[0], sentimentFg: palette[1],
+        summary: row.summary || (row.status === 'empty'
+          ? '暂无相关内容 — 区间内没有识别到该产品的市场方向讨论。'
+          : '数据暂不可用 — 市场行情摘要尚未生成。')
+      };
+    });
     var trendLegend = [
       { key: 'comments', label: '筛后评论数', color: '#2361AD' },
       { key: 'active', label: '活跃账号数', color: '#C9A961' },
@@ -702,59 +720,32 @@ export default class ProductMonitor extends React.Component {
       }),
 
       kpis: [
-        { label: '筛后评论量', value: num(o.comments), d: bench.comments, note: '合格父帖的平台回复总数，用于热度与排名；筛选前总量仅在漏斗中审计' },
-        { label: '相关评论数', value: funnel.relevantText, d: { short: partialData ? '部分数据' : '', dir: 0 }, note: '通过 exact 规则且 AI 确认 relevance=relevant 的评论' },
+        { label: '筛后评论量', value: num(o.comments), d: bench.comments },
+        { label: '相关评论数', value: funnel.relevantText, d: { short: '', dir: 0 } },
         { label: '讨论热度', value: (o.heatUnknownPosts > 0 ? '≥ ' : '') + num(o.discussionHeat), d: bench.heat,
           deltaTitle: bench.heatUnknownPosts && (bench.heatUnknownPosts.current > 0 || bench.heatUnknownPosts.base > 0)
             ? '环比按已知项计算：当期 ' + bench.heatUnknownPosts.current + ' 帖、基准期 ' + bench.heatUnknownPosts.base + ' 帖转发数未知' : undefined,
           note: R.HEAT_FORMULA + '　·　点赞 ' + num(o.likes) + ' ／ 转发 ' + num(o.shares) + heatLowerBoundNote(o.heatUnknownPosts) },
-        { label: '活跃账号数', value: num(o.activeAccounts), d: bench.accounts, note: o.activeAccounts == null ? '该产品的账号口径尚未核验' : '区间内发布或评论过的独立账号' },
-        { label: '全市场筛后评论量排名', value: '第 ' + rk.map[code], d: { short: '／ ' + rk.total + ' 只', dir: 0 }, note: '基于完整活跃 ETF 池与同一父帖筛选口径计算，板块筛选不重算' }
+        { label: '活跃账号数', value: num(o.activeAccounts), d: bench.accounts },
+        { label: '全市场筛后评论量排名', value: '第 ' + rk.map[code], d: { short: '／ ' + rk.total + ' 只', dir: 0 } }
       ].map(function (k) { return { label: k.label, value: k.value, note: k.note, delta: k.d.short, deltaTitle: k.deltaTitle, dfg: self.dfg(k.d) }; }),
-
-      commentFunnelAvailable: funnel.available,
-      commentFunnelPartial: partialData,
-      commentFunnelDataLabel: funnel.dataLabel,
-      commentFunnelSteps: funnel.steps.map(function (step) {
-        return {
-          key: step.key,
-          label: step.label,
-          value: step.key === 'relevant' ? funnel.relevantText : numRaw(step.count)
-        };
-      }),
-      commentFunnelSourceCoverage: funnel.sourceCoverageText,
-      commentFunnelAnalysisCoverage: funnel.analysisCoverageText,
-      commentFunnelQualifyingFeeds: funnel.available ? numRaw(funnel.qualifyingFeedCount) : '数据暂不可用',
-      commentFunnelFilterExcluded: funnel.available ? numRaw(funnel.filterExcludedPlatformCount) : '数据暂不可用',
-      commentFunnelExcluded: funnel.available ? numRaw(o.commentFunnel.ruleExcludedCount) : '数据暂不可用',
-      commentFunnelNeedsContext: funnel.available ? numRaw(o.commentFunnel.needsContextCount) : '数据暂不可用',
-      commentFunnelPending: funnel.available ? numRaw(o.commentFunnel.pendingCount) : '数据暂不可用',
-      partialData: partialData,
 
       heatDisclosure: o.heatUnknownPosts > 0 || bench.base.heatUnknownPosts > 0
         ? '热度、互动与转发按已知项计算；当期' + (heatLowerBoundNote(o.heatUnknownPosts) || '转发数完整')
           + '；基准期' + (heatLowerBoundNote(bench.base.heatUnknownPosts) || '转发数完整') : '',
 
-      summary: sum.text, sampleN: sumNa ? '数据暂不可用' : String(sum.sample), sampleOk: !sumNa,
-      summaryNa: sumNa,
-      summaryPoints: sumPts.map(function (p, i) { return { n: String(i + 1), text: p }; }),
-      summaryCountText: sumNa ? '数据暂不可用' : sumPts.length + ' 条要点 · 基于 ' + sum.sample + ' 条有效样本',
-      /* P7 元信息末尾的如实声明（ADR-0019 §4）：徽章说的是这一条怎么来的，这句说的是
-         整页的 AI 结论被验证到了什么程度。文案跟 /meta 的 `aiValidation` 走。 */
-      aiValidationNote: sum.summaryMode === 'facts'
-        ? '本摘要由已标注数据自动整理，未生成未经数据支撑的因果推断。'
-        : aiValidationNote(R.AI_VALIDATION),
-      aiLabel: sumNa ? '暂不可用' : (sum.summaryMode === 'facts'
-        ? (partialData ? '部分数据 · 统计摘要' : '统计摘要')
-        : (partialData ? '部分数据 · AI 生成' : (sum.low ? '样本不足 · 不输出倾向结论' : 'AI 生成 · 可追溯原文'))),
-      aiBg: sumNa ? 'var(--ink-100)' : (sum.summaryMode === 'facts' ? 'var(--csop-blue-50)' : (sum.low ? 'var(--ink-100)' : 'var(--warning-100)')),
-      aiFg: sumNa ? 'var(--ink-500)' : (sum.summaryMode === 'facts' ? 'var(--csop-blue-700)' : (sum.low ? 'var(--ink-700)' : 'var(--warning-700)')),
-      hasSummaryEvidence: !sumNa && o.mentions > 0,
-      summaryEvidence: String(Math.round(o.mentions * 0.4)),
-      openSummaryEvidence: () => self.openPanel({
-        kind: 'summary', id: 'sum', polarity: 'neutral', title: '当前舆情总结的支撑原文',
-        filter: '全部产品相关内容', count: Math.round(o.mentions * 0.4)
-      }),
+      marketOutlookRows: marketOutlookRows,
+      marketOutlookNa: marketOutlookNa,
+      marketOutlookEmpty: !marketOutlookNa && marketOutlookRows.length === 0,
+      marketOutlookProductScoped: marketOutlookProductScoped,
+      marketOutlookTitle: marketOutlookProductScoped
+        ? '市场风向 · ' + code + ' 相关市场情绪与讨论'
+        : '产品市场风向与热议',
+      marketOutlookEmptyText: marketOutlookProductScoped
+        ? '暂无相关内容 — 当前区间没有识别到该产品相关的市场方向讨论。'
+        : '暂无相关内容 — 当前区间没有可展示的核心产品行情讨论。',
+      marketOutlookRange: range.from + ' ～ ' + range.to,
+      refreshMarketOutlook: () => { invalidateMarketOutlook(code, s.rangeKey); self.forceUpdate(); },
 
       netText: attNa
         ? '数据暂不可用 · 不输出倾向结论'
@@ -795,10 +786,12 @@ export default class ProductMonitor extends React.Component {
           + Math.round(negAll.slice(0, 2).reduce(function (a, t) { return a + t.share; }, 0)) + '%。')
         : '区间内没有可归类的消极观点。',
       posThemes: posThemes, negThemes: negThemes,
-      showIssuerOpinions: o.ownership === 'own',
-      issuerUnavailable: issuerOpinions?.status === 'unavailable',
-      issuerEmpty: issuerOpinions?.status === 'empty',
+      showIssuerOpinions: issuerView.hasRows,
       issuerRows: issuerRows,
+      issuerMoreVisible: issuerView.canToggle,
+      issuerExpanded: issuerView.expanded,
+      issuerMoreLabel: issuerView.toggleLabel,
+      issuerToggle: () => this.setState({ issuerMore: !s.issuerMore }),
       noPos: !posNa && posThemes.length === 0, noNeg: !negNa && negThemes.length === 0,
       posUnavailable: posNa, negUnavailable: negNa,
       posMoreVisible: posAll.length > 3, negMoreVisible: negAll.length > 3,
@@ -819,8 +812,9 @@ export default class ProductMonitor extends React.Component {
       trendLeave: () => self.setState({ hover: null }),
       pxOk: pxOn && px.status === 'ok', pxUnavailable: pxOn && px.status !== 'ok',
       pxCurrency: px.currency || '', pxKLabel: candleMode === 'redUp' ? '红涨绿跌' : (candleMode === 'neutral' ? '空心为涨、实心为跌' : '绿涨红跌'),
-      pxMeta: px.status === 'ok' ? ('行情粒度 ' + px.granLabel + ' · ' + px.currency + (px.missing ? ' · ' + px.missing + ' 个时间桶无行情' : '')) : '价格数据暂不可用',
+      pxMeta: px.status === 'ok' ? ('行情粒度 ' + px.granLabel + ' · ' + px.currency + (pxSource ? ' · ' + pxSource : '') + (px.missing ? ' · ' + px.missing + ' 个时间桶无行情' : '')) : '价格数据暂不可用',
       pxNote: px.status === 'ok' ? ('行情粒度为' + px.granLabel + '、价格单位 ' + px.currency + '，非交易时段与休市日不补造 K 线') : '当前产品价格数据暂不可用，不以指数或其他产品价格替代',
+      pxSourceDisclosure: priceSourceDisclosure(px, R.DATA_PROVIDER),
       kolScope: kolDisplayLabel(kolRes.scope), kolHas: kolRes.status === 'ok', kolEmpty: kolRes.status === 'empty', kolUnavailable: kolRes.status === 'unavailable',
       kolRows: kolRows, kolMoreVisible: kolAll.length > 5,
       kolActivityHref: 'kol-activity.dc.html?etf=' + encodeURIComponent(code) + '&range=' + encodeURIComponent(s.rangeKey),
@@ -868,7 +862,7 @@ export default class ProductMonitor extends React.Component {
       var hc = px.list[s.hover];
       out.hoverPxOn = pxOn;
       out.hoverPxTitle = code + ' 价格';
-      out.hoverPxMeta = px.status === 'ok' ? (px.granLabel + ' · ' + px.currency) : '';
+      out.hoverPxMeta = px.status === 'ok' ? (px.granLabel + ' · ' + px.currency + (pxSource ? ' · ' + pxSource : '')) : '';
       out.hoverPxHas = !!(pxOn && px.status === 'ok' && hc && hc.open != null);
       out.hoverPxNone = !!(pxOn && !out.hoverPxHas);
       out.hoverPxNote = px.status !== 'ok' ? '价格数据暂不可用' : ('无行情 · ' + ((hc && hc.note) || '非交易时段'));
@@ -1068,7 +1062,7 @@ export default class ProductMonitor extends React.Component {
         </Shell>
 
         {v.loading && (
-          <div style={s('position:sticky;top:144px;z-index:30;display:flex;align-items:center;gap:10px;margin:14px 24px 0;padding:9px 15px;border:1px solid var(--csop-blue-200);border-radius:6px;background:var(--csop-blue-50)')}>
+          <div style={s('display:flex;align-items:center;gap:10px;margin:14px 24px 0;padding:9px 15px;border:1px solid var(--csop-blue-200);border-radius:6px;background:var(--csop-blue-50)')}>
             <span style={s('width:8px;height:8px;border-radius:9999px;background:var(--csop-blue-600)')}></span>
             <span style={s('font:500 14px/1.4 var(--font-cjk);color:var(--csop-blue-800)')}>数据加载中 — 正在按新的产品与日期范围重新聚合舆情、KOL、重点舆情与行情数据</span>
           </div>

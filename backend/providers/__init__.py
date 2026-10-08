@@ -5,7 +5,8 @@
 - ``demo`` —— 取数自 fixtures/demo/，逐字来自设计源 design/radar-data.js。
              用于 100% 还原验收（ADR-0006）：页面必须与设计源静态站逐字相同。
 - ``sql``  —— 取数自真实瘦库（本地 SQLite / 生产 MySQL，`RADAR_DB_URL` 决定方言）。
-             计数、内容、日历是真的；AI 标注与行情返回 None，见 providers/sql.py 模块头。
+             计数、内容、日历是真的；AI 随现行标注走，行情随已验证行情标的走，
+             见 providers/sql.py 模块头。
 
 选择靠环境变量 DATA_PROVIDER（默认 sql）。日常服务只读真实数据；demo 仅供显式测试验收。
 ``mysql`` 是 ``sql`` 的旧名别名：本地跑的是 SQLite，叫 mysql 会让人以为本地也要起 MySQL。

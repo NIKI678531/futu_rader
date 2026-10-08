@@ -52,6 +52,17 @@ class TestSynthSchemas:
             synth.parse("hot_summary", {"text": "长" * 31, "evidence_ids": ["c1"], "needs_review": False}, {"c1"})
         ok = synth.parse("hot_summary", {"text": "分派稳定获认可，倾向继续持有", "evidence_ids": ["c1"], "needs_review": False}, {"c1"})
         assert ok.text.startswith("分派")
+        assert synth.parse(
+            "topic_label",
+            {"title": "恒科反弹", "summary": "长" * 100, "evidence_ids": ["c1"]},
+            {"c1"},
+        ).summary == "长" * 100
+        with pytest.raises(SchemaError, match="上限"):
+            synth.parse(
+                "topic_label",
+                {"title": "恒科反弹", "summary": "长" * 101, "evidence_ids": ["c1"]},
+                {"c1"},
+            )
 
     def test_evidence_ids_must_be_subset_of_input(self):
         with pytest.raises(SchemaError, match="没有的证据"):
@@ -75,9 +86,16 @@ class TestSynthSchemas:
 
     def test_summary_prompt_is_experience_led_instead_of_polarity_led(self):
         prompt = synth.system_prompt("summary")
-        assert synth.VERSION == "synth-v5"
+        assert synth.VERSION == "synth-v6"
         assert "具体产品体验／使用场景／讨论现象" in prompt
         assert "不得按「积极观点／消极观点」分组" in prompt
+
+    def test_topic_prompt_returns_a_standalone_market_outlook(self):
+        prompt = synth.system_prompt("topic_label")
+        assert "不超过 100 字" in prompt
+        assert "市场风向" in prompt
+        assert "不能把群体观点写成系统自己的预测" in prompt
+        assert "不评价 ETF 的费率" in prompt
 
     def test_theme_rejects_generic_product_experience_title(self):
         raw = {"results": [{"key": "positive|other_product", "title": "产品整体体验获认可",
@@ -164,6 +182,17 @@ def engine(tmp_path):
             error_count=0,
         ))
     return eng
+
+
+def test_today_anchor_is_observed_and_never_joins_default_batch_ranges(engine):
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k="data_max_ts", v="2026-08-26 09:00:00"))
+
+    assert "d0" not in synthesize.DEFAULT_RANGES
+    assert synthesize.read_anchor(engine, "d0").isoformat() == "2026-08-26"
+    assert synthesize.resolve_anchor(engine, ["d0"]).isoformat() == "2026-08-26"
+    with pytest.raises(ValueError, match="single range"):
+        synthesize.resolve_anchor(engine, ["d0", "d1"])
 
 
 @pytest.fixture()

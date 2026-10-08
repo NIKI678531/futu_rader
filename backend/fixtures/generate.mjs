@@ -228,10 +228,9 @@ dump('kol_impact', RANGE_KEYS.map((k) => {
   return [k, v]
 }))
 
-/* ── kolOpinions(kol, range) ── 这位 KOL 对**发帖记录之外**的产品的观点与操作。
+/* ── kolOpinions(kol, range) ── 兼容保留的 KOL 其他产品观点端点。
    参数键 "<kol>|<range>"；KOL 全集来自 KOLS 主数据，32 × 5 = 160 条。
-   与 kolImpact 分开是因为它按 KOL 取、且只有详情页用；塞进 kolImpact 会让 KOL 影响力页
-   每次都白拉 32 个人的观点表。 */
+   当前详情页不再请求它；继续与 kolImpact 分开，避免影响力页白拉 32 个人的观点数据。 */
 dump(
   'kol_opinions',
   R.KOLS.flatMap((k) => RANGE_KEYS.map((rk) => [k[0] + '|' + rk, R.kolOpinions(k[0], rk)])),

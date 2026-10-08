@@ -63,6 +63,7 @@ from ai.schemas import SchemaError  # noqa: E402
 from core import stages as core_stages, themes as core_themes, topics as core_topics  # noqa: E402
 from core.attitude import LOW_SAMPLE  # noqa: E402
 from core.calendar import PRESETS, build as build_range  # noqa: E402
+from core.data_clock import analysis_range_anchor  # noqa: E402
 from radar_db import make_engine  # noqa: E402
 from radar_db.annotations_read import (  # noqa: E402
     COMMENT_PRODUCT_PROMPT_VERSIONS,
@@ -92,7 +93,10 @@ from radar_db.time_windows import hkt_range_utc_naive, utc_naive_to_hkt  # noqa:
 log = logging.getLogger("worker.synthesize")
 
 KINDS = synth.KINDS
-DEFAULT_RANGES = tuple(PRESETS)
+# d0 is partial and has a different right edge from every complete-day range.
+# It is opt-in and always runs alone (the admin queue already enforces one
+# range per request); legacy batch commands keep their complete-range default.
+DEFAULT_RANGES = tuple(key for key in PRESETS if key != "d0")
 MIN_BUCKET = 2          # 少于这么多条的桶不起名
 EVIDENCE_PER_BUCKET = 6  # 每桶抽几条引文
 EVIDENCE_MAX_CHARS = 140
@@ -115,10 +119,29 @@ def load_master(path=None, engine=None):
     return {"products": load_products(engine=engine)}
 
 
-def read_anchor(engine):
+def read_anchor(engine, range_key=None):
     with engine.connect() as conn:
-        a = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar()
-    return date.fromisoformat(a[:10]) if a else None
+        meta = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v)).all())
+    complete = date.fromisoformat(meta["anchor"][:10]) if meta.get("anchor") else None
+    return analysis_range_anchor(
+        engine,
+        range_key or "d1",
+        complete,
+        meta=meta,
+    )
+
+
+def resolve_anchor(engine, ranges, anchor_override=None):
+    """Resolve one run's right edge without ever treating d0 as d1."""
+    selected = tuple(dict.fromkeys(ranges))
+    if "d0" in selected and selected != ("d0",):
+        raise ValueError("d0 must be analyzed as a single range")
+    if anchor_override is not None:
+        return anchor_override
+    anchor = read_anchor(engine, "d0" if selected == ("d0",) else None)
+    if anchor is None and selected == ("d0",):
+        raise ValueError("当天数据尚未同步，d0 暂无可生成数据")
+    return anchor
 
 
 def _window(rng):
@@ -945,15 +968,16 @@ def run(engine, cfg, *, codes=None, ranges=DEFAULT_RANGES, kinds=KINDS, provider
         route_active = comment_routes_ready_on_connection(conn)
     if not dry_run and not route_active:
         require_filter_ready(engine, filter_config)
-    master = master or load_master(engine=engine)
-    anchor = anchor_override or read_anchor(engine)
-    if anchor is None:
-        raise SystemExit("meta_kv 里没有 anchor：先跑 import_dump / etl")
     if pairs is None:
         if codes is None:
             raise ValueError("给 codes 或 pairs")
         pairs = [(code, range_key) for code in codes for range_key in ranges]
     pairs = list(pairs)
+    selected_ranges = tuple(dict.fromkeys(range_key for _code, range_key in pairs))
+    master = master or load_master(engine=engine)
+    anchor = resolve_anchor(engine, selected_ranges, anchor_override)
+    if anchor is None:
+        raise SystemExit("meta_kv 里没有 anchor：先跑 import_dump / etl")
     provider = provider or (None if dry_run else build_provider(cfg))
     s = Synthesizer(
         engine,

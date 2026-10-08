@@ -21,8 +21,9 @@
  *   ⑥ 过滤：按阶段只剩该阶段；按代码只剩该代码；清掉恢复
  *   ⑦ 自动跟随：向上滚出现「回到最新」，点它回到底部并消失
  *   ⑧ Esc 关闭 → 之后 4s 内零次 /progress 请求；点遮罩也能关
- *   ⑨ 新增字段：产品监控 KPI 下限注记、「 · 待更新」徽章、evidenceCount、抽检文案（且无「已核验」）；
- *      板块总览 KPI 备注、榜单「待更新」小徽章
+ *   ⑨ 新增字段：产品监控 KPI 下限注记、evidenceCount、抽检文案（且无「已核验」）；
+ *      mock 仍注入 stale=true／partial 覆盖，但业务页不展示「待更新」或「部分数据」；
+ *      进度与 Admin 统一改口为「需重算」
  *   ⑩ 侧栏里没有任何启停作业的按钮（工作台只读）
  *
  * 端口特意跟常规站点（8008／5173）与其他脚本（8017／8018／5174／5175／5177）岔开。
@@ -150,7 +151,8 @@ async function checkDrawer(browser) {
     ok(/L2 主模型队列\s+pending \d+ \/ done \d+/.test(ov), '④ 总览：L2 队列 pending/done', ov)
     ok(/帖子标注任务\s+pending 37/.test(ov), '④ 总览：帖子任务计数', ov)
     ok(/KOL 评论观点任务\s+暂无内容/.test(ov), '④ 总览：空字典是「暂无内容」', ov)
-    ok(/待更新汇总产品\s+\d+ 只/.test(ov), '④ 总览：待更新汇总产品数', ov)
+    ok(/需重算汇总产品\s+\d+ 只/.test(ov), '④ 总览：需重算汇总产品数', ov)
+    ok(!ov.includes('待更新'), '④ 进度总览不再使用「待更新」旧文案', ov)
     ok(/当前吞吐（5 分钟）\s+2\.35 条\/秒/.test(ov), '④ 总览：吞吐两位小数 条/秒', ov)
     ok(/预计剩余\s+[\d.]+ 分钟/.test(ov), '④ 总览：ETA 秒换算成分钟', ov)
     const first = await page.locator('[data-progress-event]').first().innerText()
@@ -248,24 +250,25 @@ async function checkFields(browser) {
     await page.waitForTimeout(500)
     let text = await page.evaluate(() => document.body.innerText)
     ok(text.includes('（3 帖转发数未知 · 下限）'), '⑨ 产品监控 KPI 备注带下限注记', '')
-    ok(text.includes('AI 生成 · 可追溯原文 · 待更新'), '⑨ 舆情总结徽章追加「 · 待更新」', '')
+    ok(text.includes('AI 生成 · 可追溯原文'), '⑨ stale 结论仍照常展示原有 AI 来源徽章', '')
     ok(text.includes('查看原文证据 7 条'), '⑨ 证据条数用 evidenceCount', '')
     ok(text.includes('人工核对 200 条（2026-09-12），态度准确率 87.0%、相关性准确率 93.5%'), '⑨ spot_check 抽检文案', '')
     /* 只查那一句：设计源里「KOL 身份来自已核验名单」说的是名单，不是 AI 结论，那是合法文案。 */
     const note = (text.match(/AI 结论由模型自动生成[^\n]*/) || [''])[0]
     ok(note.length > 0 && !note.includes('已核验'), '⑨ 验证程度那句里不得出现「已核验」', note)
-    /* 「待更新」该出现在：舆情总结徽章（summary.stale）、正负观点（themes 顶层）、话题
-       （topics **逐行** stale）、关联竞品（competitors 顶层）、阶段观点（stages 顶层）—— 五处。
-       少一处就是某条契约的读法错了。 */
+    /* mock 在总结／主题／话题／竞品／阶段五类端点仍注入 stale=true。
+       这个运维状态不得再变成业务页上的「待更新」徽章。 */
     const staleN = (text.match(/待更新/g) || []).length
-    ok(staleN === 5, '⑨ 总结／主题／话题（逐行）／竞品／阶段五处都挂「待更新」', `出现 ${staleN} 次，期望 5`)
+    ok(staleN === 0, '⑨ 产品业务页不展示「待更新」', `出现 ${staleN} 次，期望 0`)
+    ok(!text.includes('部分数据'), '⑨ 产品业务页不展示「部分数据」标签', text)
 
     await page.goto(WEB + '/sector', { waitUntil: 'networkidle', timeout: 60_000 })
     await page.locator('[data-screen-label]').waitFor({ timeout: 30_000 })
     await page.waitForTimeout(500)
     text = await page.evaluate(() => document.body.innerText)
     ok(text.includes('（5 帖转发数未知 · 下限）'), '⑨ 板块总览 KPI 备注带自家合计下限注记', '')
-    ok(text.includes('待更新'), '⑨ 榜单热议总结格有「待更新」小徽章', '')
+    ok(!text.includes('待更新'), '⑨ 板块业务页不展示「待更新」', text)
+    ok(!text.includes('部分数据'), '⑨ 板块业务页不展示「部分数据」标签', text)
 
     /* ⑪ 舆情三态。mock 把评论量第 2 名的 alerts／negMentions 改成 null、第 3 名改成 0，
        第 1 名（3033）保持正数。列上：正数红标、null 灰字「暂不可用」、0 走设计源原路径
@@ -282,13 +285,13 @@ async function checkFields(browser) {
       '⑪ negMentions 为正数的行：红标带数字', `code ${pos} 期望 ${posN}`)
     ok((await page.locator(NA_TITLE).count()) === 1, '⑪ 整表只有那一行是「暂不可用」', `实际 ${await page.locator(NA_TITLE).count()} 处`)
 
-    /* 抽屉：总结徽章（summary.stale）、正负观点（themes 顶层）、负面舆情摘要（negCats **逐行**）、
-       关联竞品（competitors 顶层）四处「待更新」。 */
+    /* 抽屉会读总结／主题／负面摘要／竞品四类 stale 契约，但可见层同样屏蔽旧文案。 */
     await row(pos).click()
     await page.getByText('当前舆情总结', { exact: true }).first().waitFor({ timeout: 30_000 })
     await page.waitForTimeout(300)
     const drawerStale = (await page.evaluate(() => document.body.innerText).then((t) => t.match(/待更新/g)) || []).length
-    ok(drawerStale === 5, '⑪ 抽屉里总结／主题／负面摘要（逐行）／竞品四处「待更新」（加榜单那枚共 5）', `出现 ${drawerStale} 次`)
+    ok(drawerStale === 0, '⑪ 板块抽屉不展示「待更新」', `出现 ${drawerStale} 次`)
+    ok(!(await page.evaluate(() => document.body.innerText)).includes('部分数据'), '⑪ 板块抽屉不展示「部分数据」标签', '')
     await page.getByText('✕', { exact: true }).first().click()
     await page.getByText('当前舆情总结', { exact: true }).first().waitFor({ state: 'hidden', timeout: 5000 })
 
@@ -298,6 +301,19 @@ async function checkFields(browser) {
     ok((await row(nul).count()) === 0, '⑪ 「仅有舆情」筛掉 alerts 为 null 的产品', `code ${nul}`)
     ok((await row(zero).count()) === 0, '⑪ 「仅有舆情」筛掉 alerts 为 0 的产品', `code ${zero}`)
     ok((await row(firm).count()) === 1, '⑪ 「仅有舆情」留下 alerts 为正的产品', `code ${firm}`)
+
+    /* 其他业务路由也不得残留旧文案；Admin 保留同一运维计数，可见名称改为「需重算」。 */
+    for (const route of ['/kol', '/kol/detail', '/official']) {
+      await page.goto(WEB + route, { waitUntil: 'networkidle', timeout: 60_000 })
+      await page.locator('[data-screen-label]').waitFor({ timeout: 30_000 })
+      const routeText = await page.evaluate(() => document.body.innerText)
+      ok(!routeText.includes('待更新'), `⑨ ${route} 不展示「待更新」`, routeText)
+    }
+    await page.goto(WEB + '/admin', { waitUntil: 'domcontentloaded', timeout: 60_000 })
+    await page.getByText('数据链路管理', { exact: true }).waitFor({ timeout: 30_000 })
+    const adminText = await page.evaluate(() => document.body.innerText)
+    ok(!adminText.includes('待更新'), '⑨ Admin 不展示「待更新」', adminText)
+    ok(adminText.includes('需重算'), '⑨ Admin 用「需重算」表达 stale 运维计数', adminText)
     for (const e of errors) fail.push({ name: '新增字段 · JS 报错', detail: e })
   } finally {
     await page.close()

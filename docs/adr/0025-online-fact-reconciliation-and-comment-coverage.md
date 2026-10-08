@@ -26,6 +26,9 @@
 
 每次运行先固定 high-watermark，再按上述二元键分页。只接纳当前 120 个产品；源库中的
 其他产品计入 `ignored`，不写入 Radar。`feed_id` 与 `comment_id` 是幂等 upsert 的稳定键。
+源库必须分别存在 `(scraped_at, feed_id)`、`(detail_updated_at, feed_id)` 和
+`(scraped_at, user_id)` 复合索引。Radar 的日内增量任务会先检查这三个索引；
+缺少时明确失败，不允许 13:00／15:00 高频任务退化成全表扫描。
 
 ### 2. 失效按语义变化，而不是按“行被写过”
 

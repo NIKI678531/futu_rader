@@ -249,9 +249,9 @@ def test_running_analysis_revisions_keep_expensive_scan_cache(sql_provider):
     assert "probe" not in sql_provider._cache
 
 
-def test_presets_are_the_five_ranges_with_d7_default(client):
+def test_presets_include_today_before_yesterday_with_d7_default(client):
     data = client.get("/api/v1/meta").get_json()["data"]
-    assert [p["key"] for p in data["presets"]] == ["d1", "d2", "d7", "d14", "d30"]
+    assert [p["key"] for p in data["presets"]] == ["d0", "d1", "d2", "d7", "d14", "d30"]
     assert data["defaultRange"] == "d7"
 
 
@@ -273,14 +273,16 @@ def test_sql_exposes_month_to_date_with_backend_computed_dates(sql_client):
 def test_bucket_granularity_follows_prd_3_1(client):
     """≤2 天按小时；≤14 天按自然日；≥15 天按自然周。"""
     by_key = {p["key"]: p for p in client.get("/api/v1/meta").get_json()["data"]["presets"]}
-    assert [by_key[k]["gran"] for k in ("d1", "d2", "d7", "d14", "d30")] == [
+    assert [by_key[k]["gran"] for k in ("d0", "d1", "d2", "d7", "d14", "d30")] == [
+        "hour",
         "hour",
         "hour",
         "day",
         "day",
         "week",
     ]
-    assert [by_key[k]["bucketCount"] for k in ("d1", "d2", "d7", "d14", "d30")] == [
+    assert [by_key[k]["bucketCount"] for k in ("d0", "d1", "d2", "d7", "d14", "d30")] == [
+        24,
         24,
         48,
         7,

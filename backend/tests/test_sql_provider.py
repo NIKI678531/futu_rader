@@ -11,11 +11,20 @@ schema 是共用的那一份，所以「列名对不上」这类错误照样能�
 用编出来的数字有个额外好处：期望值可以手算写在断言旁边，读的人不用信任何一层实现。
 """
 
+import json
 from datetime import date, datetime
 
 import pytest
 from sqlalchemy import delete, insert
-from radar_db.schema import meta_kv
+from radar_db.comment_routes import COMMENT_ROUTE_VERSION, readiness_values as route_readiness_values
+from radar_db.schema import (
+    annotation_runs,
+    comment_product_routes,
+    feed_mentions,
+    feeds,
+    mentions,
+    meta_kv,
+)
 from sql_fixture import (
     ANCHOR,
     COMMENT_TEXT,
@@ -55,7 +64,7 @@ class TestAnchor:
         今天是 2026-09-10，数据止于 08-26。用系统时间的话每个区间都是空的。
         """
         assert provider.build_range("d1")["to"] == ANCHOR
-        assert provider.updated_at == "2026-08-25 23:59"
+        assert provider.updated_at == "2026-08-25 14:00"
 
     def test_an_unprovisioned_database_is_unavailable_not_empty(self):
         """没导过数据 ⇒ 契约函数返回 `None` ⇒ envelope 判成 `unavailable`。
@@ -781,6 +790,48 @@ class TestAttitudeAggregation:
         assert b["base"]["attitude"]["positive"] == 1
         assert b["positive"]["text"] == "+1（+100.0%）"
 
+    def test_company_positive_delta_uses_the_completed_range_baseline(self, provider):
+        """The company rollup and every product benchmark share one baseline truth.
+
+        A completed analysis scope makes an empty product's attitude counts exact zeroes,
+        not missing data.  The range-scoped progress covers both the current and adjacent
+        baseline windows, so the company delta must stay numeric just like each product's.
+        """
+        own_codes = [
+            product["code"]
+            for product in MASTER["products"]
+            if product["ownership"] == "own"
+        ]
+        provider._meta["own_analysis_progress_d1"] = json.dumps(
+            {
+                "anchor": ANCHOR,
+                "baselineFrom": "2026-08-24",
+                "sourceVersion": {},
+                "products": {
+                    code: {"complete": True, "queue": {}} for code in own_codes
+                },
+            }
+        )
+
+        company_pool = provider.pool("d1")
+        current_by_code = {
+            row["code"]: row["attitude"]["positive"]
+            for row in company_pool["list"]
+            if row["ownership"] == "own"
+        }
+        product_benchmarks = {
+            code: provider.benchmark(code, "d1") for code in own_codes
+        }
+
+        assert current_by_code == {code: 0 for code in own_codes}
+        assert all(
+            result["base"]["attitude"]["positive"] == 0
+            and result["positive"]["abs"] == 0
+            for result in product_benchmarks.values()
+        )
+        assert company_pool["own"]["pos"] == 0
+        assert company_pool["own"]["dPos"]["abs"] == 0
+
     def test_the_company_headline_stays_unknown_while_any_product_is_unannotated(self, provider):
         """板块总览顶部那张「积极内容」卡：61 只自家产品里有一只没标过 ⇒ 合计未知。
 
@@ -801,6 +852,195 @@ class TestAttitudeAggregation:
         assert own["managementCoverage"]["positiveProducts"] == 1
         assert own["managementCoverage"]["totalProducts"] > 1
         assert own["managementCoverage"]["complete"] is False
+
+
+class TestIssuerOpinions:
+    def test_a_known_product_without_completed_analysis_is_unavailable(self, provider):
+        assert provider.issuer_opinions("7709", "d1") == {
+            "status": "unavailable",
+            "issuer": "南方东英",
+            "counts": None,
+            "list": [],
+        }
+
+    def test_completed_product_without_a_related_opinion_is_empty(self, provider):
+        own_codes = [
+            product["code"]
+            for product in MASTER["products"]
+            if product["ownership"] == "own"
+        ]
+        provider._meta["own_analysis_progress_d1"] = json.dumps(
+            {
+                "anchor": ANCHOR,
+                "baselineFrom": "2026-08-24",
+                "sourceVersion": {},
+                "products": {
+                    code: {"complete": True, "queue": {}} for code in own_codes
+                },
+            }
+        )
+        with provider._engine.begin() as conn:
+            conn.execute(
+                insert(meta_kv),
+                [
+                    {"k": key, "v": value}
+                    for key, value in route_readiness_values(
+                        product["code"] for product in MASTER["products"]
+                    ).items()
+                ],
+            )
+
+        assert provider.issuer_opinions("7709", "d1") == {
+            "status": "empty",
+            "issuer": "南方东英",
+            "counts": {"positive": 0, "negative": 0, "neutral": 0},
+            "list": [],
+        }
+
+    def test_issuer_opinions_never_fall_back_when_strict_routes_are_not_active(self, provider):
+        rows = []
+        for annotation_id, (kind, value) in enumerate((
+            ("issuer_relevance", "relevant"),
+            ("issuer_attitude", "negative"),
+            ("issuer_aspect", ["other"]),
+        ), start=200):
+            rows.append({
+                "annotation_id": annotation_id,
+                "target_id": 11,
+                "subject_code": OWN_CODE,
+                "kind": kind,
+                "value": value,
+            })
+        add_annotations(provider, rows)
+
+        assert provider.issuer_opinions(OWN_CODE, "d1") == {
+            "status": "unavailable",
+            "issuer": "南方东英",
+            "counts": None,
+            "list": [],
+        }
+
+    def test_7747_and_7709_only_receive_opinions_with_their_own_strict_route(self, provider):
+        """发行商评价是产品资源，不是每只 CSOP ETF 共用的一张公司级清单。
+
+        c11 只严格指向 7709，c13 只严格指向 7747；另外故意给 c11 塞一套
+        7747 标注但不建路由，模拟历史脏结论。两只产品必须各拿各的一条，且同一
+        comment_id 在单产品响应里最多出现一次；未完成分析的其他自家产品保持 unavailable。
+        """
+        route_rows = [
+            {
+                "comment_id": 11,
+                "subject_code": "7709",
+                "feed_id": 1,
+                "matched_parent": False,
+                "matched_comment": True,
+                "rule_version": COMMENT_ROUTE_VERSION,
+                "updated_at": datetime(2026, 8, 25, 12, 0),
+            },
+            {
+                "comment_id": 13,
+                "subject_code": "7747",
+                "feed_id": 3,
+                "matched_parent": False,
+                "matched_comment": True,
+                "rule_version": COMMENT_ROUTE_VERSION,
+                "updated_at": datetime(2026, 8, 25, 12, 0),
+            },
+            # A generic issuer comment below a multi-product parent is ambiguous:
+            # parent-only routes must not broadcast it to either product.
+            {
+                "comment_id": 12,
+                "subject_code": "7709",
+                "feed_id": 1,
+                "matched_parent": True,
+                "matched_comment": False,
+                "rule_version": COMMENT_ROUTE_VERSION,
+                "updated_at": datetime(2026, 8, 25, 12, 0),
+            },
+            {
+                "comment_id": 12,
+                "subject_code": "7747",
+                "feed_id": 1,
+                "matched_parent": True,
+                "matched_comment": False,
+                "rule_version": COMMENT_ROUTE_VERSION,
+                "updated_at": datetime(2026, 8, 25, 12, 0),
+            },
+        ]
+        with provider._engine.begin() as conn:
+            conn.execute(
+                insert(annotation_runs),
+                {
+                    "run_id": "issuer-run-test",
+                    "task": "comment_product",
+                    "provider": "openai_compatible",
+                    "model_id": "test-model",
+                    "prompt_version": "comment-product-v4",
+                    "taxonomy_version": "product-feedback-v4",
+                    "schema_version": "v4",
+                    "started_at": datetime(2026, 8, 25, 12, 0),
+                    "finished_at": datetime(2026, 8, 25, 12, 1),
+                    "status": "done",
+                    "input_count": 3,
+                    "success_count": 3,
+                    "error_count": 0,
+                },
+            )
+            conn.execute(insert(comment_product_routes), route_rows)
+            conn.execute(
+                insert(meta_kv),
+                [
+                    {"k": key, "v": value}
+                    for key, value in route_readiness_values(
+                        product["code"] for product in MASTER["products"]
+                    ).items()
+                ],
+            )
+
+        rows = []
+        annotation_id = 100
+        for comment_id, code, aspect in (
+            (11, "7709", "product_management"),
+            (13, "7747", "other"),
+            (12, "7709", "other"),
+            (12, "7747", "other"),
+            # No 7747 route exists for c11: these rows must remain audit-only.
+            (11, "7747", "other"),
+        ):
+            for kind, value in (
+                ("issuer_relevance", "relevant"),
+                ("issuer_attitude", "negative"),
+                ("issuer_aspect", [aspect]),
+            ):
+                rows.append(
+                    {
+                        "annotation_id": annotation_id,
+                        "target_id": comment_id,
+                        "subject_code": code,
+                        "kind": kind,
+                        "value": value,
+                        "run_id": "issuer-run-test",
+                    }
+                )
+                annotation_id += 1
+        add_annotations(provider, rows)
+
+        by_code = {
+            code: provider.issuer_opinions(code, "d1")
+            for code in ("7709", "7747", OWN_CODE)
+        }
+
+        assert [row["commentId"] for row in by_code["7709"]["list"]] == [11]
+        assert [row["commentId"] for row in by_code["7747"]["list"]] == [13]
+        assert by_code[OWN_CODE] == {
+            "status": "unavailable",
+            "issuer": "南方东英",
+            "counts": None,
+            "list": [],
+        }
+        for result in by_code.values():
+            ids = [row["commentId"] for row in result["list"]]
+            assert len(ids) == len(set(ids))
 
 
 class TestPostAnnotations:
@@ -1135,12 +1375,59 @@ def test_master_is_served_even_with_an_empty_database():
 
 
 def test_range_key_coverage(provider):
-    """五个预设都能算，桶数按 PRD §3.1 的粒度规则。"""
+    """六个固定预设都能算，桶数按 PRD §3.1 的粒度规则。"""
+    assert len(provider.build_range("d0")["buckets"]) == 24
     assert len(provider.build_range("d1")["buckets"]) == 24  # 小时
     assert len(provider.build_range("d2")["buckets"]) == 48
     assert len(provider.build_range("d7")["buckets"]) == 7  # 日
     assert len(provider.build_range("d14")["buckets"]) == 14
     assert len(provider.build_range("d30")["buckets"]) == 5  # 周
+
+
+def test_d0_uses_partial_data_cutoff_and_keeps_future_hours_unknown(provider):
+    # 没有任何晚于完整日 anchor 的事实时，只有日历框架，业务数据不冒充零。
+    assert provider.build_range("d0")["to"] == "2026-08-26"
+    assert provider.build_range("d0")["dataThrough"] is None
+    assert provider.pool("d0") is None
+
+    # 03:15 HKT 已有一条真实帖子。当天总量只计到该时刻，04:00 之后仍是未知。
+    with provider._engine.begin() as conn:
+        conn.execute(insert(feeds), {
+            "feed_id": 99,
+            "code": OWN_CODE,
+            "source_ticker": f"0{OWN_CODE}.HK",
+            "posted_at": datetime(2026, 8, 25, 19),
+            "feed_type": 1,
+            "author_uid": "today-user",
+            "like_count": 2,
+            "comment_count": 3,
+            "image_count": 0,
+            "share_count": 1,
+            "raw_json_broken": False,
+        })
+        conn.execute(insert(mentions), {
+            "feed_id": 99, "code": OWN_CODE, "source": "anchor", "in_pool": True,
+        })
+        conn.execute(insert(feed_mentions), {
+            "feed_id": 99, "raw_ticker": f"0{OWN_CODE}.HK", "market": "HK", "occurrences": 1,
+        })
+        conn.execute(insert(meta_kv), [
+            {"k": "data_max_ts", "v": "2026-08-26 03:15:00"},
+            {"k": "data_revision", "v": "d0-test"},
+        ])
+    assert provider.refresh() is True
+
+    rng = provider.build_range("d0")
+    assert rng["to"] == "2026-08-26"
+    assert rng["benchTo"] == "2026-08-25"
+    assert rng["dataThrough"] == "2026-08-26T03:15:00 HKT"
+    observation = next(row for row in provider.pool("d0")["list"] if row["code"] == OWN_CODE)
+    assert observation["comments"] == 3
+    assert observation["buckets"][3]["comments"] == 3
+    assert observation["buckets"][4]["comments"] is None
+    assert observation["buckets"][-1]["active"] is None
+    benchmark = provider.benchmark(OWN_CODE, "d0")
+    assert benchmark["base"]["comments"] == 0
 
 
 def test_date(provider):

@@ -300,7 +300,9 @@ def test_reprioritize_is_idempotent_and_reports_changes(tmp_path, cfg):
 
 
 def test_ranges_touching_current_and_bench_windows():
-    assert ranges_touching(ANCHOR, date(2026, 8, 25), date(2026, 8, 25)) == ["d1", "d2", "d7", "d14", "d30", "mtd"]
+    assert ranges_touching(ANCHOR, date(2026, 8, 26), date(2026, 8, 26)) == ["d0"]
+    assert ranges_touching(ANCHOR, date(2026, 8, 28), date(2026, 8, 28)) == ["d0"]
+    assert ranges_touching(ANCHOR, date(2026, 8, 25), date(2026, 8, 25)) == ["d0", "d1", "d2", "d7", "d14", "d30", "mtd"]
     assert ranges_touching(ANCHOR, date(2026, 8, 24), date(2026, 8, 24)) == ["d1", "d2", "d7", "d14", "d30", "mtd"]  # d1 基准窗
     assert ranges_touching(ANCHOR, date(2026, 8, 3), date(2026, 8, 3)) == ["d14", "d30", "mtd"]
     assert ranges_touching(ANCHOR, date(2026, 6, 1), date(2026, 6, 2)) == []

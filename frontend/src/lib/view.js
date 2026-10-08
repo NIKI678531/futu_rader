@@ -250,18 +250,6 @@ export function aiValidationNote(level, detail) {
   return AI_VALIDATION_NOTE[level] || AI_VALIDATION_NOTE.none;
 }
 
-/* 徽章后缀：后端说这块汇总的底层标注已经更新、汇总还没重新生成（`stale: true`）。
-   只认 `=== true`：demo 下没有这个键，`undefined` 不是「旧了」，不加字，逐字比对照旧。 */
-export function staleSuffix(flag) { return flag === true ? ' · 待更新' : ''; }
-export var STALE_TITLE = '标注已更新，汇总待重新生成';
-
-/* 逐行带旗标的数组（负面类别、热议话题）：后端仍下发数组，`stale` 挂在**每个元素**上，
-   同产品同区间所有行同值。整块「待更新」＝有行且每一行都 `=== true`；空数组不是「旧了」
-   （没有东西可旧），demo 的元素没有这个键 ⇒ every 为假 ⇒ 不加字。 */
-export function rowsStale(rows) {
-  return Array.isArray(rows) && rows.length > 0 && rows.every(function (r) { return r != null && r.stale === true; });
-}
-
 /* 讨论热度的下限注记。`heatUnknownPosts` 是区间内转发数未知的帖子数（0＝无）：>0 时
    热度／互动／转发都是**下限**，得说出来。缺键（demo）或 0 都不加字。
    读的是后端数好的字段，不在前端重算公式（铁律 1）。 */
@@ -378,6 +366,9 @@ export function shell(domainKey, subKey, st, go) {
       var on = p.k === range.key;
       return {
         label: p.label, go: function () { go({ rangeKey: p.k }); },
+        placeholder: p.placeholder,
+        screenDiffNew: p.screenDiffNew,
+        active: on,
         fw: on ? 600 : 400,
         fg: on ? 'var(--csop-blue-700)' : 'var(--ink-600)',
         bg: on ? 'var(--csop-blue-50)' : '#fff'

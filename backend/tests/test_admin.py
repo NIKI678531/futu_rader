@@ -212,7 +212,9 @@ def test_comment_rows_reuse_pool_counts_and_preserve_zero_vs_unavailable(monkeyp
     assert [row["rank"] for row in result["comments"]] == [1, 2, 3]
     assert result["commentDisplayLimit"] == 10
     assert result["analyzedProductCodes"] == ["3033", "3067", "3088"]
-    assert [row["key"] for row in result["ranges"]] == ["d1", "d2", "d7", "d14", "d30", "mtd"]
+    assert [row["key"] for row in result["ranges"]] == [
+        "d0", "d1", "d2", "d7", "d14", "d30", "mtd",
+    ]
     assert result["recentRuns"] == []
     first = result["comments"][0]
     source = pool_rows[0]
@@ -285,10 +287,12 @@ def test_pipeline_selection_follows_the_worker_own_limit(monkeypatch):
     result = AdminOperations(target_engine=engine, market_provider=PoolProvider()).pipeline("d7")
 
     assert seen[0] == ("d7", 15)
-    assert {range_key for range_key, _limit in seen} == {"d1", "d2", "d7", "d14", "d30", "mtd"}
+    assert {range_key for range_key, _limit in seen} == {
+        "d0", "d1", "d2", "d7", "d14", "d30", "mtd",
+    }
     assert {limit for _range, limit in seen} == {15}
     assert result["analyzedProductCodes"] == ["3033"]
-    assert [row["expected"] for row in result["coverage"]] == [1] * 6
+    assert [row["expected"] for row in result["coverage"]] == [1] * 7
 
 
 def test_pipeline_refreshes_its_cached_market_provider_before_reading(monkeypatch):
@@ -619,10 +623,28 @@ def test_checks_explain_what_blocks_page_data(monkeypatch):
     engine = _engine()
     now = datetime(2026, 10, 6, 1, 0, tzinfo=timezone.utc)
     with engine.begin() as conn:
-        conn.execute(insert(meta_kv), [{"k": "anchor", "v": "2026-08-25"}] + _ready_worker_meta(
-            provider="typesafe_system_one", model="jev-latest",
-            generationError="Layer B 需要能生成文字的模型", dataMode="dump", dailyCron="0 8 * * *",
-        ))
+        conn.execute(
+            insert(meta_kv),
+            [
+                {"k": "anchor", "v": "2026-08-25"},
+                {
+                    "k": "ai_intraday_last_run",
+                    "v": json.dumps({
+                        "startedAt": "2026-10-06T05:00:00Z",
+                        "dataDate": "2026-10-06",
+                        "sync": {"status": "succeeded"},
+                    }),
+                },
+            ]
+            + _ready_worker_meta(
+                provider="typesafe_system_one",
+                model="jev-latest",
+                generationError="Layer B 需要能生成文字的模型",
+                dataMode="dump",
+                dailyCron="0 8 * * *",
+                intradayCron="0 13,15 * * *",
+            ),
+        )
 
     class PoolProvider:
         def pool(self, _range_key):
@@ -640,6 +662,10 @@ def test_checks_explain_what_blocks_page_data(monkeypatch):
     assert "生成文字" in checks["generation"]["detail"]
     assert "本地 dump" in checks["mode"]["detail"]
     assert "0 8 * * *" in checks["daily"]["detail"] and "尚未运行过" in checks["daily"]["detail"]
+    assert checks["intraday"]["status"] == "info"
+    assert "0 13,15 * * *" in checks["intraday"]["detail"]
+    assert "2026-10-06" in checks["intraday"]["detail"]
+    assert result["intraday"]["sync"]["status"] == "succeeded"
 
 
 def test_fill_all_route_is_removed_so_ranges_cannot_be_bulk_queued():

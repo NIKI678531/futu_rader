@@ -168,7 +168,7 @@ def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=
             summary["complete"] = False
     elif not skip_synth:
         ranges = list(ranges or synthesize.DEFAULT_RANGES)
-        anchor = anchor_override or synthesize.read_anchor(engine)
+        anchor = synthesize.resolve_anchor(engine, ranges, anchor_override)
         pairs = ready_pairs(engine, scope_id, codes, ranges, anchor) if anchor else []
         summary["synth_pairs"] = len(pairs)
         summary["synth_pairs_total"] = len(codes) * len(ranges)

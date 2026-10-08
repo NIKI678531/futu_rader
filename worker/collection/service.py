@@ -37,6 +37,7 @@ from radar_db.schema import (
     meta_kv,
     users,
 )
+from radar_db.time_windows import utc_naive_to_hkt
 
 from .models import AiRequest, AiResult, Cursor, FeedObservation, SyncRequest, SyncResult, UserObservation
 from .source import STREAMS, SourceAdapter
@@ -68,6 +69,36 @@ def _put_meta(conn, key, value):
     value = None if value is None else str(value)
     if not conn.execute(update(meta_kv).where(meta_kv.c.k == key).values(v=value)).rowcount:
         conn.execute(insert(meta_kv).values(k=key, v=value))
+
+
+def _advance_data_max_ts(conn, items) -> datetime | None:
+    """Publish the latest accepted feed post time in HKT, monotonically.
+
+    This runs inside the same page transaction as facts and the keyset
+    checkpoint. d0 therefore reads ``meta_kv.data_max_ts`` in O(1); scanning
+    ``max(feeds.posted_at)`` is only needed for older databases.
+    """
+    observed = []
+    for item in items:
+        if not isinstance(item, FeedObservation):
+            continue
+        posted_at = item.feed.get("posted_at")
+        if posted_at is not None:
+            observed.append(utc_naive_to_hkt(posted_at))
+    if not observed:
+        return None
+    latest = max(observed)
+    current_raw = conn.execute(
+        select(meta_kv.c.v).where(meta_kv.c.k == "data_max_ts")
+    ).scalar_one_or_none()
+    try:
+        current = datetime.fromisoformat(str(current_raw)) if current_raw else None
+    except ValueError:
+        current = None
+    if current is None or latest > current:
+        _put_meta(conn, "data_max_ts", latest.isoformat(sep=" ", timespec="seconds"))
+        return latest
+    return current
 
 
 def _different(existing, values, fields):
@@ -295,7 +326,15 @@ class FutuRefresh:
             self._wait_for_ready(request.anchor or request.budget_date, request.wait_timeout_seconds)
         plans = []
         selected_codes_by_range = {}
-        range_priority = {"d1": 0, "d2": 1, "d7": 2, "d14": 3, "d30": 4, "mtd": 5}
+        range_priority = {
+            "d0": 0,
+            "d1": 1,
+            "d2": 2,
+            "d7": 3,
+            "d14": 4,
+            "d30": 5,
+            "mtd": 6,
+        }
         ordered_ranges = tuple(sorted(request.ranges, key=range_priority.__getitem__))
         own_limit = parse_own_limit(os.getenv("AI_OWN_TOP_LIMIT"))
         for range_key in ordered_ranges:
@@ -615,6 +654,8 @@ class FutuRefresh:
                 counts[outcome] += 1
                 changed_codes.update(affected_codes)
                 coverages.add(item.coverage)
+            if not dry_run:
+                _advance_data_max_ts(active, items)
             if not dry_run and (counts["inserted"] or counts["updated"]):
                 revision = bump_revision(active, "data")
             if not dry_run and changed_codes:

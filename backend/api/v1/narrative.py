@@ -2,7 +2,9 @@
 
 - GET /api/v1/hot-summaries?range=d7                        → `hotSummaryFor` 整池一份
 - GET /api/v1/products/<code>/summary?range=d7              → `summaryFor(code, range)`
+- GET /api/v1/products/<code>/market-outlook?range=d7       → `marketOutlook(code, range)`
 - GET /api/v1/products/<code>/themes?range=d7               → `themesFor(code, range, *)`
+- GET /api/v1/products/<code>/issuer-opinions?range=d7      → `issuerOpinions(code, range)`
 - GET /api/v1/products/<code>/negative-categories?range=d7  → `negCatsFor(code, range)`
 - GET /api/v1/products/<code>/competitors?range=d7          → `competitorsFor(code, range)`
 - GET /api/v1/products/<code>/compliance?range=d7           → `complianceFor(code, range)`
@@ -22,6 +24,7 @@ from core.narrative import (
     competitors_for,
     hot_summaries,
     issuer_opinions,
+    market_outlook,
     neg_cats_for,
     summary_for,
     themes_for,
@@ -49,6 +52,12 @@ def summary_endpoint(code):
     return _respond(summary_for(code, key), f"未知的产品 {code!r} 或区间预设 {key!r}")
 
 
+@v1_bp.get("/products/<code>/market-outlook")
+def market_outlook_endpoint(code):
+    key = range_key()
+    return _respond(market_outlook(code, key), f"未知的产品 {code!r} 或区间预设 {key!r}")
+
+
 @v1_bp.get("/products/<code>/themes")
 def themes_endpoint(code):
     key = range_key()
@@ -73,7 +82,7 @@ def compliance_endpoint(code):
     return _respond(compliance_for(code, key), f"未知的产品 {code!r} 或区间预设 {key!r}")
 
 
-@v1_bp.get("/issuers/<issuer>/opinions")
-def issuer_opinions_endpoint(issuer):
+@v1_bp.get("/products/<code>/issuer-opinions")
+def issuer_opinions_endpoint(code):
     key = range_key()
-    return _respond(issuer_opinions(issuer.lower(), key), f"未知的发行商 {issuer!r} 或区间预设 {key!r}")
+    return _respond(issuer_opinions(code, key), f"未知的产品 {code!r} 或区间预设 {key!r}")

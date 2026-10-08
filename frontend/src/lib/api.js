@@ -165,6 +165,12 @@ export function clearCache() {
   notify()
 }
 
+/** 只让一个端点失效，用于局部「刷新」按钮；其他已经稳定显示的数据保持不动。 */
+export function invalidate(url) {
+  cache.delete(url)
+  notify()
+}
+
 export function startLiveUpdates(onChange) {
   let stopped = false
   let busy = false

@@ -35,7 +35,8 @@
 
 1. 配置了 `MARKET_INSIGHT_DATABASE_URL` 时，找今天或前一晚最近一次成功的 `comments_all` 回执，
    经 `sync_once` 同步，让 anchor 前进；未配置时即「本地 dump 模式」，记为跳过；
-2. 配置了 `FMP_API_KEY` 时同步自家行情；
+2. 配置了 `FMP_API_KEY` 时按 [ADR-0034](0034-product-scoped-price-provider-fallback.md) 同步完整活跃产品池（`own`＋`peer`）的行情：
+   FMP 为首选，精确身份未验证或满足严格的整段分时无数据条件时才探测 Yahoo Finance；
 3. 把 `d1,d2,d7,d14,d30,mtd` 写进 `ai_analysis_requests`，`requested_by='schedule'`。
 
 同步或行情失败不阻断第 3 步：AI 照常在库里已有的数据上运行。worker 的

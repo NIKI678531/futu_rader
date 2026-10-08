@@ -16,6 +16,10 @@ class MarketDataError(RuntimeError):
 
 
 class FmpClient:
+    provider = "fmp"
+    adjustment = "split_adjusted"
+    intraday_interval = "30min"
+
     def __init__(self, api_key=None, session=None):
         self.api_key = api_key or os.getenv("FMP_API_KEY", "")
         self.base = os.getenv("FMP_BASE_URL", "https://financialmodelingprep.com/stable").rstrip("/")

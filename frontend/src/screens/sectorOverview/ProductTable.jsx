@@ -49,6 +49,9 @@ export default function ProductTable({ v }) {
                   <span style={s('flex:none;font:600 12px/1.4 var(--font-mono);color:var(--negative-700)')}>{r.neg}</span>
                   </>
                 )}
+                {r.grayAttitude && (
+                  <span role="img" aria-label={r.grayAttitudeLabel} title={r.grayAttitudeLabel} style={s('flex:none;width:56px;height:6px;border-radius:3px;background:var(--ink-200)')}></span>
+                )}
                 {r.lowSample && (
                   <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>样本不足</span>
                 )}
@@ -59,7 +62,7 @@ export default function ProductTable({ v }) {
                   <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>暂不可用</span>
                 )}
               </div>
-              {r.partialData && !r.attNa && (
+              {r.partialData && !r.attNa && r.coverageLabel && (
                 <span style={s('font:500 10px/1.2 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>{r.coverageLabel}</span>
               )}
             </div>
@@ -72,8 +75,6 @@ export default function ProductTable({ v }) {
               )}
             </span>
             <span title={r.hotTitle} style={s(`flex:1.3;min-width:220px;padding-left:10px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;font:400 13px/18px var(--font-cjk);color:${r.hotFg};text-wrap:pretty`)}>
-              {/* `stale === true`（后端：标注已更新、这句还没重新生成）才有这枚小徽章；demo 下没有这个键。 */}
-              {r.hotStale && <span title={r.staleTitle} style={s('display:inline-block;margin-right:6px;padding:0 6px;border-radius:9999px;background:var(--warning-100);font:600 11px/1.6 var(--font-cjk);color:var(--warning-700);vertical-align:1px')}>待更新</span>}
               {r.hot}
             </span>
           </div>

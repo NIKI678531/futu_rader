@@ -1,14 +1,11 @@
 import { s, hover } from '../../lib/dc'
+import DatePresetTabs from '../../components/DatePresetTabs'
 
-/* 第三行：预设区间 · 起止日期 · 产品搜索下拉 · 热力粒度 · 基准区间 */
+/* 第二行：预设区间 · 起止日期 · 产品搜索下拉 · 热力粒度 · 基准区间 */
 export default function FilterBar({ v }) {
   return (
-    <div style={s('display:flex;align-items:center;gap:10px 12px;flex-wrap:wrap;min-height:48px;padding:7px 24px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1)')}>
-      <div style={s('flex:none;display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden;background:#fff')}>
-        {v.presets.map((p) => (
-          <div key={p.label} onClick={p.go} style={s(`padding:6px 14px;font:${p.fw} 14px/1.4 var(--font-cjk);color:${p.fg};background:${p.bg};cursor:pointer;border-right:1px solid var(--border-1);transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>{p.label}</div>
-        ))}
-      </div>
+    <div data-shell-filter style={s('display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap;min-height:48px;box-sizing:border-box;padding:6px 24px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1)')}>
+      <DatePresetTabs presets={v.presets} />
       <div style={s('flex:none;display:flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 14px/1.4 var(--font-mono);color:var(--ink-700);white-space:nowrap')}>
         <span>{v.rangeFrom}</span><span style={s('color:var(--ink-300)')}>→</span><span>{v.rangeTo}</span>
       </div>

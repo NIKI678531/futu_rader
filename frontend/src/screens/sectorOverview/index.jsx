@@ -17,9 +17,10 @@
        保持可见并变淡。构造函数里把本屏已知端点一次性预取（radar.js `urlsFor`）。 */
 import React from 'react'
 import R, { prefetchScreen } from '../../data/radar'
-import { shortName, navGroups, num, numRaw, stamp, naBox, aiValidationNote, heatLowerBoundNote, staleSuffix, rowsStale, STALE_TITLE, kolDisplayLabel } from '../../lib/view'
+import { shortName, navGroups, num, numRaw, stamp, naBox, aiValidationNote, heatLowerBoundNote, kolDisplayLabel } from '../../lib/view'
 import { commentFunnelView } from '../../lib/commentFunnel'
 import { ownManagementView } from '../../lib/ownManagement'
+import { sectorAttitudeBar } from '../../lib/attitudeDisplay'
 import { s } from '../../lib/dc'
 import DataUnavailable from '../../components/DataUnavailable'
 import Shell from '../../components/Shell'
@@ -101,7 +102,7 @@ class SectorOverview extends React.Component {
             { k: '点赞 ／ 转发', v: num(o.likes) + ' ／ ' + num(o.shares), fg: 'rgba(255,255,255,0.88)' },
             /* attitude 整块可能为 null（AI 标注未建，ADR-0017）。三态同出一块标注，
                要缺一起缺，所以整行一句长文案，不写三遍。 */
-            { k: '积极 ／ 消极 ／ 中性', v: o.attitude == null ? '数据暂不可用' : o.attitude.positive + ' / ' + o.attitude.negative + ' / ' + o.attitude.neutral + (funnel.partial ? ' · ' + (funnel.available ? '部分数据' : '数据暂不可用') : ''), fg: 'rgba(255,255,255,0.88)' },
+            { k: '积极 ／ 消极 ／ 中性', v: o.attitude == null ? '数据暂不可用' : o.attitude.positive + ' / ' + o.attitude.negative + ' / ' + o.attitude.neutral + (!funnel.available ? ' · 数据暂不可用' : ''), fg: 'rgba(255,255,255,0.88)' },
             { k: '情绪净值', v: this.netText(o), fg: 'rgba(255,255,255,0.88)' }
           ].concat(rc > 0 ? [{ k: '需合规关注', v: rc + ' 条 · AI 识别待确认', fg: '#F3A6A6' }] : [])
         }
@@ -266,6 +267,9 @@ class SectorOverview extends React.Component {
       var on = p.k === s.rangeKey;
       return {
         label: p.label, go: () => self.go({ rangeKey: p.k, sel: null, tip: null }),
+        placeholder: p.placeholder,
+        screenDiffNew: p.screenDiffNew,
+        active: on,
         fw: on ? 600 : 400, fg: on ? 'var(--csop-blue-700)' : 'var(--ink-600)',
         bg: on ? 'var(--csop-blue-50)' : '#fff'
       };
@@ -334,12 +338,10 @@ class SectorOverview extends React.Component {
     };
     var sorted = visible.slice().sort(cmp);
     var rows = (s.listAll ? sorted : sorted.slice(0, 10)).map(function (o, i) {
-      /* `attitude` **整块**可能是 null（三态要 AI 标注，ADR-0017：标注表没建起来之前
-         观测上就没有这个块）。设计源直接 `att.positive`，接真库时第一次渲染就 TypeError。
-         注意不能退化成 `sampleSufficient: false` 去走「样本不足」那条分支 ——
-         样本不足是「数过了，样本太少不下结论」，暂不可用是「根本没数过」，
-         六态里是两态，混用等于把一次采集故障说成一个结论（PRD §3.6）。 */
-      var att = o.attitude, valid = att == null ? 0 : att.positive + att.negative;
+      /* 这里的 5 条筛后评论只控制榜单小条是否展示，不改后端 LOW_SAMPLE=10 的结论门槛。
+         到 5 条且已有正负态度就画比例；一条正负态度都识别不到时改画灰条。 */
+      var att = o.attitude;
+      var attitudeBar = sectorAttitudeBar(o);
       var g = growthPct(o), negN = P.negMentions[o.code];
       var on = s.sel === o.code;
       /* 热议总结整块可能是 null：它要 AI 归纳（`providers/sql.py::hot_summaries`），
@@ -357,7 +359,7 @@ class SectorOverview extends React.Component {
         comments: num(o.comments),
         relatedComments: commentFunnel.relevantText,
         partialData: commentFunnel.partial,
-        coverageLabel: commentFunnel.available ? '部分数据' : '数据暂不可用',
+        coverageLabel: commentFunnel.available ? '' : '数据暂不可用',
         growth: g == null ? '—' : (g > 0 ? '+' : '') + g.toFixed(0) + '%',
         gfg: g == null ? 'var(--ink-300)' : (g > 2 ? 'var(--positive-700)' : (g < -2 ? 'var(--negative-600)' : 'var(--ink-500)')),
         heat: (o.heatUnknownPosts > 0 ? '≥ ' : '') + num(o.discussionHeat),
@@ -365,12 +367,14 @@ class SectorOverview extends React.Component {
            有值但 `heatUnknownPosts > 0` 时是下限，title 里说出来（demo 下没有这个键）。 */
         heatWhy: o.discussionHeat == null ? heatWhy(o)
           : (o.heatUnknownPosts > 0 ? '讨论热度 ' + num(o.discussionHeat) + heatLowerBoundNote(o.heatUnknownPosts) : undefined),
-        hasAttitude: att != null && att.sampleSufficient,
-        lowSample: att != null && !att.sampleSufficient,
-        attNa: att == null,
+        hasAttitude: attitudeBar.kind === 'colored',
+        grayAttitude: attitudeBar.kind === 'gray',
+        grayAttitudeLabel: attitudeBar.grayLabel,
+        lowSample: attitudeBar.kind === 'low_sample',
+        attNa: attitudeBar.kind === 'unavailable',
         pos: att == null ? '' : String(att.positive), neg: att == null ? '' : String(att.negative),
-        posW: valid ? (att.positive / valid * 100).toFixed(1) : '0',
-        negW: valid ? (att.negative / valid * 100).toFixed(1) : '0',
+        posW: attitudeBar.positiveWidth,
+        negW: attitudeBar.negativeWidth,
         /* `negMentions` 也要 AI（舆情条数来自负面类别）。`null > 0` 为假，红标不出现 ——
            这是对的：没扫过就不该报警。但 `alertN` 不能是 `String(null)`。
            三态分开渲染：正数红标、0 留空（扫过了、没有需关注的内容）、null 灰字「暂不可用」
@@ -379,11 +383,8 @@ class SectorOverview extends React.Component {
         alert: negN > 0, alertN: numRaw(negN), alertNa: negN == null,
         /* 热议总结：AI 一句话归纳区间内该 ETF 的主流具体观点；样本不足／不可用按统一状态文案灰字显示 */
         hot: hsText, hotFg: hsOk ? 'var(--ink-800)' : 'var(--ink-400)',
-        /* `stale === true`：底层标注已更新、这句总结还没重新生成。title 说出来，格内加一枚
-           小徽章；demo 下没有这个键，两处都不出现。 */
-        hotStale: hs != null && hs.stale === true, staleTitle: STALE_TITLE,
         hotTitle: hsOk
-          ? (hs.stale === true ? STALE_TITLE + ' — ' : '') + hs.text + '（AI 生成' + staleSuffix(hs.stale) + ' · 基于 ' + hs.sample + ' 条有效态度样本）'
+          ? hs.text + '（AI 生成 · 基于 ' + hs.sample + ' 条有效态度样本）'
           : hsText,
         bg: on ? 'var(--csop-blue-50)' : (i % 2 ? 'var(--canvas)' : '#fff'),
         codeFg: on ? 'var(--csop-blue-700)' : 'var(--ink-900)',
@@ -497,7 +498,7 @@ class SectorOverview extends React.Component {
       neg: management.neg, negDelta: management.negDelta, negDfg: management.negDir > 0 ? 'var(--negative-600)' : (management.negDir < 0 ? 'var(--positive-700)' : 'var(--ink-400)'),
       pos: management.pos, posDelta: management.posDelta, posDfg: management.posDir > 0 ? 'var(--positive-700)' : (management.posDir < 0 ? 'var(--negative-600)' : 'var(--ink-400)'),
       partialData: ownPartial || management.partial,
-      coverageLabel: management.partial ? management.coverageLabel : (ownCoverageUnavailable ? '数据暂不可用' : '部分数据'),
+      coverageLabel: management.partial ? management.coverageLabel : (ownCoverageUnavailable ? '数据暂不可用' : ''),
       negW: management.negWidth, posW: management.posWidth,
       barTitle: management.barTitle
     };
@@ -652,8 +653,6 @@ class SectorOverview extends React.Component {
       var posRaw = R.themesFor(code, s.rangeKey, 'positive');
       var negRaw = R.themesFor(code, s.rangeKey, 'negative');
       var catsRaw = R.negCatsFor(code, s.rangeKey);
-      /* 负面类别仍是数组，`stale` 逐行挂在每个元素上（后端契约），整块判定见 lib/view.js rowsStale。 */
-      var catsStale = rowsStale(catsRaw);
       var posNa = posRaw == null, negNa = negRaw == null, catsNa = catsRaw == null;
       var pos = (posNa ? [] : posRaw).slice(0, 3).map(themeRow);
       var neg = (negNa ? [] : negRaw).slice(0, 3).map(themeRow);
@@ -738,10 +737,8 @@ class SectorOverview extends React.Component {
         obg: o.ownership === 'own' ? 'var(--csop-blue-50)' : 'var(--ink-100)',
         ofg: o.ownership === 'own' ? 'var(--csop-blue-700)' : 'var(--ink-600)',
         summary: sum.text, sample: sumNa ? '数据暂不可用' : String(sum.sample), sampleOk: !sumNa, rangeText: range.text,
-        /* 徽章：`aiStatus === 'unavailable'`（只有计数句、AI 要点没生成）不许写「AI 生成」；
-           `stale === true` 追加「 · 待更新」。两个键 demo 下都不存在。 */
-        sumAiLabel: (sum.aiStatus === 'unavailable' ? '计数句 · AI 要点待生成' : 'AI 生成 · 可追溯原文') + staleSuffix(sum.stale),
-        sumStale: sum.stale === true, staleTitle: STALE_TITLE,
+        /* `aiStatus === 'unavailable'`（只有计数句、AI 要点没生成）不许写「AI 生成」。 */
+        sumAiLabel: sum.aiStatus === 'unavailable' ? '计数句 · AI 要点待生成' : 'AI 生成 · 可追溯原文',
         posThemes: pos, negThemes: neg,
         noPos: !posNa && pos.length === 0, noNeg: !negNa && neg.length === 0,
         posUnavailable: posNa, negUnavailable: negNa,
@@ -768,13 +765,12 @@ class SectorOverview extends React.Component {
         comments: num(o.comments),
         relatedComments: commentFunnel.relevantText,
         partialData: commentFunnel.partial,
-        coverageLabel: commentFunnel.available ? '部分数据' : '数据暂不可用',
+        coverageLabel: commentFunnel.available ? '' : '数据暂不可用',
         likes: num(o.likes),
         shares: num(o.shares) + heatLowerBoundNote(o.heatUnknownPosts),
         interactions: num(o.interactions) + heatLowerBoundNote(o.heatUnknownPosts),
         rank: String(rk.map[code]), rankTotal: String(rk.total),
         hasNegCats: cats.length > 0, noNegCats: !catsNa && cats.length === 0, negCatsUnavailable: catsNa,
-        negCatsStale: catsStale, themesStale: R.themesStale(code, s.rangeKey) === true, compsStale: comps.stale === true,
         negCats: cats.map(function (c) {
           /* 基准期没标注时后端给 null（生命周期未知），不是「持续」——徽章写「暂不可用」（PRD §3.6 短文案）。 */
           var st = lifeStyle[c.lifecycleLabel] || lifeStyle['持续'];
@@ -835,7 +831,7 @@ class SectorOverview extends React.Component {
         </Shell>
 
         {v.loading && (
-          <div style={s('position:sticky;top:144px;z-index:30;display:flex;align-items:center;gap:10px;margin:14px 24px 0;padding:9px 15px;border:1px solid var(--csop-blue-200);border-radius:6px;background:var(--csop-blue-50)')}>
+          <div style={s('display:flex;align-items:center;gap:10px;margin:14px 24px 0;padding:9px 15px;border:1px solid var(--csop-blue-200);border-radius:6px;background:var(--csop-blue-50)')}>
             <span style={s('width:8px;height:8px;border-radius:9999px;background:var(--csop-blue-600)')}></span>
             <span style={s('font:500 14px/1.4 var(--font-cjk);color:var(--csop-blue-800)')}>数据加载中 — 正在按新的日期范围与板块筛选重新聚合</span>
           </div>

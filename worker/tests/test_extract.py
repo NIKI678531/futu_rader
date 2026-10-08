@@ -252,6 +252,20 @@ def test_range_resolves_against_anchor(engine):
     assert (frm, to) == (datetime(2026, 8, 19), datetime(2026, 8, 25))
 
 
+def test_today_range_resolves_against_latest_observed_data_day(engine):
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k="data_max_ts", v="2026-08-26 09:00:00"))
+
+    class A:
+        range = "d0"
+        from_ = None
+        to = None
+
+    frm, to = extract.resolve_window(A(), engine)
+
+    assert (frm, to) == (datetime(2026, 8, 26), datetime(2026, 8, 26))
+
+
 def test_hkt_day_extracts_utc_naive_boundary_rows(engine, cfg, tmp_path):
     timestamps = (
         datetime(2026, 8, 24, 15, 59, 59),

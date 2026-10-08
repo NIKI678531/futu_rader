@@ -10,7 +10,7 @@
 
 ## 哪些字段是真的，哪些是 None
 
-一句话：**能数出来的都是真的；要 AI 标注的随库里有没有标注走；要行情源的都是 None。**
+一句话：**能数出来的都是真的；AI 随现行标注走；行情随已验证标的与本地价格事实走。**
 
 | 类别 | 例子 | 现状 |
 |---|---|---|
@@ -20,7 +20,7 @@
 | 内容 | 帖子标题正文、评论正文、作者、链接 | **真实** |
 | AI 标注（有写入方） | 帖子类型／摘要／操作方向、评论态度、合规命中、证据引文 | **随标注走**：库里有现行结论就是真值，没有就是 None |
 | AI 标注（无写入方） | 主题聚类、负面类别、热议话题、阶段观点 | **None**（对应的 kind 还没有任何任务在写） |
-| 行情 | K 线、日线价格 | **None**（dump 里没有本产品池的价格序列） |
+| 行情 | K 线、日线价格 | **随已验证行情标的走**：优先源或备用源写入本地行情表后读取；缺失不补零 |
 
 None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲染「暂不可用」。
 **绝不返回 0 或 []** —— 那是在说「查过了，真的是零」（铁律 2）。
@@ -84,6 +84,7 @@ from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 from core import stages as core_stages, themes as core_themes, topics as core_topics  # noqa: E402
 from core.attitude import LOW_SAMPLE, sample_sufficient  # noqa: E402
 from core.calendar import PRESETS, build, parse_anchor  # noqa: E402
+from core.data_clock import latest_hkt_data_time  # noqa: E402
 from core.delta import delta  # noqa: E402
 from core.heat import heat_of  # noqa: E402
 from radar_db import make_engine  # noqa: E402
@@ -102,6 +103,7 @@ from radar_db.comment_filter import (  # noqa: E402
 from radar_db.comment_routes import (  # noqa: E402
     COMMENT_ROUTE_VERSION,
     is_ready as comment_routes_ready,
+    readiness_on_connection as comment_routes_ready_on_connection,
     route_exists_predicate,
 )
 from radar_db.product_catalog import load_accounts, load_products  # noqa: E402
@@ -122,9 +124,17 @@ from radar_db.schema import (  # noqa: E402
     meta_kv,
     synthesis_outputs,
 )
-from radar_db.time_windows import hkt_range_utc_naive, utc_naive_to_hkt  # noqa: E402
+from radar_db.time_windows import HKT, hkt_range_utc_naive, utc_naive_to_hkt  # noqa: E402
 
 KOL_OPINION_PROMPT_VERSION = "kol-opinion-v2"
+
+# ``price_instruments`` is the single active, verified identity for a product.
+# Both providers persist the same split-adjusted (not total-return) contract;
+# their storage key stays machine-readable while the API exposes a human label.
+_PRICE_PROVIDER_CONTRACTS = {
+    "fmp": {"source": "FMP", "adjustment": "split_adjusted"},
+    "yfinance": {"source": "Yahoo Finance", "adjustment": "split_adjusted"},
+}
 
 
 class SqlProvider:
@@ -237,6 +247,10 @@ class SqlProvider:
     @property
     def updated_at(self):
         """页面右上角的「数据截至」。取真实数据的最大 `posted_at`，不是系统时间。"""
+        latest = latest_hkt_data_time(self._engine, self._meta)
+        if latest is not None:
+            return latest.strftime("%Y-%m-%d %H:%M")
+        # 旧库在 facts 表尚不可读时仍可能有已核实的完整日截止点。
         ts = self._meta.get("anchor_ts")
         return ts[:16] if ts else None
 
@@ -376,7 +390,39 @@ class SqlProvider:
         if key not in PRESETS or self._anchor is None:
             # 锚点取不到 ⇒ 整个区间是未知，不用今天兜底（见 core/calendar.parse_anchor）。
             return None
-        return build(key, self._anchor)
+        if key != "d0":
+            return build(key, self._anchor)
+        data_through = self._d0_data_through()
+        # Even before today's first fact arrives, the calendar contract remains
+        # available so the screen can render its normal component tree.  Data
+        # endpoints are gated in ``_filtered_range``/``_content_range`` below
+        # and remain unavailable; no zero is manufactured from this descriptor.
+        data_day = (
+            data_through.date()
+            if data_through is not None
+            else self._anchor + timedelta(days=1)
+        )
+        return build("d0", data_day, data_through=data_through)
+
+    def _d0_data_through(self):
+        key = ("d0_data_through",)
+        if key not in self._cache:
+            latest = latest_hkt_data_time(self._engine, self._meta)
+            self._cache[key] = (
+                latest
+                if latest is not None
+                and self._anchor is not None
+                and latest.date() > self._anchor
+                else None
+            )
+        return self._cache[key]
+
+    def _content_range(self, key):
+        """Range for raw account content, including d0 arrival gating."""
+        rng = self.build_range(key)
+        if rng is None or (key == "d0" and self._d0_data_through() is None):
+            return None
+        return rng
 
     def _filtered_range(self, key):
         """Build a range only after the parent-feed backfill is publishable.
@@ -387,8 +433,12 @@ class SqlProvider:
         instead of an authoritative-looking zero.
         """
         rng = self.build_range(key)
-        if rng is None or not self._filter_window_ready(
-            rng.get("benchFrom", rng["from"]), rng["to"]
+        if (
+            rng is None
+            or (key == "d0" and self._d0_data_through() is None)
+            or not self._filter_window_ready(
+                rng.get("benchFrom", rng["from"]), rng["to"]
+            )
         ):
             return None
         return rng
@@ -580,7 +630,12 @@ class SqlProvider:
         if rng is None:
             return None
         cur = self._scan(rng["from"], rng["to"], rng)
-        base = self._scan(rng["benchFrom"], rng["benchTo"])
+        # Keep the baseline scan identical to ``benchmark()``: range-scoped
+        # completion metadata is what turns a completed empty product into an
+        # exact zero.  Dropping the range here made the company delta unknown
+        # even while every product benchmark had numeric current/base values.
+        baseline_range = _baseline_range(rng)
+        base = self._scan(rng["benchFrom"], rng["benchTo"], baseline_range)
 
         items, global_max = [], 1
         for p in self._products:
@@ -648,7 +703,7 @@ class SqlProvider:
         rng = self._filtered_range(range_key)
         if rng is None:
             return None
-        cur = self._scan(rng["from"], rng["to"])
+        cur = self._scan(rng["from"], rng["to"], rng)
         order = sorted(self._by_code, key=lambda c: (-cur[c]["comments"], c))
         return {"map": {c: i + 1 for i, c in enumerate(order)}, "total": len(order)}
 
@@ -663,7 +718,7 @@ class SqlProvider:
         cur = self._scan(rng["from"], rng["to"], rng)[code]
         # 基准区间也切同样多的桶：环比要逐桶对齐同位（PRD §3.1），产品监控页的趋势图
         # 悬停要显示「这一桶较基准同位 +12（+25.0%）」。
-        baseline_range = build(range_key, date.fromisoformat(rng["benchTo"]), days_override=rng["days"])
+        baseline_range = _baseline_range(rng)
         base = self._scan(rng["benchFrom"], rng["benchTo"], baseline_range)[code]
         return {
             "mentions": delta(cur["mentions"], base["mentions"]),
@@ -724,7 +779,7 @@ class SqlProvider:
         return out
 
     def daily_for(self, code):
-        """KOL 详情与产品监控的逐日轴。价格四项没有数据源 → None，评论与活跃是真的。"""
+        """KOL 详情与产品监控的逐日轴，价格跟随当前已验证行情标的。"""
         if code not in self._by_code:
             return MISSING
         if self._anchor is None:
@@ -733,13 +788,26 @@ class SqlProvider:
         if not self._filter_window_ready(frm, self._anchor):
             return None
         per_day = self._by_day(code, frm, self._anchor)
-        from radar_db.schema import price_bars
+        from radar_db.schema import price_bars, price_instruments
         with self._engine.connect() as conn:
-            prices = {row["session_date"]: row for row in conn.execute(select(price_bars).where(
-                price_bars.c.code == code, price_bars.c.interval == "1d", price_bars.c.provider == "fmp",
-                price_bars.c.adjustment == "split_adjusted", price_bars.c.session_date >= frm.isoformat(),
-                price_bars.c.session_date <= self._anchor.isoformat(),
-            )).mappings()}
+            instrument = conn.execute(
+                select(price_instruments).where(price_instruments.c.code == code)
+            ).mappings().first()
+            contract = _PRICE_PROVIDER_CONTRACTS.get(instrument["provider"]) if instrument else None
+            if contract:
+                prices = {
+                    row["session_date"]: row
+                    for row in conn.execute(select(price_bars).where(
+                        price_bars.c.code == code,
+                        price_bars.c.interval == "1d",
+                        price_bars.c.provider == instrument["provider"],
+                        price_bars.c.adjustment == contract["adjustment"],
+                        price_bars.c.session_date >= frm.isoformat(),
+                        price_bars.c.session_date <= self._anchor.isoformat(),
+                    )).mappings()
+                }
+            else:
+                prices = {}
         out = []
         for i in range((self._anchor - frm).days + 1):
             d = frm + timedelta(days=i)
@@ -750,9 +818,14 @@ class SqlProvider:
                     "iso": d.isoformat(),
                     "comments": n_comments,
                     "active": active,
-                    # 行情序列不在这份 dump 里。写 None 而不是拿收盘价占位。
-                          **{key: float(prices[d.isoformat()][field]) if d.isoformat() in prices else None
-                              for key, field in (("px", "close"), ("o", "open"), ("c", "close"), ("h", "high"), ("l", "low"))},
+                    # 没有当前已验证行情事实就写 None，绝不拿别的产品或旧 provider 占位。
+                    **{
+                        key: float(prices[d.isoformat()][field]) if d.isoformat() in prices else None
+                        for key, field in (
+                            ("px", "close"), ("o", "open"), ("c", "close"),
+                            ("h", "high"), ("l", "low"),
+                        )
+                    },
                 }
             )
         return out
@@ -760,7 +833,7 @@ class SqlProvider:
     # ── 账号域：官号 ─────────────────────────────────────────────────
 
     def official_posts(self, range_key):
-        rng = self.build_range(range_key)
+        rng = self._content_range(range_key)
         if rng is None:
             return None
         # 官号在真实数据里只能按**全称**认（`full`），uid 对不上，见模块头第 1 点。
@@ -823,13 +896,13 @@ class SqlProvider:
         于是同一个官号在 demo 与 sql 下芯片顺序不同 —— 逐字比对抓不到（它比的是 demo），
         只有接了真库才看得见。
         """
-        rng = self.build_range(range_key)
-        if rng is None:
-            return None
         o = next((x for x in self._officials if x["short"] == account or x["full"] == account), None)
         if o is None:
             # 名单里没有这个官号 = 没这个资源 → 404，不是「这个官号的数据暂不可用」。
             return MISSING
+        rng = self._content_range(range_key)
+        if rng is None:
+            return None
         rows = defaultdict(lambda: {"count": 0, "posts": 0})
         post_ids = set()
         for row, codes, _status in self._attributed_official_posts(rng, {o["full"]: o}):
@@ -906,7 +979,7 @@ class SqlProvider:
     # ── 账号域：KOL ──────────────────────────────────────────────────
 
     def kol_impact(self, range_key):
-        rng = self.build_range(range_key)
+        rng = self._content_range(range_key)
         if rng is None:
             return None
         by_name = {k["name"]: k for k in self._kols if k.get("active")}
@@ -928,7 +1001,7 @@ class SqlProvider:
         posts.sort(key=lambda p: (-p["t"], p["id"]))
         return {
             "posts": posts,
-            # leaders 是**全量**画像（不随筛选变化），KOL 详情页用它定顺序（见 core/kol.py）。
+            # leaders 是**全量**兼容画像（不随筛选变化）；新页面按 posts 聚合浏览量定顺序。
             # 画像里的 typeCounts / topType / styleTag 全部来自 AI 类型标注 → None。
             "leaders": self._leaders(posts),
             "kolActive": len(seen),
@@ -939,7 +1012,7 @@ class SqlProvider:
             "updated": self.updated_at,
         }
 
-    # ── 需要行情源的字段，本期一律 None ──────────────────────────────
+    # ── 行情源字段：只读当前已验证标的，不跨产品／跨 provider 兜底 ─────
     #
     # **先验产品代码**。「这只产品的这个字段要行情源」和「没有这只产品」是两件事：
     # 前者是 200 +「暂不可用」，后者是 404。整段都回 None 的话，URL 里把 3033 敲成
@@ -967,13 +1040,24 @@ class SqlProvider:
             ).order_by(price_syncs.c.updated_at.desc()).limit(1)).mappings().first()
             if instrument is None and sync is None:
                 return None
+            contract = _PRICE_PROVIDER_CONTRACTS.get(instrument["provider"]) if instrument else None
             rows = list(conn.execute(select(price_bars).where(
-                price_bars.c.code == code, price_bars.c.interval == interval,
-                price_bars.c.provider == "fmp", price_bars.c.adjustment == "split_adjusted",
-                price_bars.c.session_date >= rng["from"], price_bars.c.session_date <= rng["to"],
-            )).mappings())
-        return aggregate_prices(rng, rows, instrument["currency"] if instrument else "HKD",
-                                sync["reason"] if sync else "not_synced")
+                price_bars.c.code == code,
+                price_bars.c.interval == interval,
+                price_bars.c.provider == instrument["provider"],
+                price_bars.c.adjustment == contract["adjustment"],
+                price_bars.c.session_date >= rng["from"],
+                price_bars.c.session_date <= rng["to"],
+            )).mappings()) if contract else []
+        return aggregate_prices(
+            rng,
+            rows,
+            currency=instrument["currency"] if instrument else None,
+            source=contract["source"] if contract else None,
+            adjustment=contract["adjustment"] if contract else None,
+            reason=(sync["reason"] if sync else
+                    "not_synced" if contract else "unsupported_price_provider"),
+        )
 
     # ── 市场域：Layer B 生成物驱动的叙述组（ADR-0020） ────────────────
     #
@@ -987,9 +1071,19 @@ class SqlProvider:
     #
     # 「标注过」的判据与 `_scan` 同源（`att is None` 即没标过），不另写一套。
 
+    def _effective_anchor(self, range_key):
+        """Published d0 generations are keyed by their actual data day."""
+        if self._anchor is None:
+            return None
+        if range_key != "d0":
+            return self._anchor
+        through = self._d0_data_through()
+        return through.date() if through is not None else None
+
     def _published(self, code, range_key, kind):
         """``(anchor, fingerprint)`` of the published Layer-B generation, or ``None``."""
-        if self._anchor is None:
+        effective_anchor = self._effective_anchor(range_key)
+        if effective_anchor is None:
             return None
         generation = self._meta.get(synthesis_generation_key(code, range_key, kind))
         if not generation:
@@ -999,7 +1093,7 @@ class SqlProvider:
             separator != "|"
             or not published_fp
             or not published_anchor
-            or published_anchor > self._anchor.isoformat()
+            or published_anchor > effective_anchor.isoformat()
         ):
             return None
         return published_anchor, published_fp
@@ -1056,7 +1150,8 @@ class SqlProvider:
         No generation at all is ``unavailable``, not stale.
         """
         dirty = self._meta.get(f"synth_dirty_{code}_{range_key}") == "1"
-        current = self._anchor.isoformat() if self._anchor else None
+        effective_anchor = self._effective_anchor(range_key)
+        current = effective_anchor.isoformat() if effective_anchor else None
         for kind in kinds:
             published = self._published(code, range_key, kind)
             if published is None or not self._synth(code, range_key, kind):
@@ -1312,10 +1407,17 @@ class SqlProvider:
 
     def _base_units(self, code, rng):
         """基准期的判定单元；基准期一条态度标注都没有 ⇒ None（环比与生命周期暂不可用）。"""
-        blo, bhi = hkt_range_utc_naive(rng["benchFrom"], rng["benchTo"])
+        baseline_range = _baseline_range(rng)
+        blo, bhi = _window(baseline_range)
         att = self._released_window_annotations("attitude", blo, bhi).get(code, {})
         rel = self._released_window_annotations("relevance", blo, bhi).get(code, {})
-        if not att and not rel and self._scan(rng["benchFrom"], rng["benchTo"])[code]["att"] is None:
+        if (
+            not att
+            and not rel
+            and self._scan(
+                rng["benchFrom"], rng["benchTo"], baseline_range
+            )[code]["att"] is None
+        ):
             return None
         asp = self._released_window_annotations("aspect", blo, bhi).get(code, {})
         feedback = self._released_window_annotations("feedback_eligible", blo, bhi).get(code, {})
@@ -1513,7 +1615,9 @@ class SqlProvider:
                 fallback_points.append(focus_fact(themes))
                 ev_ids.extend(eid for theme in themes for eid in (theme.get("evidenceIds") or []))
 
-            base = self._scan(rng["benchFrom"], rng["benchTo"])[code]
+            base = self._scan(
+                rng["benchFrom"], rng["benchTo"], _baseline_range(rng)
+            )[code]
             mentions_change = delta(s["mentions"], base["mentions"])["text"]
             heat_change = delta(s["heat"], base["heat"])["text"]
             fallback_points.append(
@@ -1538,6 +1642,58 @@ class SqlProvider:
             "stale": has_model_points and self._stale(code, range_key, "summary"),
         }
 
+    def market_outlook(self, code, range_key):
+        """按灰度口径返回当前产品，或当前产品加四只高讨论产品。
+
+        排名的计数直接来自已发布的 ``market_direction`` 单元；只对
+        最终入选的五只产品读 ``topic_label``，避免为一张表执行整个产品
+        池的 Layer B 查询。
+        """
+        if code not in self._by_code:
+            return MISSING
+        rng = self._filtered_range(range_key)
+        if rng is None:
+            return None
+
+        scope = core_topics.market_outlook_scope(code)
+        if scope == "product":
+            topics = self.topics_for(code, range_key)
+            count = core_topics.market_discussion_count(topics)
+            if count is None:
+                return None
+            if count <= 0:
+                return {"scope": scope, "list": []}
+            return {
+                "scope": scope,
+                "list": [core_topics.market_outlook_row(self._by_code[code], topics)],
+            }
+
+        counts = {}
+        for candidate in self._by_code:
+            units = self._units(candidate, rng)
+            counts[candidate] = None if units is None else len(units["market"])
+        selected = core_topics.select_market_outlook_codes(
+            self._products, code, counts,
+        )
+        if selected is None:
+            return None
+        if not selected:
+            return {"scope": scope, "list": []}
+
+        topics_by_code = {
+            candidate: self.topics_for(candidate, range_key)
+            for candidate in selected
+        }
+        return {
+            "scope": scope,
+            "list": [
+                core_topics.market_outlook_row(
+                    self._by_code[candidate], topics_by_code[candidate],
+                )
+                for candidate in selected
+            ]
+        }
+
     def themes_for(self, code, range_key):
         if code not in self._by_code:
             return MISSING
@@ -1554,23 +1710,94 @@ class SqlProvider:
         out["stale"] = self._stale(code, range_key, "theme_label")
         return out
 
-    def issuer_opinions(self, issuer, range_key):
-        """Return deduplicated CSOP company opinions, never ETF attitudes."""
-        if issuer != "csop":
+    def issuer_opinions(self, code, range_key):
+        """Return CSOP company opinions explicitly routed to one ETF.
+
+        Issuer relevance is annotated on the same ``(comment_id, subject_code)``
+        unit as product feedback.  The route-backed subject is therefore the
+        product boundary; a company-wide list would copy an unrelated comment
+        onto every CSOP product page.
+        """
+        if code not in self._by_code:
             return MISSING
+        if self._by_code[code].get("ownership") != "own":
+            return {"status": "na", "issuer": self._by_code[code].get("issuer"),
+                    "list": [], "counts": None}
         rng = self._filtered_range(range_key)
         if rng is None:
             return None
         lo, hi = _window(rng)
+        unavailable = {"status": "unavailable", "issuer": "南方东英",
+                       "list": [], "counts": None}
+        empty = {"status": "empty", "issuer": "南方东英", "list": [],
+                 "counts": {"positive": 0, "negative": 0, "neutral": 0}}
+        try:
+            with self._engine.connect() as conn:
+                routes_ready = comment_routes_ready_on_connection(
+                    conn, codes=self._by_code,
+                )
+        except SQLAlchemyError:
+            routes_ready = False
+        if not routes_ready:
+            return unavailable
+
+        def no_rows_result():
+            completed = code in self._completed_codes(rng["from"], rng["to"], range_key)
+            return empty if completed else unavailable
+
         kwargs = dict(
             task="comment_product", prompt_version=PRODUCT_FEEDBACK_PROMPT_VERSIONS,
             window=(lo, hi), parent_filter_config=self._comment_filter_config,
         )
-        rel = released_annotations(self._engine, "issuer_relevance", "comment", **kwargs)
-        att = released_annotations(self._engine, "issuer_attitude", "comment", **kwargs)
-        aspects = released_annotations(self._engine, "issuer_aspect", "comment", **kwargs)
+        rel = released_annotations(
+            self._engine, "issuer_relevance", "comment", subject_code=code, **kwargs
+        )
         if not rel:
-            return {"status": "unavailable", "issuer": "南方东英", "list": [], "counts": None}
+            return no_rows_result()
+
+        # Issuer comments need a stricter product boundary than ordinary product
+        # feedback.  A generic company comment below a parent post that names
+        # several ETFs is not evidence for every ETF.  Prefer a unique cashtag in
+        # the comment itself; otherwise accept only a unique parent-derived route.
+        route_rows = []
+        comment_ids = sorted({unit[0] for unit in rel})
+        with self._engine.connect() as conn:
+            for chunk in _chunked(comment_ids, 900):
+                route_rows.extend(conn.execute(
+                    select(
+                        comment_product_routes.c.comment_id,
+                        comment_product_routes.c.subject_code,
+                        comment_product_routes.c.matched_comment,
+                    ).where(
+                        comment_product_routes.c.comment_id.in_(chunk),
+                        comment_product_routes.c.rule_version == COMMENT_ROUTE_VERSION,
+                    )
+                ).mappings())
+        routes_by_comment = defaultdict(list)
+        for route in route_rows:
+            routes_by_comment[route["comment_id"]].append(route)
+        uniquely_routed = set()
+        for comment_id, routes in routes_by_comment.items():
+            explicit = {route["subject_code"] for route in routes if route["matched_comment"]}
+            candidates = explicit or {route["subject_code"] for route in routes}
+            if len(candidates) == 1:
+                uniquely_routed.add((comment_id, next(iter(candidates))))
+        rel = {unit: row for unit, row in rel.items() if unit in uniquely_routed}
+        if not rel:
+            return no_rows_result()
+
+        att = {
+            unit: row
+            for unit, row in released_annotations(
+                self._engine, "issuer_attitude", "comment", subject_code=code, **kwargs
+            ).items()
+        }
+        aspects = {
+            unit: row
+            for unit, row in released_annotations(
+                self._engine, "issuer_aspect", "comment", subject_code=code, **kwargs
+            ).items()
+        }
 
         chosen = {}
         for unit, row in rel.items():
@@ -1661,7 +1888,7 @@ class SqlProvider:
         if u is None:
             return None
         label = self._labels(code, range_key, "topic_label").get(core_topics.MARKET_SUBKEY)
-        base_window = _window({"from": rng["benchFrom"], "to": rng["benchTo"]})
+        base_window = _window(_baseline_range(rng))
         baseline = self._released_window_annotations(
             "market_direction", *base_window
         ).get(code, {})
@@ -1739,6 +1966,9 @@ class SqlProvider:
         )
         rows = self._synth(code, range_key, "competitor_reason")
         scan = self._scan(rng["from"], rng["to"], rng)
+        baseline_scan = self._scan(
+            rng["benchFrom"], rng["benchTo"], _baseline_range(rng)
+        )
         related = []
         if not fixed and not rows:
             # 人工映射与共提分析都尚未产出时，先给同板块、同结构且区间内确有讨论的
@@ -1783,7 +2013,7 @@ class SqlProvider:
                     f"同属{q['sectorName']}／{q['struct']}产品，按本区间讨论量自动补入 · 待确认"
                 ),
                 "mentions": scan[c]["mentions"], "comments": scan[c]["comments"],
-                "delta": delta(scan[c]["comments"], self._scan(rng["benchFrom"], rng["benchTo"])[c]["comments"]),
+                "delta": delta(scan[c]["comments"], baseline_scan[c]["comments"]),
                 "positiveThemes": (
                     [{"id": f"{c}-like-{i}", "title": t, "mentions": n_ev} for i, t in enumerate(like)]
                     if r else [{"id": t["id"], "title": t["title"], "mentions": t["mentions"]} for t in positive]
@@ -2297,14 +2527,14 @@ class SqlProvider:
         缺席和零在这里必须分得开：窗口内的底库是全的，所以「没人发」是查出来的结论，
         那个 0 是真的 0；而 `KeyError` 意味着代码不在池里，是另一回事。
         """
-        key = (frm, to, rng["key"] if rng else None)
+        key = (frm, to, rng["key"] if rng else None, rng.get("dataThrough") if rng else None)
         if key in self._cache:
             return self._cache[key]
 
         nb = len(rng["buckets"]) if rng else 0
         gran = rng["gran"] if rng else None
         origin = date.fromisoformat(frm)
-        lo, hi = hkt_range_utc_naive(frm, to)
+        lo, hi = _window(rng) if rng else hkt_range_utc_naive(frm, to)
 
         # A product observation is section-scoped and parent-qualified.  Body
         # mentions remain available to the account attribution surfaces, but
@@ -2453,8 +2683,9 @@ class SqlProvider:
                 # upper bound is the verified collection anchor.  This keeps
                 # an exact-filtered product with no comments from looking like
                 # an unfinished crawl.
-                source_complete=all(
-                    status == "complete" for status in source_statuses
+                source_complete=(
+                    not (rng or {}).get("partial", False)
+                    and all(status == "complete" for status in source_statuses)
                 ),
                 rule_excluded_count=rule_excluded,
                 rule_eligible_count=len(rule_eligible_units),
@@ -2516,6 +2747,7 @@ class SqlProvider:
                 out[code]["attSeen"] = True
         for s in out.values():
             _finish(s)
+            _mask_future_buckets(s, rng)
         self._cache[key] = out
         return out
 
@@ -3069,9 +3301,81 @@ def _add_all(vals):
     return total
 
 
+def _through_datetime(value):
+    if not value:
+        return None
+    text = str(value).strip().removesuffix(" HKT")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(HKT).replace(tzinfo=None)
+    return parsed
+
+
+def _benchmark_data_through(rng):
+    """d0's previous-day comparison stops at the same HKT wall time."""
+    return _through_datetime(rng.get("benchmarkThrough"))
+
+
+def _baseline_range(rng):
+    """Build the adjacent comparison range, preserving d0's partial cutoff."""
+    return build(
+        "d1" if rng["key"] == "d0" else rng["key"],
+        date.fromisoformat(rng["benchTo"]),
+        days_override=rng["days"],
+        data_through=_benchmark_data_through(rng),
+    )
+
+
+def _mask_future_buckets(observation, rng):
+    """Keep unobserved d0 hours unknown instead of manufacturing zeroes."""
+    if not rng or not rng.get("partial"):
+        return
+    through = _through_datetime(rng.get("dataThrough"))
+    if through is None:
+        return
+    nullable = (
+        "mentions", "comments", "likes", "shares", "heatUnknownPosts",
+        "interactions", "active", "heat",
+    )
+    for descriptor, bucket in zip(rng.get("buckets", ()), observation["buckets"]):
+        start = datetime.combine(
+            date.fromisoformat(descriptor["day"]),
+            datetime.min.time(),
+        ) + timedelta(hours=descriptor.get("hour", 0))
+        if start <= through:
+            continue
+        for field in nullable:
+            bucket[field] = None
+        bucket["att"] = None
+    observation["activeByBucket"] = [bucket["active"] for bucket in observation["buckets"]]
+    observed_mentions = [
+        bucket["mentions"] for bucket in observation["buckets"]
+        if bucket["mentions"] is not None
+    ]
+    observation["maxBucket"] = max(observed_mentions, default=None)
+
+
 def _window(rng):
-    """HKT 自然日区间对应的 UTC-naive 半开时间窗。"""
-    return hkt_range_utc_naive(rng["from"], rng["to"])
+    """HKT calendar range as a UTC-naive half-open window.
+
+    A partial d0 (and its previous-day same-time benchmark) stops immediately
+    after ``dataThrough``.  That includes the last observed fact while keeping
+    later hours out of totals and AI inputs.
+    """
+    lo, hi = hkt_range_utc_naive(rng["from"], rng["to"])
+    through = _through_datetime(rng.get("dataThrough"))
+    if through is not None:
+        cutoff = (
+            through.replace(tzinfo=HKT)
+            .astimezone(timezone.utc)
+            .replace(tzinfo=None)
+            + timedelta(microseconds=1)
+        )
+        hi = min(hi, cutoff)
+    return lo, hi
 
 
 def _stamp(dt):

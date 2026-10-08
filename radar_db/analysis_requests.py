@@ -7,19 +7,28 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
-from sqlalchemy import desc, insert, select, update
+from sqlalchemy import delete, desc, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from .schema import ai_analysis_requests, meta_kv
 
 
-RANGE_PRIORITY = {"d1": 400, "d2": 300, "d7": 500, "d14": 200, "d30": 100, "mtd": 50}
+RANGE_PRIORITY = {
+    "d0": 600,
+    "d1": 400,
+    "d2": 300,
+    "d7": 500,
+    "d14": 200,
+    "d30": 100,
+    "mtd": 50,
+}
 REQUESTERS = ("admin", "schedule")
 ACTIVE_STATUSES = ("queued", "running")
 TERMINAL_STATUSES = ("succeeded", "partial", "failed")
 WORKER_HEARTBEAT_KEY = "ai_analysis_worker_heartbeat"
 WORKER_READINESS_KEY = "ai_analysis_worker_readiness"
 WORKER_HEARTBEAT_STALE_SECONDS = 120
+FOLLOWUP_PREFIX = "ai_analysis_followup_"
 
 
 def _utcnow() -> datetime:
@@ -155,7 +164,7 @@ def enqueue(
     """
 
     if range_key not in RANGE_PRIORITY:
-        raise ValueError("range 只允许 d1、d2、d7、d14、d30 或 mtd")
+        raise ValueError("range 只允许 d0、d1、d2、d7、d14、d30 或 mtd")
     if requested_by not in REQUESTERS:
         raise ValueError("requested_by 只允许 admin 或 schedule")
     now = now or _utcnow()
@@ -186,6 +195,65 @@ def enqueue(
             return serialize(existing), False
         raise
     return serialize(values), True
+
+
+def request_followup(
+    engine,
+    range_key: str,
+    *,
+    requested_by: str = "schedule",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Remember that an active range must run once more after it finishes.
+
+    The active-range unique key intentionally coalesces duplicate clicks.  For
+    the 13:00/15:00 d0 refreshes, however, newer source facts arriving while a
+    run is active require one follow-up.  A durable marker lets the normal
+    queue poll promote that work without creating concurrent analyses.
+    """
+    if range_key not in RANGE_PRIORITY:
+        raise ValueError("range 只允许 d0、d1、d2、d7、d14、d30 或 mtd")
+    if requested_by not in REQUESTERS:
+        raise ValueError("requested_by 只允许 admin 或 schedule")
+    payload = {
+        "range": range_key,
+        "requestedBy": requested_by,
+        "requestedAt": _iso(now or _utcnow()),
+    }
+    key = FOLLOWUP_PREFIX + range_key
+    value = json.dumps(payload, ensure_ascii=False)
+    with engine.begin() as conn:
+        updated = conn.execute(update(meta_kv).where(meta_kv.c.k == key).values(v=value))
+        if not updated.rowcount:
+            conn.execute(insert(meta_kv).values(k=key, v=value))
+    return payload
+
+
+def promote_followups(engine) -> list[dict[str, Any]]:
+    """Promote coalesced follow-ups once their older active request is gone."""
+    with engine.connect() as conn:
+        markers = list(conn.execute(
+            select(meta_kv.c.k, meta_kv.c.v).where(meta_kv.c.k.like(FOLLOWUP_PREFIX + "%"))
+        ))
+    promoted = []
+    for key, raw in markers:
+        range_key = key[len(FOLLOWUP_PREFIX):]
+        marker = _json(raw) or {}
+        request, created = enqueue(
+            engine,
+            range_key,
+            requested_by=marker.get("requestedBy") or "schedule",
+        )
+        marker_at = str(marker.get("requestedAt") or "")
+        # If another worker promoted it first, its active request is at least as
+        # new as the marker and also covers the requested refresh.
+        covered = created or str(request.get("requestedAt") or "") >= marker_at
+        if not covered:
+            continue
+        with engine.begin() as conn:
+            conn.execute(delete(meta_kv).where(meta_kv.c.k == key, meta_kv.c.v == raw))
+        promoted.append(request)
+    return promoted
 
 
 def list_requests(engine, *, limit: int = 20) -> list[dict[str, Any]]:

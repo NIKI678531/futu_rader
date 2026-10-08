@@ -45,7 +45,7 @@ test('confirmed relevant count is a lower bound while source, AI, or context is 
     const view = commentFunnelView({ ...complete, ...changed })
     assert.equal(view.relevantText, '≥ 50')
     assert.equal(view.partial, true)
-    assert.equal(view.dataLabel, '部分数据')
+    assert.equal('dataLabel' in view, false)
   }
 })
 
