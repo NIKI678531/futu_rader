@@ -93,6 +93,21 @@ On Windows mapped network drives, `npm run dev` automatically syncs the source t
 mirror described in ADR-0018 and runs Vite there; do not start `vite` directly from the share.
 Open `http://localhost:5173` in a browser. The API runs on `http://localhost:8008` by default. Configuration examples are available in `backend/.env.example` and `worker/.env.example`.
 
+The production frontend is a Webpack 5 Module Federation remote. `npm run build`
+emits `dist/remoteEntry.js`; `npm run dev:remote` serves the development container
+on port `3026`, and `npm run remote-smoke` checks the built container in a browser.
+Register it in the Investment Research Database host with these values:
+
+| Field | Value |
+| --- | --- |
+| `app_name` / `remote_scope` | `opinionRadar` |
+| `remote_module` | `./App` |
+| `route` | `/opinion-radar` |
+| `remote_url` | `/remote/opinion-radar/remoteEntry.js` |
+
+The exposed component reuses the host router. The standalone Vite entry supplies
+its own router for ordinary local development.
+
 To start the containerized infrastructure:
 
 ```bash

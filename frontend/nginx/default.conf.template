@@ -38,6 +38,13 @@ server {
     location ^~ /remote/opinion-radar/admin/ { return 404; }
     location ^~ /remote/opinion-radar/api/v1/admin { return 404; }
 
+    location = /remote/opinion-radar/remoteEntry.js {
+        try_files $uri =404;
+        default_type application/javascript;
+        add_header Access-Control-Allow-Origin "*" always;
+        add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" always;
+    }
+
     location /remote/opinion-radar/api/ {
         proxy_pass http://${API_UPSTREAM}/api/;
         proxy_http_version 1.1;

@@ -1,7 +1,8 @@
 # PRD 部署手册
 
 本目录按公司 EKS 部署规范落地，只包含 PRD。复用 `ih` 中已有的共享 ALB，
-入口为现有域名下的 `/remote/opinion-radar`。页面和 API 都先经过 nginx，
+远程资源入口为现有域名下的 `/remote/opinion-radar`，host 页面路由为 `/opinion-radar`。
+页面资源和 API 都先经过 nginx，
 API 转发时去掉 `/remote/opinion-radar`，保留 Flask 使用的 `/api` 前缀。
 配置不进入镜像，数据库使用外部 RDS，不在集群内部署 MySQL。
 
@@ -105,7 +106,8 @@ docker compose -f docker-compose.prd.yml push srvapp webapp
 基础运行时、直接及传递 Python 依赖、npm lock 均已固定；
 Dockerfile 校验 lock 与 requirements 一致。Python 保留项目的 3.11，不擅自升级到模板的 3.12。
 前端强制构建参数 `VITE_BASE_PATH=/remote/opinion-radar/`、
-`VITE_API_BASE=/remote/opinion-radar/api/v1`；路由、静态资源和 nginx 均使用同一前缀。
+`VITE_API_BASE=/remote/opinion-radar/api/v1`；`remoteEntry.js`、静态资源、独立访问路由和
+nginx 使用该前缀。host 内的页面路由为 `/opinion-radar/*`。
 本地日常开发未设置这些参数时仍使用根路径和原有 `5173` / `8008`。
 
 `.dockerignore` 在仓库根，因为两个镜像都使用根构建上下文；前端仍需读取只读设计资源。
@@ -120,6 +122,7 @@ docker compose -f docker-compose.prd.yml up -d
 curl -f http://127.0.0.1:18008/health
 curl -f http://127.0.0.1:18008/health/deep
 curl -f http://127.0.0.1:18080/healthz
+curl -f http://127.0.0.1:18080/remote/opinion-radar/remoteEntry.js
 curl -f http://127.0.0.1:18080/remote/opinion-radar/sector
 curl -f http://127.0.0.1:18080/remote/opinion-radar/api/v1/meta
 docker compose -f docker-compose.prd.yml down

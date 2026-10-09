@@ -289,7 +289,18 @@ def test_shared_ingress_radar_routes_keep_nginx_access_controls(prd_resources):
     nginx = (ROOT / "frontend/nginx/default.conf.template").read_text(encoding="utf-8")
     assert "location ^~ /remote/opinion-radar/api/v1/admin { return 404; }" in nginx
     assert "location = /remote/opinion-radar/admin { return 404; }" in nginx
+    assert "location = /remote/opinion-radar/remoteEntry.js {" in nginx
+    assert 'add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" always;' in nginx
     assert "proxy_pass http://${API_UPSTREAM}/api/;" in nginx
     assert "try_files $uri /remote/opinion-radar/index.html;" in nginx
     main = (ROOT / "frontend/src/main.jsx").read_text(encoding="utf-8")
-    assert "basename={import.meta.env.BASE_URL}" in main
+    remote = (ROOT / "frontend/src/RemoteApp.jsx").read_text(encoding="utf-8")
+    webpack = (ROOT / "frontend/webpack.config.cjs").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "frontend/Dockerfile").read_text(encoding="utf-8")
+    assert "basename={APP_BASE_PATH}" in main
+    assert '<RemoteApp basePath="" />' in main
+    assert "HOST_ROUTE = '/opinion-radar'" in remote
+    assert "name: 'opinionRadar'" in webpack
+    assert "filename: 'remoteEntry.js'" in webpack
+    assert "'./App': './src/RemoteApp.jsx'" in webpack
+    assert "test -f dist/remoteEntry.js" in dockerfile

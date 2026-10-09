@@ -2,6 +2,7 @@ import { s, hover } from '../lib/dc'
 import DcLink from './DcLink'
 import R from '../data/radar'
 import { ProgressButton } from './ProgressDrawer'
+import { useAdminEnabled } from '../lib/appRoutes'
 
 const COLLECTION_LABEL = {
   fresh: '采集正常',
@@ -46,6 +47,7 @@ function CollectionDisclosure({ data }) {
 /* Compact sticky header shared by all business screens. Domain and page tabs share
    the first row; each screen passes its own filter bar as the second row. */
 export default function Shell({ vals, children }) {
+  const adminEnabled = useAdminEnabled()
   const { navGroups = [], rangeText, updated } = vals
   const progress = vals.skeleton ? null : R.ANALYSIS_PROGRESS
   const isSql = !vals.skeleton && R.DATA_PROVIDER === 'sql'
@@ -105,7 +107,7 @@ export default function Shell({ vals, children }) {
             <span style={s('font:600 14px/1.4 var(--font-mono);color:var(--ink-800)')}>{updated}</span>
           </div>
           {isSql && <ProgressButton />}
-          {isSql && (
+          {isSql && adminEnabled && (
             <DcLink
               href="/admin"
               title="查看评论进入与 AI 分析链路"

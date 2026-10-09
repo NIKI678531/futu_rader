@@ -1,4 +1,6 @@
-const API_BASE = import.meta.env?.VITE_API_BASE || '/api/v1'
+import { API_BASE_PATH } from '../config/runtime.js'
+
+const API_BASE = API_BASE_PATH
 
 export class AdminApiError extends Error {
   constructor(message, { status = 0, code = 'admin_error' } = {}) {

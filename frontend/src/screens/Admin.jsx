@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import DcLink from '../components/DcLink'
 import { loadAdminPipeline, runAdminAnalysis } from '../lib/adminApi'
 import '../styles/admin.css'
 
@@ -142,7 +142,7 @@ export default function Admin() {
     <header className="admin-topbar">
       <div><p className="admin-eyebrow">FUTU RADAR / ADMIN</p><h1>数据链路管理</h1></div>
       <div className="admin-actions">
-        <Link to="/product">查看产品页</Link>
+        <DcLink href="/product">查看产品页</DcLink>
       </div>
     </header>
 

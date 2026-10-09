@@ -40,7 +40,9 @@
  * 和连不上是同一类事故。
  */
 
-const BASE = import.meta.env.VITE_API_BASE || '/api/v1'
+import { API_BASE_PATH } from '../config/runtime.js'
+
+const BASE = API_BASE_PATH
 
 /** 取数层抛出的错误。`kind` 见模块头那张表；`url` 用来在错误条上指出是哪个端点。 */
 export class ApiError extends Error {

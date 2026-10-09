@@ -71,11 +71,12 @@ function syncMirror(frontendDir) {
 async function run() {
   const mirrorRoot = process.env.RADAR_MIRROR || path.join(os.homedir(), '.futu-radar', 'mirror')
   const networkDrive = isNetworkDrive(FRONTEND)
+  const remote = process.argv.includes('--remote')
   const plan = createDevPlan({
     frontendDir: FRONTEND,
     mirrorRoot,
     networkDrive,
-    args: process.argv.slice(2),
+    args: process.argv.slice(2).filter(arg => arg !== '--remote'),
   })
 
   if (plan.sync) {
@@ -84,13 +85,20 @@ async function run() {
     syncMirror(FRONTEND)
   }
 
-  if (!existsSync(plan.viteEntry)) {
-    console.error(`找不到本地 Vite：${plan.viteEntry}`)
+  const runtimeEntry = remote
+    ? path.join(plan.viteCwd, 'node_modules', 'webpack-cli', 'bin', 'cli.js')
+    : plan.viteEntry
+  const runtimeArgs = remote
+    ? ['serve', '--config', 'webpack.config.cjs', '--mode', 'development', ...plan.args]
+    : plan.args
+
+  if (!existsSync(runtimeEntry)) {
+    console.error(`找不到本地前端工具：${runtimeEntry}`)
     console.error(`请先在 ${plan.viteCwd} 执行 npm install。`)
     process.exit(1)
   }
 
-  const child = spawn(process.execPath, [plan.viteEntry, ...plan.args], {
+  const child = spawn(process.execPath, [runtimeEntry, ...runtimeArgs], {
     cwd: plan.viteCwd,
     env: process.env,
     stdio: 'inherit',

@@ -11,6 +11,7 @@ import SectorOverview from './screens/sectorOverview/index.jsx'
 import Admin from './screens/Admin'
 import R from './data/radar'
 import DataUnavailable from './components/DataUnavailable'
+import { AppBasePathProvider, withAppBasePath } from './lib/appRoutes'
 
 function BusinessScreen({ children }) {
   if (R.buildRange(R.DEFAULT_RANGE) == null) {
@@ -28,27 +29,28 @@ function BusinessScreen({ children }) {
    a cache miss (Suspense) or an Error when the service is unreachable. Both need
    a boundary above the screen to land in. Keying the boundary too means a route
    change also clears a stuck error state. */
-export default function App() {
+export default function App({ basePath = '', includeAdmin = !basePath }) {
   const loc = useLocation()
   const [dataVersion, setDataVersion] = useState(0)
   useEffect(() => startLiveUpdates(() => startTransition(() => setDataVersion(version => version + 1))), [])
   const key = loc.pathname + loc.search
+  const route = path => withAppBasePath(basePath, path)
 
   const screen = (element) => <ScreenBoundary key={key}><BusinessScreen>{cloneElement(element, { dataVersion })}</BusinessScreen></ScreenBoundary>
 
   return (
-    <>
-    <Routes>
-      <Route path="/" element={<Navigate to="/official" replace />} />
-      <Route path="/official" element={screen(<OfficialActivity />)} />
-      <Route path="/kol" element={screen(<KolActivity />)} />
-      <Route path="/kol/detail" element={screen(<KolDetail />)} />
-      <Route path="/product" element={screen(<ProductMonitor />)} />
-      <Route path="/sector" element={screen(<SectorOverview />)} />
-      <Route path="/admin" element={<Admin />} />
-      <Route path="*" element={<Navigate to="/official" replace />} />
-    </Routes>
-    {loc.pathname !== '/admin' && <ProgressDrawer />}
-    </>
+    <AppBasePathProvider basePath={basePath} adminEnabled={includeAdmin}>
+      <Routes>
+        <Route index element={<Navigate to={route('/official')} replace />} />
+        <Route path="official" element={screen(<OfficialActivity />)} />
+        <Route path="kol" element={screen(<KolActivity />)} />
+        <Route path="kol/detail" element={screen(<KolDetail />)} />
+        <Route path="product" element={screen(<ProductMonitor />)} />
+        <Route path="sector" element={screen(<SectorOverview />)} />
+        {includeAdmin && <Route path="admin" element={<Admin />} />}
+        <Route path="*" element={<Navigate to={route('/official')} replace />} />
+      </Routes>
+      {loc.pathname !== route('/admin') && <ProgressDrawer />}
+    </AppBasePathProvider>
   )
 }

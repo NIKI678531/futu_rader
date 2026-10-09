@@ -120,7 +120,7 @@ export default class ProductMonitor extends React.Component {
     }
     this.setState(patch, () => {
       try {
-        var u = '/product?code=' + this.state.code + '&range=' + this.state.rangeKey;
+        var u = window.location.pathname + '?code=' + this.state.code + '&range=' + this.state.rangeKey;
         window.history.replaceState(null, '', u);
       } catch (e) { /* 沙箱内可能不允许改写地址 */ }
     });

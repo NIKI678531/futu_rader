@@ -10,7 +10,8 @@ ENV VITE_BASE_PATH=${VITE_BASE_PATH} \
     VITE_API_BASE=${VITE_API_BASE}
 RUN test "$VITE_BASE_PATH" = "/remote/opinion-radar/" \
     && test "$VITE_API_BASE" = "/remote/opinion-radar/api/v1" \
-    && npm run build
+    && npm run build \
+    && test -f dist/remoteEntry.js
 
 FROM nginxinc/nginx-unprivileged:1.30.0-alpine
 ENV NGINX_ENVSUBST_FILTER=^API_UPSTREAM$ \

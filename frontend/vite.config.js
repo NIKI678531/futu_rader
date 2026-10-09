@@ -15,14 +15,20 @@ import { onNetworkDrive, watch } from './vite.env.js'
    for the rest of what a network drive breaks. */
 const require = createRequire(import.meta.url)
 const react = require('@vitejs/plugin-react').default
+const appBasePath = process.env.VITE_BASE_PATH || '/'
+const apiBasePath = process.env.VITE_API_BASE || '/api/v1'
 
 // `design/` holds the byte-exact Claude Design mirror. The React port imports the
 // data layer and design-system CSS straight out of it so there is exactly one copy
 // of each and re-importing from Claude Design cannot silently fork them.
 /** @type {import('vite').UserConfig} */
 export default {
-  base: process.env.VITE_BASE_PATH || '/',
+  base: appBasePath,
   plugins: [react()],
+  define: {
+    __APP_BASE_PATH__: JSON.stringify(appBasePath),
+    __API_BASE_PATH__: JSON.stringify(apiBasePath),
+  },
   // See vite.env.js for what a network drive breaks and why these two settings fix it.
   resolve: { preserveSymlinks: onNetworkDrive },
   server: {
