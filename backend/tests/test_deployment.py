@@ -138,6 +138,11 @@ kubectl() {
     echo "KUBECTL_CALLED" >&2
     case "$1" in
         -n)
+            [ "$2" = ih ] || return 98
+            case "$6" in
+                ih-prd-remote-opinion-radar-srvapp-secret|ih-prd-remote-opinion-radar-worker-secret) ;;
+                *) return 97 ;;
+            esac
             for arg in "$@"; do
                 case "$arg" in --from-env-file=*) cat "${arg#*=}" ;; esac
             done
@@ -170,3 +175,121 @@ exec bash "$@"
         assert result.stdout.count(f"RADAR_DB_URL={values['RADAR_DB_URL']}") == 2
         for key, value in values.items():
             assert f"{key}={value}" in result.stdout
+
+
+@pytest.mark.parametrize("rendered_state", ["valid", "missing", "unrendered", "old-root"])
+def test_nginx_startup_requires_rendered_subpath_proxy(tmp_path, rendered_state):
+    git_bash = Path(os.getenv("ProgramFiles", "C:/Program Files")) / "Git/bin/bash.exe"
+    bash = str(git_bash) if git_bash.exists() else shutil.which("bash")
+    if not bash:
+        pytest.skip("Bash is required to test the nginx startup script")
+    upstream = "ih-prd-remote-opinion-radar-srvapp:8026"
+    template = (ROOT / "frontend/nginx/default.conf.template").read_text(encoding="utf-8")
+    rendered = template.replace("${API_UPSTREAM}", upstream)
+    if rendered_state == "unrendered":
+        rendered = template
+    if rendered_state == "old-root":
+        rendered = rendered.replace(f"http://{upstream}/api/;", f"http://{upstream};")
+    if rendered_state != "missing":
+        (tmp_path / "default.conf").write_text(rendered, encoding="utf-8")
+    harness = r'''
+nginx() { [ "$1" = -t ] || return 99; echo NGINX_CONFIG_TEST; }
+export -f nginx
+export API_UPSTREAM="$1"
+export NGINX_ENVSUBST_OUTPUT_DIR="$2"
+exec bash "$3"
+'''
+    result = subprocess.run(
+        [bash, "-c", harness, "nginx-test", upstream, tmp_path.as_posix(),
+         (ROOT / "frontend/docker-entrypoint.d/25-require-rendered-config.sh").as_posix()],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert (result.returncode == 0) == (rendered_state == "valid"), result.stderr
+    assert ("NGINX_CONFIG_TEST" in result.stdout) == (rendered_state == "valid")
+
+
+@pytest.fixture
+def prd_resources():
+    yaml = pytest.importorskip("yaml", reason="Install PyYAML to validate Kubernetes manifests")
+    return {
+        (document["kind"], document["metadata"]["name"]): document
+        for path in (ROOT / "k8s/prd").glob("*.yaml")
+        if path.name != "secret.yaml"
+        for document in yaml.safe_load_all(path.read_text(encoding="utf-8"))
+    }
+
+
+def test_prd_uses_existing_namespace_and_prefixed_resources(prd_resources):
+    assert not (ROOT / "k8s/prd/namespace.yaml").exists()
+    for (kind, name), resource in prd_resources.items():
+        assert kind != "Namespace"
+        assert resource["metadata"]["namespace"] == "ih"
+        if kind == "Ingress":
+            assert name == "hkg-csop-prd-lb16-ih"
+        else:
+            assert name.startswith("ih-prd-remote-opinion-radar-")
+
+
+def test_prd_selectors_and_environment_references_resolve(prd_resources):
+    prefix = "ih-prd-remote-opinion-radar-"
+    for component in ("srvapp", "worker", "webapp"):
+        deployment = prd_resources["Deployment", prefix + component]
+        pod = deployment["spec"]["template"]
+        assert deployment["spec"]["selector"]["matchLabels"].items() <= pod["metadata"]["labels"].items()
+        if component != "worker":
+            service = prd_resources["Service", prefix + component]
+            assert service["spec"]["selector"].items() <= pod["metadata"]["labels"].items()
+        for container in pod["spec"].get("initContainers", []) + pod["spec"]["containers"]:
+            for source in container.get("envFrom", []):
+                if "configMapRef" in source:
+                    assert ("ConfigMap", source["configMapRef"]["name"]) in prd_resources
+                else:
+                    assert source["secretRef"]["name"] == prefix + component + "-secret"
+
+
+def test_prd_shared_backend_image_keeps_explicit_worker_role(prd_resources):
+    yaml = pytest.importorskip("yaml")
+    services = yaml.safe_load((ROOT / "docker-compose.prd.yml").read_text(encoding="utf-8"))["services"]
+    registry = "449732370091.dkr.ecr.ap-east-1.amazonaws.com/ih-prd-remote-opinion-radar-"
+    for component in ("srvapp", "worker", "webapp"):
+        image = registry + ("webapp" if component == "webapp" else "srvapp") + ":latest"
+        assert services[component]["image"] == image
+        deployment = prd_resources["Deployment", "ih-prd-remote-opinion-radar-" + component]
+        pod = deployment["spec"]["template"]["spec"]
+        for container in pod.get("initContainers", []) + pod["containers"]:
+            assert container["image"] == image
+            assert container["imagePullPolicy"] == "Always"
+            if component == "worker":
+                assert container["workingDir"] == "/app/worker"
+                assert container["command"] == services["worker"]["entrypoint"]
+                assert container["command"][-3:] == ["/opt/worker/bin/python", "/app/deploy/runtime.py", "worker"]
+                assert container["args"][0] == "/opt/worker/bin/python"
+    assert "build" not in services["worker"]
+    assert services["worker"]["healthcheck"]["test"][-2:] == ["--healthcheck", "worker"]
+    dockerfile = (ROOT / "backend/Dockerfile").read_text(encoding="utf-8")
+    for component in ("srvapp", "worker"):
+        assert f"COPY --from=dependencies /opt/{component} /opt/{component}" in dockerfile
+        assert f"/opt/{component}/bin/pip install --no-cache-dir --require-hashes" in dockerfile
+    assert "COPY worker/ /app/worker/" in dockerfile
+
+
+def test_shared_ingress_radar_routes_keep_nginx_access_controls(prd_resources):
+    ingress = prd_resources["Ingress", "hkg-csop-prd-lb16-ih"]
+    service = prd_resources["Service", "ih-prd-remote-opinion-radar-webapp"]
+    assert "status" not in ingress
+    assert set(ingress["metadata"]) == {"name", "namespace", "annotations"}
+    assert "kubectl.kubernetes.io/last-applied-configuration" not in ingress["metadata"]["annotations"]
+    routes = {route["path"]: route for route in ingress["spec"]["rules"][0]["http"]["paths"]}
+    for path in ("/remote/opinion-radar", "/remote/opinion-radar/api"):
+        assert routes[path]["backend"]["service"] == {
+            "name": service["metadata"]["name"], "port": {"number": 3026},
+        }
+    assert routes["/"]["backend"]["service"]["name"] == "ih-prd-host-webapp"
+    assert service["metadata"]["annotations"]["alb.ingress.kubernetes.io/healthcheck-path"] == "/healthz"
+    nginx = (ROOT / "frontend/nginx/default.conf.template").read_text(encoding="utf-8")
+    assert "location ^~ /remote/opinion-radar/api/v1/admin { return 404; }" in nginx
+    assert "location = /remote/opinion-radar/admin { return 404; }" in nginx
+    assert "proxy_pass http://${API_UPSTREAM}/api/;" in nginx
+    assert "try_files $uri /remote/opinion-radar/index.html;" in nginx
+    main = (ROOT / "frontend/src/main.jsx").read_text(encoding="utf-8")
+    assert "basename={import.meta.env.BASE_URL}" in main

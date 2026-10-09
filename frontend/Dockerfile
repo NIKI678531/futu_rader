@@ -4,9 +4,12 @@ COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY frontend/ /src/frontend/
 COPY design/ /src/design/
-ARG VITE_API_BASE
-ENV VITE_API_BASE=${VITE_API_BASE}
-RUN test "$VITE_API_BASE" = "/api/v1" \
+ARG VITE_BASE_PATH=/remote/opinion-radar/
+ARG VITE_API_BASE=/remote/opinion-radar/api/v1
+ENV VITE_BASE_PATH=${VITE_BASE_PATH} \
+    VITE_API_BASE=${VITE_API_BASE}
+RUN test "$VITE_BASE_PATH" = "/remote/opinion-radar/" \
+    && test "$VITE_API_BASE" = "/remote/opinion-radar/api/v1" \
     && npm run build
 
 FROM nginxinc/nginx-unprivileged:1.30.0-alpine
@@ -19,7 +22,7 @@ RUN apk add --no-cache tzdata \
 COPY frontend/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY frontend/docker-entrypoint.d/25-require-rendered-config.sh /docker-entrypoint.d/
 RUN chmod 755 /docker-entrypoint.d/25-require-rendered-config.sh
-COPY --from=build /src/frontend/dist/ /usr/share/nginx/html/
+COPY --from=build /src/frontend/dist/ /usr/share/nginx/html/remote/opinion-radar/
 USER 101:101
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

@@ -1,10 +1,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: futuradar-worker
-  namespace: futu-radar
+  name: ih-prd-remote-opinion-radar-worker
+  namespace: ih
   labels:
-    app: prd-futuradar
+    app: ih-prd-remote-opinion-radar
     component: worker
     env: prd
 spec:
@@ -13,12 +13,12 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      app: prd-futuradar
+      app: ih-prd-remote-opinion-radar
       component: worker
   template:
     metadata:
       labels:
-        app: prd-futuradar
+        app: ih-prd-remote-opinion-radar
         component: worker
         env: prd
     spec:
@@ -35,14 +35,19 @@ spec:
           type: RuntimeDefault
       initContainers:
         - name: migrate
-          image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/prd-futuradar-worker:latest
+          image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/ih-prd-remote-opinion-radar-srvapp:latest
           imagePullPolicy: Always
-          args: [python, -m, alembic, -c, /app/radar_db/alembic.ini, upgrade, head]
+          workingDir: /app/worker
+          command: [/usr/bin/tini, --, /opt/worker/bin/python, /app/deploy/runtime.py, worker]
+          args: [/opt/worker/bin/python, -m, alembic, -c, /app/radar_db/alembic.ini, upgrade, head]
+          env:
+            - name: PATH
+              value: /opt/worker/bin:/opt/srvapp/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
           envFrom:
             - configMapRef:
-                name: futuradar-worker-config
+                name: ih-prd-remote-opinion-radar-worker-config
             - secretRef:
-                name: futuradar-worker-secret
+                name: ih-prd-remote-opinion-radar-worker-secret
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -62,13 +67,19 @@ spec:
               memory: 1Gi
       containers:
         - name: worker
-          image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/prd-futuradar-worker:latest
+          image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/ih-prd-remote-opinion-radar-srvapp:latest
           imagePullPolicy: Always
+          workingDir: /app/worker
+          command: [/usr/bin/tini, --, /opt/worker/bin/python, /app/deploy/runtime.py, worker]
+          args: [/opt/worker/bin/python, /app/worker/scheduler.py]
+          env:
+            - name: PATH
+              value: /opt/worker/bin:/opt/srvapp/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
           envFrom:
             - configMapRef:
-                name: futuradar-worker-config
+                name: ih-prd-remote-opinion-radar-worker-config
             - secretRef:
-                name: futuradar-worker-secret
+                name: ih-prd-remote-opinion-radar-worker-secret
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -83,18 +94,18 @@ spec:
               mountPath: /app/.scratch
           startupProbe:
             exec:
-              command: [python, /app/deploy/runtime.py, --healthcheck, worker]
+              command: [/opt/worker/bin/python, /app/deploy/runtime.py, --healthcheck, worker]
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 30
           readinessProbe:
             exec:
-              command: [python, /app/deploy/runtime.py, --healthcheck, worker]
+              command: [/opt/worker/bin/python, /app/deploy/runtime.py, --healthcheck, worker]
             periodSeconds: 30
             timeoutSeconds: 5
           livenessProbe:
             exec:
-              command: [python, /app/deploy/runtime.py, --healthcheck, worker]
+              command: [/opt/worker/bin/python, /app/deploy/runtime.py, --healthcheck, worker]
             periodSeconds: 30
             timeoutSeconds: 5
           resources:

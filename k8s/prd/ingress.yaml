@@ -1,30 +1,375 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: hkg-csop-prd-futuradar
-  namespace: futu-radar
-  labels:
-    app: prd-futuradar
-    component: webapp
-    env: prd
   annotations:
-    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-east-1:449732370091:certificate/bcf0cb84-fbda-4a4c-bfd8-f8682bb3223d
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS":443}]'
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=600
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/subnets: subnet-0b6437b8524901938,subnet-0d0ad9cc9831bd376,subnet-00dea870fd4e28f16
     alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-east-1:449732370091:certificate/REPLACE-ME
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
-    alb.ingress.kubernetes.io/ssl-redirect: "443"
-    alb.ingress.kubernetes.io/healthcheck-path: /healthz
-    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=900
+  name: hkg-csop-prd-lb16-ih
+  namespace: ih
 spec:
   ingressClassName: alb
   rules:
-    - host: REPLACE-ME.csopasset.com
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: futuradar-webapp
-                port:
-                  number: 80
+  - http:
+      paths:
+      - backend:
+          service:
+            name: ih-prd-remote-product-overview-srvapp
+            port:
+              number: 8002
+        path: /remote/prd_hgl_ov/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-ter-srvapp
+            port:
+              number: 8006
+        path: /remote/ter/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-chat-insight-srvapp
+            port:
+              number: 8007
+        path: /remote/chat-insight/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-compass-svrapp
+            port:
+              number: 8008
+        path: /remote/compass/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-product-data-srvapp
+            port:
+              number: 8010
+        path: /remote/product-data/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-weekly-perf-srvapp
+            port:
+              number: 8012
+        path: /remote/weekly-perf/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-ext-finance-srvapp
+            port:
+              number: 8013
+        path: /remote/external-aum-dashboard/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-terc-srvapp
+            port:
+              number: 8015
+        path: /remote/terc/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-vibeppt-srvapp
+            port:
+              number: 8016
+        path: /remote/vibe-ppt/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-vibeppt-srvapp
+            port:
+              number: 8016
+        path: /remote/vibe-ppt/files
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-vibeppt-srvapp
+            port:
+              number: 8016
+        path: /remote/vibe-ppt/health
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-product-backtest-srvapp
+            port:
+              number: 8017
+        path: /remote/product-backtest/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-etps-aum-srvapp-svc
+            port:
+              number: 8018
+        path: /remote/market-insight/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-research-reports-srvapp
+            port:
+              number: 8019
+        path: /remote/research-reports/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-td-attribution-srvapp
+            port:
+              number: 8021
+        path: /remote/td-attribution/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-mmf-weekly-perf-srvapp
+            port:
+              number: 8022
+        path: /remote/mmf-report/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-cash-flow-srvapp
+            port:
+              number: 8023
+        path: /remote/cash-flow/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-da-report-srvapp
+            port:
+              number: 8024
+        path: /remote/da-report/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-opinion-radar-webapp
+            port:
+              number: 3026
+        path: /remote/opinion-radar/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-research-db-webapp
+            port:
+              number: 3001
+        path: /remote/research-db
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-product-overview-webapp
+            port:
+              number: 3002
+        path: /remote/prd_hgl_ov
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-capital-market-webapp
+            port:
+              number: 3004
+        path: /remote/capital-market
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-market-news-webapp
+            port:
+              number: 3005
+        path: /remote/market-news
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-ter-webapp
+            port:
+              number: 3006
+        path: /remote/ter
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-chat-insight-webapp
+            port:
+              number: 3007
+        path: /remote/chat-insight
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-log-view-webapp
+            port:
+              number: 3008
+        path: /remote/log-view
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-compass-webapp
+            port:
+              number: 3009
+        path: /remote/compass
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-product-data-webapp
+            port:
+              number: 3010
+        path: /remote/product-data
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-alpha-research-report-webapp
+            port:
+              number: 3011
+        path: /remote/alpha-research-report
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-terc-webapp
+            port:
+              number: 3015
+        path: /remote/terc
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-weekly-perf-webapp
+            port:
+              number: 3012
+        path: /remote/weekly-perf
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-ext-finance-webapp
+            port:
+              number: 3013
+        path: /remote/external-aum-dashboard
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-vibeppt-webapp
+            port:
+              number: 3016
+        path: /remote/vibe-ppt
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-product-backtest-webapp
+            port:
+              number: 3017
+        path: /remote/backtest
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-etps-aum-webapp-svc
+            port:
+              number: 3018
+        path: /remote/market-insight
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-research-reports-webapp
+            port:
+              number: 3019
+        path: /remote/research-reports
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-td-attribution-webapp
+            port:
+              number: 3021
+        path: /remote/td-attribution
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-mmf-weekly-perf-webapp
+            port:
+              number: 3022
+        path: /remote/mmf-report
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-cash-flow-webapp
+            port:
+              number: 3023
+        path: /remote/cash-flow
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-da-report-webapp
+            port:
+              number: 3024
+        path: /remote/da-report
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-market-timing-webapp
+            port:
+              number: 3025
+        path: /remote/market-timing
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-opinion-radar-webapp
+            port:
+              number: 3026
+        path: /remote/opinion-radar
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-inav-chck-webapp
+            port:
+              number: 3027
+        path: /remote/inav-chck
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-media-monitor-webapp
+            port:
+              number: 3028
+        path: /remote/media-monitor
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-li-daily-announcement-webapp
+            port:
+              number: 3029
+        path: /remote/daily-announcement
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-fund-cmt-auto-webapp
+            port:
+              number: 3030
+        path: /remote/fund-cmt-auto
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-oms-workbench-svrapp
+            port:
+              number: 8000
+        path: /remote/oms-workbench/api
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-oms-workbench-svrapp
+            port:
+              number: 8000
+        path: /remote/oms-workbench/docs
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-oms-workbench-svrapp
+            port:
+              number: 8000
+        path: /remote/oms-workbench/openapi.json
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-remote-oms-workbench-webapp
+            port:
+              number: 80
+        path: /remote/oms-workbench/
+        pathType: Prefix
+      - backend:
+          service:
+            name: ih-prd-host-webapp
+            port:
+              number: 3000
+        path: /
+        pathType: Prefix

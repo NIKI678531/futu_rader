@@ -1,7 +1,7 @@
 name: futuradar-prd
 services:
   srvapp:
-    image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/prd-futuradar-srvapp:latest
+    image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/ih-prd-remote-opinion-radar-srvapp:latest
     platform: linux/amd64
     build:
       context: .
@@ -21,11 +21,19 @@ services:
     stop_grace_period: 60s
     restart: unless-stopped
   worker:
-    image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/prd-futuradar-worker:latest
+    image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/ih-prd-remote-opinion-radar-srvapp:latest
     platform: linux/amd64
-    build:
-      context: .
-      dockerfile: worker/Dockerfile
+    working_dir: /app/worker
+    entrypoint: [/usr/bin/tini, --, /opt/worker/bin/python, /app/deploy/runtime.py, worker]
+    command: [/opt/worker/bin/python, /app/worker/scheduler.py]
+    environment:
+      PATH: /opt/worker/bin:/opt/srvapp/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+    healthcheck:
+      test: [CMD, /opt/worker/bin/python, /app/deploy/runtime.py, --healthcheck, worker]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
     env_file:
       - path: .env.prd
         required: false
@@ -40,13 +48,14 @@ services:
     stop_grace_period: 900s
     restart: unless-stopped
   webapp:
-    image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/prd-futuradar-webapp:latest
+    image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/ih-prd-remote-opinion-radar-webapp:latest
     platform: linux/amd64
     build:
       context: .
       dockerfile: frontend/Dockerfile
       args:
-        VITE_API_BASE: /api/v1
+        VITE_BASE_PATH: /remote/opinion-radar/
+        VITE_API_BASE: /remote/opinion-radar/api/v1
     environment:
       API_UPSTREAM: srvapp:8008
     depends_on:

@@ -1,10 +1,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: futuradar-webapp
-  namespace: futu-radar
+  name: ih-prd-remote-opinion-radar-webapp
+  namespace: ih
   labels:
-    app: prd-futuradar
+    app: ih-prd-remote-opinion-radar
     component: webapp
     env: prd
 spec:
@@ -16,12 +16,12 @@ spec:
       maxUnavailable: 0
   selector:
     matchLabels:
-      app: prd-futuradar
+      app: ih-prd-remote-opinion-radar
       component: webapp
   template:
     metadata:
       labels:
-        app: prd-futuradar
+        app: ih-prd-remote-opinion-radar
         component: webapp
         env: prd
     spec:
@@ -38,14 +38,14 @@ spec:
           type: RuntimeDefault
       containers:
         - name: webapp
-          image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/prd-futuradar-webapp:latest
+          image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/ih-prd-remote-opinion-radar-webapp:latest
           imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8080
           env:
             - name: API_UPSTREAM
-              value: futuradar-srvapp:8008
+              value: ih-prd-remote-opinion-radar-srvapp:8026
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

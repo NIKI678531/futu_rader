@@ -1,10 +1,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: futuradar-srvapp
-  namespace: futu-radar
+  name: ih-prd-remote-opinion-radar-srvapp
+  namespace: ih
   labels:
-    app: prd-futuradar
+    app: ih-prd-remote-opinion-radar
     component: srvapp
     env: prd
 spec:
@@ -16,12 +16,12 @@ spec:
       maxUnavailable: 0
   selector:
     matchLabels:
-      app: prd-futuradar
+      app: ih-prd-remote-opinion-radar
       component: srvapp
   template:
     metadata:
       labels:
-        app: prd-futuradar
+        app: ih-prd-remote-opinion-radar
         component: srvapp
         env: prd
     spec:
@@ -38,16 +38,16 @@ spec:
           type: RuntimeDefault
       containers:
         - name: srvapp
-          image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/prd-futuradar-srvapp:latest
+          image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/ih-prd-remote-opinion-radar-srvapp:latest
           imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8008
           envFrom:
             - configMapRef:
-                name: futuradar-srvapp-config
+                name: ih-prd-remote-opinion-radar-srvapp-config
             - secretRef:
-                name: futuradar-srvapp-secret
+                name: ih-prd-remote-opinion-radar-srvapp-secret
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

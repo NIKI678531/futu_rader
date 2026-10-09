@@ -44,12 +44,12 @@ extract_keys "RADAR_DB_URL" > "$work/srvapp.env"
 extract_keys "RADAR_DB_URL MARKET_INSIGHT_DATABASE_URL AI_PRIMARY_API_KEY AI_SYNTH_API_KEY FMP_API_KEY" > "$work/worker.env"
 
 for component in srvapp worker; do
-    kubectl -n futu-radar create secret generic "futuradar-$component-secret" \
+    kubectl -n ih create secret generic "ih-prd-remote-opinion-radar-$component-secret" \
         --from-env-file="$work/$component.env" --dry-run=client -o yaml > "$work/$component.yaml"
     kubectl label --local -f "$work/$component.yaml" \
-        app=prd-futuradar "component=$component" env=prd -o yaml > "$work/$component-labeled.yaml"
+        app=ih-prd-remote-opinion-radar "component=$component" env=prd -o yaml > "$work/$component-labeled.yaml"
 done
 
-kubectl apply --server-side --field-manager=futuradar-secrets \
+kubectl apply --server-side --field-manager=ih-prd-remote-opinion-radar-secrets \
     -f "$work/srvapp-labeled.yaml" -f "$work/worker-labeled.yaml"
-echo "PRD Secrets updated. Restart futuradar-srvapp and futuradar-worker to load new values."
+echo "PRD Secrets updated. Restart ih-prd-remote-opinion-radar-srvapp and ih-prd-remote-opinion-radar-worker to load new values."

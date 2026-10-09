@@ -1,19 +1,21 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: futuradar-webapp
-  namespace: futu-radar
+  name: ih-prd-remote-opinion-radar-webapp
+  namespace: ih
+  annotations:
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
   labels:
-    app: prd-futuradar
+    app: ih-prd-remote-opinion-radar
     component: webapp
     env: prd
 spec:
   type: ClusterIP
   selector:
-    app: prd-futuradar
+    app: ih-prd-remote-opinion-radar
     component: webapp
   ports:
     - name: http
-      port: 80
+      port: 3026
       targetPort: http
       protocol: TCP

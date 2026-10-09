@@ -21,6 +21,7 @@ const react = require('@vitejs/plugin-react').default
 // of each and re-importing from Claude Design cannot silently fork them.
 /** @type {import('vite').UserConfig} */
 export default {
+  base: process.env.VITE_BASE_PATH || '/',
   plugins: [react()],
   // See vite.env.js for what a network drive breaks and why these two settings fix it.
   resolve: { preserveSymlinks: onNetworkDrive },
@@ -28,6 +29,11 @@ export default {
     port: 5173,
     proxy: {
       '/api': { target: 'http://127.0.0.1:8008', changeOrigin: true },
+      '/remote/opinion-radar/api': {
+        target: 'http://127.0.0.1:8008',
+        changeOrigin: true,
+        rewrite: path => path.replace(/^\/remote\/opinion-radar/, ''),
+      },
     },
     fs: { allow: ['..'] },
     watch,
