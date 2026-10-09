@@ -31,8 +31,9 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.getenv("RADAR_LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stdout,
 )
 # Every 2-second queue poll would otherwise print two INFO lines.
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
@@ -46,6 +47,9 @@ def runtime_readiness():
 
 
 def heartbeat(*, engine=None, now=None):
+    health_file = os.getenv("WORKER_HEALTH_FILE")
+    if health_file:
+        Path(health_file).touch()
     engine = engine or make_engine()
     readiness = runtime_readiness()
     record_worker_heartbeat(engine, now=now, readiness=readiness)
@@ -81,6 +85,11 @@ def intraday_refresh(*, engine=None):
 def upgrade_schema(engine):
     """Apply pending Alembic migrations; databases without a version table are left alone."""
     from sqlalchemy import inspect
+    from radar_db.source_facts import fact_source
+
+    if fact_source() == "market_insight":
+        log.info("Direct source state uses explicit preparation; automatic schema migration is disabled")
+        return False
 
     if "alembic_version" not in inspect(engine).get_table_names():
         log.warning("数据库没有 alembic_version，跳过自动迁移：先按 radar_db/migrations/README.md 执行 stamp")

@@ -177,7 +177,7 @@ export function conf2(v) { return v == null ? '数据暂不可用' : v.toFixed(2
  * AI 标注不再等人批准就上页面，所以徽章从「门槛」变成了「如实声明」：每一条结论都要
  * 说清楚它是模型生成的、能不能回到原文、模型自己有没有举手。
  *
- *   pending             AI 生成 · 可追溯原文（没有可定位证据时退为「AI 生成」）
+ *   pending             有可定位证据时不显示来源徽章；否则显示「AI 生成」
  *   needs_review        AI 生成 · 待确认      ← 模型自报存疑，或证据定位失败
  *   approved/corrected  同 pending
  *   rejected            不显示（唯一的下线通道）
@@ -197,7 +197,7 @@ export function conf2(v) { return v == null ? '数据暂不可用' : v.toFixed(2
 export function reviewBadge(state, hasEvidence) {
   if (state == null || state === 'rejected') return null;
   if (state === 'needs_review') return 'AI 生成 · 待确认';
-  return hasEvidence ? 'AI 生成 · 可追溯原文' : 'AI 生成';
+  return hasEvidence ? null : 'AI 生成';
 }
 
 /* 「这条结论模型自己举手了吗」的三值判断：是（true）／否（false）／不知道（null）。
@@ -210,7 +210,7 @@ export function needsReview(state) {
 /* ── 页面级的如实声明（ADR-0019 §4） ────────────────────────────────────
  *
  * 逐条徽章说的是「这一条是怎么来的」，这句说的是「整页的 AI 结论被验证到了什么程度」。
- * 两句缺一不可：徽章写满一屏「AI 生成 · 可追溯原文」，读的人仍然会默认有人抽检过。
+ * 即使页面保留 AI 状态提示，读的人仍可能默认有人抽检过，因此验证程度必须单独说明。
  *
  * 枚举由 `/meta` 的 `aiValidation` 下发（backend/core/meta.py），本期恒为 `none`。
  * 文案跟着枚举走而不是写死，是因为这句话必须和 `/meta`、和汇报口径**同一个来源** ——

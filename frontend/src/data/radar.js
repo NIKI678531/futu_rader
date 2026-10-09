@@ -68,9 +68,15 @@ const DEFAULT_RANGE = 'd7'
 const product = (code, tail, rangeKey) =>
   `/products/${encodeURIComponent(code)}/${tail}` + qs({ range: rangeKey || DEFAULT_RANGE })
 
+/* 这个 token 是 P6 响应契约的一部分，不是后端筛选条件。市场观点从市场方向改为购买／
+   持有意愿、摘要升级为详细证据稿后，旧页面模块里可能还留着同 URL 的 Map 缓存；换 URL
+   可确保 HMR 后第一次读取一定重新取数，而不影响其他端点的稳定缓存。 */
+const marketOutlookProduct = (code, rangeKey) =>
+  product(code, 'market-outlook', rangeKey) + '&contract=purchase-opinion-v2'
+
 export function invalidateMarketOutlook(code, rangeKey) {
   if (isLocalToday(rangeKey)) return
-  invalidate(product(code, 'market-outlook', rangeKey))
+  invalidate(marketOutlookProduct(code, rangeKey))
 }
 
 export function prefetchScreen(screen, { rangeKey = DEFAULT_RANGE, kol, code } = {}) {
@@ -207,11 +213,10 @@ const migrated = {
   },
 
   /* marketOutlook(code, range) → GET /products/{code}/market-outlook?range=
-     当前产品排在第一行，再带四只本区间讨论最活跃的产品。产品、行情情绪和摘要都由后端
-     组装；前端只负责把 `{product, sentiment, summary}` 三列画出来。 */
+     端点只返回当前产品的产品态度与市场摘要；前端仍按 code 校验，避免旧缓存串产品。 */
   marketOutlook(code, rangeKey) {
     if (isLocalToday(rangeKey)) return null
-    return read(product(code, 'market-outlook', rangeKey))
+    return read(marketOutlookProduct(code, rangeKey))
   },
 
   /* themesFor(code, range, polarity) → GET /products/{code}/themes?range=

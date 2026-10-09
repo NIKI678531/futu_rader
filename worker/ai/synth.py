@@ -10,7 +10,7 @@
 | `neg_category` | S10 负面舆情摘要／P9 消极卡 | 每个负面 aspect 桶 | 具体问题名＋详细摘要＋1–3 条理由 |
 | `stage_unit` | P12 阶段观点 | 每个足量时段的计数与证据 | 7 类之一＋≤40 字摘要 |
 | `stage_summary` | P12 阶段观点 | 合并后的阶段（多时段） | ≤40 字总结 |
-| `topic_label` | P13／市场风向表 | 市场方向三色计数与证据 | 标题 ≤16 字＋行情摘要 ≤100 字 |
+| `topic_label` | P13／市场风向表 | 市场方向、产品态度计数与两类证据 | 标题 ≤16 字＋行情摘要 ≤180 字 |
 | `competitor_reason` | P14 关联竞品 | 竞品在本产品评论区的共现证据 | 喜欢／质疑原因各 ≤3 条 |
 
 ## 三条硬约束（schema＋validator 双保险）
@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from .schemas import SchemaError, _strictify
 
-VERSION = "synth-v6"
+VERSION = "synth-v8"
 
 KINDS = ("hot_summary", "summary", "theme_label", "neg_category", "stage_unit",
          "stage_summary", "topic_label", "competitor_reason")
@@ -43,6 +43,23 @@ KINDS = ("hot_summary", "summary", "theme_label", "neg_category", "stage_unit",
 STAGE_CATEGORIES = ("add_opportunity", "pullback_done", "wait", "divergence", "event", "reduce", "product_issue")
 
 _RATIO = re.compile(r"[%％]|占比|比例|成用户|成的用户|成以上|过半|大多数人|所有人|一致认为")
+_TOPIC_GENERIC_WORDS = (
+    "市场关注度", "整体情绪", "短线观点", "方向确认", "风险偏好", "不确定性",
+    "市場關注度", "整體情緒", "短線觀點", "方向確認", "風險偏好", "不確定性",
+    "另一部分", "有所", "继续", "可能", "主要", "普遍", "整体", "部分", "评论",
+    "讨论", "投资者", "市场", "行情", "后市", "短线", "走势", "方向", "观点", "情绪",
+    "指数", "板块", "关注度", "预期", "认为", "关注", "呈现", "保持", "维持", "等待",
+    "确认", "仍然", "存在", "回升", "上涨", "下跌", "回落", "反弹", "震荡", "偏多",
+    "偏空", "看多", "看空", "乐观", "谨慎", "观望", "不确定", "分歧", "升温", "转弱",
+    "转强", "多空", "为主", "偏向", "较为", "的", "了", "与", "和", "但", "而", "对",
+    "中", "有", "仍", "较", "偏", "是",
+    "繼續", "可能", "主要", "普遍", "整體", "部分", "評論", "討論", "投資者", "市場",
+    "行情", "後市", "短線", "走勢", "方向", "觀點", "情緒", "指數", "板塊", "關注度",
+    "預期", "認為", "關注", "呈現", "保持", "維持", "等待", "確認", "仍然", "存在",
+    "回升", "上漲", "下跌", "回落", "反彈", "震盪", "偏多", "偏空", "看多", "看空",
+    "樂觀", "謹慎", "觀望", "不確定", "分歧", "升溫", "轉弱", "轉強", "多空", "為主",
+    "偏向", "較為", "與", "對", "仍", "較", "是",
+)
 
 
 def _no_ratio(text, where):
@@ -53,6 +70,14 @@ def _no_ratio(text, where):
 def _max_len(text, n, where):
     if text is not None and len(text) > n:
         raise ValueError(f"{where}: {len(text)} 字，超过 {n} 字上限")
+
+
+def _topic_sentence_is_generic(text):
+    """True when a sentence contains only market-direction boilerplate."""
+    remainder = re.sub(r"[\s，,；;：:。！？!?、（）()《》「」『』]", "", text)
+    for word in sorted(_TOPIC_GENERIC_WORDS, key=len, reverse=True):
+        remainder = remainder.replace(word, "")
+    return not remainder
 
 
 # ── 模型 ────────────────────────────────────────────────────────────────
@@ -191,9 +216,17 @@ class TopicLabel(BaseModel):
     @model_validator(mode="after")
     def _rules(self):
         _max_len(self.title, 16, "topic.title")
-        _max_len(self.summary, 100, "topic.summary")
+        _max_len(self.summary, 180, "topic.summary")
         _no_ratio(self.title, "topic.title")
         _no_ratio(self.summary, "topic.summary")
+        if not self.evidence_ids:
+            raise ValueError("topic_label: 至少引用一条证据")
+        sentences = [part.strip() for part in re.split(r"[。！？!?]+", self.summary) if part.strip()]
+        if not 2 <= len(sentences) <= 4:
+            raise ValueError(f"topic.summary: 应写 2–4 句，当前为 {len(sentences)} 句")
+        generic = [sentence for sentence in sentences if _topic_sentence_is_generic(sentence)]
+        if generic:
+            raise ValueError(f"topic.summary: 存在无具体证据锚点的泛化套话 {generic[0]!r}")
         return self
 
 
@@ -281,7 +314,7 @@ _COMMON = """你是富途牛牛 ETF 讨论区舆情工作台的**撰稿员**，�
 硬规则：
 1. **只写观点，不写数**。不得出现百分比、占比、比例、「六成」「过半」「大多数人」「所有人一致」这类表述。要表达多寡只能用「多条评论」「个别评论」这样的词。
 2. **每句话都要能回到原文**：`evidence` 里每条引文带 `id`，你写的每条结论都要在 `evidence_ids` 里列出支撑它的引文 id，且只能用给出的 id。
-3. **不判断真伪、不预测涨跌、不给投资建议、不表述与价格的因果关系**。写「讨论区认为……」而不是「……将会……」。
+3. **不判断真伪、不预测涨跌、不给投资建议、不自行推断因果**。只有证据明确表达原因或影响时，才可写「评论将……归因于……／认为……影响……」来转述；不得把同时发生或先后出现自行改写成因果。
 4. **随原文语言**：`language` 是这批引文的主流文字（zh-Hans 简体／zh-Hant 繁体／yue 粤语），用同一种写。
 5. 拿不准就 `needs_review=true`（有该字段的 kind）。
 6. 不要输出 JSON 之外的任何文字。"""
@@ -350,11 +383,20 @@ SYSTEMS = {
 
     "topic_label": _COMMON + """
 
-# 任务：生成产品的市场风向摘要
+# 任务：生成产品评论中的市场观点摘要
 
-`facts.topic` 是区间内谈市场方向、指数涨跌、宏观事件而**没有评价产品本身**的评论集合，带看多／看空／无方向计数与证据。输出：
+`facts.topic` 是区间内的市场方向计数；`facts.productAttitude` 是当前产品的积极／消极／中性态度计数，二者语义独立。摘要的主体必须是评论对该 ETF 所对应市场、指数、行业及成分股行情的看法，不是抽象的情绪标签。`evidence` 中：
+- `market_direction` 是该评论的方向标注；`direction_quote` 是支持方向标注的短引文；`text` 是同一条评论的脱敏上下文，用来保留公司、指数、行业、财报、供需和催化剂等细节。
+- `product_attitude` 只用于在两类结论相反时说明产品态度，不得把费率、点差、跟踪误差等产品体验写入市场观点摘要。
+
+输出：
 - `title`：**不超过 16 字**，点出讨论围绕的具体话题（如「恒科反弹持续性」「美联储议息预期」）。
-- `summary`：**不超过 100 字**的独立行情摘要，供「市场风向」表直接展示。先交代讨论呈现的看多／看空／观望取向，再写支撑该取向的具体事件、数据预期、行业因素或主要分歧；没有证据时不得补造驱动因素。
+- `summary`：写成 **2–4 句、不超过 180 字**；有至少三条具体证据时目标 **130–180 字**，证据不足宁可更短，禁止凑字或补造。尽量按「具体市场对象与行情 → 驱动或制约因素 → 对相关行业／成分股的影响链路 → 短线取向与分歧」组织。
+- 每句至少保留一个证据原文中的具体锚点：公司／指数／行业名、财报或业绩指标、供需／库存／产能、回购、估值、政策／宏观数据、资金或技术位、催化剂／风险之一。优先沿用原文中的专有名词；专名、数字和因果链都必须在所引 `evidence_ids` 对应的 `text` 中出现，不能凭产品名称或常识补全。
+- 禁止用「市场关注度升温」「整体情绪偏乐观／谨慎」「后市仍有不确定性」「多空存在分歧」等套话单独成句；必须紧接证据里的具体对象与原因。不要逐条复述评论，要合并同一事件，并保留不同评论的关键分歧。
+- 结构示例（**仅示范详细程度，示例名词不是默认事实**）：若且仅若证据原文确有「美光财报超预期、存储缺货、回购、景气修复、海力士补涨」等信息，可写成「评论围绕美光财报超预期、存储缺货与回购预期展开，并把这些催化与存储景气修复、海力士补涨联系起来……」；其他 ETF 必须换成各自证据中的对象和逻辑。
+- 只有 `facts.productAttitude.sampleSufficient=true` 时，才可归纳整体产品态度；若此时市场方向与产品态度相反，必须明确写成「市场方向讨论……，但产品态度……」两层结论，不得把市场方向冒充产品舆情。只能写「多条评论押注……」等证据强度，不得擅自升级成全市场共识。
+- `facts.productAttitude.sampleSufficient=false` 时，产品态度样本不足：不得写「整体积极／消极」「想买／不想买」或比较两类结论，只总结带 `market_direction` 的行情证据。
 - 可以转述「评论预期上涨／回落」「讨论认为……」，但不能把群体观点写成系统自己的预测，也不能给出买卖建议。
 - 这里只总结市场、指数、行业或成分股方向，不评价 ETF 的费率、点差、跟踪误差等产品体验。
 - `evidence_ids`。""",

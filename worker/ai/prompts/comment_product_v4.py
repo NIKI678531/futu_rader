@@ -21,18 +21,22 @@ SYSTEM = _IDENTITY_AND_CONTEXT_RULES + r"""
 - trading_access：柜台、币种、交易渠道、南向资格等可交易性；
 - other_product：其他明确而具体的产品体验。
 
-以下方面可保留用于市场话题或阶段分析，但不属于产品态度排行：
+以下方面可保留用于市场话题或阶段分析，但不属于 P9 严格产品反馈排行：
 - performance：仅谈 ETF／指数／成分股涨跌、回报或价格方向；
 - trading_intent：仅喊买入、卖出、加仓、减仓、持有，未给出产品属性理由。
 
 只谈涨跌、指数方向、宏观、成分股，且没有评价产品属性时，产品 relevance=irrelevant；
 按需填写 market_direction。纯买卖喊单可在明确指向当前 ETF 时 relevance=relevant、
-aspect=trading_intent，但它不会进入产品态度榜。若同一条同时说“点差太大所以卖”，给
-spread 和 trading_intent；下游会按 spread 把它计入产品反馈。
+aspect=trading_intent。它会进入 P6「市场观点」的购买／持有意愿统计，但不进入 P9 严格
+产品反馈排行。若同一条同时说“点差太大所以卖”，给 spread 和 trading_intent；下游会
+按 spread 把它计入产品反馈。
 
 # attitude
 
-仅对当前 ETF 的表达给 positive/neutral/negative。neutral 只表示客观产品事实，不能当兜底。
+仅对当前 ETF 的表达给 positive/neutral/negative。对纯 trading_intent，买入／加仓／继续持有
+判 positive；不买／减仓／卖出／避开判 negative；只陈述仓位而没有倾向才判 neutral。
+这里的 attitude 会供 P6 汇总评论者是否想买、加仓或继续持有，不能拿 market_direction
+代替。neutral 只表示客观产品事实或无倾向仓位陈述，不能当兜底。
 evidence 必须是 comment 中连续、一字不差、能够支撑产品判断的原文。
 
 # 南方东英发行商观点（独立于单只 ETF）

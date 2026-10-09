@@ -40,6 +40,54 @@ def test_sync_is_idempotent_and_failure_preserves_prices(tmp_path):
         assert {row.status for row in conn.execute(select(price_syncs))} == {"unavailable"}
 
 
+def test_force_intraday_refetches_current_bars_but_reuses_daily_history(tmp_path):
+    engine = make_engine("sqlite:///" + (tmp_path / "intraday-refresh.db").as_posix())
+    create_all(engine)
+
+    class Client:
+        provider = "fmp"
+        adjustment = "split_adjusted"
+        intraday_interval = "30min"
+
+        def __init__(self):
+            self.intervals = []
+
+        def instrument(self, _code):
+            return {
+                "symbol": "3033.HK", "exchange": "HKSE", "currency": "HKD",
+                "name": "ETF", "timezone": "Asia/Hong_Kong",
+            }
+
+        def bars(self, symbol, interval, start, end):
+            self.intervals.append(interval)
+            timestamp = end.isoformat() if interval == "1d" else f"{end.isoformat()}T09:30:00"
+            return normalize_bars(
+                [{"date": timestamp, "open": 10, "high": 12, "low": 9, "close": 11}],
+                interval, start, end, symbol,
+            )
+
+    client = Client()
+    day = date(2026, 8, 26)
+    sync(engine, client, ["3033"], day, day, intraday_start=day)
+    client.intervals.clear()
+
+    rows = sync(
+        engine,
+        client,
+        ["3033"],
+        day,
+        day,
+        intraday_start=day,
+        force_intraday=True,
+    )
+
+    assert client.intervals == ["30min"]
+    assert {(row["interval"], row["status"]) for row in rows} == {
+        ("1d", "reused"),
+        ("30min", "ok"),
+    }
+
+
 def test_sync_falls_back_to_yfinance_only_when_fmp_cannot_verify_instrument(tmp_path):
     engine = make_engine("sqlite:///" + (tmp_path / "fallback.db").as_posix())
     create_all(engine)

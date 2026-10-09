@@ -26,7 +26,7 @@ class KolActivity extends React.Component {
   constructor(props) {
     super(props);
     this.state = {
-      rangeKey: 'd7', sort: 'eng', leaderSort: 'views', sel: null,
+      rangeKey: 'd7', sort: 'time', leaderSort: 'views', sel: null,
       etf: 'ALL', kol: 'ALL', post: 'ALL', types: [], dirs: [],
       etfMenu: false, kolMenu: false, postMenu: false, typeMenu: false,
       /* 表内筛选：发帖记录（q / camp / onlyPending / tTypeMenu）与声量排名（lq / lCamp / lType） */
@@ -74,7 +74,7 @@ class KolActivity extends React.Component {
     var self = this;
     var esc = function (v) { v = v == null ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.split('"').join('""') + '"' : v; };
     var ownershipLabel = function (p) { return p.ownership === 'own' ? '自家' : (p.ownership === 'peer' ? '其他公司' : '数据暂不可用'); };
-    var head = ['重点KOL', 'KOL标签', '发帖时间', 'ETF代码', 'ETF名称', '发行商', '内容形式', '操作方向', '类型置信度', '是否待确认', 'AI摘要', 'ETF归属', '提及产品(全部代码)', '赞', '评论数', '转发', '原帖链接'];
+    var head = ['重点KOL', 'KOL标签', '发帖时间', 'ETF代码', 'ETF名称', '发行商', '内容形式', '操作方向', '类型置信度', '是否待确认', 'AI摘要', 'ETF归属', '提及产品(全部代码)', '赞', '评论数', '转发', '浏览量', '原帖链接'];
     /* 导出的缺失格写「数据暂不可用」，不写空。CSV 里的空单元格在 Excel 里与
        「这里确实没有」长得一模一样，而这份文件会被拿去做判断、甚至再统计一遍。
        页面上分得开的两件事，落到文件里也得分得开。 */
@@ -87,7 +87,7 @@ class KolActivity extends React.Component {
         conf2(p.confidence), pd == null ? na : (pd ? '是' : '否'),
         ann ? na : (p.hasSummary ? p.summary : '（图片帖，无摘要）'), ownershipLabel(p),
         p.mentioned.map(function (m) { return m.code + '.HK'; }).join(' '),
-        cell(p.likes), cell(p.comments), cell(p.shares), p.url].map(esc).join(',');
+        cell(p.likes), cell(p.comments), cell(p.shares), cell(p.views), p.url].map(esc).join(',');
     }));
     var blob = new Blob(['﻿' + lines.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' });
     var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename;
@@ -385,7 +385,7 @@ class KolActivity extends React.Component {
         summary: p.hasSummary ? p.summary : '',
         noSummary: p.hasSummary === false, summaryNa: self.annNa(p),
         ownership: ownershipOf(p),
-        likes: num(p.likes), comments: num(p.comments), shares: num(p.shares),
+        likes: num(p.likes), comments: num(p.comments), shares: num(p.shares), views: num(p.views),
         url: p.url, stop: function (e) { e.stopPropagation(); },
         bg: p.id === s.sel ? 'var(--csop-blue-50)' : (i % 2 ? 'var(--canvas)' : '#fff'),
         /* 只打开抽屉，不改动上方筛选 */
@@ -744,6 +744,7 @@ class KolActivity extends React.Component {
                     <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 10px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>AI 摘要</th>
                     <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:96px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>ETF 归属</th>
                     <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 6px;width:132px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>赞 / 评 / 转</th>
+                    <th data-testid="kol-post-view-header" data-screen-diff-new="kol-view-column" style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 6px;width:88px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>浏览量</th>
                     <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 16px 10px 6px;width:84px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>原帖</th>
                   </tr>
                 </thead>
@@ -789,6 +790,7 @@ class KolActivity extends React.Component {
                         <span style={s(`display:inline-block;padding:2px 8px;border-radius:9999px;background:${r.ownership.bg};font:600 12px/1.5 var(--font-cjk);color:${r.ownership.fg};white-space:nowrap`)}>{r.ownership.label}</span>
                       </td>
                       <td style={s('padding:11px 6px;vertical-align:top;text-align:right;font:500 13px/1.6 var(--font-mono);color:var(--ink-700);border-bottom:1px solid var(--ink-100);white-space:nowrap')}>{r.likes} / {r.comments} / {r.shares}</td>
+                      <td data-testid="kol-post-view-cell" data-screen-diff-new="kol-view-column" style={s('padding:11px 6px;vertical-align:top;text-align:right;font:500 13px/1.6 var(--font-mono);color:var(--ink-700);border-bottom:1px solid var(--ink-100);white-space:nowrap')}>{r.views}</td>
                       <td style={s('padding:11px 16px 11px 6px;vertical-align:top;text-align:right;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
                         <a href={r.url} target="_blank" rel="noopener" onClick={r.stop} style={s('display:inline-flex;align-items:center;padding:4px 11px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>原帖 ↗</a>
                       </td>

@@ -9,6 +9,15 @@ import KolDetail from './screens/KolDetail'
 import ProductMonitor from './screens/productMonitor/index.jsx'
 import SectorOverview from './screens/sectorOverview/index.jsx'
 import Admin from './screens/Admin'
+import R from './data/radar'
+import DataUnavailable from './components/DataUnavailable'
+
+function BusinessScreen({ children }) {
+  if (R.buildRange(R.DEFAULT_RANGE) == null) {
+    return <DataUnavailable screenLabel="数据范围" reason="当前数据源的完整日期暂不可用。" />
+  }
+  return children
+}
 
 /* The ported screens read `location.search` directly, exactly as the .dc.html
    sources do. Keying each route on the full URL remounts on navigation so those
@@ -25,7 +34,7 @@ export default function App() {
   useEffect(() => startLiveUpdates(() => startTransition(() => setDataVersion(version => version + 1))), [])
   const key = loc.pathname + loc.search
 
-  const screen = (element) => <ScreenBoundary key={key}>{cloneElement(element, { dataVersion })}</ScreenBoundary>
+  const screen = (element) => <ScreenBoundary key={key}><BusinessScreen>{cloneElement(element, { dataVersion })}</BusinessScreen></ScreenBoundary>
 
   return (
     <>

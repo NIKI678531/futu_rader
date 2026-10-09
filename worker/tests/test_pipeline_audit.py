@@ -96,7 +96,11 @@ class UniversalFake:
             elif kind == "stage_summary":
                 data = {"results": [{"key": s["key"], "summary": "連續看多", "evidence_ids": s["evidence_ids"][:1]} for s in f["stages"]]}
             elif kind == "topic_label":
-                data = {"title": "大市方向", "summary": "看空為主", "evidence_ids": ids[:1]}
+                data = {
+                    "title": "大市方向",
+                    "summary": "評論把恒指回落與風險偏好轉弱相聯繫。部分評論等待恒指成交量確認後再調整倉位。",
+                    "evidence_ids": ids[:1],
+                }
             else:
                 data = {"results": [{"code": c["code"], "like_reasons": [], "dislike_reasons": [], "evidence_ids": [],
                                      "needs_review": True} for c in f["competitors"]]}

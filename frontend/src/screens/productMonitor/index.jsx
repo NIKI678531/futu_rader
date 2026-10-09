@@ -20,6 +20,8 @@ import R, { invalidateMarketOutlook, prefetchScreen } from '../../data/radar'
 import { rgba, num, numRaw, navGroups, stamp, naBox, heatLowerBoundNote, kolDisplayLabel } from '../../lib/view'
 import { commentFunnelView } from '../../lib/commentFunnel'
 import { DEFAULT_PRODUCT_CODE, productCodeOrDefault, productSelectionFromSearch } from '../../lib/productSelection'
+import { productMarketOutlookRows, productMarketOutlookView } from '../../lib/productMarketOutlook'
+import { productKolDisplay } from '../../lib/productKol'
 import { issuerOpinionView } from '../../lib/attitudeDisplay'
 import { priceSourceDisclosure, priceSourceLabel } from '../../lib/priceDisplay'
 import { s } from '../../lib/dc'
@@ -178,13 +180,13 @@ export default class ProductMonitor extends React.Component {
   kolPanel(k, code, rangeKey) {
     var range = R.buildRange(rangeKey);
     return {
-      kind: 'kol', id: 'kol-' + k.kolName, polarity: 'neutral', title: k.kolName + ' 在评论区对 ' + code + ' 的提及',
+      kind: 'kol', id: 'kol-' + k.kolName, polarity: 'neutral', title: k.kolName + ' 对 ' + code + ' 的相关原帖与评论观点',
       filter: '产品 ' + code + ' · ' + range.text + ' · KOL ' + k.kolName, count: k.evidenceCount, items: k.evidence,
       extra: [
         { k: '产品', v: code + ' ' + R.MASTER[code].name },
         { k: '时间范围', v: range.text + '（HKT）' },
         { k: 'KOL', v: k.kolName + '（' + kolDisplayLabel(k.kolTypeLabel) + ' · ' + String(k.kolTags || '').split(',').join(' · ') + '）' },
-        { k: '统计口径', v: '只计该 KOL 在相关帖子评论区中实际提及该产品的评论，同一条评论只计一次；每条可跳转 Futu 原文' }
+        { k: '统计口径', v: '计入该 KOL 实际提及该产品的相关原帖，以及相关帖子评论区中已确认的评论观点；同一条证据只计一次，每条可跳转 Futu 原文' }
       ]
     };
   }
@@ -571,10 +573,11 @@ export default class ProductMonitor extends React.Component {
       neutral: ['var(--ink-100)', 'var(--ink-600)']
     };
     var kolRows = kolShow.map(function (k) {
+      var display = productKolDisplay(k);
       return {
         name: k.kolName, type: kolDisplayLabel(k.kolTypeLabel), tags: String(k.kolTags || '').split(',').join(' · '),
-        count: String(k.mentionCommentCount), last: k.lastMentionedAt,
-        excerpt: k.representativeExcerpt || '暂无相关内容', evidence: String(k.evidenceCount),
+        count: String(k.mentionCommentCount), last: display.latestPost,
+        summary: display.postSummary, evidence: String(k.evidenceCount),
         detailHref: 'kol-detail.dc.html?kol=' + encodeURIComponent(k.kolName) + '&range=' + encodeURIComponent(s.rangeKey),
         stop: function (e) { e.stopPropagation(); },
         go: () => self.openPanel(self.kolPanel(k, code, s.rangeKey))
@@ -624,32 +627,11 @@ export default class ProductMonitor extends React.Component {
       return o.code.toLowerCase().indexOf(pqQ) >= 0 || o.name.toLowerCase().indexOf(pqQ) >= 0;
     }).sort(function (a, b) { return b.mentions - a.mentions; }) : [];
 
-    /* 市场风向是独立返回，不再把 P7 产品评价硬拼成行情摘要。7709 先灰度为只看当前
-       产品：后端按 subject_code 收窄，前端再过滤一次，以兼容尚未重启的旧后端缓存。 */
+    /* 市场风向按当前产品一一对应；前端再过滤一次，避免旧缓存里的其他产品串入。 */
     var marketOutlook = R.marketOutlook(code, s.rangeKey);
     var marketOutlookNa = marketOutlook == null;
-    var marketOutlookProductScoped = marketOutlook?.scope === 'product' || code === '7709';
-    var marketOutlookSourceRows = marketOutlookNa ? [] : marketOutlook.list.filter(function (row) {
-      return !marketOutlookProductScoped || row.code === code;
-    });
-    var marketOutlookRows = marketOutlookSourceRows.map(function (row) {
-      var palette = {
-        bullish: ['var(--positive-100)', 'var(--positive-700)'],
-        neutral_bullish: ['var(--positive-100)', 'var(--positive-700)'],
-        neutral: ['var(--ink-100)', 'var(--ink-700)'],
-        neutral_bearish: ['var(--negative-100)', 'var(--negative-700)'],
-        bearish: ['var(--negative-100)', 'var(--negative-700)']
-      }[row.sentiment] || ['var(--ink-100)', 'var(--ink-500)'];
-      return {
-        code: row.code,
-        name: row.name,
-        sentiment: row.sentimentLabel || (row.status === 'empty' ? '暂无结论' : '暂不可用'),
-        sentimentBg: palette[0], sentimentFg: palette[1],
-        summary: row.summary || (row.status === 'empty'
-          ? '暂无相关内容 — 区间内没有识别到该产品的市场方向讨论。'
-          : '数据暂不可用 — 市场行情摘要尚未生成。')
-      };
-    });
+    var marketOutlookSourceRows = productMarketOutlookRows(marketOutlook, code);
+    var marketOutlookRows = marketOutlookSourceRows.map(productMarketOutlookView);
     var trendLegend = [
       { key: 'comments', label: '筛后评论数', color: '#2361AD' },
       { key: 'active', label: '活跃账号数', color: '#C9A961' },
@@ -737,13 +719,8 @@ export default class ProductMonitor extends React.Component {
       marketOutlookRows: marketOutlookRows,
       marketOutlookNa: marketOutlookNa,
       marketOutlookEmpty: !marketOutlookNa && marketOutlookRows.length === 0,
-      marketOutlookProductScoped: marketOutlookProductScoped,
-      marketOutlookTitle: marketOutlookProductScoped
-        ? '市场风向 · ' + code + ' 相关市场情绪与讨论'
-        : '产品市场风向与热议',
-      marketOutlookEmptyText: marketOutlookProductScoped
-        ? '暂无相关内容 — 当前区间没有识别到该产品相关的市场方向讨论。'
-        : '暂无相关内容 — 当前区间没有可展示的核心产品行情讨论。',
+      marketOutlookTitle: '产品市场观点与总结',
+      marketOutlookEmptyText: '暂无相关内容 — 当前区间没有识别到该产品相关的市场方向讨论。',
       marketOutlookRange: range.from + ' ～ ' + range.to,
       refreshMarketOutlook: () => { invalidateMarketOutlook(code, s.rangeKey); self.forceUpdate(); },
 

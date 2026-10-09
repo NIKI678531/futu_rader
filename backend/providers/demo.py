@@ -49,6 +49,32 @@ _OFFICIAL_CASHTAG_CODE = re.compile(
 _SHORT_PREFIX = re.compile(r"^南方[東东]英")
 _SHORT_SUFFIX = re.compile(r"(指數|指数)?ETF$")
 
+# ``topics.json`` predates the product-market-outlook contract and mixes true
+# market/index/industry discussion with product mechanics and peer-selection
+# cards.  The fixture has no source-kind discriminator, so keep an explicit,
+# closed allow-list here: an unknown future legacy title is safer omitted than
+# presented as a market-direction conclusion.
+_DEMO_MARKET_DIRECTION_TOPIC_TITLES = frozenset({
+    "指数与市场方向判断",
+    "恒生科技指数反弹持续性",
+    "港股通资金流向",
+    "美元利率下行路径",
+    "长久期国债的久期风险",
+    "A股成交量能否放大",
+    "恒指关键点位争夺",
+    "政策预期与板块轮动",
+    "英伟达财报前的仓位安排",
+    "纳指财报窗口的波动",
+    "海力士 HBM 产能进展",
+    "日经与越南的区域轮动",
+    "日元汇率对回报的影响",
+    "金价关键位争夺",
+    "黄金避险与美元流向",
+    "美联储议息预期",
+    "美股估值分歧",
+    "虚拟资产监管进展",
+})
+
 
 def _official_camp(products):
     camps = {
@@ -76,6 +102,82 @@ def _short_name(name, n=10):
     if not value:
         value = str(name or "")
     return value if len(value) <= n else value[:n] + "…"
+
+
+def _demo_market_direction_topics(topics):
+    """Copy only frozen topics that are valid P6 market-direction context."""
+    if topics is None:
+        return None
+    return [
+        dict(row) for row in topics
+        if isinstance(row, dict)
+        and row.get("title") in _DEMO_MARKET_DIRECTION_TOPIC_TITLES
+    ]
+
+
+def _demo_market_summary(topics, limit=180):
+    """Project the frozen topic cards into one detailed, source-bounded summary.
+
+    The demo fixture predates the single-row market-outlook card and stores up
+    to three separately grounded topic labels.  Combining their existing title
+    and summary text gives the card the same 2–4 sentence density as current AI
+    output without inventing a company, event, or causal link.
+    """
+    rows = [row for row in (topics or []) if isinstance(row, dict) and row.get("title")]
+    rows.sort(
+        key=lambda row: (int(row.get("mentions") or 0), str(row.get("id") or "")),
+        reverse=True,
+    )
+    if not rows:
+        return None, []
+
+    def clean(value):
+        return re.sub(r"\s+", " ", str(value or "")).strip().rstrip("。！？!?；;")
+
+    if len(rows) == 1:
+        title = clean(rows[0]["title"])
+        detail = clean(rows[0].get("summary"))
+        if not detail:
+            return None, []
+        sentences = [
+            (f"评论聚焦「{title}」", rows[0]),
+            (f"具体观点为：{detail}", rows[0]),
+        ]
+    else:
+        leads = ("评论首先聚焦", "同时关注", "另一条讨论线索是", "此外还涉及")
+        sentences = []
+        for index, row in enumerate(rows[:4]):
+            title = clean(row["title"])
+            detail = clean(row.get("summary"))
+            sentence = f"{leads[index]}「{title}」"
+            if detail:
+                sentence += f"：{detail}"
+            sentences.append((sentence, row))
+
+    selected = []
+    for sentence, row in sentences:
+        candidate = "".join(f"{part}。" for part, _row in [*selected, (sentence, row)])
+        if len(candidate) <= limit:
+            selected.append((sentence, row))
+    # Keep the 2–4 sentence contract without truncating a source sentence.  If
+    # detailed prose cannot fit, two source titles are still concrete and fully
+    # attributable; one title alone is not enough to manufacture a second fact.
+    if len(selected) < 2 and len(rows) >= 2:
+        selected = [
+            (f"评论聚焦「{clean(rows[0]['title'])}」", rows[0]),
+            (f"同时涉及「{clean(rows[1]['title'])}」", rows[1]),
+        ]
+        if len("".join(f"{sentence}。" for sentence, _row in selected)) > limit:
+            return None, []
+    elif len(selected) < 2:
+        return None, []
+
+    evidence_ids = list(dict.fromkeys(
+        evidence_id
+        for _sentence, row in selected
+        for evidence_id in (row.get("evidenceIds") or [])
+    ))
+    return "".join(f"{sentence}。" for sentence, _row in selected), evidence_ids
 
 
 class DemoProvider:
@@ -254,7 +356,7 @@ class DemoProvider:
         return self._product_range_lookup("summaries", code, range_key)
 
     def market_outlook(self, code, range_key):
-        """按灰度口径返回当前产品，或当前产品加四只高讨论产品。
+        """只返回当前产品对应的产品态度与市场风向摘要。
 
         直接投影已有 ``topics`` fixture，不新增一份会与话题数据漂移的
         market-outlook fixture。
@@ -264,39 +366,42 @@ class DemoProvider:
         if code not in by_code:
             return MISSING
 
-        scope = core_topics.market_outlook_scope(code)
-        if scope == "product":
-            value = self.topics_for(code, range_key)
-            topics = None if value is MISSING else value
-            count = core_topics.market_discussion_count(topics)
-            if count is None:
-                return None
-            if count <= 0:
-                return {"scope": scope, "list": []}
-            return {
-                "scope": scope,
-                "list": [core_topics.market_outlook_row(by_code[code], topics)],
-            }
-
-        topics_by_code = {}
-        for candidate in by_code:
-            value = self.topics_for(candidate, range_key)
-            topics_by_code[candidate] = None if value is MISSING else value
-        counts = {
-            candidate: core_topics.market_discussion_count(value)
-            for candidate, value in topics_by_code.items()
+        pool = self.pool(range_key)
+        attitudes = {} if pool is None or pool is MISSING else {
+            str(product["code"]): product.get("attitude")
+            for product in pool.get("list", [])
         }
-        selected = core_topics.select_market_outlook_codes(products, code, counts)
-        if selected is None:
-            return None
-        if not selected:
-            return {"scope": scope, "list": []}
+        value = self.topics_for(code, range_key)
+        topics = None if value is MISSING else _demo_market_direction_topics(value)
+        attitude_counts = attitudes.get(code)
+        market_count = core_topics.market_discussion_count(topics)
+        opinion_count = None if attitude_counts is None else sum(
+            int(value or 0) for value in attitude_counts.values()
+        )
+        if not any((count or 0) > 0 for count in (market_count, opinion_count)):
+            if any(count is None for count in (market_count, opinion_count)):
+                return None
+            return {"scope": "product", "list": []}
+        projected_topics = topics
+        detailed_summary, summary_evidence_ids = _demo_market_summary(projected_topics)
+        if projected_topics:
+            primary = max(
+                projected_topics,
+                key=lambda topic: (int(topic.get("mentions") or 0), str(topic.get("id") or "")),
+            )
+            if detailed_summary:
+                primary["summary"] = detailed_summary
+                primary["evidenceIds"] = summary_evidence_ids
+            else:
+                # Never fall back to the legacy one-sentence topic prose when
+                # the new 2–4 sentence market-summary contract cannot be met.
+                primary["summary"] = None
+                primary["labelStatus"] = "unavailable"
         return {
-            "scope": scope,
-            "list": [
-                core_topics.market_outlook_row(by_code[candidate], topics_by_code[candidate])
-                for candidate in selected
-            ]
+            "scope": "product",
+            "list": [core_topics.market_outlook_row(
+                by_code[code], projected_topics, attitude_counts,
+            )],
         }
 
     def themes_for(self, code, range_key):
@@ -331,7 +436,122 @@ class DemoProvider:
         return self._product_range_lookup("topics", code, range_key)
 
     def kol_mentions_for(self, code, range_key):
-        return self._product_range_lookup("kol_mentions", code, range_key)
+        data = self._product_range_lookup("kol_mentions", code, range_key)
+        if data is None or data is MISSING:
+            return data
+
+        # ``kol_mentions`` is the frozen comment-opinion fixture, while
+        # ``kol_impact`` is the frozen KOL-post fixture used by /kol.  Merge the
+        # two here so the product page and KOL page really share the same posts
+        # without rewriting either historical fixture.
+        by_kol = {
+            source["kolName"]: {
+                **source,
+                "evidence": list(source.get("evidence") or []),
+            }
+            for source in data.get("list", [])
+        }
+        impact = self.kol_impact(range_key)
+        impact_posts = [] if impact is None or impact is MISSING else impact.get("posts", [])
+        for post in impact_posts:
+            if not any(str(item.get("code")) == str(code) for item in post.get("mentioned", [])):
+                continue
+            name = post.get("kol")
+            if not name:
+                continue
+            row = by_kol.setdefault(name, {
+                "productCode": code,
+                "kolAccountId": f"kol-{name}",
+                "kolName": name,
+                "kolTags": post.get("tags"),
+                "kolType": "partner",
+                "kolTypeLabel": "合作 KOL",
+                "mentionCommentCount": 0,
+                "lastMentionedAt": None,
+                "dominantAttitude": None,
+                "dominantLabel": None,
+                "representativeExcerpt": None,
+                "evidenceCount": 0,
+                "evidence": [],
+            })
+
+            time_text = str(post.get("time") or "").strip()
+            day = str(post.get("day") or "").strip()
+            published_at = (
+                f"{day} {time_text.rsplit(' ', 1)[-1]}" if day and time_text
+                else time_text or day or None
+            )
+            original = "\n".join(
+                str(part) for part in (post.get("fullText") or []) if part is not None
+            ) or str(post.get("typeEvidence") or "")
+            source_url = post.get("url")
+            post_identity = post.get("id") or f"{name}|{published_at}|{source_url or ''}"
+            evidence_id = f"{code}-kp-{post_identity}"
+            if any(
+                item.get("sourceKind") == "帖子" and item.get("id") == evidence_id
+                for item in row["evidence"]
+            ):
+                continue
+            row["evidence"].append({
+                "id": evidence_id,
+                "productCodes": [str(item["code"]) for item in post.get("mentioned", [])],
+                "publishedAt": published_at,
+                "authorName": name,
+                "authorType": "合作 KOL",
+                "isKnownKol": True,
+                "kolType": "partner",
+                "excerpt": original,
+                "attitude": None,
+                "attitudeLabel": None,
+                "comments": post.get("comments"),
+                "interactions": post.get("engagement"),
+                "sourceKind": "帖子",
+                "sourceUrl": source_url,
+                "_summary": post.get("summary") if isinstance(post.get("summary"), str)
+                and post["summary"].strip() else None,
+            })
+
+        rows = []
+        for source in by_kol.values():
+            evidence = source["evidence"]
+            evidence.sort(
+                key=lambda item: (item.get("publishedAt") or "", str(item.get("id") or "")),
+                reverse=True,
+            )
+            posts = [item for item in evidence if item.get("sourceKind") == "帖子"]
+            latest_post = posts[0] if posts else None
+            representative = latest_post or (evidence[0] if evidence else None)
+            rows.append({
+                **source,
+                "mentionCommentCount": len(evidence),
+                "lastMentionedAt": (evidence[0] if evidence else {}).get("publishedAt"),
+                "latestPostAt": (latest_post or {}).get("publishedAt"),
+                "representativeSummary": (
+                    (latest_post or {}).get("_summary")
+                    if latest_post else source.get("representativeSummary")
+                ),
+                "representativeExcerpt": (
+                    (representative or {}).get("excerpt")
+                    or source.get("representativeExcerpt")
+                ),
+                "evidenceCount": len(evidence),
+                "evidence": [
+                    {key: value for key, value in item.items() if key != "_summary"}
+                    for item in evidence
+                ],
+            })
+
+        # Stable sorts keep KOL name ascending when two timestamps tie.
+        rows.sort(key=lambda row: row.get("kolName") or "")
+        with_posts = [row for row in rows if row.get("latestPostAt") is not None]
+        comments_only = [row for row in rows if row.get("latestPostAt") is None]
+        with_posts.sort(key=lambda row: row["latestPostAt"], reverse=True)
+        comments_only.sort(key=lambda row: row.get("lastMentionedAt") or "", reverse=True)
+        return {
+            **data,
+            "status": "ok" if rows else data.get("status", "empty"),
+            "list": [*with_posts, *comments_only],
+        }
 
     def evidence_for(self, code, ctx_key, polarity, n):
         """证据侧栏。参数键 `<code>|<ctxKey>|<polarity>`，其中 ctxKey 自带区间前缀。

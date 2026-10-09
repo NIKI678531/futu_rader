@@ -35,7 +35,7 @@ def _contract(client):
 
 def _fetch_plan(engine, client, instrument, contract, code, start, end,
                 intraday_start, previous_instrument, force, identity_error=None,
-                allow_reuse=True):
+                allow_reuse=True, force_intervals=()):
     identity_unchanged = bool(
         instrument is not None
         and previous_instrument is not None
@@ -72,8 +72,9 @@ def _fetch_plan(engine, client, instrument, contract, code, start, end,
                     price_bars.c.session_date >= cursor.isoformat(),
                     price_bars.c.session_date <= last.isoformat(),
                 ).limit(1)).first()
+            interval_forced = force or interval in force_intervals
             if (allow_reuse and prior == "ok" and identity_unchanged
-                    and matching_bar is not None and not force):
+                    and matching_bar is not None and not interval_forced):
                 plan.append({
                     **key,
                     "provider": contract["provider"],
@@ -182,7 +183,7 @@ def _persist_plan(engine, instrument, contract, code, plan, clear_sync_cache=Fal
 
 
 def sync(engine, client, codes, start, end, intraday_start=None, force=False,
-         fallback_client=None):
+         fallback_client=None, force_intraday=False):
     result = []
     for code in codes:
         with engine.connect() as conn:
@@ -215,6 +216,7 @@ def sync(engine, client, codes, start, end, intraday_start=None, force=False,
             previous_instrument,
             force,
             identity_error,
+            force_intervals=(contract["intraday_interval"],) if force_intraday else (),
         )
 
         primary_contract = _contract(client)

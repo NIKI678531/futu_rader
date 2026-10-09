@@ -1,9 +1,127 @@
 import json
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import create_engine
 
 from jobs import refresh
+from radar_db import make_engine
+from radar_db.source_db import make_source_engine, require_separate_databases
+
+
+def test_source_connection_is_read_only_and_does_not_create_files(tmp_path, monkeypatch):
+    monkeypatch.delenv("RADAR_DB_URL", raising=False)
+    path = tmp_path / "source.sqlite"
+    url = "sqlite:///" + path.as_posix()
+    setup = create_engine(url)
+    with setup.begin() as conn:
+        conn.exec_driver_sql("CREATE TABLE facts (id INTEGER PRIMARY KEY)")
+        conn.exec_driver_sql("INSERT INTO facts VALUES (1)")
+    setup.dispose()
+
+    source = make_source_engine(url)
+    with source.connect() as conn:
+        assert conn.exec_driver_sql("SELECT id FROM facts").scalar_one() == 1
+        for statement in ("INSERT INTO facts VALUES (2)", "CREATE TABLE unsafe (id INTEGER)"):
+            with pytest.raises(ValueError, match="only allow read queries"):
+                conn.exec_driver_sql(statement)
+    raw = source.raw_connection()
+    try:
+        cursor = raw.cursor()
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                cursor.execute("INSERT INTO facts VALUES (2)")
+        finally:
+            cursor.close()
+    finally:
+        raw.close()
+    source.dispose()
+
+    missing = tmp_path / "missing.sqlite"
+    with pytest.raises(ValueError, match="does not exist"):
+        make_source_engine("sqlite:///" + missing.as_posix())
+    assert not missing.exists()
+
+
+def test_application_engine_rejects_source_database_before_connecting(monkeypatch):
+    monkeypatch.setenv("MARKET_INSIGHT_DATABASE_URL", "mysql+pymysql://reader:secret@db/source")
+    with pytest.raises(ValueError, match="separate databases"):
+        make_engine("mysql+pymysql://writer:other@DB:3306/source")
+    require_separate_databases("mysql+pymysql://writer:other@db/application")
+
+
+def test_source_connection_also_rejects_application_database(monkeypatch):
+    monkeypatch.setenv("RADAR_DB_URL", "mysql+pymysql://writer:secret@db/source")
+    with pytest.raises(ValueError, match="separate databases"):
+        make_source_engine("mysql+pymysql://reader:other@DB:3306/source")
+
+
+def test_source_connection_requires_configuration_and_masks_invalid_url(monkeypatch):
+    monkeypatch.delenv("MARKET_INSIGHT_DATABASE_URL", raising=False)
+    with pytest.raises(ValueError, match="Missing MARKET_INSIGHT_DATABASE_URL"):
+        make_source_engine()
+    with pytest.raises(ValueError) as raised:
+        make_source_engine("secret-invalid-url")
+    assert "secret-invalid-url" not in str(raised.value)
+
+
+def test_source_check_never_initializes_application_or_ai(monkeypatch, capsys):
+    disposed = []
+    source = SimpleNamespace(dispose=lambda: disposed.append(True))
+    monkeypatch.setattr(refresh, "_source_engine", lambda: source)
+    monkeypatch.setattr(refresh, "make_engine", lambda: pytest.fail("application DB must not be opened"))
+    monkeypatch.setattr(refresh, "_refresh", lambda **kwargs: pytest.fail("AI must not initialize"))
+
+    def inspect_only_source(engine, codes, sample_size):
+        assert engine is source
+        assert codes == ("3033", "2802")
+        assert sample_size == 3
+        return {"status": "sample_checked", "productionReady": False}
+
+    monkeypatch.setattr(refresh, "inspect_source", inspect_only_source)
+    assert refresh.main(["check-source", "--codes", "3033,2802", "--sample-size", "3"]) == 0
+    assert disposed == [True]
+    assert json.loads(capsys.readouterr().out)["productionReady"] is False
+
+
+def test_source_check_masks_driver_errors_and_closes_connection(monkeypatch, capsys):
+    disposed = []
+    source = SimpleNamespace(dispose=lambda: disposed.append(True))
+    monkeypatch.setattr(refresh, "_source_engine", lambda: source)
+
+    def fail_inspection(*args, **kwargs):
+        raise RuntimeError("driver failed with password=private-secret and private-body")
+
+    monkeypatch.setattr(refresh, "inspect_source", fail_inspection)
+    with pytest.raises(SystemExit) as raised:
+        refresh.main(["check-source", "--codes", "3033"])
+    assert raised.value.code == 2
+    assert disposed == [True]
+    error = capsys.readouterr().err
+    assert "Source inspection failed" in error
+    assert "private-secret" not in error
+    assert "private-body" not in error
+
+
+def test_source_check_reports_missing_tables_without_creating_them(tmp_path, monkeypatch):
+    monkeypatch.delenv("RADAR_DB_URL", raising=False)
+    path = tmp_path / "source.sqlite"
+    path.touch()
+    source = make_source_engine("sqlite:///" + path.as_posix())
+    try:
+        report = refresh.inspect_source(source, ("3033",), sample_size=1)
+        assert report["status"] == "blocked"
+        assert report["productionReady"] is False
+        assert {issue["table"] for issue in report["issues"]} == {
+            "futu_comments_stocks", "futu_comments_feeds", "futu_comments_users",
+        }
+        with source.connect() as conn:
+            assert conn.exec_driver_sql("SELECT count(*) FROM sqlite_master").scalar_one() == 0
+        with pytest.raises(ValueError, match="sample_size"):
+            refresh.inspect_source(source, ("3033",), sample_size=101)
+    finally:
+        source.dispose()
 
 
 def test_refresh_wires_only_market_insight_database_source(monkeypatch):

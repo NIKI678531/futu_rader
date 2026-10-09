@@ -1,4 +1,4 @@
-"""ADR-0021 顺序与并行：逐区间就绪判定、Layer B 按 (code, range) 并行、full_own 的学生线程。"""
+"""逐区间就绪判定与 Layer B 按 (code, range) 并行。"""
 
 import json
 import os
@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(REPO, "backend"))
 
 from ai import config  # noqa: E402
 from ai.providers.base import Completion, TransientError, Usage  # noqa: E402
-from jobs import full_own, pipeline, synthesize  # noqa: E402
+from jobs import pipeline, synthesize  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
 from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config  # noqa: E402
 from radar_db.events import recent  # noqa: E402
@@ -118,7 +118,11 @@ class SynthFake:
             data = {"results": [{"key": s["key"], "summary": "連續看多", "evidence_ids": s["evidence_ids"][:1]}
                                 for s in f["stages"]]}
         elif kind == "topic_label":
-            data = {"title": "大市方向", "summary": "看空為主", "evidence_ids": ids[:1]}
+            data = {
+                "title": "大市方向",
+                "summary": "評論把恒指回落與風險偏好轉弱相聯繫。部分評論等待恒指成交量確認後再調整倉位。",
+                "evidence_ids": ids[:1],
+            }
         else:
             data = {"results": [{"code": c["code"], "like_reasons": [], "dislike_reasons": [], "evidence_ids": [],
                                  "needs_review": True} for c in f["competitors"]]}
@@ -238,34 +242,3 @@ def test_failed_pair_keeps_dirty_flag_and_clean_pair_clears_it(tmp_path, cfg):
     assert flags[f"synth_dirty_{B}_d7"] == "1"
     evs = {e["code"]: e for e in recent(eng) if e["stage"] == "L3"}
     assert evs[B]["level"] == "warn" and evs[A]["level"] == "info"
-
-
-# ── full_own 学生线程 ──────────────────────────────────────────────────
-
-
-def test_student_channel_rotates_scopes_and_stops(monkeypatch, tmp_path, cfg):
-    eng = _engine(tmp_path)
-    seen = []
-    budget = {"n": 2}
-
-    def fake_classify(engine, c, *, scope_id, model_dir=None, **kw):
-        seen.append(scope_id)
-        n = budget["n"]
-        budget["n"] = max(0, n - 1)
-        return {"input": n, "routed": 0}
-
-    monkeypatch.setattr(full_own.classify, "run", fake_classify)
-    state = {"scopes": {A: "sA", B: "sB"}}
-    ch = full_own.StudentChannel(eng, cfg, state, idle_seconds=0.05)
-    ch.start()
-    import time
-    deadline = time.time() + 5
-    while ch.rounds < 3 and time.time() < deadline:
-        time.sleep(0.02)
-    state["scopes"] = {A: "sA2"}  # tick 重排了 scope，线程下一轮跟上
-    while "sA2" not in seen and time.time() < deadline:
-        time.sleep(0.02)
-    ch.stop()
-    ch.join(timeout=5)
-    assert not ch.is_alive()
-    assert seen[:2] == ["sA", "sB"] and "sA2" in seen

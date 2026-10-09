@@ -58,13 +58,12 @@ export default function Overview({ v }) {
         {!v.marketOutlookNa && !v.marketOutlookEmpty && (
           <table style={s('width:100%;border-collapse:collapse;table-layout:fixed')}>
             <colgroup>
-              {!v.marketOutlookProductScoped && <col style={{ width: '25%' }} />}
-              <col style={{ width: v.marketOutlookProductScoped ? '20%' : '15%' }} />
-              <col style={{ width: v.marketOutlookProductScoped ? '80%' : '60%' }} />
+              <col style={{ width: '20%' }} />
+              <col style={{ width: '80%' }} />
             </colgroup>
             <thead>
               <tr style={s('background:var(--canvas-alt)')}>
-                {(v.marketOutlookProductScoped ? ['情绪', '总结'] : ['产品', '情绪', '总结']).map((label) => (
+                {['市场观点', '市场观点总结'].map((label) => (
                   <th key={label} scope="col" style={s('padding:12px 16px;border-bottom:1px solid var(--border-1);text-align:left;font:600 13px/1.4 var(--font-cjk);color:var(--ink-900)')}>{label}</th>
                 ))}
               </tr>
@@ -72,13 +71,8 @@ export default function Overview({ v }) {
             <tbody>
               {v.marketOutlookRows.map((row) => (
                 <tr key={row.code} style={s('border-bottom:1px solid var(--ink-100)')}>
-                  {!v.marketOutlookProductScoped && (
-                    <td style={s('padding:15px 16px;vertical-align:top;font:500 14px/1.55 var(--font-cjk);color:var(--ink-900);overflow-wrap:anywhere')}>
-                      {row.name}<span style={s('display:block;margin-top:2px;font:500 12px/1.4 var(--font-mono);color:var(--ink-500)')}>（{row.code}）</span>
-                    </td>
-                  )}
                   <td style={s('padding:15px 16px;vertical-align:top')}>
-                    <span style={s(`display:inline-flex;padding:2px 8px;border:1px solid ${row.sentimentFg};border-radius:4px;background:${row.sentimentBg};font:500 12px/1.5 var(--font-cjk);color:${row.sentimentFg};white-space:nowrap`)}>{row.sentiment}</span>
+                    <span style={s(`display:inline-flex;padding:2px 8px;border:1px solid ${row.attitudeFg};border-radius:4px;background:${row.attitudeBg};font:500 12px/1.5 var(--font-cjk);color:${row.attitudeFg};white-space:nowrap`)}>{row.attitude}</span>
                   </td>
                   <td style={s('padding:15px 16px;vertical-align:top;font:400 14px/1.75 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>{row.summary}</td>
                 </tr>

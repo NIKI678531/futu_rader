@@ -1,0 +1,63 @@
+name: futuradar-prd
+services:
+  srvapp:
+    image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/prd-futuradar-srvapp:latest
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - path: .env.prd
+        required: false
+        format: raw
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:mode=1777,size=1g
+      - /home/app:mode=1777,size=256m
+    ports:
+      - 127.0.0.1:18008:8008
+    stop_grace_period: 60s
+    restart: unless-stopped
+  worker:
+    image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/prd-futuradar-worker:latest
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    env_file:
+      - path: .env.prd
+        required: false
+        format: raw
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:mode=1777,size=1g
+      - /home/app:mode=1777,size=512m
+      - /app/.scratch:mode=1777,size=512m
+    stop_grace_period: 900s
+    restart: unless-stopped
+  webapp:
+    image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/prd-futuradar-webapp:latest
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE: /api/v1
+    environment:
+      API_UPSTREAM: srvapp:8008
+    depends_on:
+      srvapp:
+        condition: service_healthy
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:mode=1777,size=128m
+      - /etc/nginx/conf.d:mode=1777,size=1m
+    ports:
+      - 127.0.0.1:18080:8080
+    restart: unless-stopped

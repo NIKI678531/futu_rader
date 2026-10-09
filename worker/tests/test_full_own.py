@@ -1,10 +1,11 @@
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 from sqlalchemy import insert, select, update
 
 from ai import config
+from jobs import annotate
 from jobs.full_own import prepare, prioritize_scope, product_code_sets, queue_status
 
 
@@ -141,7 +142,53 @@ def test_selected_ranges_only_queue_their_current_and_baseline_windows(tmp_path)
     assert queue_status(engine, scopes["3033"]) == {"pending": 2}
     with engine.connect() as conn:
         targets = set(conn.execute(select(annotation_jobs.c.target_id)).scalars())
+        assert set(conn.execute(select(annotation_jobs.c.stage)).scalars()) == {"llm"}
     assert targets == {2, 3}
+
+
+@pytest.mark.parametrize("filter_ready", [True, False])
+def test_legacy_queue_resumes_only_eligible_unleased_jobs(tmp_path, filter_ready):
+    engine = make_engine("sqlite:///" + (tmp_path / "legacy-queue.db").as_posix())
+    create_all(engine)
+    if filter_ready:
+        _mark_filter_ready(engine)
+    now = datetime.utcnow()
+    with engine.begin() as conn:
+        conn.execute(insert(feeds).values(
+            feed_id=1, code="3033", source_ticker="03033.HK", posted_at=now,
+            feed_type=1, like_count=0, comment_count=1, image_count=0, raw_json_broken=False,
+        ))
+        conn.execute(insert(feed_mentions).values(
+            feed_id=1, raw_ticker="03033.HK", market="HK", occurrences=1,
+        ))
+        conn.execute(insert(comments).values(comment_id=1, feed_id=1, content="ETF fee"))
+        for job_id, status, scope_id, code, lease in (
+            (1, "pending", "selected", "3033", None),
+            (2, "claimed", "selected", "3033", now - timedelta(minutes=1)),
+            (3, "claimed", "selected", "3033", now + timedelta(hours=1)),
+            (4, "done", "selected", "3033", None),
+            (5, "pending", "other", "3033", None),
+            (6, "pending", "selected", "2800", None),
+        ):
+            conn.execute(insert(annotation_jobs).values(
+                job_id=job_id, task="comment_product", target_type="comment", target_id=1,
+                subject_code=code, input_hash=str(job_id), status=status, stage="student",
+                scope_id=scope_id, priority=0, attempts=0, created_at=now, updated_at=now,
+                lease_until=lease,
+            ))
+    if filter_ready:
+        assert annotate.route_legacy_jobs_to_llm(engine, "selected") == 2
+        assert annotate.route_legacy_jobs_to_llm(engine, "selected") == 0
+    else:
+        with pytest.raises(RuntimeError, match="not ready"):
+            annotate.route_legacy_jobs_to_llm(engine, "selected")
+    with engine.connect() as conn:
+        jobs = {row.job_id: row for row in conn.execute(select(annotation_jobs))}
+    expected = {1, 2} if filter_ready else set()
+    assert {job_id for job_id, row in jobs.items() if row.stage == "llm"} == expected
+    assert all(jobs[job_id].status == "pending" and jobs[job_id].lease_until is None for job_id in expected)
+    assert jobs[3].status == "claimed"
+    assert jobs[4].status == "done"
 
 
 def test_today_prepare_includes_partial_day_and_yesterday_baseline(tmp_path):

@@ -188,10 +188,10 @@ Layer B 的原则是“模型只写字，不写数”：计数和桶先由程序
 | `neg_category` | 每个负面产品问题桶的名称和摘要 | negative + 可行动 aspect | `/negative-categories` | prompt `worker/ai/synth.py:292-300`；payload `worker/jobs/synthesize.py:292-329`；provider `backend/providers/sql.py:851-866` |
 | `stage_unit` | 每个足量时段 7 类之一 + digest | 每时段正负中计数、tone、证据 | `/stages` | schema `worker/ai/synth.py:122-140`；payload `worker/jobs/synthesize.py:384-422`；provider `backend/providers/sql.py:887-908` |
 | `stage_summary` | 合并阶段的一句总结 | 相邻同类时段及其 digest／证据 | `/stages` | schema `worker/ai/synth.py:142-158`；生成 `worker/jobs/synthesize.py:532-568` |
-| `topic_label` | 市场方向话题标题和摘要 | bullish/bearish/neutral 计数和证据 | `/topics` | schema `worker/ai/synth.py:160-173`；payload `worker/jobs/synthesize.py:371-381`；provider `backend/providers/sql.py:868-885` |
+| `topic_label` | 2–4 句、≤180 字的具体市场观点总结 | bullish/bearish/neutral 市场方向计数＋完整相关评论的产品态度计数；优先抽取公司、指数、财报、供需、回购、估值与风险分歧等原文证据 | `/topics`、`/market-outlook` | schema／prompt `worker/ai/synth.py`；payload `worker/jobs/synthesize.py::build_topic_payload`；provider `backend/providers/sql.py::topics_for` |
 | `competitor_reason` | 每只竞品喜欢／质疑原因各最多 3 条 | 固定映射 + 产品别名共现候选 + 证据 | `/competitors` | schema `worker/ai/synth.py:175-208`；payload `worker/jobs/synthesize.py:425-456`；provider `backend/providers/sql.py:910-950` |
 
-共用原料 `Material` 读取当前区间的 `relevance/attitude/aspect/market_direction/compliance` 以及基准期计数（`worker/jobs/synthesize.py:163-225`）。证据优先使用程序已定位的 `annotation_evidence`，否则用脱敏评论正文，并截至 140 字（`worker/jobs/synthesize.py:227-263`）；抽样按天轮询并随机化，保留长短和少数意见，不按点赞排序（`worker/jobs/synthesize.py:271-286`）。
+共用原料 `Material` 读取当前区间的 `relevance/attitude/aspect/market_direction/compliance` 以及基准期计数。一般证据优先使用程序已定位的 `annotation_evidence`，否则用脱敏评论正文并截至 140 字；`topic_label` 例外地保留最多 320 字的脱敏评论上下文，并按具体信息密度和方向分层去重抽样，使实体、事件和行业驱动不被短方向引文截断。严格产品体验主题继续使用 `units`，P6 市场观点与 topic payload 的产品态度事实统一使用含纯交易意向的 `opinion_units`。
 
 生成入口按产品 × 区间循环：先生成主题／负面标签，再生成 summary，随后 topic、stage、competitor（`worker/jobs/synthesize.py:462-568,730-755`）。输入指纹覆盖 annotation IDs、facts、prompt/model/provider/taxonomy/schema；相同输入复用，底层标注变化会生成新行并 supersede 旧行（`worker/jobs/synthesize.py:150-157,592-699`）。
 

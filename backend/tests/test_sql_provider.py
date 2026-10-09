@@ -594,6 +594,9 @@ class TestAiAndPriceSurfacesAreNone:
         row = result["list"][0]
         assert row["kolName"] == impact_post["kol"] == KOL_NAME
         assert row["mentionCommentCount"] == row["evidenceCount"] == 1
+        assert row["lastMentionedAt"] == row["latestPostAt"] == "2026-08-25 09:00"
+        assert row["representativeSummary"] is None
+        assert row["representativeExcerpt"] == FEED_TEXT
         assert row["evidence"] == [{
             "id": f"{OWN_CODE}-kp-{KOL_NAME}-2",
             "productCodes": [OWN_CODE],
@@ -1392,25 +1395,44 @@ def test_d0_uses_partial_data_cutoff_and_keeps_future_hours_unknown(provider):
 
     # 03:15 HKT 已有一条真实帖子。当天总量只计到该时刻，04:00 之后仍是未知。
     with provider._engine.begin() as conn:
-        conn.execute(insert(feeds), {
-            "feed_id": 99,
-            "code": OWN_CODE,
-            "source_ticker": f"0{OWN_CODE}.HK",
-            "posted_at": datetime(2026, 8, 25, 19),
-            "feed_type": 1,
-            "author_uid": "today-user",
-            "like_count": 2,
-            "comment_count": 3,
-            "image_count": 0,
-            "share_count": 1,
-            "raw_json_broken": False,
-        })
-        conn.execute(insert(mentions), {
-            "feed_id": 99, "code": OWN_CODE, "source": "anchor", "in_pool": True,
-        })
-        conn.execute(insert(feed_mentions), {
-            "feed_id": 99, "raw_ticker": f"0{OWN_CODE}.HK", "market": "HK", "occurrences": 1,
-        })
+        conn.execute(insert(feeds), [
+            {
+                "feed_id": 99,
+                "code": OWN_CODE,
+                "source_ticker": f"0{OWN_CODE}.HK",
+                "posted_at": datetime(2026, 8, 25, 19),
+                "feed_type": 1,
+                "author_uid": "today-user",
+                "like_count": 2,
+                "comment_count": 3,
+                "image_count": 0,
+                "share_count": 1,
+                "raw_json_broken": False,
+            },
+            {
+                # 同一产品讨论区、同一 D0 窗口，但父帖只带其他产品 tag。
+                # 即使平台评论数很大，也绝不能污染页面主数。
+                "feed_id": 100,
+                "code": OWN_CODE,
+                "source_ticker": f"0{OWN_CODE}.HK",
+                "posted_at": datetime(2026, 8, 25, 19, 1),
+                "feed_type": 1,
+                "author_uid": "wrong-tag-user",
+                "like_count": 999,
+                "comment_count": 999,
+                "image_count": 0,
+                "share_count": 999,
+                "raw_json_broken": False,
+            },
+        ])
+        conn.execute(insert(mentions), [
+            {"feed_id": feed_id, "code": OWN_CODE, "source": "anchor", "in_pool": True}
+            for feed_id in (99, 100)
+        ])
+        conn.execute(insert(feed_mentions), [
+            {"feed_id": 99, "raw_ticker": f"0{OWN_CODE}.HK", "market": "HK", "occurrences": 1},
+            {"feed_id": 100, "raw_ticker": f"0{PEER_CODE}.HK", "market": "HK", "occurrences": 1},
+        ])
         conn.execute(insert(meta_kv), [
             {"k": "data_max_ts", "v": "2026-08-26 03:15:00"},
             {"k": "data_revision", "v": "d0-test"},
@@ -1423,6 +1445,9 @@ def test_d0_uses_partial_data_cutoff_and_keeps_future_hours_unknown(provider):
     assert rng["dataThrough"] == "2026-08-26T03:15:00 HKT"
     observation = next(row for row in provider.pool("d0")["list"] if row["code"] == OWN_CODE)
     assert observation["comments"] == 3
+    assert observation["commentFunnel"]["rawPlatformCount"] == 1002
+    assert observation["commentFunnel"]["platformCount"] == 3
+    assert observation["commentFunnel"]["filterExcludedPlatformCount"] == 999
     assert observation["buckets"][3]["comments"] == 3
     assert observation["buckets"][4]["comments"] is None
     assert observation["buckets"][-1]["active"] is None
@@ -1464,6 +1489,19 @@ class TestRefresh:
             conn.execute(insert(meta_kv), [{"k": "etl_generation", "v": "feeds=9"}])
         assert provider.refresh() is True
         assert provider._cache == {}
+
+    def test_a_new_d0_watermark_drops_the_scan_cache(self, provider):
+        assert provider.build_range("d0")["dataThrough"] is None
+        assert provider._cache[("d0_data_through",)] is None
+
+        with provider._engine.begin() as conn:
+            conn.execute(insert(meta_kv), {
+                "k": "data_max_ts", "v": "2026-08-26 03:15:00",
+            })
+
+        assert provider.refresh() is True
+        assert provider._cache == {}
+        assert provider.build_range("d0")["dataThrough"] == "2026-08-26T03:15:00 HKT"
 
     def test_an_unchanged_database_keeps_the_cache(self, provider):
         provider.pool("d1")

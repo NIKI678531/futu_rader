@@ -2,3 +2,12 @@
 # end-of-line conversion anywhere in this repo (git's autocrlf is on by default on
 # Windows and would rewrite LF to CRLF on checkout).
 * -text
+
+k8s/** text eol=lf
+deploy/runtime.py text eol=lf
+backend/Dockerfile text eol=lf
+worker/Dockerfile text eol=lf
+frontend/Dockerfile text eol=lf
+frontend/docker-entrypoint.d/*.sh text eol=lf
+frontend/nginx/*.template text eol=lf
+docker-compose.prd.yml text eol=lf

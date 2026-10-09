@@ -46,9 +46,10 @@ ASPECTS = (
     "leverage_decay", "performance", "trading_intent", "other",
 )
 
-# v4 deliberately separates product-quality feedback from market performance and
-# trading calls.  The latter remain useful inputs for topic/stage surfaces, but
-# must never move the positive/negative product-opinion ranking.
+# v4 deliberately separates strict P9 product-quality feedback from market
+# performance and trading calls.  ``trading_intent`` still contributes its
+# positive/neutral/negative attitude to the P6 purchase/holding-opinion view;
+# it must not enter the P9 product-feedback aspect ranking.
 PRODUCT_FEEDBACK_ASPECTS = (
     "fee", "liquidity", "spread", "tracking", "dividend", "leverage_decay",
     "product_design", "issuer_service", "disclosure", "trading_access",

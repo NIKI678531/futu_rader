@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: futuradar-srvapp-config
+  namespace: futu-radar
+  labels:
+    app: prd-futuradar
+    component: srvapp
+    env: prd
+data:
+  APP_ENV: production
+  APP_HOST: 0.0.0.0
+  APP_PORT: "8008"
+  ROOT_PATH: ""
+  DATA_PROVIDER: sql
+  RADAR_FACT_SOURCE: radar
+  TZ: Asia/Hong_Kong
+  RADAR_LOG_LEVEL: INFO
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: futuradar-worker-config
+  namespace: futu-radar
+  labels:
+    app: prd-futuradar
+    component: worker
+    env: prd
+data:
+  APP_ENV: production
+  TZ: Asia/Hong_Kong
+  RADAR_LOG_LEVEL: INFO
+  RADAR_FACT_SOURCE: radar
+  WORKER_HEALTH_FILE: /tmp/worker-heartbeat
+  WORKER_HEARTBEAT_INTERVAL_SECONDS: "60"
+  LOOKBACK_DAYS: "60"
+  AI_PRIMARY_PROVIDER: typesafe_system_one
+  AI_PRIMARY_BASE_URL: https://api.typesafe.ai
+  AI_PRIMARY_MODEL: jev-latest
+  AI_SYNTH_PROVIDER: openai_compatible
+  AI_SYNTH_BASE_URL: https://amao-prd.csopasset.com/llm/v1
+  AI_SYNTH_MODEL: gpt-5.6-luna
+  AI_DATA_GOVERNANCE_APPROVED: "true"
+  AI_FILL_MISSING_ONLY: "false"
+  AI_REQUEST_TIMEOUT_SECONDS: "120"
+  AI_MAX_RETRIES: "3"
+  AI_MICRO_BATCH_SIZE: "1"
+  AI_MAX_INPUT_TOKENS: "8000"
+  AI_CONCURRENCY: "8"
+  AI_REQUEST_POLL_SECONDS: "2"
+  AI_MANUAL_MAX_HTTP_REQUESTS: "100000"
+  AI_DAILY_CRON: "0 8 * * *"
+  AI_INTRADAY_CRON: "0 13,15 * * *"
+  AI_OWN_TOP_LIMIT: "0"
+  AI_PROMPT_VERSION: comment-product-v4
+  AI_TAXONOMY_VERSION: product-feedback-v4
+  AI_SCHEMA_VERSION: v3
+  AI_STRUCTURED_OUTPUT: "true"
+  AI_REASONING_EFFORT: low
+  AI_STORE: "false"
+  FMP_BASE_URL: https://financialmodelingprep.com/stable

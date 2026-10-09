@@ -1,31 +1,40 @@
-# 构建上下文是**仓库根**，不是 worker/ —— 见 docker-compose.yml 顶部注释。
-FROM python:3.11-slim
-
-WORKDIR /app/worker
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-RUN groupadd -g 1000 appuser && useradd -r -u 1000 -g appuser appuser
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ \
+FROM python:3.11.14-slim-bookworm AS dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends gcc g++ \
     && rm -rf /var/lib/apt/lists/*
+RUN python -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+WORKDIR /build
+COPY worker/requirements.txt worker/requirements.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock \
+    && pip install --no-cache-dir --no-index --no-deps -r requirements.txt \
+    && pip check
 
-COPY worker/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
-
-COPY worker/ /app/worker
-# 表结构 backend 与 worker 共用一份，源在仓库根（radar_db/__init__.py 说明了为什么）。
-COPY radar_db/ /app/radar_db
-# Layer B（jobs/synthesize.py）以只读方式 import backend/core 的叶子模块组事实 JSON ——
-# 口径只有那一份实现（铁律 1），worker 不重写公式；产品主数据也在 backend 下。
-COPY backend/core/ /app/backend/core
+FROM python:3.11.14-slim-bookworm
+ENV PATH=/opt/venv/bin:$PATH \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8 \
+    PYTHONPATH=/app:/app/worker \
+    APP_ENV=production \
+    TZ=Asia/Hong_Kong \
+    HOME=/home/app \
+    XDG_CACHE_HOME=/home/app/.cache \
+    WORKER_HEALTH_FILE=/tmp/worker-heartbeat
+RUN apt-get update && apt-get install -y --no-install-recommends tini tzdata ca-certificates libstdc++6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 10001 app && useradd -r -u 10001 -g app -d /home/app app \
+    && mkdir -p /home/app /app/.scratch && chmod 1777 /home/app /app/.scratch /tmp
+COPY --from=dependencies /opt/venv /opt/venv
+COPY worker/ /app/worker/
+COPY radar_db/ /app/radar_db/
+COPY backend/core/ /app/backend/core/
 COPY backend/fixtures/demo/master.json /app/backend/fixtures/demo/master.json
 COPY backend/fixtures/product_catalog_additions.json /app/backend/fixtures/product_catalog_additions.json
-RUN chown -R appuser:appuser /app
+COPY deploy/runtime.py /app/deploy/runtime.py
 
-USER appuser
-
+WORKDIR /app/worker
+USER 10001:10001
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+    CMD ["python", "/app/deploy/runtime.py", "--healthcheck", "worker"]
+ENTRYPOINT ["/usr/bin/tini", "--", "python", "/app/deploy/runtime.py", "worker"]
 CMD ["python", "scheduler.py"]

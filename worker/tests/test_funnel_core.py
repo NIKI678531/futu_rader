@@ -1,4 +1,4 @@
-"""ADR-0021 基础件：事件表、按 stage 领取、整批一事务、优先级重排、近重复折叠与传播、训练集切分、迁移 0008。"""
+"""事件表、按 stage 领取、整批一事务、优先级重排、近重复折叠与传播、迁移 0008。"""
 
 import json
 import os
@@ -15,7 +15,6 @@ sys.path.insert(0, REPO)
 from ai import config, neardup, schemas  # noqa: E402
 from ai.providers.base import Completion, Usage  # noqa: E402
 from jobs import annotate  # noqa: E402
-from models import dataset, registry  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
 from radar_db import events  # noqa: E402
 from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config  # noqa: E402
@@ -146,19 +145,19 @@ def test_claim_by_stage_and_default_stage_per_task(tmp_path, cfg):
     _seed(eng, ["评论一号这只不错", "评论二号点差太大", "评论三号费率低"])
     annotate.enqueue_comments(eng, cfg, codes=[CODE])
     with eng.begin() as conn:
-        assert {r[0] for r in conn.execute(select(annotation_jobs.c.stage))} == {"student"}
-        conn.execute(update(annotation_jobs).where(annotation_jobs.c.target_id == 12).values(stage="llm"))
+        assert {r[0] for r in conn.execute(select(annotation_jobs.c.stage))} == {"llm"}
+        conn.execute(update(annotation_jobs).where(annotation_jobs.c.target_id == 12).values(stage="llm_fill"))
     llm = annotate.claim(eng, "comment_product", 10, stage="llm")
-    assert [j["target_id"] for j in llm] == [12]
-    student = annotate.claim(eng, "comment_product", 10, stage="student")
-    assert sorted(j["target_id"] for j in student) == [11, 13]
-    assert annotate.claim(eng, "comment_product", 10, stage="student") == []
+    assert sorted(job["target_id"] for job in llm) == [11, 13]
+    fill = annotate.claim(eng, "comment_product", 10, stage="llm_fill")
+    assert [job["target_id"] for job in fill] == [12]
+    assert annotate.claim(eng, "comment_product", 10, stage="llm") == []
     # 不分段：过期租约后三条都能领
     with eng.begin() as conn:
         conn.execute(update(annotation_jobs).values(lease_until=datetime(2026, 1, 1)))
     assert len(annotate.claim(eng, "comment_product", 10)) == 3
-    assert annotate.pending_count(eng, "comment_product", stage="llm") == 1
-    assert annotate.default_stage("comment_product") == "student"
+    assert annotate.pending_count(eng, "comment_product", stage="llm") == 2
+    assert annotate.default_stage("comment_product") == "llm"
     assert annotate.default_stage("post_annotation") == "llm"
     assert annotate.default_stage("kol_comment_opinion") == "llm"
 
@@ -393,129 +392,19 @@ def test_cluster_rows_and_propagation(tmp_path, cfg):
     assert r13[1]["supersedes_id"] is None  # 人工裁决的不被顶掉
 
 
-# ── 训练集 ─────────────────────────────────────────────────────────────
-
-
-def test_split_has_no_group_leakage_and_is_deterministic():
-    units = []
-    for code in ("3033", "7226", "2800"):
-        for week in range(1, 40):
-            for i in range(3):
-                units.append({"unit": [week * 10 + i, code], "group": f"{code}|2026-W{week:02d}"})
-    train, hold = dataset.split(units, 0.10)
-    assert {u["group"] for u in train}.isdisjoint({u["group"] for u in hold})
-    assert 0.04 < len(hold) / len(units) < 0.18
-    train2, hold2 = dataset.split(units, 0.10)
-    assert [u["unit"] for u in hold] == [u["unit"] for u in hold2]
-    assert dataset.group_key("3033", datetime(2026, 8, 25)) == "3033|2026-W35"
-    assert dataset.group_key("3033", None) == "3033|unknown"
-
-
-def test_collect_units_takes_only_llm_current_rows_with_luna_payload(tmp_path, cfg):
+def test_legacy_queue_uses_current_product_routes(tmp_path, cfg):
     eng = _engine(tmp_path)
-    _seed(eng, ["这只ETF点差太大", "费率比同行高", "恒指要崩了", "抄来的一条"])
-    now = datetime(2026, 8, 26)
+    _seed(eng, ["跨产品评论", "未命中当前路由的评论"])
+    annotate.enqueue_comments(eng, cfg, codes=[CODE], scope_id="legacy")
     with eng.begin() as conn:
-        for rid, prov in (("luna-1", "openai_compatible"), ("rule-1", "rule"), ("stu-1", "local_model"), ("prop-1", "propagated")):
-            conn.execute(insert(annotation_runs).values(
-                run_id=rid, task="comment_product", provider=prov, model_id="m", prompt_version="comment-product-v3",
-                taxonomy_version="v2", schema_version="v2", started_at=now, status="done",
-                input_count=0, success_count=0, error_count=0))
+        conn.execute(update(annotation_jobs).values(stage="student"))
+        conn.execute(update(annotation_jobs).where(annotation_jobs.c.target_id == 11).values(subject_code="2800"))
+        _activate_routes(conn, [11], code="2800")
 
-        def ann(tid, kind, value, run, sup=None):
-            return {"target_type": "comment", "target_id": tid, "subject_code": CODE, "kind": kind,
-                    "value_json": json.dumps(value), "run_id": run, "input_hash": f"h{tid}{kind}{run}",
-                    "review_state": "pending", "created_at": now, "supersedes_id": sup}
-        conn.execute(insert(annotations), [
-            ann(11, "relevance", "relevant", "luna-1"), ann(11, "attitude", "negative", "luna-1"),
-            ann(11, "aspect", ["spread"], "luna-1"),
-            ann(12, "relevance", "relevant", "stu-1"),            # 学生自己的：剔
-            ann(13, "relevance", "irrelevant", "rule-1"),         # 规则：剔
-            ann(14, "relevance", "relevant", "prop-1"),           # 抄来的：剔
-        ])
-        # 12 后来被 Luna supersede 了 ⇒ 现行是 Luna 的，要收
-        res = conn.execute(select(annotations.c.annotation_id).where(annotations.c.target_id == 12)).scalar_one()
-        conn.execute(insert(annotations).values(**ann(12, "relevance", "irrelevant", "luna-1", sup=res)))
-        _activate_routes(conn, [11, 12, 13, 14])
-    units = dataset.collect_units(eng)
-    assert [u["unit"] for u in units] == [[11, CODE], [12, CODE]]
-    u11 = units[0]
-    assert u11["relevance"] == "relevant" and u11["attitude"] == "negative" and u11["aspects"] == ["spread"]
-    assert units[1]["relevance"] == "irrelevant" and units[1]["attitude"] is None
-    assert u11["text"].startswith("评论：这只ETF点差太大\n产品：3033")
-    assert "标题：恒科今日走势" in u11["text"] and "帖子：今日恒科低开高走" in u11["text"]
-    assert u11["group"] == "3033|2026-W34"
-    meta = dataset.build(eng, tmp_path / "ds")
-    assert meta["n_units"] == 2 and (tmp_path / "ds" / "train.jsonl").exists()
-    assert meta["aspect_head"] is False
-
-
-def test_training_units_exclude_unqualified_and_cross_product_comments(tmp_path, cfg):
-    eng = _engine(tmp_path)
-    _seed(eng, ["合格评论"], first=11, feed_id=1)
-    now = datetime(2026, 8, 26)
-    with eng.begin() as conn:
-        conn.execute(insert(feeds), [
-            {"feed_id": 2, "code": CODE, "source_ticker": "03033.HK", "posted_at": now,
-             "feed_type": 1, "title": "无 cashtag", "content": "无 cashtag", "like_count": 0,
-             "comment_count": 1, "image_count": 0, "raw_json_broken": False},
-            {"feed_id": 3, "code": CODE, "source_ticker": "03033.HK", "posted_at": now,
-             "feed_type": 1, "title": "$03033.HK$", "content": "合格父帖", "like_count": 0,
-             "comment_count": 1, "image_count": 0, "raw_json_broken": False},
-        ])
-        conn.execute(insert(feed_mentions).values(
-            feed_id=3, raw_ticker="03033.HK", market="HK", occurrences=1,
-        ))
-        conn.execute(insert(comments), [
-            {"comment_id": 12, "feed_id": 2, "content": "不合格父帖下评论", "author_uid": "u2"},
-            {"comment_id": 13, "feed_id": 3, "content": "跨产品旧结论", "author_uid": "u3"},
-        ])
-        conn.execute(insert(annotation_runs).values(
-            run_id="scope-luna", task="comment_product", provider="openai_compatible", model_id="m",
-            prompt_version="comment-product-v3", taxonomy_version="v2", schema_version="v2", started_at=now,
-            status="done", input_count=0, success_count=0, error_count=0,
-        ))
-        conn.execute(insert(annotations), [
-            {"target_type": "comment", "target_id": 11, "subject_code": CODE, "kind": "relevance",
-             "value_json": '"relevant"', "run_id": "scope-luna", "input_hash": "valid",
-             "review_state": "pending", "created_at": now},
-            {"target_type": "comment", "target_id": 12, "subject_code": CODE, "kind": "relevance",
-             "value_json": '"relevant"', "run_id": "scope-luna", "input_hash": "unqualified",
-             "review_state": "pending", "created_at": now},
-            {"target_type": "comment", "target_id": 13, "subject_code": "2800", "kind": "relevance",
-             "value_json": '"relevant"', "run_id": "scope-luna", "input_hash": "cross",
-             "review_state": "pending", "created_at": now},
-        ])
-        _activate_routes(conn, [11])
-
-    assert [unit["unit"] for unit in dataset.collect_units(eng)] == [[11, CODE]]
-
-
-def test_training_units_fail_closed_without_route_readiness(tmp_path):
-    eng = make_engine("sqlite:///" + (tmp_path / "not-ready.db").as_posix())
-    create_all(eng)
-    with pytest.raises(RuntimeError, match="comment AI routes are not ready"):
-        dataset.collect_units(eng)
-
-
-def test_payload_text_puts_comment_first_and_caps_aliases():
-    p = {"comment": "有", "product": {"code": "3033", "name": "恒生科技指数ETF", "aliases": list("abcdefg")},
-         "parent_comment": "这只怎么看", "post_title": "标题", "post_context": None}
-    t = dataset.payload_text(p)
-    assert t.splitlines()[0] == "评论：有" and "a／b／c／d" in t and "e" not in t.split("\n")[1]
-    assert "父评论：这只怎么看" in t and "帖子：" not in t
-
-
-def test_registry_thresholds_and_model_id(monkeypatch):
-    assert registry.model_id_string("rbt3") == "hfl/rbt3@0aa0527ff4170f29e1dfd3eb6ef60dc67e1bf75c"
-    assert registry.model_id_string().startswith("Langboat/mengzi-bert-base-fin@")
-    monkeypatch.setenv("STUDENT_ROUTE_THRESHOLD", "0.9")
-    monkeypatch.delenv("STUDENT_REVIEW_THRESHOLD", raising=False)
-    assert registry.route_threshold() == 0.9 and registry.review_threshold() == 0.9
-    monkeypatch.setenv("STUDENT_MODEL_DIR", "/tmp/x/student")
-    assert str(registry.model_dir()).endswith("student")
-    with pytest.raises(KeyError):
-        registry.spec("nope")
+    assert annotate.route_legacy_jobs_to_llm(eng, "legacy") == 1
+    with eng.connect() as conn:
+        stages = dict(conn.execute(select(annotation_jobs.c.target_id, annotation_jobs.c.stage)).all())
+    assert stages == {11: "llm", 12: "student"}
 
 
 # ── 迁移 0008 的数据步 ─────────────────────────────────────────────────

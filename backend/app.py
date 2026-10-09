@@ -28,8 +28,9 @@ if os.path.exists(_ENV):
     load_dotenv(_ENV, override=False)
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.getenv("RADAR_LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stdout,
 )
 
 
@@ -49,6 +50,23 @@ def create_app():
     @app.get(root + "/health")
     def health():
         return jsonify({"status": "ok"})
+
+    @app.get(root + "/health/deep")
+    def deep_health():
+        from sqlalchemy import text
+        from radar_db import make_engine
+
+        engine = None
+        try:
+            engine = make_engine()
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+        except Exception:
+            return jsonify({"status": "degraded", "dependencies": {"database": "unavailable"}}), 503
+        finally:
+            if engine is not None:
+                engine.dispose()
+        return jsonify({"status": "ok", "dependencies": {"database": "ok"}})
 
     @app.errorhandler(HTTPException)
     def json_errors(e):

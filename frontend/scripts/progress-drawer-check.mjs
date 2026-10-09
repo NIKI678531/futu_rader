@@ -250,7 +250,7 @@ async function checkFields(browser) {
     await page.waitForTimeout(500)
     let text = await page.evaluate(() => document.body.innerText)
     ok(text.includes('（3 帖转发数未知 · 下限）'), '⑨ 产品监控 KPI 备注带下限注记', '')
-    ok(text.includes('AI 生成 · 可追溯原文'), '⑨ stale 结论仍照常展示原有 AI 来源徽章', '')
+    ok(!text.includes('AI 生成 · 可追溯原文'), '⑨ 页面已移除可追溯来源徽章', '')
     ok(text.includes('查看原文证据 7 条'), '⑨ 证据条数用 evidenceCount', '')
     ok(text.includes('人工核对 200 条（2026-09-12），态度准确率 87.0%、相关性准确率 93.5%'), '⑨ spot_check 抽检文案', '')
     /* 只查那一句：设计源里「KOL 身份来自已核验名单」说的是名单，不是 AI 结论，那是合法文案。 */

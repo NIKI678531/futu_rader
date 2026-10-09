@@ -212,6 +212,7 @@ class SqlProvider:
             ai_source_version(meta) != ai_source_version(old_meta)
             or meta.get("anchor") != old_meta.get("anchor")
             or meta.get("anchor_ts") != old_meta.get("anchor_ts")
+            or meta.get("data_max_ts") != old_meta.get("data_max_ts")
             or meta.get("price_revision") != old_meta.get("price_revision")
             or meta.get("product_feedback_taxonomy")
             != old_meta.get("product_feedback_taxonomy")
@@ -294,6 +295,23 @@ class SqlProvider:
             "platformCommentCount": None,
             "parsedCommentCount": None,
         }
+        if self._meta.get("fact_source") == "market_insight":
+            with self._engine.connect() as conn:
+                coverage = conn.execute(select(
+                    feeds.c.comment_coverage_status, func.count(), func.sum(feeds.c.comment_count),
+                ).group_by(feeds.c.comment_coverage_status)).all()
+                parsed = conn.execute(select(func.count()).select_from(comments)).scalar_one()
+            states = {row[0] for row in coverage}
+            return {
+                **unavailable,
+                "sourceCompleteThrough": self._meta.get("anchor"),
+                "commentCoverage": "partial" if states & {"partial", "retryable_incomplete"}
+                else "complete" if states == {"complete"} else "unknown",
+                "platformCommentCount": sum(row[2] for row in coverage) if coverage else None,
+                "parsedCommentCount": parsed if coverage else None,
+                "factSource": "market_insight",
+                "sourceRevision": self._meta.get("data_revision"),
+            }
         try:
             with self._engine.connect() as conn:
                 latest_terminal = conn.execute(
@@ -445,6 +463,13 @@ class SqlProvider:
 
     def _filter_window_ready(self, frm, to):
         """The marker is necessary, and every in-window source ticker must resolve."""
+        lower = self._meta.get("source_window_from")
+        if lower:
+            lower_time = datetime.fromisoformat(lower)
+            if lower_time.tzinfo is not None:
+                lower_time = lower_time.astimezone(HKT).replace(tzinfo=None)
+            if datetime.combine(date.fromisoformat(str(frm)[:10]), datetime.min.time()) < lower_time:
+                return False
         if not is_filter_ready(self._meta, self._comment_filter_config):
             return False
         key = ("filter_window_ready", str(frm), str(to))
@@ -1120,7 +1145,14 @@ class SqlProvider:
         try:
             with self._engine.connect() as conn:
                 q = (
-                    select(synthesis_outputs)
+                    select(
+                        synthesis_outputs,
+                        annotation_runs.c.prompt_version.label("run_prompt_version"),
+                    )
+                    .outerjoin(
+                        annotation_runs,
+                        annotation_runs.c.run_id == synthesis_outputs.c.run_id,
+                    )
                     .where(
                         synthesis_outputs.c.code == code,
                         synthesis_outputs.c.range_key == range_key,
@@ -1136,6 +1168,7 @@ class SqlProvider:
                         "value": json.loads(r["value_json"]),
                         "evidenceIds": json.loads(r["evidence_ids_json"] or "[]"),
                         "reviewState": r["review_state"],
+                        "promptVersion": r["run_prompt_version"],
                     }
         except SQLAlchemyError:
             out = {}
@@ -1154,8 +1187,17 @@ class SqlProvider:
         current = effective_anchor.isoformat() if effective_anchor else None
         for kind in kinds:
             published = self._published(code, range_key, kind)
-            if published is None or not self._synth(code, range_key, kind):
+            rows = self._synth(code, range_key, kind)
+            if published is None or not rows:
                 continue
+            if (
+                kind == "topic_label"
+                and any(
+                    row.get("promptVersion") != core_topics.MARKET_OUTLOOK_SYNTH_VERSION
+                    for row in rows.values()
+                )
+            ):
+                return True
             if dirty or published[0] != current:
                 return True
         return False
@@ -1365,7 +1407,7 @@ class SqlProvider:
             return None
 
     def _units(self, code, rng):
-        """区间内这只产品的判定单元（相关＋有态度），以及市场方向单元。整块 None＝没标过。"""
+        """区间内产品反馈、购买意愿与市场方向单元。整块 None＝没标过。"""
         key = ("units", code, rng["key"])
         if key in self._cache:
             return self._cache[key]
@@ -1379,6 +1421,7 @@ class SqlProvider:
         asp = self._released_window_annotations("aspect", lo, hi).get(code, {})
         feedback = self._released_window_annotations("feedback_eligible", lo, hi).get(code, {})
         units = []
+        opinion_units = []
         for unit, a in att.items():
             if (rel.get(unit) or {}).get("value") != "relevant":
                 continue
@@ -1393,6 +1436,11 @@ class SqlProvider:
                 "posted_at": utc_naive_to_hkt(a["posted_at"]),
                 "annotation_id": (rel.get(unit) or {}).get("annotation_id"),
             }
+            # The market-outlook card answers whether people want to buy or
+            # avoid this ETF.  A pure add/reduce-position call is therefore a
+            # valid opinion even though it remains excluded from the stricter
+            # product-feedback themes and issue categories below.
+            opinion_units.append(candidate)
             if core_themes.is_product_feedback(candidate):
                 units.append(candidate)
         market = [
@@ -1401,7 +1449,7 @@ class SqlProvider:
             for unit, m in mkt.items()
             if m["value"] in ("bullish", "bearish", "neutral")
         ]
-        out = {"units": units, "market": market}
+        out = {"units": units, "opinion_units": opinion_units, "market": market}
         self._cache[key] = out
         return out
 
@@ -1453,9 +1501,21 @@ class SqlProvider:
         out = {}
         for subkey, row in self._synth(code, range_key, kind).items():
             v = row["value"]
+            k = tuple(subkey.split("|", 1)) if split else subkey
+            if (
+                kind == "topic_label"
+                and row.get("promptVersion") != core_topics.MARKET_OUTLOOK_SYNTH_VERSION
+            ):
+                out[k] = {
+                    "title": None,
+                    "summary": None,
+                    "key_points": [],
+                    "evidence_ids": row["evidenceIds"],
+                    "reviewState": row["reviewState"],
+                }
+                continue
             if not isinstance(v, dict) or "title" not in v:
                 continue
-            k = tuple(subkey.split("|", 1)) if split else subkey
             out[k] = {"title": v.get("title"), "summary": v.get("summary"),
                       "key_points": [
                           {"text": point.get("text"), "evidenceIds": point.get("evidence_ids", [])}
@@ -1643,55 +1703,31 @@ class SqlProvider:
         }
 
     def market_outlook(self, code, range_key):
-        """按灰度口径返回当前产品，或当前产品加四只高讨论产品。
-
-        排名的计数直接来自已发布的 ``market_direction`` 单元；只对
-        最终入选的五只产品读 ``topic_label``，避免为一张表执行整个产品
-        池的 Layer B 查询。
-        """
+        """只返回当前产品的产品态度与市场风向摘要。"""
         if code not in self._by_code:
             return MISSING
         rng = self._filtered_range(range_key)
         if rng is None:
             return None
 
-        scope = core_topics.market_outlook_scope(code)
-        if scope == "product":
-            topics = self.topics_for(code, range_key)
-            count = core_topics.market_discussion_count(topics)
-            if count is None:
-                return None
-            if count <= 0:
-                return {"scope": scope, "list": []}
-            return {
-                "scope": scope,
-                "list": [core_topics.market_outlook_row(self._by_code[code], topics)],
-            }
-
-        counts = {}
-        for candidate in self._by_code:
-            units = self._units(candidate, rng)
-            counts[candidate] = None if units is None else len(units["market"])
-        selected = core_topics.select_market_outlook_codes(
-            self._products, code, counts,
+        units = self._units(code, rng)
+        topics = self.topics_for(code, range_key)
+        attitude_counts = core_topics.product_attitude_counts(
+            None if units is None else units["opinion_units"],
         )
-        if selected is None:
-            return None
-        if not selected:
-            return {"scope": scope, "list": []}
-
-        topics_by_code = {
-            candidate: self.topics_for(candidate, range_key)
-            for candidate in selected
-        }
+        market_count = core_topics.market_discussion_count(topics)
+        opinion_count = None if attitude_counts is None else sum(attitude_counts.values())
+        if not any((count or 0) > 0 for count in (market_count, opinion_count)):
+            if any(count is None for count in (market_count, opinion_count)):
+                return None
+            return {"scope": "product", "list": []}
         return {
-            "scope": scope,
-            "list": [
-                core_topics.market_outlook_row(
-                    self._by_code[candidate], topics_by_code[candidate],
-                )
-                for candidate in selected
-            ]
+            "scope": "product",
+            "list": [core_topics.market_outlook_row(
+                self._by_code[code],
+                topics,
+                attitude_counts,
+            )],
         }
 
     def themes_for(self, code, range_key):
@@ -2053,6 +2089,9 @@ class SqlProvider:
 
         ``mentionCommentCount`` 是既有前端契约字段，现表示本行的相关内容条数（原帖＋
         已确认评论观点）；证据里的 ``sourceKind`` 明确区分两种来源。
+        ``latestPostAt`` 只表示最新相关原帖；``representativeSummary`` 是该原帖的
+        AI 摘要（无原帖时为最新评论观点摘要），原文仍保留在 ``representativeExcerpt``
+        与 ``evidence[].excerpt``。
         """
         if code not in self._by_code:
             return MISSING
@@ -2072,17 +2111,20 @@ class SqlProvider:
         post_ids = [int(post["id"].removeprefix("kol-")) for post in posts]
         post_sources = self._sources("feed", post_ids)
 
-        # 一条内部 event 同时保存排序时间和对外 evidence。用一份 evidence 列表生成计数、
-        # 最近时间与代表摘录，避免三个字段彼此漂移。
+        # 一条内部 event 同时保存排序时间、AI 摘要和对外 evidence。
+        # 摘要与原文分开保存：卡片可以优先展示摘要，证据侧栏仍能回到原文。
         by_kol = defaultdict(list)
         for post, feed_id in zip(posts, post_ids):
             source = post_sources.get(feed_id)
             if source is None:
                 continue
-            excerpt = source["text"] or post.get("summary") or ""
+            summary = post.get("summary")
+            if not isinstance(summary, str) or not summary.strip():
+                summary = None
             by_kol[post["kol"]].append({
                 "postedAt": source["postedAt"],
                 "isPost": True,
+                "summary": summary,
                 "attitude": None,
                 "evidence": {
                     "id": f"{code}-kp-{post['kol']}-{feed_id}",
@@ -2092,7 +2134,7 @@ class SqlProvider:
                     "authorType": "合作 KOL",
                     "isKnownKol": True,
                     "kolType": "partner",
-                    "excerpt": excerpt,
+                    "excerpt": source["text"] or "",
                     # 原帖的操作方向不是产品态度，不能把「加仓」偷换成正面评价。
                     "attitude": None,
                     "attitudeLabel": None,
@@ -2146,6 +2188,7 @@ class SqlProvider:
             by_kol[source["authorName"]].append({
                 "postedAt": source["postedAt"],
                 "isPost": False,
+                "summary": summary["value"].strip(),
                 "attitude": attitude,
                 "evidence": {
                     "id": f"{code}-km-{source['authorName']}-{unit[0]}",
@@ -2168,6 +2211,7 @@ class SqlProvider:
             return {"status": "empty", "scope": "合作 KOL 名单", "list": []}
 
         items = []
+        sort_times = {}
         for name, xs in by_kol.items():
             xs.sort(key=lambda event: event["postedAt"] or datetime.min, reverse=True)
             counts = defaultdict(int)
@@ -2178,19 +2222,27 @@ class SqlProvider:
             n = len(xs)
             attitude_n = sum(counts.values())
             dominant = max(counts, key=counts.get) if attitude_n >= 3 else None
-            # 代表摘录优先来自与 /kol 同源的 KOL 原帖；没有相关原帖时才回退到评论观点。
+            # 代表项严格取最新相关原帖；没有原帖时才回退到最新评论。
             representative = next((event for event in xs if event["isPost"]), xs[0])
+            latest_post_at = representative["postedAt"] if representative["isPost"] else None
+            sort_times[name] = latest_post_at or xs[0]["postedAt"]
             items.append({
                 "productCode": code, "kolAccountId": f"kol-{name}", "kolName": name,
                 "kolTags": active_kols[name].get("tags"), "kolType": "partner", "kolTypeLabel": "合作 KOL",
                 "mentionCommentCount": n, "lastMentionedAt": _stamp(xs[0]["postedAt"]),
+                "latestPostAt": _stamp(latest_post_at),
                 "dominantAttitude": dominant,
                 "dominantLabel": attitude_labels.get(dominant),
+                "representativeSummary": representative["summary"],
                 "representativeExcerpt": representative["evidence"]["excerpt"],
                 "evidenceCount": n,
                 "evidence": [event["evidence"] for event in xs],
             })
-        items.sort(key=lambda i: (-i["mentionCommentCount"], i["kolName"]))
+        # 稳定排序分三层：有原帖的在前；组内时间倒序；同刻按 KOL 名。
+        # 有原帖者只看 latestPostAt，更新的评论不得改变它在原帖组内的顺序。
+        items.sort(key=lambda item: item["kolName"])
+        items.sort(key=lambda item: sort_times[item["kolName"]], reverse=True)
+        items.sort(key=lambda item: item["latestPostAt"] is None)
         return {"status": "ok" if items else "empty", "scope": "合作 KOL 名单", "list": items}
 
     def kol_opinions(self, kol, range_key):

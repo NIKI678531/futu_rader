@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from typing import Literal
 
+from radar_db.source_normalization import FeedObservation
+
 
 Coverage = Literal["complete", "partial", "retryable_incomplete", "unknown"]
 SyncMode = Literal["incremental", "backfill", "repair"]
@@ -142,15 +144,6 @@ class AiResult:
     def as_dict(self) -> dict:
         return asdict(self)
 
-
-@dataclass(frozen=True)
-class FeedObservation:
-    feed: dict
-    comments: tuple[dict, ...]
-    mentions: tuple[dict, ...]
-    feed_mentions: tuple[dict, ...]
-    observed_at: datetime
-    coverage: Coverage
 
 
 @dataclass(frozen=True)

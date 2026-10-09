@@ -76,7 +76,6 @@ for cand in (REPO_ROOT, Path(__file__).resolve().parents[1]):
 import clock  # noqa: E402
 from ai import config  # noqa: E402
 from ai import release_regressions  # noqa: E402
-from models import registry  # noqa: E402
 from scripts.gold_sample import format_parent_comments  # noqa: E402
 from radar_db import default_data_dir, make_engine  # noqa: E402
 from radar_db.comment_routes import (  # noqa: E402
@@ -438,8 +437,8 @@ def _label_or_none(sysd):
 
 
 def combined_label(m, threshold=None):
-    """生产路由：学生两头都够置信用学生，否则用 Luna；只有一边有标签就用那一边。"""
-    threshold = registry.route_threshold() if threshold is None else threshold
+    """兼容历史混合模型报告；当前远程模型报告直接使用 LLM 标签。"""
+    threshold = 0.85 if threshold is None else threshold
     st, lu = m["student"], m["llm"]
     if st.get("relevance") is None:
         return _label_or_none(lu)
@@ -977,7 +976,7 @@ def main(argv=None):
     ap.add_argument("--recheck", metavar="XLSX", help="复核表：里面填了相关性的行覆盖原表同编号的判法")
     ap.add_argument("--recheck-out", action="store_true",
                     help="把与模型分歧的行写成 <表名>-recheck.xlsx（与人工表同目录，预填上一轮判法，不带模型标签）")
-    ap.add_argument("--threshold", type=float, help="combined 路由阈值，默认 STUDENT_ROUTE_THRESHOLD")
+    ap.add_argument("--threshold", type=float, help="历史 combined 报告阈值，默认 0.85")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s")
     if args.apply:

@@ -119,3 +119,18 @@ def test_heartbeat_is_persisted_for_admin_queue_health(monkeypatch):
     assert values["ai_analysis_worker_readiness"] == (
         '{"ready": false, "error": "质量报告未配置"}'
     )
+
+
+def test_local_heartbeat_precedes_database_access(monkeypatch, tmp_path):
+    import pytest
+
+    health_file = tmp_path / "heartbeat"
+    monkeypatch.setenv("WORKER_HEALTH_FILE", str(health_file))
+
+    def unavailable():
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr("scheduler.make_engine", unavailable)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        heartbeat()
+    assert health_file.exists()

@@ -11,6 +11,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
+from radar_db.source_normalization import extract_futu_cashtags, normalize_futu_ticker
+
 from radar_db.comment_filter import (
     CommentFilterConfig,
     FilterPolicy,
@@ -23,31 +25,6 @@ from radar_db.comment_filter import (
 
 EXACT_RULE = "parent_feed_filter"
 EXACT_RULE_VERSION = "parent-feed-v2"
-
-
-def normalize_futu_ticker(value: str) -> str | None:
-    """Convert a strict FUTU ticker to Radar's legacy canonical code."""
-
-    raw = normalize_source_ticker(value)
-    if raw is None:
-        return None
-    symbol, market = raw.rsplit(".", 1)
-    if not symbol or not market or len(market) < 2 or len(market) > 4:
-        return None
-    if market == "HK":
-        return (symbol.lstrip("0") or "0") if symbol.isdigit() else symbol
-    return f"{market.lower()}:{symbol}"
-
-
-def extract_futu_cashtags(text: str | None) -> tuple[str, ...]:
-    """Return legacy canonical codes for strict parent-text cashtags."""
-
-    values: list[str] = []
-    for mention in extract_feed_mentions(None, text):
-        code = normalize_futu_ticker(mention.raw_ticker)
-        if code is not None:
-            values.extend([code] * mention.occurrences)
-    return tuple(values)
 
 
 class ExactProductMatcher:

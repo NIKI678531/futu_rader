@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import random
+import re
 import sys
 import threading
 import uuid
@@ -100,6 +101,9 @@ DEFAULT_RANGES = tuple(key for key in PRESETS if key != "d0")
 MIN_BUCKET = 2          # 少于这么多条的桶不起名
 EVIDENCE_PER_BUCKET = 6  # 每桶抽几条引文
 EVIDENCE_MAX_CHARS = 140
+TOPIC_EVIDENCE_PER_DIRECTION = 6
+TOPIC_ATTITUDE_EVIDENCE_PER_POLARITY = 2
+TOPIC_EVIDENCE_MAX_CHARS = 320
 COMPETITOR_TOP_K = 3
 COMPETITOR_MIN_EVIDENCE = 3
 WORKERS = 8
@@ -234,8 +238,8 @@ class Material:
         comp = released("compliance", read_args)
 
         self.ann_ids = set()
-        self.units = []   # 严格产品反馈（态度排行、主题、总结、竞品）
-        self.stage_units = []  # 明确指向产品的全部态度（含纯买卖/表现讨论）
+        self.units = []   # 严格产品反馈（主题、总结、竞品）
+        self.opinion_units = []  # 左列产品观点全集（含纯买卖/表现讨论）
         for unit, a in att.items():
             r = rel.get(unit)
             if r is None or r["value"] != "relevant":
@@ -251,9 +255,12 @@ class Material:
                 "posted_at": utc_naive_to_hkt(a["posted_at"]),
                 "annotation_id": r["annotation_id"],
             }
-            self.stage_units.append(candidate)
+            self.opinion_units.append(candidate)
             if core_themes.is_product_feedback(candidate):
                 self.units.append(candidate)
+        # 阶段观点与左列观点使用同一批明确指向产品的态度，但保留独立命名，
+        # 避免后续阶段算法的变更悄悄改变市场观点摘要口径。
+        self.stage_units = list(self.opinion_units)
         self.market_units = []
         for unit, m in mkt.items():
             if m["value"] in ("bullish", "bearish", "neutral"):
@@ -277,6 +284,10 @@ class Material:
         self.pos = sum(1 for u in self.units if u["attitude"] == "positive")
         self.neg = sum(1 for u in self.units if u["attitude"] == "negative")
         self.neu = sum(1 for u in self.units if u["attitude"] == "neutral")
+        self.opinion_relevant_count = len(self.opinion_units)
+        self.opinion_pos = sum(1 for u in self.opinion_units if u["attitude"] == "positive")
+        self.opinion_neg = sum(1 for u in self.opinion_units if u["attitude"] == "negative")
+        self.opinion_neu = sum(1 for u in self.opinion_units if u["attitude"] == "neutral")
 
         # 基准期只要计数
         blo, bhi = _bench_window(rng)
@@ -311,7 +322,8 @@ class Material:
     def texts(self):
         """`{comment_id: 脱敏正文}`，只取本区间用到的评论。"""
         if self._texts is None:
-            ids = {u["comment_id"] for u in self.units} | {u["comment_id"] for u in self.stage_units} \
+            ids = {u["comment_id"] for u in self.units} | {u["comment_id"] for u in self.opinion_units} \
+                | {u["comment_id"] for u in self.stage_units} \
                 | {u["comment_id"] for u in self.market_units} \
                 | {h["comment_id"] for h in self.compliance_hits}
             out = {}
@@ -369,6 +381,81 @@ def sample_evidence(units, k, seed):
             out.append(by_day[d].pop())
         i += 1
     return out
+
+
+_TOPIC_DETAIL_TERMS = (
+    "财报", "业绩", "营收", "利润", "指引", "订单", "库存", "供给", "供应", "需求",
+    "供需", "缺货", "扩产", "产能", "回购", "估值", "政策", "监管", "利率", "降息",
+    "通胀", "非农", "指数", "板块", "行业", "催化", "景气", "补涨", "反弹", "回调",
+    "上修", "下修", "预期", "数据", "会议", "资金", "成交", "汇率", "油价", "金价",
+    "芯片", "半导体", "存储", "DRAM", "NAND", "HBM", "AI", "比特币", "以太币",
+)
+_TOPIC_ALNUM = re.compile(r"[A-Za-z][A-Za-z0-9.+-]*|\d+(?:\.\d+)?")
+
+
+def _compact_topic_text(text, limit=TOPIC_EVIDENCE_MAX_CHARS):
+    """Keep both ends of a long comment; event context often follows its opening view."""
+    clean = " ".join(str(text or "").split())
+    if len(clean) <= limit:
+        return clean
+    head = limit * 2 // 3
+    return clean[:head].rstrip() + "…" + clean[-(limit - head - 1):].lstrip()
+
+
+def _topic_detail_score(text):
+    """Rank source comments by concrete, source-visible detail without inventing entities."""
+    clean = str(text or "")
+    distinct_terms = sum(1 for term in _TOPIC_DETAIL_TERMS if term.casefold() in clean.casefold())
+    alnum = len(set(token.casefold() for token in _TOPIC_ALNUM.findall(clean)))
+    clauses = len(re.findall(r"[，,；;。！？!?]", clean))
+    return distinct_terms * 80 + min(len(clean), TOPIC_EVIDENCE_MAX_CHARS) + min(alnum, 8) * 12 + min(clauses, 6) * 4
+
+
+def _topic_evidence_item(mat, unit, label_key, label_value):
+    """Use the full comment for context and retain the annotation quote as direction proof."""
+    context = redact.scrub_text(mat.texts().get(unit["comment_id"], "") or "")
+    quote = redact.scrub_text(mat.quotes().get(unit.get("annotation_id"), "") or "")
+    text = _compact_topic_text(context or quote)
+    ts = unit.get("posted_at")
+    item = {
+        "id": f"c{unit['comment_id']}",
+        "text": text,
+        "day": ts.strftime("%m-%d") if ts else None,
+        label_key: label_value,
+    }
+    if quote and " ".join(quote.split()).casefold() != " ".join(text.split()).casefold():
+        item["direction_quote" if label_key == "market_direction" else "attitude_quote"] = _compact_topic_text(
+            quote, EVIDENCE_MAX_CHARS,
+        )
+    return item
+
+
+def _sample_detailed_topic_evidence(mat, units, k, label_key, label_value):
+    """Prefer detailed, non-duplicate comments, with recency as the deterministic tie-breaker."""
+    candidates = []
+    for unit in units:
+        item = _topic_evidence_item(mat, unit, label_key, label_value)
+        normalized = re.sub(r"\s+", "", item["text"]).casefold()
+        if not normalized:
+            continue
+        candidates.append((
+            _topic_detail_score(item["text"]),
+            unit.get("posted_at") or datetime.min,
+            str(unit.get("comment_id")),
+            normalized,
+            item,
+        ))
+    candidates.sort(key=lambda row: (row[0], row[1], row[2]), reverse=True)
+    seen_text = set()
+    selected = []
+    for _score, _posted_at, _comment_id, normalized, item in candidates:
+        if normalized in seen_text:
+            continue
+        seen_text.add(normalized)
+        selected.append(item)
+        if len(selected) == k:
+            break
+    return selected
 
 
 # ── 每种 kind 的原料组装 ───────────────────────────────────────────────────
@@ -459,10 +546,50 @@ def build_topic_payload(mat):
     if not tp:
         return None
     t = tp[0]
-    ev = [mat.evidence_item(u) for u in sample_evidence(mat.market_units, 10, "topic")]
-    ev = _dedupe_ev(ev)
-    facts = {"topic": {"bullish": t["positive"], "bearish": t["negative"], "neutral": t["neutral"],
-                       "mentions": t["mentions"]}}
+    evidence = []
+    for direction in ("bullish", "bearish", "neutral"):
+        units = [u for u in mat.market_units if u["market_direction"] == direction]
+        evidence.extend(
+            _sample_detailed_topic_evidence(
+                mat,
+                units,
+                TOPIC_EVIDENCE_PER_DIRECTION,
+                "market_direction",
+                direction,
+            )
+        )
+    for attitude in ("positive", "negative", "neutral"):
+        units = [u for u in mat.opinion_units if u["attitude"] == attitude]
+        evidence.extend(
+            _sample_detailed_topic_evidence(
+                mat,
+                units,
+                TOPIC_ATTITUDE_EVIDENCE_PER_POLARITY,
+                "product_attitude",
+                attitude,
+            )
+        )
+    merged = {}
+    for item in evidence:
+        if item["id"] in merged:
+            merged[item["id"]].update({key: value for key, value in item.items() if value is not None})
+        elif item["text"]:
+            merged[item["id"]] = item
+    ev = list(merged.values())
+    facts = {
+        "topic": {
+            "bullish": t["positive"],
+            "bearish": t["negative"],
+            "neutral": t["neutral"],
+            "mentions": t["mentions"],
+        },
+        "productAttitude": {
+            "positive": mat.opinion_pos,
+            "negative": mat.opinion_neg,
+            "neutral": mat.opinion_neu,
+            "sampleSufficient": (mat.opinion_pos + mat.opinion_neg) >= LOW_SAMPLE,
+        },
+    }
     return facts, ev, {e["id"] for e in ev}
 
 
@@ -647,7 +774,7 @@ class Synthesizer:
             if tp:
                 facts, evidence, allowed = tp
                 self._generate(code, range_key, anchor, "topic_label", core_topics.MARKET_SUBKEY,
-                               {u["annotation_id"] for u in mat.market_units}, facts, evidence, allowed,
+                               mat.ann_ids, facts, evidence, allowed,
                                product, rng_info, lambda obj: obj.model_dump())
             else:
                 self._publish_empty(code, range_key, anchor, "topic_label", "no_topic_bucket")

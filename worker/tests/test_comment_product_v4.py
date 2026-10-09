@@ -110,5 +110,10 @@ def test_v4_prompt_explicitly_lists_market_exclusions_and_issuer_split():
 
     assert "只谈涨跌、指数方向、宏观、成分股" in system
     assert "纯买卖喊单" in system
+    assert "P6「市场观点」的购买／持有意愿统计" in system
+    assert "买入／加仓／继续持有" in system
+    assert "不买／减仓／卖出／避开" in system
+    assert "不进入 P9 严格" in system
+    assert "不会进入产品态度榜" not in system
     assert "发行商观点（独立于单只 ETF）" in system
 

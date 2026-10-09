@@ -35,6 +35,27 @@ test('kol and official cards omit the requested explanatory copy', () => {
   assert.doesNotMatch(official, /提及 ETF 按出现次数统计，只含 ETF，不含个股/)
 })
 
+test('visible application surfaces omit the traceable-source badge only', () => {
+  const visibleSurfaces = [
+    'lib/view.js',
+    'screens/KolActivity.jsx',
+    'screens/KolDetail.jsx',
+    'screens/OfficialActivity.jsx',
+    'screens/productMonitor/Stages.jsx',
+    'screens/sectorOverview/Drawer.jsx',
+    'screens/sectorOverview/index.jsx',
+  ]
+
+  for (const path of visibleSurfaces) {
+    assert.doesNotMatch(source(path), /AI 生成 · 可追溯原文/, path)
+  }
+
+  const badges = source('lib/view.js')
+  assert.match(badges, /if \(state === 'needs_review'\) return 'AI 生成 · 待确认'/)
+  assert.match(badges, /return hasEvidence \? null : 'AI 生成'/)
+  assert.match(source('screens/productMonitor/Stages.jsx'), /v\.stageUnavailable && <span[^>]*>AI 阶段观点 · 待分析<\/span>/)
+})
+
 test('visible application surfaces do not use the legacy freshness wording', () => {
   const visibleSurfaces = [
     'components/ProgressDrawer.jsx',

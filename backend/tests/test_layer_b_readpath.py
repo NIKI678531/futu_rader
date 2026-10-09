@@ -11,10 +11,12 @@ import json
 from datetime import datetime
 
 import pytest
-from sqlalchemy import insert, update
+from sqlalchemy import insert, select, update
 
-from radar_db.schema import feeds, meta_kv, synthesis_outputs
+from core import topics as core_topics
+from radar_db.schema import annotation_runs, comments, feeds, mentions, meta_kv, synthesis_outputs
 from radar_db.revisions import set_synthesis_generation
+from providers.demo import DemoProvider, MISSING
 from sql_fixture import (
     FEED_TEXT, KOL_NAME, OWN_CODE, PEER_CODE, add_annotations, add_comments, add_evidence,
     make_sql_provider,
@@ -26,7 +28,7 @@ def provider():
     return make_sql_provider()
 
 
-def annotated(p, n_pos=8, n_neg=4, kol_n=3):
+def annotated(p, n_pos=8, n_neg=4, kol_n=3, market_direction="bearish"):
     """c11 负（点差）、c12 正（费率）＋ 补出足量样本：正 `n_pos`、负 `n_neg`，都挂在 f1（08-25 09:00）。"""
     rows = []
     add_comments(p, [{"comment_id": 100 + i, "content": f"补一条评论 {i}", "author_name": KOL_NAME if i < kol_n else "路人丙"}
@@ -45,7 +47,7 @@ def annotated(p, n_pos=8, n_neg=4, kol_n=3):
     # 市场方向也只在当前 relevance=relevant 时进入产品话题聚合。
     rows += [
         {"annotation_id": aid, "target_id": 11, "kind": "relevance", "value": "relevant"},
-        {"annotation_id": aid + 1, "target_id": 11, "kind": "market_direction", "value": "bearish"},
+        {"annotation_id": aid + 1, "target_id": 11, "kind": "market_direction", "value": market_direction},
     ]
     return add_annotations(p, rows)
 
@@ -56,6 +58,12 @@ def add_synth(p, rows):
         r.get("fp", f"fp-{r.get('code', OWN_CODE)}-{r.get('range_key', 'd1')}-{r['kind']}")
         for r in rows
     }
+    def prompt_version(row):
+        return row.get("prompt_version", core_topics.MARKET_OUTLOOK_SYNTH_VERSION)
+
+    def run_id(row):
+        return row.get("run_id", f"synth-test-{prompt_version(row)}")
+
     payload = [
         {
             "code": r.get("code", OWN_CODE), "range_key": r.get("range_key", "d1"), "anchor": "2026-08-25",
@@ -63,18 +71,143 @@ def add_synth(p, rows):
             "input_fingerprint": generation_fps[(r.get("code", OWN_CODE), r.get("range_key", "d1"), r["kind"])],
             "value_json": json.dumps(r["value"], ensure_ascii=False),
             "evidence_ids_json": json.dumps(r.get("evidence_ids", ["c100"])),
-            "run_id": "synth-test", "review_state": r.get("review_state", "pending"),
+            "run_id": run_id(r), "review_state": r.get("review_state", "pending"),
             "created_at": datetime(2026, 8, 26, 10, i), "supersedes_id": r.get("supersedes_id"),
         }
         for i, r in enumerate(rows)
     ]
     with p._engine.begin() as conn:
+        run_specs = {run_id(row): prompt_version(row) for row in rows}
+        existing = set(conn.execute(
+            select(annotation_runs.c.run_id).where(annotation_runs.c.run_id.in_(run_specs))
+        ).scalars())
+        if missing := set(run_specs).difference(existing):
+            conn.execute(insert(annotation_runs), [{
+                "run_id": synth_run_id,
+                "task": "synthesize",
+                "provider": "test",
+                "model_id": "test-model",
+                "prompt_version": run_specs[synth_run_id],
+                "taxonomy_version": "v2",
+                "schema_version": "synth-v1",
+                "started_at": datetime(2026, 8, 26, 9),
+                "finished_at": datetime(2026, 8, 26, 10),
+                "status": "done",
+                "input_count": 1,
+                "success_count": 1,
+                "error_count": 0,
+            } for synth_run_id in missing])
         conn.execute(insert(synthesis_outputs), payload)
         for (code, range_key, kind), fp in generation_fps.items():
             set_synthesis_generation(conn, code, range_key, "2026-08-25", kind, fp)
             p._meta[f"synth_current_{code}_{range_key}_{kind}"] = f"2026-08-25|{fp}"
     p._cache.clear()
     return p
+
+
+def add_purchase_intents(p, attitude, content, *, first_comment_id=400, count=10):
+    comment_ids = list(range(first_comment_id, first_comment_id + count))
+    add_comments(p, [
+        {"comment_id": comment_id, "content": content}
+        for comment_id in comment_ids
+    ])
+    rows = []
+    annotation_id = first_comment_id * 10
+    for comment_id in comment_ids:
+        rows.extend([
+            {"annotation_id": annotation_id, "target_id": comment_id,
+             "kind": "relevance", "value": "relevant"},
+            {"annotation_id": annotation_id + 1, "target_id": comment_id,
+             "kind": "attitude", "value": attitude},
+            {"annotation_id": annotation_id + 2, "target_id": comment_id,
+             "kind": "aspect", "value": ["trading_intent"]},
+            {"annotation_id": annotation_id + 3, "target_id": comment_id,
+             "kind": "feedback_eligible", "value": False},
+        ])
+        annotation_id += 4
+    return add_annotations(p, rows)
+
+
+def test_demo_market_outlook_keeps_opinion_when_topics_are_empty(monkeypatch):
+    provider = DemoProvider()
+    monkeypatch.setattr(provider, "topics_for", lambda code, range_key: [])
+
+    row = provider.market_outlook("3033", "d7")["list"][0]
+
+    assert row["status"] == "empty"
+    assert row["attitude"] is not None
+    assert row["sentiment"] is None
+    assert row["summary"] is None
+
+
+def test_demo_market_outlook_keeps_topics_when_opinion_is_unavailable(monkeypatch):
+    provider = DemoProvider()
+    monkeypatch.setattr(provider, "pool", lambda range_key: {
+        "list": [{"code": "3033", "attitude": None}],
+    })
+
+    row = provider.market_outlook("3033", "d7")["list"][0]
+
+    assert row["status"] == "ok"
+    assert row["attitude"] is None
+    assert row["attitudeStatus"] == "unavailable"
+    assert row["sentiment"] is not None
+    assert row["summary"]
+
+
+def test_demo_market_outlook_filters_product_topics_and_merges_selected_evidence(monkeypatch):
+    provider = DemoProvider()
+    monkeypatch.setattr(provider, "topics_for", lambda code, range_key: [
+        {
+            "id": "legacy-product", "title": "与同类产品的选择比较",
+            "summary": "比较同类 ETF 的产品选择。", "mentions": 999,
+            "positive": 999, "negative": 0, "neutral": 0,
+            "evidenceIds": ["c-product"],
+        },
+        {
+            "id": "market-hbm", "title": "海力士 HBM 产能进展",
+            "summary": "供应链信息指向 HBM 产能变化。", "mentions": 30,
+            "positive": 3, "negative": 1, "neutral": 0,
+            "evidenceIds": ["c1", "c-shared"],
+        },
+        {
+            "id": "market-fed", "title": "美联储议息预期",
+            "summary": "利率路径影响风险资产表现。", "mentions": 20,
+            "positive": 0, "negative": 3, "neutral": 0,
+            "evidenceIds": ["c2", "c-shared"],
+        },
+        {
+            "id": "market-gold", "title": "黄金避险与美元流向",
+            "summary": "美元、黄金与避险资金的具体讨论" * 12, "mentions": 10,
+            "positive": 0, "negative": 0, "neutral": 10,
+            "evidenceIds": ["c-not-selected"],
+        },
+    ])
+
+    row = provider.market_outlook("3033", "d7")["list"][0]
+
+    assert "海力士 HBM" in row["summary"]
+    assert "美联储议息预期" in row["summary"]
+    assert "同类产品" not in row["summary"]
+    assert "黄金避险" not in row["summary"]
+    assert row["evidenceIds"] == ["c1", "c-shared", "c2"]
+    assert row["sentiment"] == "neutral_bearish"
+
+
+def test_demo_market_outlook_distinguishes_unknown_from_known_empty(monkeypatch):
+    provider = DemoProvider()
+    monkeypatch.setattr(provider, "pool", lambda range_key: None)
+    monkeypatch.setattr(provider, "topics_for", lambda code, range_key: MISSING)
+    assert provider.market_outlook("3033", "d7") is None
+
+    monkeypatch.setattr(provider, "pool", lambda range_key: {
+        "list": [{
+            "code": "3033",
+            "attitude": {"positive": 0, "negative": 0, "neutral": 0},
+        }],
+    })
+    monkeypatch.setattr(provider, "topics_for", lambda code, range_key: [])
+    assert provider.market_outlook("3033", "d7") == {"scope": "product", "list": []}
 
 
 class TestThemesAndNegCats:
@@ -280,29 +413,182 @@ class TestTopicsAndHot:
                        "value": {"title": "恒指方向争论", "summary": "多条评论看空大市。"}}])
         assert p.topics_for(OWN_CODE, "d1")[0]["title"] == "恒指方向争论"
 
-    def test_market_outlook_uses_topic_label_and_keeps_current_product_first(self, provider):
+    def test_market_outlook_uses_topic_label_and_only_returns_current_product(self, provider):
         assert provider.market_outlook(OWN_CODE, "d1") is None
         p = annotated(provider)
         pending = p.market_outlook(OWN_CODE, "d1")
+        assert pending["scope"] == "product"
+        assert [row["code"] for row in pending["list"]] == [OWN_CODE]
         assert pending["list"][0] == {
             "code": OWN_CODE,
             "name": p._by_code[OWN_CODE]["name"],
             "status": "unavailable",
+            "attitude": "positive",
+            "attitudeLabel": "积极偏多",
+            "attitudeStatus": "ok",
             "sentiment": "bearish",
             "sentimentLabel": "看空",
             "summary": None,
+            "stale": False,
+            "reviewState": None,
+            "evidenceIds": [],
         }
-        assert len(pending["list"]) <= 5
-        assert len({row["code"] for row in pending["list"]}) == len(pending["list"])
 
         add_synth(p, [{
             "kind": "topic_label", "subkey": "market",
             "value": {"title": "恒指方向争论", "summary": "多条评论看空大市。"},
         }])
+        current_topic = p.topics_for(OWN_CODE, "d1")[0]
+        assert current_topic["labelStatus"] == "ok"
+        assert current_topic["stale"] is False
         generated = p.market_outlook(OWN_CODE, "d1")["list"][0]
         assert generated["status"] == "ok"
+        assert generated["attitude"] == "positive"
         assert generated["sentiment"] == "bearish"
         assert generated["summary"] == "多条评论看空大市。"
+        assert generated["stale"] is False
+        assert generated["reviewState"] == "pending"
+        assert generated["evidenceIds"] == ["c100"]
+
+        p._meta[f"synth_dirty_{OWN_CODE}_d1"] = "1"
+        p._cache.clear()
+        stale = p.market_outlook(OWN_CODE, "d1")["list"][0]
+        assert stale["status"] == "unavailable"
+        assert stale["summary"] is None
+        assert stale["stale"] is True
+        assert stale["reviewState"] == "pending"
+        assert stale["evidenceIds"] == ["c100"]
+
+    def test_market_outlook_rejects_old_topic_prompt_version_without_affecting_generation_marker(
+        self, provider,
+    ):
+        p = annotated(provider)
+        add_synth(p, [{
+            "kind": "topic_label",
+            "subkey": "market",
+            "prompt_version": "synth-v7",
+            "value": {"title": "旧版市场方向", "summary": "旧版泛化摘要。"},
+            "evidence_ids": ["c-old"],
+        }])
+
+        topic = p.topics_for(OWN_CODE, "d1")[0]
+        assert topic["title"] == "市场方向与指数走势讨论"
+        assert topic["labelStatus"] == "unavailable"
+        assert topic["stale"] is True
+        assert topic["evidenceIds"] == ["c-old"]
+
+        row = p.market_outlook(OWN_CODE, "d1")["list"][0]
+        assert row["status"] == "unavailable"
+        assert row["summary"] is None
+        assert row["stale"] is True
+        assert row["evidenceIds"] == ["c-old"]
+
+        published = p._published(OWN_CODE, "d1", "topic_label")
+        assert published == ("2026-08-25", f"fp-{OWN_CODE}-d1-topic_label")
+
+    def test_prompt_version_guard_is_scoped_to_topic_label(self, provider):
+        p = annotated(provider)
+        add_synth(p, [{
+            "kind": "theme_label",
+            "subkey": "positive|fee",
+            "prompt_version": "synth-v7",
+            "value": {
+                "key": "positive|fee",
+                "title": "旧版但仍兼容的费率主题",
+                "summary": "评论认可管理费水平。",
+            },
+        }])
+
+        theme = p.themes_for(OWN_CODE, "d1")["positive"][0]
+        assert theme["title"] == "旧版但仍兼容的费率主题"
+        assert theme["labelStatus"] == "ok"
+
+    def test_market_outlook_known_empty_is_not_unknown(self, provider, monkeypatch):
+        monkeypatch.setattr(provider, "_units", lambda code, rng: {
+            "units": [], "opinion_units": [], "market": [],
+        })
+        monkeypatch.setattr(provider, "topics_for", lambda code, range_key: [])
+
+        assert provider.market_outlook(OWN_CODE, "d1") == {
+            "scope": "product", "list": [],
+        }
+
+    def test_market_outlook_attitude_does_not_follow_opposite_market_direction(self, provider):
+        p = annotated(provider, n_pos=91, n_neg=209, market_direction="bullish")
+        add_synth(p, [{
+            "kind": "topic_label", "subkey": "market",
+            "value": {"title": "韩国股市与芯片业绩", "summary": "讨论押注芯片财报带动韩国股市短线反弹。"},
+        }])
+
+        row = p.market_outlook(OWN_CODE, "d1")["list"][0]
+
+        assert row["attitude"] == "negative"
+        assert row["attitudeLabel"] == "消极偏多"
+        assert row["sentiment"] == "bullish"
+        assert row["sentimentLabel"] == "看多"
+        assert row["summary"] == "讨论押注芯片财报带动韩国股市短线反弹。"
+
+    @pytest.mark.parametrize(("attitude", "content", "label"), [
+        ("positive", "今日加仓这只 ETF", "积极偏多"),
+        ("negative", "这只 ETF 全部卖出，不再买入", "消极偏多"),
+    ])
+    def test_market_outlook_counts_pure_purchase_intent_as_opinion(
+        self, provider, attitude, content, label,
+    ):
+        p = annotated(provider, n_pos=1, n_neg=1, market_direction="bullish")
+        add_purchase_intents(p, attitude, content)
+
+        units = p._units(OWN_CODE, p.build_range("d1"))
+        assert len(units["units"]) == 2
+        assert len(units["opinion_units"]) == 12
+
+        row = p.market_outlook(OWN_CODE, "d1")["list"][0]
+        assert row["attitude"] == attitude
+        assert row["attitudeLabel"] == label
+        assert row["sentiment"] == "bullish"
+
+    def test_market_outlook_keeps_purchase_opinion_without_market_direction(self, provider):
+        add_purchase_intents(provider, "positive", "今日加仓这只 ETF")
+
+        row = provider.market_outlook(OWN_CODE, "d1")["list"][0]
+
+        assert row["status"] == "empty"
+        assert row["attitude"] == "positive"
+        assert row["attitudeLabel"] == "积极偏多"
+        assert row["sentiment"] is None
+        assert row["summary"] is None
+
+    def test_market_outlook_neutral_only_opinions_are_low_sample(self, provider):
+        add_purchase_intents(
+            provider, "neutral", "先观察成交量与折溢价", count=12,
+        )
+
+        row = provider.market_outlook(OWN_CODE, "d1")["list"][0]
+
+        assert row["status"] == "empty"
+        assert row["attitude"] is None
+        assert row["attitudeStatus"] == "low_sample"
+        assert row["sentiment"] is None
+
+    def test_market_outlook_keeps_market_summary_without_purchase_opinion(self, provider):
+        add_annotations(provider, [
+            {"annotation_id": 2000, "target_id": 11,
+             "kind": "relevance", "value": "relevant"},
+            {"annotation_id": 2001, "target_id": 11,
+             "kind": "market_direction", "value": "bullish"},
+        ])
+        add_synth(provider, [{
+            "kind": "topic_label", "subkey": "market",
+            "value": {"title": "市场反弹", "summary": "评论认为指数存在反弹机会。"},
+        }])
+
+        row = provider.market_outlook(OWN_CODE, "d1")["list"][0]
+
+        assert row["status"] == "ok"
+        assert row["attitude"] is None
+        assert row["attitudeStatus"] == "unavailable"
+        assert row["sentiment"] == "bullish"
+        assert row["summary"] == "评论认为指数存在反弹机会。"
 
     def test_hot_summary_three_states(self, provider):
         p = annotated(provider)
@@ -453,6 +739,10 @@ class TestCompetitorsAndKol:
             {"annotation_id": 954, "target_id": 102, "kind": "kol_summary", "value": "第三条真实观点"},
             {"annotation_id": 955, "target_id": 102, "kind": "kol_action", "value": "未提及操作"},
             {"annotation_id": 956, "target_id": 102, "kind": "relevance", "value": "relevant"},
+            {"annotation_id": 957, "target_id": 2, "target_type": "feed", "subject_code": "",
+             "kind": "post_type", "value": "market"},
+            {"annotation_id": 958, "target_id": 2, "target_type": "feed", "subject_code": "",
+             "kind": "summary", "value": "AI 摘要：费率较低，适合长期持有"},
         ])
         add_evidence(p, [{"evidence_id": 1, "annotation_id": 954, "source_target_id": 102,
                           "start_offset": 0, "end_offset": 5, "quote_text": "第三条真实"}])
@@ -463,6 +753,8 @@ class TestCompetitorsAndKol:
         k = km["list"][0]
         assert k["kolName"] == KOL_NAME and k["mentionCommentCount"] == 3
         assert k["dominantAttitude"] is None, "只有 2 条有效态度，不能用 3 条观点越过态度阈值"
+        assert k["latestPostAt"] == "2026-08-25 09:00"
+        assert k["representativeSummary"] == "AI 摘要：费率较低，适合长期持有"
         assert k["representativeExcerpt"] == FEED_TEXT
         assert [e["sourceKind"] for e in k["evidence"]].count("帖子") == 1
         comments = {e["id"].rsplit("-", 1)[-1]: (e["attitude"], e["attitudeLabel"])
@@ -471,6 +763,25 @@ class TestCompetitorsAndKol:
         assert p.kol_mentions_for(PEER_CODE, "d1") == {
             "status": "empty", "scope": "合作 KOL 名单", "list": [],
         }
+
+    @pytest.mark.parametrize("summary_value", [None, False], ids=["missing", "explicit-none"])
+    def test_kol_mentions_keep_post_summary_nullable_and_raw_excerpt(self, provider, summary_value):
+        rows = [
+            {"annotation_id": 950, "target_id": 2, "target_type": "feed", "subject_code": "",
+             "kind": "post_type", "value": "market"},
+        ]
+        if summary_value is not None:
+            rows.append({
+                "annotation_id": 951, "target_id": 2, "target_type": "feed", "subject_code": "",
+                "kind": "summary", "value": summary_value,
+            })
+        add_annotations(provider, rows)
+
+        row = provider.kol_mentions_for(OWN_CODE, "d1")["list"][0]
+
+        assert row["representativeSummary"] is None
+        assert row["representativeExcerpt"] == FEED_TEXT
+        assert row["evidence"][0]["excerpt"] == FEED_TEXT
 
     def test_kol_mentions_use_attitude_only_for_the_dominant_label(self, provider):
         p = annotated(provider)
@@ -538,13 +849,13 @@ class TestCompetitorsAndKol:
     def test_kol_mentions_fall_back_to_confirmed_comments_without_a_related_kol_post(self, provider):
         with provider._engine.begin() as conn:
             conn.execute(update(feeds).where(feeds.c.feed_id == 3).values(code=PEER_CODE))
-        add_comments(provider, [{"comment_id": 100, "feed_id": 3, "content": "竞品流动性不错",
+        add_comments(provider, [{"comment_id": 100, "feed_id": 3, "content": "原评论：成交很顺畅，但仍要留意价差。",
                                  "author_name": KOL_NAME}])
         add_annotations(provider, [
             {"annotation_id": 949, "target_id": 100, "subject_code": PEER_CODE,
              "kind": "relevance", "value": "relevant"},
             {"annotation_id": 950, "target_id": 100, "subject_code": PEER_CODE,
-             "kind": "kol_summary", "value": "竞品流动性不错"},
+             "kind": "kol_summary", "value": "AI 摘要：竞品流动性不错"},
         ])
 
         km = provider.kol_mentions_for(PEER_CODE, "d1")
@@ -552,8 +863,65 @@ class TestCompetitorsAndKol:
         assert km["status"] == "ok" and len(km["list"]) == 1
         row = km["list"][0]
         assert row["kolName"] == KOL_NAME and row["mentionCommentCount"] == 1
-        assert row["representativeExcerpt"] == "竞品流动性不错"
+        assert row["latestPostAt"] is None
+        assert row["representativeSummary"] == "AI 摘要：竞品流动性不错"
+        assert row["representativeExcerpt"] == "原评论：成交很顺畅，但仍要留意价差。"
         assert row["evidence"][0]["sourceKind"] == "评论"
+
+    def test_kol_mentions_sort_by_latest_post_then_put_comment_only_accounts_last(self, provider):
+        names = sorted(
+            k["name"] for k in provider._kols
+            if k.get("active") and k["name"] != KOL_NAME
+        )[:3]
+        with provider._engine.begin() as conn:
+            conn.execute(insert(feeds), [
+                {
+                    "feed_id": 20 + i, "code": OWN_CODE, "source_ticker": f"0{OWN_CODE}.HK",
+                    "posted_at": datetime(2026, 8, 25, 7), "feed_type": 1,
+                    "author_uid": f"tie-kol-{i}", "author_name": name,
+                    "title": None, "content": f"{name} 的新原帖", "like_count": 0,
+                    "comment_count": 0, "image_count": 0, "share_count": 0,
+                    "browse_count": 0, "raw_json_broken": False,
+                }
+                for i, name in enumerate(names[:2])
+            ])
+            conn.execute(insert(mentions), [
+                {"feed_id": 20 + i, "code": OWN_CODE, "source": "anchor", "in_pool": True}
+                for i in range(2)
+            ])
+
+        # 旧原帖 KOL 的评论更新且数量更多，也不得越过 15:00 的新原帖。
+        # 只有评论的账号即使时间最新，仍保留在原帖账号之后。
+        add_comments(provider, [
+            {"comment_id": 200, "content": "旧原帖 KOL 的新评论一", "author_name": KOL_NAME},
+            {"comment_id": 201, "content": "旧原帖 KOL 的新评论二", "author_name": KOL_NAME},
+            {"comment_id": 202, "content": "只评论账号的最新观点", "author_name": names[2]},
+        ])
+        with provider._engine.begin() as conn:
+            conn.execute(update(comments).where(comments.c.comment_id.in_([200, 201])).values(
+                posted_at=datetime(2026, 8, 25, 9),
+            ))
+            conn.execute(update(comments).where(comments.c.comment_id == 202).values(
+                posted_at=datetime(2026, 8, 25, 10),
+            ))
+        add_annotations(provider, [
+            {"annotation_id": 970 + i * 2, "target_id": 200 + i,
+             "kind": "relevance", "value": "relevant"}
+            for i in range(3)
+        ] + [
+            {"annotation_id": 971 + i * 2, "target_id": 200 + i,
+             "kind": "kol_summary", "value": f"第 {i + 1} 条 AI 观点"}
+            for i in range(3)
+        ])
+
+        rows = provider.kol_mentions_for(OWN_CODE, "d1")["list"]
+
+        assert [row["kolName"] for row in rows] == [names[0], names[1], KOL_NAME, names[2]]
+        assert [row["latestPostAt"] for row in rows] == [
+            "2026-08-25 15:00", "2026-08-25 15:00", "2026-08-25 09:00", None,
+        ]
+        assert rows[2]["lastMentionedAt"] == "2026-08-25 17:00"
+        assert rows[3]["lastMentionedAt"] == "2026-08-25 18:00"
 
     def test_kol_opinions_need_the_kol_task(self, provider):
         p = annotated(provider, kol_n=2)

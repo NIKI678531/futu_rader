@@ -119,8 +119,66 @@ def test_kol_mentions_shape_and_scope(client, own_code):
     assert data["scope"] == "合作 KOL 名单"
     for k in data["list"]:
         assert {"kolName", "kolType", "kolTypeLabel", "mentionCommentCount",
-                "lastMentionedAt", "representativeExcerpt", "evidence"} <= set(k)
+                "lastMentionedAt", "latestPostAt", "representativeSummary",
+                "representativeExcerpt", "evidence"} <= set(k)
         assert k["productCode"] == own_code
+
+
+def test_kol_mentions_are_post_first_and_newest_first(client, codes):
+    """有原帖的账号按最新原帖排序；仅评论账号保留在后并按最新评论排序。"""
+    seen = {"post": 0, "comment_only": 0}
+    for code in codes:
+        rows = get(client, code, "kol-mentions")["data"]["list"]
+        post_rows = [row for row in rows if row["latestPostAt"] is not None]
+        comment_rows = [row for row in rows if row["latestPostAt"] is None]
+        assert rows == [*post_rows, *comment_rows]
+        expected_posts = sorted(post_rows, key=lambda row: row["kolName"])
+        expected_posts.sort(key=lambda row: row["latestPostAt"], reverse=True)
+        expected_comments = sorted(comment_rows, key=lambda row: row["kolName"])
+        expected_comments.sort(key=lambda row: row["lastMentionedAt"] or "", reverse=True)
+        assert post_rows == expected_posts
+        assert comment_rows == expected_comments
+        seen["post"] += len(post_rows)
+        seen["comment_only"] += len(comment_rows)
+    assert all(seen.values()), "演示数据必须同时覆盖原帖账号与仅评论账号"
+
+
+def test_demo_kol_mentions_merge_post_summary_and_raw_evidence(client):
+    """产品页复用 KOL 页原帖：列表用摘要，证据仍保留正文，最新评论不改原帖排序。"""
+    rows = get(client, "3037", "kol-mentions", "?range=d7")["data"]["list"]
+
+    assert [row["kolName"] for row in rows[:2]] == ["牛头法师", "陈达美股投资"]
+    assert all(row["latestPostAt"] is not None for row in rows[:2])
+    assert all(row["latestPostAt"] is None for row in rows[2:])
+
+    row = rows[0]
+    raw = (
+        "今天把 $盈富基金（2800.HK）$ 清了，换成 $恒生指數ETF（3037.HK）$，两张成交单都贴出来。\n"
+        "换的理由很简单：盘口厚、价差小，几笔大单进出基本没冲击。\n"
+        "仓位不变，只是换了标的。"
+    )
+    assert row["latestPostAt"] == "2026-08-29 22:44"
+    assert row["representativeSummary"] == (
+        "晒出同日买入 恒生指數ETF、卖出 盈富基金 的成交记录，理由是前者盘口更厚、价差更小。"
+    )
+    assert row["representativeExcerpt"] == raw
+    post_evidence = next(item for item in row["evidence"] if item["sourceKind"] == "帖子")
+    assert post_evidence["excerpt"] == raw
+    assert post_evidence["sourceUrl"] == "https://www.futunn.com/post/8651204"
+
+    newer_comment = rows[1]
+    assert newer_comment["lastMentionedAt"] == "2026-08-30 13:12"
+    assert newer_comment["latestPostAt"] == "2026-08-27 16:44"
+
+
+def test_demo_kol_mentions_add_post_only_accounts(client):
+    """旧评论 fixture 中没有的 KOL，也会因相关原帖进入产品页。"""
+    rows = get(client, "3033", "kol-mentions", "?range=d30")["data"]["list"]
+    row = next(item for item in rows if item["kolName"] == "年頭旺到年尾")
+
+    assert row["latestPostAt"] == row["lastMentionedAt"] == "2026-08-04 11:24"
+    assert row["mentionCommentCount"] == row["evidenceCount"] == 1
+    assert [item["sourceKind"] for item in row["evidence"]] == ["帖子"]
 
 
 def test_dominant_attitude_is_null_below_three_samples(client, codes):
@@ -133,7 +191,11 @@ def test_dominant_attitude_is_null_below_three_samples(client, codes):
     seen = {True: 0, False: 0}
     for c in codes:
         for k in get(client, c, "kol-mentions")["data"]["list"]:
-            low = k["mentionCommentCount"] < 3
+            attitude_samples = sum(
+                item.get("attitude") in {"positive", "negative", "neutral"}
+                for item in k["evidence"]
+            )
+            low = attitude_samples < 3
             assert (k["dominantAttitude"] is None) is low, (c, k["kolName"])
             assert (k["dominantLabel"] is None) is low, (c, k["kolName"])
             seen[low] += 1
@@ -168,10 +230,10 @@ def test_kol_mentions_status_distinguishes_empty_from_unavailable(client, codes)
 
 
 def test_kol_mention_rows_carry_their_own_evidence(client, own_code):
-    """KOL 提及每行自带原帖，**不走** evidence 端点。
+    """KOL 提及每行自带相关原帖／评论的原文证据，**不走** evidence 端点。
 
     侧栏点开的是「这个 KOL 提到本产品的那几条」，它已经在行里了；再去 evidence 端点
-    按 ctxKey 取一遍，取回来的会是另一个口径下的帖子。
+    按 ctxKey 取一遍，取回来的会是另一个口径下的证据。
     """
     rows = get(client, own_code, "kol-mentions")["data"]["list"]
     assert rows

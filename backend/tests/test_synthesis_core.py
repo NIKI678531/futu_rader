@@ -226,55 +226,120 @@ class TestTopics:
         assert topics.classify_market_sentiment(None, 2, 1) == unavailable
         assert topics.classify_market_sentiment(0, 0, 0) == unavailable
 
-    def test_market_outlook_selection_preserves_pool_states_and_current_first(self):
-        products = [{"code": code} for code in ("1000", "1001", "1002", "1003", "1004", "1005")]
-        assert topics.select_market_outlook_codes(
-            products, "1000", {product["code"]: None for product in products},
-        ) is None
-        assert topics.select_market_outlook_codes(
-            products, "1000", {product["code"]: 0 for product in products},
-        ) == []
-        selected = topics.select_market_outlook_codes(
-            products, "1000",
-            {"1000": None, "1001": 3, "1002": 8, "1003": 3, "1004": 0, "1005": None},
-        )
-        assert selected == ["1000", "1002", "1001", "1003", "1004"]
+    @pytest.mark.parametrize(("counts", "attitude", "label"), [
+        ((9, 1), "positive", "积极偏多"),
+        ((6, 4), "neutral_positive", "中性偏积极"),
+        ((5, 5), "neutral", "中性"),
+        ((4, 6), "neutral_negative", "中性偏消极"),
+        ((1, 9), "negative", "消极偏多"),
+        ((91, 209), "negative", "消极偏多"),
+    ])
+    def test_product_opinion_uses_positive_negative_only(self, counts, attitude, label):
+        result = topics.classify_product_opinion(*counts)
+        assert result == {
+            "attitude": attitude,
+            "attitudeLabel": label,
+            "attitudeStatus": "ok",
+        }
 
-    def test_7709_market_outlook_selection_is_scoped_to_current_product(self):
-        products = [{"code": "7709"}, {"code": "3033"}]
-        assert topics.market_outlook_scope("7709") == "product"
-        assert topics.market_outlook_scope("3033") == "market"
-        assert topics.select_market_outlook_codes(
-            products, "7709", {"7709": 3, "3033": 99},
-        ) == ["7709"]
-        assert topics.select_market_outlook_codes(
-            products, "7709", {"7709": 0, "3033": 99},
-        ) == []
-        assert topics.select_market_outlook_codes(
-            products, "7709", {"7709": None, "3033": 99},
-        ) is None
+    def test_product_opinion_preserves_unknown_and_low_sample(self):
+        assert topics.classify_product_opinion(None, 2)["attitudeStatus"] == "unavailable"
+        assert topics.classify_product_opinion(0, 0)["attitudeStatus"] == "unavailable"
+        neutral_only = topics.classify_product_opinion(0, 0, 12)
+        assert neutral_only["attitudeStatus"] == "low_sample"
+        assert neutral_only["attitude"] is None
+        low = topics.classify_product_opinion(4, 5)
+        assert low["attitudeStatus"] == "low_sample"
+        assert low["attitude"] is None
+        assert "sentiment" not in low
+
+    def test_market_discussion_count_preserves_unknown_empty_and_known(self):
+        assert topics.market_discussion_count(None) is None
+        assert topics.market_discussion_count([]) == 0
+        assert topics.market_discussion_count([
+            {"mentions": 2}, {"mentions": 3}, {"mentions": None},
+        ]) == 5
 
     def test_market_outlook_row_keeps_unavailable_empty_and_generated_apart(self):
         product = {"code": "3033", "name": "恒指 ETF"}
-        assert topics.market_outlook_row(product, None) == {
+        assert topics.market_outlook_row(product, None, None) == {
             "code": "3033", "name": "恒指 ETF", "status": "unavailable",
-            "sentiment": None, "sentimentLabel": None, "summary": None,
+            "summary": None, "attitude": None, "attitudeLabel": None,
+            "attitudeStatus": "unavailable", "sentiment": None, "sentimentLabel": None,
+            "stale": None, "reviewState": None, "evidenceIds": [],
         }
-        assert topics.market_outlook_row(product, [])["status"] == "empty"
+        empty_market = topics.market_outlook_row(
+            product, [], {"positive": 0, "negative": 0, "neutral": 0},
+        )
+        assert empty_market["status"] == "empty"
+        assert empty_market["attitude"] is None
+
+        neutral_only = topics.market_outlook_row(
+            product, [], {"positive": 0, "negative": 0, "neutral": 12},
+        )
+        assert neutral_only["attitudeStatus"] == "low_sample"
+        assert neutral_only["attitude"] is None
+
+        opinion_only = topics.market_outlook_row(
+            product, [], {"positive": 9, "negative": 1, "neutral": 0},
+        )
+        assert opinion_only["status"] == "empty"
+        assert opinion_only["attitude"] == "positive"
+        assert opinion_only["attitudeLabel"] == "积极偏多"
+        assert opinion_only["sentiment"] is None
+
+        unknown_market = topics.market_outlook_row(
+            product, None, {"positive": 1, "negative": 9, "neutral": 0},
+        )
+        assert unknown_market["status"] == "unavailable"
+        assert unknown_market["attitude"] == "negative"
+        assert unknown_market["sentiment"] is None
         pending = topics.market_outlook_row(product, [{
             "id": "3033-tp-market", "mentions": 4, "positive": 3,
             "negative": 1, "neutral": 0, "labelStatus": "unavailable",
             "summary": "这是确定性后端占位句。",
-        }])
+        }], {"positive": 91, "negative": 209, "neutral": 286})
+        assert pending["attitude"] == "negative"
+        assert pending["attitudeLabel"] == "消极偏多"
         assert pending["sentiment"] == "bullish"
+        assert pending["sentimentLabel"] == "看多"
         assert pending["status"] == "unavailable" and pending["summary"] is None
         generated = topics.market_outlook_row(product, [{
             "id": "3033-tp-market", "mentions": 4, "positive": 3,
             "negative": 1, "neutral": 0, "labelStatus": "ok",
             "summary": "美联储降息预期推动讨论偏多。",
-        }])
+            "stale": False, "reviewState": "pending", "evidenceIds": ["c1", "c2"],
+        }], {"positive": 91, "negative": 209, "neutral": 286})
         assert generated["status"] == "ok"
+        assert generated["attitude"] == "negative"
+        assert generated["sentiment"] == "bullish"
         assert generated["summary"] == "美联储降息预期推动讨论偏多。"
+        assert generated["stale"] is False
+        assert generated["reviewState"] == "pending"
+        assert generated["evidenceIds"] == ["c1", "c2"]
+
+        stale = topics.market_outlook_row(product, [{
+            "id": "3033-tp-market", "mentions": 4, "positive": 3,
+            "negative": 1, "neutral": 0, "labelStatus": "ok",
+            "summary": "旧的泛化市场观点。", "stale": True,
+            "reviewState": "pending", "evidenceIds": ["c-old"],
+        }], {"positive": 91, "negative": 209, "neutral": 286})
+        assert stale["status"] == "unavailable"
+        assert stale["summary"] is None
+        assert stale["stale"] is True
+        assert stale["reviewState"] == "pending"
+        assert stale["evidenceIds"] == ["c-old"]
+
+        market_only = topics.market_outlook_row(product, [{
+            "id": "3033-tp-market", "mentions": 4, "positive": 3,
+            "negative": 1, "neutral": 0, "labelStatus": "ok",
+            "summary": "市场观点摘要。",
+        }], None)
+        assert market_only["status"] == "ok"
+        assert market_only["attitude"] is None
+        assert market_only["attitudeStatus"] == "unavailable"
+        assert market_only["sentiment"] == "bullish"
+        assert market_only["summary"] == "市场观点摘要。"
 
 
 # ── stages ─────────────────────────────────────────────────────────────

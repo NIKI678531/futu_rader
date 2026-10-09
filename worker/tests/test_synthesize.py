@@ -54,13 +54,39 @@ class TestSynthSchemas:
         assert ok.text.startswith("分派")
         assert synth.parse(
             "topic_label",
-            {"title": "恒科反弹", "summary": "长" * 100, "evidence_ids": ["c1"]},
+            {"title": "恒科反弹", "summary": "长" * 89 + "。" + "短" * 89 + "。", "evidence_ids": ["c1"]},
             {"c1"},
-        ).summary == "长" * 100
+        ).summary == "长" * 89 + "。" + "短" * 89 + "。"
         with pytest.raises(SchemaError, match="上限"):
             synth.parse(
                 "topic_label",
-                {"title": "恒科反弹", "summary": "长" * 101, "evidence_ids": ["c1"]},
+                {"title": "恒科反弹", "summary": "长" * 90 + "。" + "短" * 89 + "。", "evidence_ids": ["c1"]},
+                {"c1"},
+            )
+
+    def test_topic_summary_requires_two_to_four_grounded_sentences(self):
+        with pytest.raises(SchemaError, match="2–4 句"):
+            synth.parse(
+                "topic_label",
+                {"title": "存储景气修复", "summary": "评论关注存储行业景气修复。", "evidence_ids": ["c1"]},
+                {"c1"},
+            )
+        with pytest.raises(SchemaError, match="至少引用"):
+            synth.parse(
+                "topic_label",
+                {"title": "存储景气修复", "summary": "评论关注存储行业景气修复。短线仍有分歧。", "evidence_ids": []},
+                {"c1"},
+            )
+        with pytest.raises(SchemaError, match="泛化套话"):
+            synth.parse(
+                "topic_label",
+                {"title": "市场方向", "summary": "评论预期市场回升。短线观点存在分歧。", "evidence_ids": ["c1"]},
+                {"c1"},
+            )
+        with pytest.raises(SchemaError, match="泛化套话"):
+            synth.parse(
+                "topic_label",
+                {"title": "市场方向", "summary": "市场关注度升温。整体情绪偏乐观。", "evidence_ids": ["c1"]},
                 {"c1"},
             )
 
@@ -86,16 +112,25 @@ class TestSynthSchemas:
 
     def test_summary_prompt_is_experience_led_instead_of_polarity_led(self):
         prompt = synth.system_prompt("summary")
-        assert synth.VERSION == "synth-v6"
+        assert synth.VERSION == "synth-v8"
+        assert synth.VERSION == synthesize.core_topics.MARKET_OUTLOOK_SYNTH_VERSION
         assert "具体产品体验／使用场景／讨论现象" in prompt
         assert "不得按「积极观点／消极观点」分组" in prompt
 
     def test_topic_prompt_returns_a_standalone_market_outlook(self):
         prompt = synth.system_prompt("topic_label")
-        assert "不超过 100 字" in prompt
-        assert "市场风向" in prompt
+        assert "2–4 句、不超过 180 字" in prompt
+        assert "市场观点" in prompt
         assert "不能把群体观点写成系统自己的预测" in prompt
         assert "不评价 ETF 的费率" in prompt
+        assert "具体市场对象与行情 → 驱动或制约因素 → 对相关行业／成分股的影响链路 → 短线取向与分歧" in prompt
+        assert "产品态度" in prompt
+        assert "押注" in prompt
+        assert "每句至少保留一个证据原文中的具体锚点" in prompt
+        assert "美光财报超预期、存储缺货、回购、景气修复、海力士补涨" in prompt
+        assert "示例名词不是默认事实" in prompt
+        assert "sampleSufficient=false" in prompt
+        assert "只总结带 `market_direction` 的行情证据" in prompt
 
     def test_theme_rejects_generic_product_experience_title(self):
         raw = {"results": [{"key": "positive|other_product", "title": "产品整体体验获认可",
@@ -195,6 +230,168 @@ def test_today_anchor_is_observed_and_never_joins_default_batch_ranges(engine):
         synthesize.resolve_anchor(engine, ["d0", "d1"])
 
 
+def test_7709_topic_payload_keeps_specific_comment_context_instead_of_short_direction_quote():
+    class TopicMaterial:
+        code = "7709"
+        rng = {
+            "from": "2026-08-25",
+            "gran": "day",
+            "buckets": [
+                {"label": "08-25", "tip": "08-25（周二）全天"},
+                {"label": "08-26", "tip": "08-26（周三）全天"},
+            ],
+        }
+        units = []
+        opinion_units = []
+        pos = neg = neu = 0
+        opinion_pos = opinion_neg = opinion_neu = 0
+
+        def __init__(self):
+            specific = {
+                20: "美光财报超预期，管理层谈到存储缺货与供应偏紧，评论据此关注海力士后续补涨。",
+                21: "HBM订单与DRAM价格上修被视为存储景气修复的信号，但也有评论担心估值已经提前反映。",
+                22: "公司回购预期叠加供应链库存去化，讨论认为可能改善半导体板块的短线风险偏好。",
+            }
+            generic = {cid: "继续看多，等上涨。" for cid in range(1, 9)}
+            self._texts = {**generic, **specific}
+            self._quotes = {cid + 100: "看涨" for cid in self._texts}
+            self.market_units = [
+                {
+                    "comment_id": cid,
+                    "market_direction": "bullish",
+                    "posted_at": datetime(2026, 8, 25 + (cid % 2), 12),
+                    "annotation_id": cid + 100,
+                }
+                for cid in self._texts
+            ]
+
+        def texts(self):
+            return self._texts
+
+        def quotes(self):
+            return self._quotes
+
+    facts, evidence, allowed = synthesize.build_topic_payload(TopicMaterial())
+    market_evidence = [item for item in evidence if item.get("market_direction")]
+    texts = [item["text"] for item in market_evidence]
+
+    assert facts["topic"] == {"bullish": 11, "bearish": 0, "neutral": 0, "mentions": 11}
+    assert any("美光财报超预期" in text and "海力士后续补涨" in text for text in texts)
+    assert any("HBM订单" in text and "DRAM价格上修" in text for text in texts)
+    assert sum(text == "继续看多，等上涨。" for text in texts) == 1
+    assert all(item.get("direction_quote") == "看涨" for item in market_evidence)
+    assert allowed == {item["id"] for item in evidence}
+
+
+def test_topic_opinion_includes_trading_intent_while_p9_themes_stay_strict(engine):
+    """The market card's opinion facts match the left column; P9 stays product-feedback only."""
+    with engine.begin() as conn:
+        conn.execute(annotations.update().values(review_state="rejected"))
+        conn.execute(insert(comments), [
+            {
+                "comment_id": 200,
+                "feed_id": 1,
+                "content": "财报后准备买入并加仓，继续看好指数反弹。",
+                "author_uid": "trade-positive",
+            },
+            {
+                "comment_id": 201,
+                "feed_id": 1,
+                "content": "点差太大所以减仓，短线看空。",
+                "author_uid": "feedback-negative-1",
+            },
+            {
+                "comment_id": 202,
+                "feed_id": 1,
+                "content": "盘口价差吃掉收益，暂时不想持有。",
+                "author_uid": "feedback-negative-2",
+            },
+        ])
+        rows_to_insert = []
+        annotation_id = 1000
+        values = {
+            200: {
+                "relevance": "relevant",
+                "attitude": "positive",
+                "aspect": ["trading_intent"],
+                "feedback_eligible": False,
+                "market_direction": "bullish",
+            },
+            201: {
+                "relevance": "relevant",
+                "attitude": "negative",
+                "aspect": ["spread", "trading_intent"],
+                "feedback_eligible": True,
+                "market_direction": "bearish",
+            },
+            202: {
+                "relevance": "relevant",
+                "attitude": "negative",
+                "aspect": ["spread"],
+                "feedback_eligible": True,
+                "market_direction": "bearish",
+            },
+        }
+        for comment_id, by_kind in values.items():
+            for kind, value in by_kind.items():
+                annotation_id += 1
+                rows_to_insert.append({
+                    "annotation_id": annotation_id,
+                    "target_type": "comment",
+                    "target_id": comment_id,
+                    "subject_code": CODE,
+                    "kind": kind,
+                    "value_json": json.dumps(value, ensure_ascii=False),
+                    "run_id": "r1",
+                    "input_hash": f"opinion-{comment_id}-{kind}",
+                    "review_state": "pending",
+                    "created_at": datetime(2026, 8, 26, 13),
+                })
+        conn.execute(insert(annotations), rows_to_insert)
+
+    rng = synthesize.build_range("d7", synthesize.read_anchor(engine))
+    mat = synthesize.Material(
+        engine,
+        CODE,
+        rng,
+        object(),
+        load_comment_filter_config(),
+    )
+
+    assert {unit["comment_id"] for unit in mat.opinion_units} == {200, 201, 202}
+    assert {unit["comment_id"] for unit in mat.units} == {201, 202}
+    assert (mat.opinion_pos, mat.opinion_neg, mat.opinion_neu) == (1, 2, 0)
+    assert (mat.pos, mat.neg, mat.neu) == (0, 2, 0)
+
+    topic_facts, topic_evidence, _allowed = synthesize.build_topic_payload(mat)
+    assert topic_facts["productAttitude"] == {
+        "positive": 1,
+        "negative": 2,
+        "neutral": 0,
+        "sampleSufficient": False,
+    }
+    opinion_evidence = {
+        item["id"] for item in topic_evidence if item.get("product_attitude")
+    }
+    assert opinion_evidence == {"c200", "c201", "c202"}
+
+    theme_facts, theme_evidence, _ids, keys = synthesize.build_theme_payload(mat, "theme_label")
+    assert keys == ["negative|spread"]
+    assert set(theme_facts["buckets"][0]["evidence_ids"]) == {"c201", "c202"}
+    assert {item["id"] for item in theme_evidence} == {"c201", "c202"}
+
+    summary_facts, _summary_evidence, _summary_ids = synthesize.build_summary_payload(
+        mat,
+        {"theme_label": {}, "neg_category": {}},
+    )
+    assert summary_facts["attitude"] == {
+        "positive": 0,
+        "negative": 2,
+        "neutral": 0,
+        "relevant": 2,
+    }
+
+
 @pytest.fixture()
 def cfg():
     return config.load(model="m", prompt_version="comment-product-v2", schema_version="v2", taxonomy_version="v2")
@@ -230,7 +427,11 @@ class FakeSynthProvider:
         elif kind == "stage_summary":
             data = {"results": [{"key": s["key"], "summary": "連續看多", "evidence_ids": s["evidence_ids"][:1]} for s in f["stages"]]}
         elif kind == "topic_label":
-            data = {"title": "恒指方向", "summary": "多條評論看空大市", "evidence_ids": ids[:1]}
+            data = {
+                "title": "恒指方向",
+                "summary": "評論把恒指回落與風險偏好轉弱相聯繫。部分評論等待恒指成交量確認後再調整倉位。",
+                "evidence_ids": ids[:2],
+            }
         else:
             data = {"results": [{"code": c["code"], "like_reasons": [], "dislike_reasons": [], "evidence_ids": [], "needs_review": True}
                                 for c in f["competitors"]]}
@@ -259,7 +460,12 @@ def test_full_run_writes_each_kind_with_facts_only_from_core(engine, cfg):
     assert topic["facts"]["topic"] == {
         "bullish": 0, "bearish": 3, "neutral": 0, "mentions": 3,
     }
-    assert {item["id"] for item in topic["evidence"]} == {"c110", "c112", "c113"}
+    assert topic["facts"]["productAttitude"] == {
+        "positive": 8, "negative": 4, "neutral": 0, "sampleSufficient": True,
+    }
+    market_evidence = [item for item in topic["evidence"] if item.get("market_direction")]
+    assert {item["id"] for item in market_evidence} == {"c110", "c113"}
+    assert {item.get("product_attitude") for item in topic["evidence"]} >= {"positive", "negative"}
     assert all(e["id"].startswith("c") for e in hot["evidence"])
     assert hot["language"] in ("zh-Hant", "yue")
     assert hot["facts"]["themes"]["positive"][0]["title"] == "費率同類最低"

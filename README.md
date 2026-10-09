@@ -99,6 +99,13 @@ To start the containerized infrastructure:
 docker compose up -d
 ```
 
+## Production Deployment
+
+PRD EKS manifests, environment mapping, image builds, verification and rollback:
+[k8s/README.md](k8s/README.md). Use `docker-compose.prd.yml` for production image
+builds. The existing `docker-compose.yml` remains a local development setup.
+Ingress host and ACM certificate must be filled before applying Ingress.
+
 ## Project Structure
 
 ```text

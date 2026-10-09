@@ -24,6 +24,7 @@ from collection.source import (
     configured_symbols_fingerprint,
 )
 from radar_db import create_all, make_engine
+from radar_db.source_db import make_source_engine
 from radar_db.revisions import ai_source_version
 from radar_db.schema import (
     ai_daily_budget,
@@ -1715,6 +1716,30 @@ def test_market_insight_adapter_uses_stable_keyset_and_all_run_watermark(tmp_pat
     assert adapter.complete_through() == date(2026, 9, 24)
     assert adapter.complete_through("not-an-all-run") is None
     assert adapter.closing_run(date(2026, 9, 24))["run_id"] == "all-1"
+
+    readonly = make_source_engine(source_engine.url)
+    try:
+        report = source_module.inspect_source(readonly, ("3033",), sample_size=1)
+        assert report["status"] == "sample_checked"
+        assert report["productionReady"] is False
+        assert report["samples"]["3033"]["feeds"] == 1
+        assert report["samples"]["3033"]["coverage"] == {"retryable_incomplete": 1}
+        assert report["completeThrough"] == date(2026, 9, 24)
+        assert "detail_updated_at" in {
+            column["name"] for column in report["tables"]["futu_comments_feeds"]["columns"]
+        }
+        serialized = json.dumps(report, default=str, ensure_ascii=False)
+        assert "作者" not in serialized
+        assert "正文" not in serialized
+        with source_engine.begin() as conn:
+            conn.execute(update(source_feeds).where(source_feeds.c.feed_id == 12).values(raw_json="{broken"))
+        failed = source_module.inspect_source(readonly, ("3033",), sample_size=1)
+        assert failed["status"] == "blocked"
+        assert failed["samples"]["3033"]["errors"] == {"invalid_raw_json": 1}
+        with source_engine.begin() as conn:
+            conn.execute(update(source_feeds).where(source_feeds.c.feed_id == 12).values(raw_json="{}"))
+    finally:
+        readonly.dispose()
 
     target = engine(tmp_path)
     result = FutuRefresh(target, adapter).sync(SyncRequest(

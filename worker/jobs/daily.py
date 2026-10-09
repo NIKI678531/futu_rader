@@ -96,6 +96,14 @@ def _anchor(engine) -> date | None:
 
 def sync_step(today: date) -> dict:
     from jobs import refresh
+    from radar_db.source_facts import fact_source, source_state_status
+
+    if fact_source() == "market_insight":
+        engine = make_engine()
+        try:
+            return source_state_status(engine)
+        finally:
+            engine.dispose()
 
     if not refresh.source_configured():
         return {"status": "skipped", "mode": "dump",
@@ -118,6 +126,10 @@ def sync_step(today: date) -> dict:
 def intraday_sync_step(at: datetime) -> dict:
     """Run the normal live keyset sync without claiming a complete source day."""
     from jobs import refresh
+    from radar_db.source_facts import fact_source
+
+    if fact_source() == "market_insight":
+        return sync_step(at.date())
 
     if not refresh.source_configured():
         return {"status": "skipped", "mode": "dump",
@@ -142,7 +154,13 @@ def intraday_sync_step(at: datetime) -> dict:
     }
 
 
-def _price_step_through(engine, through: date) -> dict:
+def _price_step_through(
+    engine,
+    through: date,
+    *,
+    intraday_start: date | None = None,
+    force_intraday: bool = False,
+) -> dict:
     if not os.getenv("FMP_API_KEY", "").strip():
         return {"status": "skipped", "reason": "未配置 FMP_API_KEY"}
     from jobs import sync_prices
@@ -156,6 +174,8 @@ def _price_step_through(engine, through: date) -> dict:
         codes,
         through - timedelta(days=PRICE_LOOKBACK_DAYS),
         through,
+        intraday_start=intraday_start,
+        force_intraday=force_intraday,
         fallback_client=YahooFinanceClient(),
     )
     return {"status": "ok", "products": len(codes),
@@ -171,7 +191,13 @@ def price_step(engine) -> dict:
 
 
 def intraday_price_step(engine, today: date) -> dict:
-    return _price_step_through(engine, today)
+    # 15:00 不能复用 13:00 的当天分时成功回执；只重拉当天分时，历史日线仍复用缓存。
+    return _price_step_through(
+        engine,
+        today,
+        intraday_start=today,
+        force_intraday=True,
+    )
 
 
 def run_daily(engine=None, *, ranges=DAILY_RANGES, sync=sync_step, prices=price_step) -> dict:
@@ -228,13 +254,18 @@ def run_intraday(
         report["sync"] = {"status": "failed", "error": _error(exc)}
     complete_anchor = _anchor(engine)
     data_date = analysis_range_anchor(engine, "d0", complete_anchor)
-    try:
-        report["prices"] = prices(engine, data_date or started.date())
-    except Exception as exc:  # noqa: BLE001
-        log.exception("当天行情同步失败，继续处理社区数据")
-        report["prices"] = {"status": "failed", "error": _error(exc)}
-
     report["dataDate"] = data_date.isoformat() if data_date else None
+    if data_date is None:
+        report["prices"] = {
+            "status": "skipped",
+            "reason": "当天社区数据尚未同步，无法确定 d0 数据日",
+        }
+    else:
+        try:
+            report["prices"] = prices(engine, data_date)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("当天行情同步失败，继续处理社区数据")
+            report["prices"] = {"status": "failed", "error": _error(exc)}
     with engine.connect() as conn:
         last_slot = conn.execute(select(meta_kv.c.v).where(
             meta_kv.c.k == INTRADAY_LAST_SLOT_KEY

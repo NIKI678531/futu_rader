@@ -53,7 +53,6 @@ for cand in (REPO_ROOT, Path(__file__).resolve().parents[1]):
 from jobs import annotate  # noqa: E402
 from jobs.import_dump import pool_codes  # noqa: E402
 from jobs.synthesize import detect_language, load_master  # noqa: E402
-from models import registry  # noqa: E402
 from radar_db import default_data_dir, make_engine  # noqa: E402
 from radar_db.comment_routes import (  # noqa: E402
     readiness_on_connection as comment_routes_ready_on_connection,
@@ -284,6 +283,7 @@ def collect_units(engine, *, ownership=None, source="student", llm_only=False):
             "student_relevance": rel, "student_attitude": att if rel == "relevant" else None,
             "student_relevance_p": rel_conf, "student_attitude_p": att_conf if rel == "relevant" else None,
             "student_confidence": min(confs) if confs else None,
+            "student_model": run_meta.get(_run, {}).get("model"),
             "llm_relevance": l_rel, "llm_attitude": luna(cur_att, (cid, code)) if l_rel == "relevant" else None,
             "llm_feedback_eligible": luna(cur_feedback, (cid, code)),
             "llm_policy": luna_policy((cid, code)),
@@ -373,12 +373,11 @@ def write_workbooks(picked, out_dir, *, names=None, source="student", llm_only=F
     ws2 = wb2.active
     ws2.title = "模型标签"
     ws2.append(list(LABEL_COLUMNS))
-    student_model = None if llm_only else registry.model_id_string()
     for u in picked:
         policy = u.get("llm_policy") or {}
         ws2.append([u["id"], u["comment_id"], u["code"], u["stratum"], u["student_relevance"], u["student_relevance_p"],
                     u["student_attitude"], u["student_attitude_p"], u["llm_relevance"], u["llm_attitude"],
-                    student_model, source if source == "llm" or not llm_only else None,
+                    None if llm_only else u.get("student_model"), source if source == "llm" or not llm_only else None,
                     policy.get("model"), policy.get("requestedModel"),
                     policy.get("promptVersion"), policy.get("schemaVersion"),
                     policy.get("taxonomyVersion"), policy.get("commentRouteVersion"),
@@ -395,18 +394,18 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="分层抽人工核对集")
     ap.add_argument("--n", type=int, default=N_DEFAULT)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--source", choices=("student", "llm"), default="student",
-                    help="student：学生判过的单元（默认）；llm：仅 Luna 现行结论，不训练、不写库")
+    ap.add_argument("--source", choices=("student", "llm"), default="llm",
+                    help="llm：远程模型现行结论（默认）；student：仅兼容历史本地模型记录")
     ap.add_argument("--out-dir", help="默认数据目录（仓库外）")
     ap.add_argument("--llm-only", action="store_true",
-                    help="抽样池改为有 Luna 现行结论的判定单元（学生还没训出来时用），文件名带 llm")
+                    help="只抽远程模型现行结论，文件名带 llm")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s")
     engine = make_engine()
     require_comment_routes_ready(engine)
     units = collect_units(engine, source=args.source, llm_only=args.llm_only)
     if not units:
-        message = ("没有学生行：原方案需先准备学生模型并运行 python -m jobs.classify；"
+        message = ("没有历史本地模型记录；"
                    "仅核对已有 Luna 结论可运行 python -m scripts.gold_sample --source llm"
                    if args.source == "student" and not args.llm_only else "没有可抽样的 Luna 现行结论（需有正文和池内产品）。")
         print(message, file=sys.stderr)

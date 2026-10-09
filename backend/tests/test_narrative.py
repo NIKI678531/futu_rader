@@ -9,6 +9,8 @@ negative-categories / competitors / compliance（PRD §5）。
 从来没得出的结论。所以下面反复出现同一个形状的断言：**空数组区分不了它们，status 才行。**
 """
 
+import re
+
 import pytest
 
 RANGE_KEYS = ["d1", "d2", "d7", "d14", "d30"]
@@ -101,26 +103,64 @@ def test_deterministic(client, own_code):
     assert get(client, own_code, "themes") == get(client, own_code, "themes")
 
 
-def test_7709_market_outlook_only_contains_7709_related_discussion(client):
-    data = get(client, "7709", "market-outlook")["data"]
+@pytest.mark.parametrize("code", ["3033", "7709"])
+def test_market_outlook_only_contains_requested_product_discussion(client, code):
+    data = get(client, code, "market-outlook")["data"]
     assert data["scope"] == "product"
-    assert [row["code"] for row in data["list"]] == ["7709"]
+    assert [row["code"] for row in data["list"]] == [code]
     assert all(set(row) == {
-        "code", "name", "status", "sentiment", "sentimentLabel", "summary",
+        "code", "name", "status", "attitude", "attitudeLabel", "attitudeStatus",
+        "sentiment", "sentimentLabel", "summary", "stale", "reviewState", "evidenceIds",
     } for row in data["list"])
     assert all(row["status"] == "ok" for row in data["list"])
+    assert all(row["attitude"] in {
+        "positive", "neutral_positive", "neutral", "neutral_negative", "negative",
+    } for row in data["list"])
     assert all(row["sentiment"] in {
         "bullish", "neutral_bullish", "neutral", "neutral_bearish", "bearish",
     } for row in data["list"])
-    assert all(row["sentimentLabel"] and row["summary"] for row in data["list"])
+    assert all(row["attitudeLabel"] and row["sentimentLabel"] and row["summary"]
+               for row in data["list"])
 
 
-def test_market_outlook_rollout_does_not_change_other_product_pages(client):
-    data = get(client, "3033", "market-outlook")["data"]
-    assert data["scope"] == "market"
-    assert data["list"][0]["code"] == "3033"
-    assert len(data["list"]) == 5
-    assert any(row["code"] != "3033" for row in data["list"])
+def test_every_product_market_outlook_is_scoped_to_requested_product(client, codes):
+    leaks = []
+    for code in codes:
+        data = get(client, code, "market-outlook")["data"]
+        returned_codes = [row["code"] for row in data["list"]]
+        if data["scope"] != "product" or len(returned_codes) > 1 or not set(returned_codes).issubset({code}):
+            leaks.append({"requested": code, "scope": data["scope"], "returned": returned_codes})
+    assert not leaks
+
+
+@pytest.mark.parametrize("range_key", RANGE_KEYS)
+def test_every_demo_market_outlook_uses_a_detailed_two_to_four_sentence_summary(
+    client, codes, range_key,
+):
+    invalid = []
+    for code in codes:
+        rows = get(client, code, "market-outlook", f"?range={range_key}")["data"]["list"]
+        for row in rows:
+            summary = row["summary"]
+            sentences = re.findall(r"[^。！？!?]+[。！？!?]", summary or "")
+            if not (2 <= len(sentences) <= 4 and len(summary) <= 180):
+                invalid.append({"code": code, "summary": summary})
+    assert not invalid
+
+
+def test_7709_demo_market_summary_keeps_fixture_specific_hbm_supply_chain_anchors(client):
+    summary = get(client, "7709", "market-outlook")["data"]["list"][0]["summary"]
+    assert "海力士 HBM" in summary
+    assert "供应链" in summary
+    assert "单一股票杠杆的持有周期" not in summary
+
+
+def test_7709_market_outlook_keeps_product_attitude_and_filtered_market_view_separate(client):
+    row = get(client, "7709", "market-outlook")["data"]["list"][0]
+    assert row["attitude"] == "negative"
+    assert row["attitudeLabel"] == "消极偏多"
+    assert row["sentiment"] == "neutral_bearish"
+    assert row["sentimentLabel"] == "中性偏看空"
 
 
 # ── 热议总结：整池一份 ──────────────────────────────────────────────────

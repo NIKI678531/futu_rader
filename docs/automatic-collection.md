@@ -28,6 +28,159 @@ MARKET_INSIGHT_DATABASE_URL=mysql+pymysql://readonly:...@source/market_insight
 RADAR_DB_URL=mysql+pymysql://writer:...@target/futu_radar
 ```
 
+## Read-only source preflight
+
+Before changing the fact-reading path, check the source without starting a sync,
+creating application tables, or running AI:
+
+```powershell
+Set-Location worker
+.venv\Scripts\python -X utf8 -m jobs.refresh check-source --codes 3033,2802 --sample-size 25
+```
+
+The CLI loads `worker/.env` without overriding injected environment variables.
+It connects only to `MARKET_INSIGHT_DATABASE_URL`; no application connection is
+opened by `check-source`. MySQL source sessions default to read-only transactions
+and the source engine rejects non-read statements. Use a database account with
+SELECT-only grants as the security boundary, and configure verified TLS in the
+deployment connection settings. The application URL must point to a different
+database/schema. Both `make_engine()` and Alembic reject matching source and
+application database identities before connecting. This configuration check
+cannot resolve host aliases; distinct credentials and database grants remain
+mandatory. An existing SQLite snapshot can also be checked using a `sqlite:///`
+source URL; it is opened in file-level read-only mode and is never created.
+
+The report includes reflected columns, primary keys, indexes, bounded per-product
+sample counts, JSON parsing failures, null-field counts and coverage states. It
+does not include connection credentials, comment bodies or user profiles.
+`--sample-size` is limited to 1-100 feeds per requested product. Missing required
+tables/columns, invalid samples or absent verified complete-day receipts produce
+exit code 2. Exit code 0 means only `sample_checked`, not deployment approval:
+`productionReady` is always false. Missing incremental indexes are reported
+separately, and partial comment snapshots remain partial. Account permissions,
+source time zones, full-dataset completeness, same-snapshot equivalence and the
+backend/AI cutover still need separate verification. Do not add columns or indexes
+to the production source automatically to satisfy this check.
+
+The 2026-08-26 MarketInsight export inspected on 2026-10-08 defines these mappings:
+
+| Application field | Source field or existing parser path |
+| --- | --- |
+| Parent ID, type and time | `futu_comments_feeds.feed_id`, `feed_type`, `posted_at` |
+| Discussion product | `stock_id` joined to `futu_comments_stocks.stock_id/ticker` |
+| Parent title and body | `feed_title`, `content_text` |
+| Parent author | `author_uid`, `author_name`; existing JSON fallback when absent |
+| Platform interaction counts | `like_count`, `comment_count`, `image_count` |
+| Detail and observation cursors | `detail_updated_at`, `scraped_at` |
+| Reply bodies | Existing parser: `raw_json.comment.comment_items` |
+| User profile | `futu_comments_users`, linked by author UID |
+
+The export's 14 feed columns match the existing source adapter. It contains the
+`(scraped_at, feed_id)` feed index, but not the adapter's
+`(detail_updated_at, feed_id)` and `(scraped_at, user_id)` incremental indexes.
+DDL confirms field names and types, not JSON payload completeness or the state of
+the current production database. `comment_count` is a platform total, not the
+number of reply bodies available to AI.
+
+This preflight checks the online three-table synchronization contract. A
+feed-only SQLite export is supported by the explicit direct-read mode below,
+even when this synchronization preflight reports missing stocks/users tables.
+Checking the source alone does not select a different business data path.
+
+## Opt-in SQLite snapshot direct reads
+
+`RADAR_FACT_SOURCE=radar` is the default. Existing backend/worker configuration,
+the default `radar.db`, and running pages remain unchanged. Merely setting the
+source URL does not enable the new mode. `RADAR_FACT_SOURCE=market_insight`
+requires an explicitly prepared, separate SQLite application state file.
+
+The shared connection factory attaches the MarketInsight snapshot read-only and
+exposes connection-local `feeds/comments/users` views. These views read source
+columns and expand reply JSON using the same Python normalization as collection.
+This preserves the existing page, evidence, AI candidate, nested reply context,
+claim, annotation publication and synthesis SQL contracts without copying source
+text into the application facts. Application `feeds/comments` tables remain empty.
+Only stock identity mappings, reply-to-feed locators, deterministic mention/route
+indexes, metadata and generated analysis results are persisted in the new state.
+
+The user-provided `market_insight.db` is a feed-only SQLite conversion: it has
+`futu_comments_feeds`, dates stored as TEXT, and no stocks or users tables. A
+verified `stock_id -> ticker` mapping is therefore mandatory. Use the
+`futu_comments_stocks` records in the matching SQL export, or a reviewed JSON
+object of stock IDs and tickers. Do not infer the discussion product from a
+cashtag appearing in a post. Missing extended user profile fields remain null.
+
+Run preparation in a **separate terminal**, using a new application file outside
+the repository. The command reads injected environment variables and does not
+load or edit the daily service's `.env` files:
+
+```powershell
+$env:MARKET_INSIGHT_DATABASE_URL = 'sqlite:///C:/path/to/market_insight.db'
+$env:RADAR_DB_URL = 'sqlite:///C:/path/to/new-radar-source-state.db'
+Set-Location worker
+.venv\Scripts\python -X utf8 -m jobs.source_state `
+  --stock-dump 'C:/path/to/matching-market-insight.sql'
+```
+
+Alternatively use `--stock-catalog 'C:/path/to/stock-identities.json'`. Optional
+`--since '2026-08-01 00:00:00'` limits indexing by UTC parent timestamp; choose a
+bound covering all requested current **and baseline** windows. Pages requiring
+earlier facts remain unavailable, not zero. The full active product pool is used;
+the stock catalog may also contain unrelated instruments.
+
+`--complete-through YYYY-MM-DD` is an explicit operator assertion of an already
+verified complete HKT day. It must not exceed the observed source date. It is
+**not** inferred from the last post, copied from the current Radar database, or
+set automatically. Without a verified complete day, the source can still be
+indexed, queried and used for explicit bounded extraction, but date presets that
+require a complete anchor remain unavailable. This is not a connection error.
+
+After preparation, enable the isolated instance in that terminal only:
+
+```powershell
+$env:RADAR_FACT_SOURCE = 'market_insight'
+$env:DATA_PROVIDER = 'sql'
+$env:APP_ENV = 'production'
+$env:APP_HOST = '127.0.0.1'
+$env:APP_PORT = '8018'  # use another unused port if occupied
+Set-Location ..\backend
+.venv\Scripts\python -X utf8 app.py
+```
+
+An independently started worker must receive the same three database settings.
+It writes jobs, annotations, evidence and synthesis only to the new application
+state. Its daily source step validates the prepared snapshot instead of copying
+facts. Do not start a worker with real model credentials during connection tests;
+set `AI_DATA_GOVERNANCE_APPROVED=false`, `AI_DAILY_CRON=off` and
+`AI_INTRADAY_CRON=off` for validation. No existing service needs to be stopped or
+restarted to test this mode. Source initialization and legacy migrations are
+separate; automatic legacy migration is disabled for the direct-read state.
+
+Snapshot mutation is fail-closed: changes to the source database or WAL detected
+on checkout or execution reject reads instead of mixing new bodies with old
+indexes/AI outputs. Stop the isolated instance before preparation. If a changed
+snapshot already has AI results in its state, prepare a new state file; historical
+results remain in the previous one. Changing the indexed window likewise requires
+a new state file. This release is for stable SQLite snapshots, not live source
+change reconciliation. Filesystem change detection is not a cryptographic proof
+against a writer deliberately preserving timestamps.
+
+Verified locally against the supplied snapshot: the UTC window starting
+2026-08-24 contained 10,971 parent feeds and 6,692 parsed replies in active
+products, with five broken JSON payloads retained as unavailable. Source body
+copies in the independent state were zero. Automated tests also cover isolated
+AI extraction, mock annotation, mock synthesis, evidence reads and five-page
+API contracts. No real AI run or current-page cutover was performed.
+
+**Production limitation:** direct-read TEMP views currently support SQLite source
+and SQLite state only. MySQL URLs continue to work with the existing read-only
+synchronization adapter, but MySQL direct-read federation and live incremental
+index reconciliation are not implemented by this snapshot mode. Do not label
+this as a verified MySQL production migration. MySQL must not be silently routed
+through SQLite or the old Radar facts when direct mode is requested.
+
+## Incremental synchronization
+
 Run an incremental synchronization locally:
 
 ```powershell

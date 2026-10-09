@@ -61,7 +61,7 @@ export default function Drawer({ v }) {
                   {sel.sampleOk
                     ? <span style={s('padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>有效样本 {sel.sample} 条</span>
                     : <span style={s('padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>有效样本 {sel.sample}</span>}
-                  <span style={s('padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700)')}>{sel.sumAiLabel}</span>
+                  {sel.sumAiLabel && <span style={s('padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700)')}>{sel.sumAiLabel}</span>}
                 </div>
               </div>
 

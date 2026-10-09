@@ -36,6 +36,16 @@ def alembic_cfg(url):
     return cfg
 
 
+def test_migration_refuses_source_database_before_creating_file(tmp_path, monkeypatch):
+    path = tmp_path / "protected-source.db"
+    url = "sqlite:///" + path.as_posix()
+    monkeypatch.setenv("MARKET_INSIGHT_DATABASE_URL", url)
+    monkeypatch.setenv("RADAR_DB_URL", url)
+    with pytest.raises(ValueError, match="separate databases"):
+        command.upgrade(alembic_cfg(url), "head")
+    assert not path.exists()
+
+
 @pytest.fixture()
 def migrated(tmp_path, monkeypatch):
     url = "sqlite:///" + (tmp_path / "migrated.db").as_posix()

@@ -64,7 +64,7 @@ def summary_for(code, range_key):
 
 
 def market_outlook(code, range_key):
-    """产品页市场风向：按灰度范围返回产品相关情绪与 AI 摘要。"""
+    """产品热议总结与市场风向：只返回当前产品的组合视图。"""
     if range_key not in VALID_KEYS:
         return MISSING
     return get_provider().market_outlook(code, range_key)

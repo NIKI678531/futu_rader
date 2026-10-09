@@ -14,6 +14,7 @@ SQLite 不支持大多数 `ALTER TABLE`（加约束、改类型、删列都不�
 不产生额外动作，所以两个方言可以共用同一份迁移脚本（ADR-0016）。
 """
 
+import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -25,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from radar_db import db_url  # noqa: E402
 from radar_db.schema import metadata  # noqa: E402
+from radar_db.source_db import require_separate_databases  # noqa: E402
 
 config = context.config
 if config.config_file_name is not None:
@@ -35,6 +37,9 @@ if config.config_file_name is not None:
 target_metadata = metadata
 
 URL = db_url()
+require_separate_databases(URL)
+if os.getenv("RADAR_FACT_SOURCE", "radar").strip().lower() == "market_insight":
+    raise ValueError("Direct source state must be prepared explicitly; do not run legacy fact migrations")
 
 
 def run_migrations_offline():

@@ -7,7 +7,7 @@ export default function KolList({ v }) {
     <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:14px')}>
       <div style={s('display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--border-1)')}>
         <span style={s('font:600 18px/1.3 var(--font-cjk)')}>产品相关 KOL</span>
-        <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>与 KOL 页面同源的 {v.code} 相关帖子，并补充评论观点 · 按相关内容数降序</span>
+        <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>与 KOL 页面同源的 {v.code} 相关帖子，并补充评论观点 · 按最新相关原帖发布时间倒序</span>
         <DcLink href={v.kolActivityHref} style={s('margin-left:auto;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('text-decoration:underline')}>查看 KOL 页面相关帖子 →</DcLink>
         <span style={s('padding:3px 10px;border-radius:9999px;background:var(--csop-blue-50);font:500 12px/1.6 var(--font-cjk);color:var(--csop-blue-700);white-space:nowrap')}>已识别 KOL 范围：{v.kolScope}</span>
       </div>
@@ -16,8 +16,8 @@ export default function KolList({ v }) {
           <div style={s('display:flex;align-items:center;gap:8px;height:38px;padding:0 20px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1);font:600 13px/1.4 var(--font-cjk);color:var(--ink-700)')}>
             <span style={s('flex:none;width:210px')}>KOL</span>
             <span style={s('flex:none;width:92px;text-align:right')}>相关内容</span>
-            <span style={s('flex:none;width:126px;padding-left:14px;box-sizing:border-box')}>最近提及</span>
-            <span style={s('flex:1;min-width:0')}>代表内容摘录</span>
+            <span style={s('flex:none;width:126px;padding-left:14px;box-sizing:border-box')}>最新发帖</span>
+            <span style={s('flex:1;min-width:0')}>帖子摘要</span>
             <span style={s('flex:none;width:96px;text-align:right')}>原文证据</span>
           </div>
           {v.kolRows.map((k) => (
@@ -32,7 +32,7 @@ export default function KolList({ v }) {
               </div>
               <span style={s('flex:none;width:92px;text-align:right;font:600 16px/1.3 var(--font-mono);color:var(--ink-900)')}>{k.count}</span>
               <span style={s('flex:none;width:126px;padding-left:14px;box-sizing:border-box;font:500 13px/1.4 var(--font-mono);color:var(--ink-600)')}>{k.last}</span>
-              <span style={s('flex:1;min-width:0;font:400 13px/1.6 var(--font-cjk);color:var(--ink-700);overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{k.excerpt}</span>
+              <span style={s('flex:1;min-width:0;font:400 13px/1.6 var(--font-cjk);color:var(--ink-700);overflow:hidden;text-overflow:ellipsis;white-space:nowrap')}>{k.summary}</span>
               <span style={s('flex:none;width:96px;text-align:right;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600)')}>证据 {k.evidence} 条 →</span>
             </div>
           ))}

@@ -98,13 +98,60 @@ _HUMAN_SETTLED = ("approved", "corrected")
 
 LEASE_MINUTES = 15
 FILL_MISSING_STAGE = "llm_fill"  # annotation_jobs.stage is VARCHAR(10)
-STAGE_STUDENT = "student"
 STAGE_LLM = "llm"
 
 
 def default_stage(task):
     """Return the first processing stage for a newly queued task."""
-    return STAGE_STUDENT if task == "comment_product" else STAGE_LLM
+    return STAGE_LLM
+
+
+def route_legacy_jobs_to_llm(engine, scope_id, parent_filter_config=None):
+    """Resume unfinished legacy local-model jobs through the remote provider."""
+    from radar_db.comment_routes import readiness_on_connection
+    from radar_db.scope_jobs import scope_condition
+
+    now = clock.now()
+    source = (
+        annotation_jobs
+        .join(comments, comments.c.comment_id == annotation_jobs.c.target_id)
+        .join(feeds, feeds.c.feed_id == comments.c.feed_id)
+    )
+    query = select(annotation_jobs.c.job_id).select_from(source).where(
+        annotation_jobs.c.task == "comment_product",
+        annotation_jobs.c.stage == "student",
+        annotation_jobs.c.target_type == "comment",
+        scope_condition(scope_id),
+        or_(
+            annotation_jobs.c.status == "pending",
+            and_(
+                annotation_jobs.c.status == "claimed",
+                or_(annotation_jobs.c.lease_until.is_(None), annotation_jobs.c.lease_until < now),
+            ),
+        ),
+    )
+    with engine.begin() as conn:
+        if readiness_on_connection(conn, lock=True):
+            query = query.where(route_exists_predicate(
+                annotation_jobs.c.target_id, annotation_jobs.c.subject_code,
+            ))
+        else:
+            parent_filter_config = require_comment_task_filter_on_connection(
+                conn, "comment_product", parent_filter_config,
+            )
+            query = query.where(
+                annotation_jobs.c.subject_code == feeds.c.code,
+                qualifying_feed_scope_predicate(feeds, parent_filter_config),
+            )
+        job_ids = list(conn.execute(query).scalars())
+        for offset in range(0, len(job_ids), 500):
+            conn.execute(update(annotation_jobs).where(
+                annotation_jobs.c.job_id.in_(job_ids[offset:offset + 500]),
+            ).values(
+                stage=STAGE_LLM, status="pending", lease_until=None, updated_at=now,
+                last_error=None,
+            ))
+    return len(job_ids)
 
 # 帖子正文作为评论上下文时只带开头这么多字。一批 30 条常来自同一篇帖子，正文按 feed_id
 # 只放一次（见 `_user_message_with_context`），但仍要有上限 —— 长文会把系统提示挤出缓存窗口。
@@ -357,14 +404,6 @@ def job_row_for_comment(cfg, prompt, schema_version, row, *, priority=0, scope_i
          "parent": parents[0] if parents else None, "parents": parents,
          "post_content": getattr(row, "post_content", None)},
     )
-    # v3 is released against direct LLM gold labels.  Letting the older local
-    # student finish these jobs would bypass that quality gate and make the
-    # public v3 funnel disagree with the annotations it displays.
-    stage = (
-        STAGE_LLM
-        if task == "comment_product" and getattr(prompt, "REQUIRES_FULL_REANNOTATION", False)
-        else default_stage(task)
-    )
     return {
         "target_type": "comment",
         "target_id": row.comment_id,
@@ -381,7 +420,7 @@ def job_row_for_comment(cfg, prompt, schema_version, row, *, priority=0, scope_i
         "priority": priority,
         "attempts": 0,
         "scope_id": scope_id,
-        "stage": stage,
+        "stage": default_stage(task),
         "created_at": now,
         "updated_at": now,
     }
@@ -1861,7 +1900,7 @@ def main(argv=None):
     ap.add_argument("--budget-requests", type=int, help="本轮最多领取多少批（≈请求数）")
     ap.add_argument("--max-http-requests", type=int, help="Required for --run; includes retries")
     ap.add_argument("--scope", help="只处理这个抽取范围（analysis_scopes.scope_id）")
-    ap.add_argument("--stage", choices=(STAGE_STUDENT, STAGE_LLM, FILL_MISSING_STAGE),
+    ap.add_argument("--stage", choices=(STAGE_LLM, FILL_MISSING_STAGE),
                     help="只处理指定漏斗段；默认不分段")
     ap.add_argument("--priority", type=int, default=0)
     ap.add_argument(

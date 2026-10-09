@@ -119,6 +119,22 @@ def test_intraday_slots_enqueue_d0_idempotently_and_coalesce_an_active_followup(
     assert len(list_requests(engine)) == 2
 
 
+def test_intraday_without_an_observed_data_day_skips_prices_and_analysis():
+    engine = _engine()
+    price_calls = []
+
+    report = daily.run_intraday(
+        engine,
+        scheduled_at=datetime(2026, 10, 8, 13, 0, tzinfo=ZoneInfo("Asia/Hong_Kong")),
+        sync=lambda _at: {"status": "succeeded", "mode": "incremental"},
+        prices=lambda *_args: price_calls.append(_args) or {"status": "ok"},
+    )
+
+    assert price_calls == []
+    assert report["prices"]["status"] == "skipped"
+    assert report["analysis"]["status"] == "unavailable"
+
+
 def test_intraday_sync_uses_a_stable_hourly_id_and_incremental_keyset_path(monkeypatch):
     monkeypatch.setenv("MARKET_INSIGHT_DATABASE_URL", "mysql+pymysql://source/market_insight")
     captured = {}
@@ -194,6 +210,30 @@ def test_price_step_wires_yfinance_as_the_fmp_identity_fallback(monkeypatch):
     expected = load_products(engine=engine)
     assert captured["codes"] == [product["code"] for product in expected]
     assert {product["ownership"] for product in expected} == {"own", "peer"}
+
+
+def test_intraday_price_step_forces_only_the_observed_days_intraday_interval(monkeypatch):
+    from datetime import date
+    from jobs import sync_prices
+    from market_data import fmp, yahoo
+
+    monkeypatch.setenv("FMP_API_KEY", "test-key")
+    primary, fallback, captured = object(), object(), {}
+    monkeypatch.setattr(fmp, "FmpClient", lambda: primary)
+    monkeypatch.setattr(yahoo, "YahooFinanceClient", lambda: fallback)
+
+    def fake_sync(engine, client, codes, start, end, **kwargs):
+        captured.update(start=start, end=end, kwargs=kwargs)
+        return []
+
+    monkeypatch.setattr(sync_prices, "sync", fake_sync)
+    observed_day = date(2026, 8, 26)
+    report = daily.intraday_price_step(_engine(), observed_day)
+
+    assert report["status"] == "ok"
+    assert captured["end"] == observed_day
+    assert captured["kwargs"]["intraday_start"] == observed_day
+    assert captured["kwargs"]["force_intraday"] is True
 
 
 def test_production_sync_goes_through_the_latest_closing_receipt(monkeypatch):

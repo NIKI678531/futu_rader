@@ -59,6 +59,8 @@ def db_url():
     url = os.getenv("RADAR_DB_URL", "").strip()
     if url:
         return url
+    if os.getenv("RADAR_FACT_SOURCE", "radar").strip().lower() == "market_insight":
+        raise ValueError("Direct source mode requires an explicit dedicated RADAR_DB_URL")
     path = default_data_dir() / "radar.db"
     path.parent.mkdir(parents=True, exist_ok=True)
     return "sqlite:///" + path.as_posix()
@@ -71,9 +73,15 @@ def make_engine(url=None, bulk=False):
     崩溃时可能丢最后一批写入——对一个可以重跑的一次性导入这是划算的，对线上服务不是，
     所以它是个显式开关而不是默认值。
     """
+    from .source_db import require_separate_databases
+    from .source_facts import fact_source, install_source_relations
+
+    mode = fact_source()
     url = url or db_url()
+    require_separate_databases(url)
     is_sqlite = url.startswith("sqlite")
-    engine = create_engine(url, future=True, echo=False)
+    options = {"connect_args": {"uri": True}} if is_sqlite and mode == "market_insight" else {}
+    engine = create_engine(url, future=True, echo=False, **options)
 
     if is_sqlite:
 
@@ -91,8 +99,17 @@ def make_engine(url=None, bulk=False):
                 cur.execute("PRAGMA temp_store=MEMORY")
             cur.close()
 
+    if mode == "market_insight":
+        source_url = os.getenv("MARKET_INSIGHT_DATABASE_URL", "").strip()
+        if not source_url:
+            raise ValueError("Missing MARKET_INSIGHT_DATABASE_URL")
+        install_source_relations(engine, source_url)
+        with engine.connect():
+            pass
     return engine
 
 
 def create_all(engine):
+    if os.getenv("RADAR_FACT_SOURCE", "radar").strip().lower() == "market_insight":
+        raise ValueError("Use source preparation for a dedicated direct-read state database")
     metadata.create_all(engine)

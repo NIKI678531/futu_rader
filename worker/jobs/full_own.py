@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import sys
-import threading
 from contextlib import nullcontext
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
@@ -17,11 +16,10 @@ for folder in (ROOT, ROOT / "worker", ROOT / "backend"):
     sys.path.insert(0, str(folder))
 
 from ai import config, synth
-from ai.prompts import requires_full_reannotation
 import clock
 from core.calendar import PRESETS, build
 from core.data_clock import analysis_range_anchor
-from jobs import annotate, classify, extract, pipeline
+from jobs import annotate, extract, pipeline
 from jobs.backfill_comment_filter import prepare_comment_task_execution
 from radar_db import make_engine
 from radar_db.comment_filter import load_comment_filter_config
@@ -142,59 +140,6 @@ def queue_status(engine, scope_id):
         ).group_by(annotation_jobs.c.status)).all())
 
 
-class StudentChannel(threading.Thread):
-    """Continuously drain the CPU student stage while the LLM channel runs."""
-
-    def __init__(
-        self,
-        engine,
-        cfg,
-        state,
-        *,
-        idle_seconds=5,
-        model_dir=None,
-        parent_filter_config=None,
-    ):
-        super().__init__(name="student-channel", daemon=True)
-        self.engine, self.cfg, self.state = engine, cfg, state
-        self.idle_seconds, self.model_dir = idle_seconds, model_dir
-        self.parent_filter_config = parent_filter_config
-        self.stop_event = threading.Event()
-        self.rounds = 0
-
-    def run(self):
-        while not self.stop_event.is_set():
-            processed = 0
-            for code, scope_id in list(self.state.get("scopes", {}).items()):
-                if self.stop_event.is_set():
-                    break
-                try:
-                    stats = classify.run(
-                        self.engine,
-                        self.cfg,
-                        scope_id=scope_id,
-                        model_dir=self.model_dir,
-                        parent_filter_config=self.parent_filter_config,
-                    )
-                    processed += stats["input"]
-                except Exception as exc:  # noqa: BLE001
-                    log.exception("学生通道 %s 失败", code)
-                    emit(
-                        self.engine,
-                        "orchestrator",
-                        f"{code} 学生通道失败：{str(exc)[:160]}",
-                        level="error",
-                        code=code,
-                        scope_id=scope_id,
-                    )
-            self.rounds += 1
-            if processed == 0:
-                self.stop_event.wait(self.idle_seconds)
-
-    def stop(self):
-        self.stop_event.set()
-
-
 def prioritize_scope(engine, scope_id, anchor, *, own, daily=False):
     changes = defaultdict(list)
     for target_type, source in (
@@ -302,13 +247,10 @@ def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
                 order.remove(code)
                 order.append(code)
                 before = queue_status(engine, scopes[code])
-                classified = classify.run(
-                    engine,
-                    cfg,
-                    scope_id=scopes[code],
+                annotate.route_legacy_jobs_to_llm(
+                    engine, scopes[code],
                     parent_filter_config=parent_filter_config,
                 )
-                progress["work"]["annotationsWritten"] += int(classified.get("written", 0))
                 result = pipeline.run(engine, cfg, scopes[code], provider=provider,
                                       max_items=cfg.micro_batch_size * cfg.concurrency,
                                       ranges=plan["ranges"], anchor_override=anchor, audit_report=False,
@@ -360,8 +302,6 @@ def main(argv=None):
     parser.add_argument("--anchor")
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--max-items", type=int, default=300)
-    parser.add_argument("--student-model-dir", help="学生权重目录（默认 STUDENT_MODEL_DIR）")
-    parser.add_argument("--no-student", action="store_true", help="不开学生推理，评论任务全部放行主模型")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--ranges", default=",".join(COMPLETE_RANGES))
     parser.add_argument("--max-http-requests", type=int, required=True)
@@ -374,11 +314,6 @@ def main(argv=None):
         parser.error("--ranges must contain supported date presets: " + ",".join(PRESETS))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     cfg = config.load()
-    student_enabled = not args.no_student and not requires_full_reannotation(
-        "comment_product",
-        cfg.prompt_version,
-        schema_version=cfg.schema_version,
-    )
     from ai.providers import build as build_provider
     from ai.providers.base import RunControl, RunStopped
     control = RunControl(args.max_http_requests)
@@ -411,7 +346,6 @@ def main(argv=None):
     with WorkerLease(engine, "own-analysis") as lease, control.interruptible():
         emit(engine, "orchestrator", f"Starting LLM analysis for {len(codes)} products: {','.join(ranges)}")
         scopes, start = prepare(engine, cfg, anchor, codes, ranges=ranges)
-        student_state = {"scopes": scopes}
         for code, scope_id in scopes.items():
             prioritize_scope(engine, scope_id, anchor, own=ownership[code] == "own")
         with engine.connect() as conn:
@@ -426,7 +360,7 @@ def main(argv=None):
         progress = {"anchor": anchor.isoformat(), "baselineFrom": start.isoformat(), "products": {},
                     "status": "running", "model": cfg.model, "batchSize": cfg.micro_batch_size,
                     "sourceVersion": source_version, "scope": "all" if args.all else "own", "ranges": ranges,
-                    "student": student_enabled, "synthVersion": synth.VERSION}
+                    "synthVersion": synth.VERSION}
         for code, scope_id in scopes.items():
             previous = prior.get("products", {}).get(code, {})
             status = queue_status(engine, scope_id)
@@ -435,31 +369,6 @@ def main(argv=None):
             progress["products"][code] = {"scope": scope_id, "queue": status, "complete": complete}
         save_progress(engine, progress)
         order = sorted(codes, key=lambda code: sum(count for state, count in progress["products"][code]["queue"].items() if state != "done"))
-
-        student = None
-        if args.watch and student_enabled:
-            student = StudentChannel(
-                engine,
-                cfg,
-                student_state,
-                model_dir=args.student_model_dir,
-                parent_filter_config=parent_filter_config,
-            )
-            student.start()
-            emit(engine, "orchestrator", "学生通道线程已启动（与主模型通道并行）")
-
-        def run_student_inline(scope_id):
-            if not student_enabled:
-                reason = "--no-student" if args.no_student else f"{cfg.prompt_version} direct LLM policy"
-                routed = classify.route_all_to_llm(engine, scope_id, None, reason)
-                return {"input": routed, "routed": routed}
-            return classify.run(
-                engine,
-                cfg,
-                scope_id=scope_id,
-                model_dir=args.student_model_dir,
-                parent_filter_config=parent_filter_config,
-            )
 
         def tick():
             nonlocal scopes, start, anchor, complete_anchor, source_version, order
@@ -496,7 +405,6 @@ def main(argv=None):
                         save_progress(engine, progress)
                         return
                 scopes, start = prepare(engine, cfg, anchor, codes, ranges=ranges)
-                student_state["scopes"] = scopes
                 source_version = current_source
                 progress.update(status="running", anchor=anchor.isoformat(), baselineFrom=start.isoformat())
                 progress["sourceVersion"] = source_version
@@ -519,17 +427,9 @@ def main(argv=None):
             status = queue_status(engine, scopes[code])
             if status.get("dead") or status.get("failed"):
                 progress["products"][code]["blocked"] = "failed_jobs"
-            if student is None:
-                student_stats = run_student_inline(scopes[code])
-                if student_stats["input"]:
-                    emit(
-                        engine,
-                        "orchestrator",
-                        f"{code} 学生段：{student_stats['input']:,} 条 → 路由主模型 {student_stats['routed']:,}",
-                        code=code,
-                        scope_id=scopes[code],
-                        data={"input": student_stats["input"], "routed": student_stats["routed"]},
-                    )
+            annotate.route_legacy_jobs_to_llm(
+                engine, scopes[code], parent_filter_config=parent_filter_config,
+            )
             emit(engine, "L2", f"Processing {code}", code=code, scope_id=scopes[code], data=status)
             try:
                 result = pipeline.run(
@@ -559,40 +459,35 @@ def main(argv=None):
             save_progress(engine, progress)
             print(json.dumps({"code": code, **progress["products"][code]}, ensure_ascii=True), flush=True)
 
-        try:
-            if args.watch:
-                scheduler = BlockingScheduler(timezone="Asia/Hong_Kong")
-                logging.getLogger("apscheduler").setLevel(logging.ERROR)
-                if args.sync_prices and os.getenv("FMP_API_KEY"):
-                    from jobs.sync_prices import sync
-                    from market_data.fmp import FmpClient
-                    from market_data.yahoo import YahooFinanceClient
-                    scheduler.add_job(lambda: sync(
-                        engine,
-                        FmpClient(),
-                        price_codes,
-                        start,
-                        anchor,
-                        force=True,
-                        fallback_client=YahooFinanceClient(),
-                    ),
-                                      "interval", hours=1, max_instances=1, coalesce=True)
-                scheduler.add_job(tick, "interval", seconds=5, max_instances=1, coalesce=True,
-                                  next_run_time=clock.now())
-                try:
-                    scheduler.start()
-                except (KeyboardInterrupt, SystemExit):
-                    scheduler.shutdown(wait=True)
-            else:
-                for _ in codes:
-                    tick()
-                    if control.stop_event.is_set():
-                        break
-                return 0 if all(row["complete"] for row in progress["products"].values()) else 2
-        finally:
-            if student is not None:
-                student.stop()
-                student.join(timeout=30)
+        if args.watch:
+            scheduler = BlockingScheduler(timezone="Asia/Hong_Kong")
+            logging.getLogger("apscheduler").setLevel(logging.ERROR)
+            if args.sync_prices and os.getenv("FMP_API_KEY"):
+                from jobs.sync_prices import sync
+                from market_data.fmp import FmpClient
+                from market_data.yahoo import YahooFinanceClient
+                scheduler.add_job(lambda: sync(
+                    engine,
+                    FmpClient(),
+                    price_codes,
+                    start,
+                    anchor,
+                    force=True,
+                    fallback_client=YahooFinanceClient(),
+                ),
+                                  "interval", hours=1, max_instances=1, coalesce=True)
+            scheduler.add_job(tick, "interval", seconds=5, max_instances=1, coalesce=True,
+                              next_run_time=clock.now())
+            try:
+                scheduler.start()
+            except (KeyboardInterrupt, SystemExit):
+                scheduler.shutdown(wait=True)
+        else:
+            for _ in codes:
+                tick()
+                if control.stop_event.is_set():
+                    break
+            return 0 if all(row["complete"] for row in progress["products"].values()) else 2
 
 
 if __name__ == "__main__":

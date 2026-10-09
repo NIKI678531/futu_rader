@@ -737,8 +737,8 @@ class SectorOverview extends React.Component {
         obg: o.ownership === 'own' ? 'var(--csop-blue-50)' : 'var(--ink-100)',
         ofg: o.ownership === 'own' ? 'var(--csop-blue-700)' : 'var(--ink-600)',
         summary: sum.text, sample: sumNa ? '数据暂不可用' : String(sum.sample), sampleOk: !sumNa, rangeText: range.text,
-        /* `aiStatus === 'unavailable'`（只有计数句、AI 要点没生成）不许写「AI 生成」。 */
-        sumAiLabel: sum.aiStatus === 'unavailable' ? '计数句 · AI 要点待生成' : 'AI 生成 · 可追溯原文',
+        /* 正常结果不再显示来源徽章；只有 AI 要点尚未生成时保留状态提示。 */
+        sumAiLabel: sum.aiStatus === 'unavailable' ? '计数句 · AI 要点待生成' : null,
         posThemes: pos, negThemes: neg,
         noPos: !posNa && pos.length === 0, noNeg: !negNa && neg.length === 0,
         posUnavailable: posNa, negUnavailable: negNa,

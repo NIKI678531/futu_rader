@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta, timezone
@@ -29,6 +30,115 @@ COMPLETION_PROOF_COLUMNS = {
 
 class SourceSchemaError(RuntimeError):
     pass
+
+
+def inspect_source(engine, codes, *, sample_size=25):
+    """Inspect the source contract and bounded samples without reading the application DB."""
+    selected = tuple(dict.fromkeys(str(code).strip() for code in codes))
+    if not selected or any(len(code) != 4 or not code.isascii() or not code.isdigit() for code in selected):
+        raise ValueError("codes must contain four-digit HK product codes")
+    if not 1 <= sample_size <= 100:
+        raise ValueError("sample_size must be between 1 and 100")
+
+    inspector = inspect(engine)
+    report = {
+        "source": "market_insight",
+        "dialect": engine.dialect.name,
+        "status": "blocked",
+        "productionReady": False,
+        "tables": {},
+        "issues": [],
+        "samples": {},
+        "unverified": [
+            "database_account_select_only_grants",
+            "source_timestamp_timezone_and_epoch_units",
+            "full_dataset_identity_and_comment_completeness",
+            "same_snapshot_radar_fact_and_api_parity",
+            "backend_and_ai_direct_read_cutover",
+        ],
+    }
+    for name, required in MarketInsightMySqlAdapter._required.items():
+        if not inspector.has_table(name):
+            report["issues"].append({"table": name, "reason": "missing_table"})
+            continue
+        columns = inspector.get_columns(name)
+        expected = required | ({"detail_updated_at"} if name == "futu_comments_feeds" else set())
+        missing = sorted(expected - {column["name"] for column in columns})
+        report["tables"][name] = {
+            "columns": [
+                {"name": column["name"], "type": str(column["type"]), "nullable": column["nullable"]}
+                for column in columns
+            ],
+            "primaryKey": inspector.get_pk_constraint(name).get("constrained_columns", []),
+            "indexes": [index.get("column_names", []) for index in inspector.get_indexes(name)],
+            "missingRequired": missing,
+        }
+        if missing:
+            report["issues"].append({"table": name, "reason": "missing_columns", "columns": missing})
+    if report["issues"]:
+        return report
+
+    adapter = MarketInsightMySqlAdapter(engine, set(selected))
+    report["incrementalIndexGaps"] = adapter.incremental_index_gaps()
+    report["completeThrough"] = adapter.complete_through()
+    if report["completeThrough"] is None:
+        report["issues"].append({"reason": "no_verified_complete_day"})
+    seen_comments = {}
+    with engine.connect() as conn:
+        if engine.dialect.name == "mysql":
+            session = conn.exec_driver_sql(
+                "SELECT @@version, @@session.time_zone, @@session.character_set_connection"
+            ).one()
+            report["session"] = {
+                "serverVersion": session[0], "timeZone": session[1], "characterSet": session[2],
+            }
+        for code in selected:
+            stock_ids = tuple(stock_id for stock_id, value in adapter.stock_codes.items() if value == code)
+            rows = conn.execute(
+                select(adapter.feeds)
+                .where(adapter.feeds.c.stock_id.in_(stock_ids))
+                .order_by(adapter.feeds.c.feed_id.desc())
+                .limit(sample_size)
+            ).mappings().all()
+            coverage = Counter()
+            null_fields = Counter()
+            errors = Counter()
+            parsed_comments = 0
+            for source_row in rows:
+                row = dict(source_row)
+                try:
+                    observed_at = row.get("scraped_at") or row.get("detail_updated_at")
+                    if not isinstance(row["posted_at"], datetime) or not isinstance(observed_at, datetime):
+                        errors["invalid_feed_timestamp"] += 1
+                        continue
+                    observation = normalize_feed(
+                        row, code, observed_at, source_ticker=adapter.stock_tickers[row["stock_id"]],
+                    )
+                except (TypeError, ValueError, KeyError, AttributeError, OverflowError):
+                    errors["normalization_failed"] += 1
+                    continue
+                coverage[observation.coverage] += 1
+                if observation.feed["raw_json_broken"]:
+                    errors["invalid_raw_json"] += 1
+                for field in ("title", "content", "author_uid", "author_name", "share_count", "browse_count"):
+                    if observation.feed[field] is None:
+                        null_fields[field] += 1
+                for comment in observation.comments:
+                    parsed_comments += 1
+                    previous = seen_comments.setdefault(comment["comment_id"], comment["feed_id"])
+                    if previous != comment["feed_id"]:
+                        errors["comment_id_shared_by_different_feeds"] += 1
+                    for field in ("posted_at", "content", "author_uid", "like_count"):
+                        if comment[field] is None:
+                            null_fields["comment." + field] += 1
+            report["samples"][code] = {
+                "feeds": len(rows), "parsedComments": parsed_comments,
+                "coverage": dict(coverage), "nullFields": dict(null_fields), "errors": dict(errors),
+            }
+            if not rows or errors:
+                report["issues"].append({"code": code, "reason": "sample_missing_or_invalid"})
+    report["status"] = "sample_checked" if not report["issues"] else "blocked"
+    return report
 
 
 def configured_symbols_fingerprint(codes: Iterable[str]) -> str:

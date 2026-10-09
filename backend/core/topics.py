@@ -6,6 +6,9 @@ PRD 逐字：「市场方向、指数涨跌与宏观事件等不计入产品赞�
 但对市场 `bearish`，就落在这里。三色计数是 bullish / bearish / neutral —— 页面契约叫
 `positive / negative / neutral`，这里按名映射，**不是**产品态度。
 
+`market_outlook_row` 是组合视图：`attitude*` 读取当前产品的产品态度，
+`sentiment*` 读取独立的市场方向话题。两种结论不得互相推导。
+
 ## 一个区间一个话题
 
 没有向量聚类，话题的成员关系只有一个确定性依据：「有市场方向」。所以一个产品 × 区间
@@ -14,15 +17,16 @@ kind=`topic_label`，subkey=`market`）。要分成多个话题得先有聚类 �
 设计源每个区间给三个话题；这里给一个真的，不给三个编的。
 """
 
+from .attitude import LOW_SAMPLE
 from .delta import delta
 
 DIRECTION_TO_TRICOLOR = {"bullish": "positive", "bearish": "negative", "neutral": "neutral"}
 DEFAULT_TITLE = "市场方向与指数走势讨论"
 MARKET_SUBKEY = "market"
-MARKET_OUTLOOK_LIMIT = 5
-# 产品页市场风向改为「只看当前产品」的灰度名单。先按产品要求上线
-# 7709；确认展示口径后，把其余代码逐步加入即可，不影响旧页面。
-PRODUCT_SCOPED_MARKET_OUTLOOK_CODES = frozenset({"7709"})
+# Read-side contract for the P6 market-opinion prose.  The backend deliberately
+# owns this string instead of importing worker code; an older generation may be
+# structurally valid JSON while still carrying the superseded, generic prompt.
+MARKET_OUTLOOK_SYNTH_VERSION = "synth-v8"
 
 MARKET_SENTIMENT_LABELS = {
     "bullish": "看多",
@@ -31,6 +35,63 @@ MARKET_SENTIMENT_LABELS = {
     "neutral_bearish": "中性偏看空",
     "bearish": "看空",
 }
+
+PRODUCT_ATTITUDE_LABELS = {
+    "positive": "积极偏多",
+    "neutral_positive": "中性偏积极",
+    "neutral": "中性",
+    "neutral_negative": "中性偏消极",
+    "negative": "消极偏多",
+}
+
+
+def _unknown_product_opinion(status="unavailable"):
+    return {
+        "attitude": None,
+        "attitudeLabel": None,
+        "attitudeStatus": status,
+    }
+
+
+def classify_product_opinion(positive, negative, neutral=0):
+    """Classify product attitude without mixing in market direction.
+
+    Per PRD §3.4, neutral comments are reported separately and do not dilute
+    the ``positive + negative`` denominator.  Unknown counts and a genuinely
+    low sample remain distinct states instead of being manufactured as neutral.
+    """
+    if positive is None or negative is None:
+        return _unknown_product_opinion()
+    analysed_total = positive + negative + int(neutral or 0)
+    if analysed_total == 0:
+        return _unknown_product_opinion()
+    total = positive + negative
+    if total < LOW_SAMPLE:
+        return _unknown_product_opinion("low_sample")
+    margin = positive - negative
+    if margin > 0:
+        attitude = "positive" if margin * 4 >= total else "neutral_positive"
+    elif margin < 0:
+        attitude = "negative" if -margin * 4 >= total else "neutral_negative"
+    else:
+        attitude = "neutral"
+    return {
+        "attitude": attitude,
+        "attitudeLabel": PRODUCT_ATTITUDE_LABELS[attitude],
+        "attitudeStatus": "ok",
+    }
+
+
+def product_attitude_counts(units):
+    """Count known product-attitude units while preserving unavailable data."""
+    if units is None:
+        return None
+    counts = {"positive": 0, "negative": 0, "neutral": 0}
+    for unit in units:
+        attitude = unit.get("attitude")
+        if attitude in counts:
+            counts[attitude] += 1
+    return counts
 
 
 def classify_market_sentiment(positive, negative, neutral):
@@ -66,79 +127,52 @@ def market_discussion_count(topics):
     return sum(int(topic.get("mentions") or 0) for topic in topics if isinstance(topic, dict))
 
 
-def market_outlook_scope(code):
-    """Return the staged display scope for one product's market outlook."""
-    return "product" if str(code) in PRODUCT_SCOPED_MARKET_OUTLOOK_CODES else "market"
-
-
-def select_market_outlook_codes(products, current_code, discussion_counts, limit=MARKET_OUTLOOK_LIMIT):
-    """Select the current product first, then the most-discussed known products.
-
-    The 7709 page is the first product-scoped rollout: its market outlook must
-    contain only discussion routed to 7709 (for example Hynix or Korean-equity
-    direction), never unrelated high-volume products from the wider pool.
-
-    Known empty products (count 0) sort ahead of unavailable products (``None``),
-    so an unknown value is never silently treated as a measured zero.  ``None``
-    means the whole pool is unavailable; ``[]`` means the pool was checked and
-    contains no market-direction discussion.
-    """
-    current_code = str(current_code)
-    if market_outlook_scope(current_code) == "product":
-        current_count = discussion_counts.get(current_code)
-        if current_count is None:
-            return None
-        if current_count <= 0:
-            return []
-        return [current_code]
-
-    if not any(value is not None for value in discussion_counts.values()):
-        return None
-    if not any((value or 0) > 0 for value in discussion_counts.values() if value is not None):
-        return []
-
-    codes = [str(product["code"]) for product in products]
-    others = [candidate for candidate in codes if candidate != current_code]
-    others.sort(key=lambda candidate: (
-        discussion_counts.get(candidate) is None,
-        -(discussion_counts.get(candidate) or 0),
-        candidate,
-    ))
-    return [current_code, *others[: max(0, limit - 1)]]
-
-
-def market_outlook_row(product, topics):
-    """Project existing topic-label output into one market-outlook table row."""
+def market_outlook_row(product, topics, attitude_counts):
+    """Combine independent product-attitude and market-direction conclusions."""
     base = {
         "code": str(product["code"]),
         "name": product["name"],
         "status": "unavailable",
-        "sentiment": None,
-        "sentimentLabel": None,
         "summary": None,
+        "stale": None,
+        "reviewState": None,
+        "evidenceIds": [],
+        **_unknown_product_opinion(),
+        **classify_market_sentiment(None, None, None),
     }
+    opinion = classify_product_opinion(*(
+        (None, None) if attitude_counts is None else (
+            attitude_counts.get("positive"), attitude_counts.get("negative"),
+            attitude_counts.get("neutral"),
+        )
+    ))
     if topics is None:
-        return base
+        return {**base, **opinion}
     valid = [topic for topic in topics if isinstance(topic, dict)]
     if not valid:
-        return {**base, "status": "empty"}
+        return {**base, **opinion, "status": "empty"}
 
-    positive = sum(int(topic.get("positive") or 0) for topic in valid)
-    negative = sum(int(topic.get("negative") or 0) for topic in valid)
-    neutral = sum(int(topic.get("neutral") or 0) for topic in valid)
-    sentiment = classify_market_sentiment(positive, negative, neutral)
+    sentiment = classify_market_sentiment(*(
+        sum(int(topic.get(key) or 0) for topic in valid)
+        for key in ("positive", "negative", "neutral")
+    ))
     primary = max(valid, key=lambda topic: (int(topic.get("mentions") or 0), str(topic.get("id") or "")))
     # SQL topics carry a deterministic fallback sentence while their AI label is
     # pending.  This table promises an AI topic summary, so do not present that
     # fallback as generated prose.  Frozen demo rows predate ``labelStatus`` and
     # are complete by construction.
     label_status = primary.get("labelStatus")
-    summary = primary.get("summary") if label_status in (None, "ok") else None
+    stale = bool(primary.get("stale"))
+    summary = primary.get("summary") if label_status in (None, "ok") and not stale else None
     return {
         **base,
+        **opinion,
         **sentiment,
         "status": "ok" if summary else "unavailable",
         "summary": summary or None,
+        "stale": stale,
+        "reviewState": primary.get("reviewState"),
+        "evidenceIds": list(primary.get("evidenceIds") or []),
     }
 
 

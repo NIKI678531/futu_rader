@@ -19,7 +19,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 ROOT = Path(__file__).resolve().parents[2]
 for folder in (ROOT, ROOT / "worker", ROOT / "backend"):
@@ -34,17 +35,16 @@ from collection import (
     SyncRequest,
 )
 from collection.models import HARD_DAILY_MAX
+from collection.source import inspect_source
 from jobs.import_dump import pool_codes
 from jobs.hkex_catalog import activate_pending_if_receipt_matches
 from radar_db import make_engine
 from radar_db.schema import ai_daily_budget, ingestion_runs
+from radar_db.source_db import make_source_engine
 
 
 def _source_engine():
-    url = os.getenv("MARKET_INSIGHT_DATABASE_URL", "").strip()
-    if not url:
-        raise ValueError("Missing MARKET_INSIGHT_DATABASE_URL; inject it from an Airflow/Kubernetes Secret")
-    return create_engine(url, future=True, pool_pre_ping=True)
+    return make_source_engine()
 
 
 def _refresh(with_source=True, through_source_run_id=None):
@@ -71,6 +71,21 @@ def source_configured() -> bool:
     return bool(os.getenv("MARKET_INSIGHT_DATABASE_URL", "").strip())
 
 
+def check_source(*, codes, sample_size=25):
+    source = None
+    try:
+        source = _source_engine()
+        return inspect_source(source, codes, sample_size=sample_size)
+    except (SQLAlchemyError, RuntimeError) as exc:
+        raise ValueError(
+            f"Source inspection failed ({type(exc).__name__}); "
+            "check connectivity, SELECT permissions and the source schema"
+        ) from None
+    finally:
+        if source is not None:
+            source.dispose()
+
+
 def latest_closing_run(source, hkt_day: date):
     """The newest successful ``comments_all`` receipt for ``hkt_day`` or the day before."""
 
@@ -87,6 +102,10 @@ def latest_closing_run(source, hkt_day: date):
 def sync_once(*, mode="incremental", run_id=None, through_source_run_id=None, page_size=1000,
               dry_run=False, feed_ids=(), service=None):
     """One MarketInsight → Radar sync, including catalog-driven route rebuilds."""
+    from radar_db.source_facts import fact_source
+
+    if fact_source() == "market_insight":
+        raise ValueError("Direct-read mode must not materialize source facts; use source_state preparation")
 
     service = service or _refresh(through_source_run_id=through_source_run_id)
     result = service.sync(SyncRequest(
@@ -133,6 +152,10 @@ def _optional_date(value: str) -> date | None:
 def _parser():
     parser = argparse.ArgumentParser(description="Futu Radar automatic source refresh")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    check = sub.add_parser("check-source", help="inspect source schema and bounded samples without writing")
+    check.add_argument("--codes", required=True, help="comma-separated HK product codes to inspect")
+    check.add_argument("--sample-size", type=int, default=25, help="feeds per product, from 1 to 100")
 
     sync = sub.add_parser("sync", help="incrementally synchronize MarketInsight into Radar")
     sync.add_argument("--run-id", help="stable orchestration id; Airflow retries must reuse it")
@@ -181,6 +204,14 @@ def main(argv=None):
     parser = _parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "check-source":
+            payload = check_source(
+                codes=tuple(value.strip() for value in args.codes.split(",") if value.strip()),
+                sample_size=args.sample_size,
+            )
+            print(json.dumps(payload, ensure_ascii=False, default=str, indent=2))
+            return 0 if payload["status"] == "sample_checked" else 2
+
         if args.command == "sync":
             payload = sync_once(
                 mode=args.mode,
@@ -241,4 +272,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+
+    load_dotenv(ROOT / "worker" / ".env", override=False)
     raise SystemExit(main())

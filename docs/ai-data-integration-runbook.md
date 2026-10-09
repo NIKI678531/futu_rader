@@ -1,9 +1,13 @@
-# futu-radar 数据、Hugging Face 模型与 AI API 接入执行手册
+# futu-radar 数据与 AI API 接入执行手册
 
 > 版本：v1.2（v1.0 初版；v1.1 记录 Gate 0–2 执行结果于 §16；v1.2 新增 §20 重点舆情识别专项、§21 无人工金标路线、§22 公开数据集清单）  
 > 日期：2026-09-11  
 > 适用环境：Windows 11、PowerShell、Python 3.11、SQLite（本地）/ MySQL 8（生产）  
-> 目标：先恢复真实数据展示，再建立可追溯的 AI 标注、Hugging Face 本地模型、行情与上游数据库同步链路。
+> 目标：先恢复真实数据展示，再建立可追溯的远程 AI 标注、行情与上游数据库同步链路。
+>
+> 2026-10-09 更新：已移除停用的本地模型训练、导出、推理及专用依赖。当前只使用远程
+> `AI_PRIMARY_*` 和 `AI_SYNTH_*`；无需下载模型或配置 Hugging Face。历史研究、ADR 和
+> 下文旧阶段记录中的本地模型方案仅供追溯，不是当前部署步骤。未删除仓库外的缓存或历史标注。
 
 ## 0. 安全红线
 
@@ -36,12 +40,8 @@ git diff -- . ':!*.env'
 |---|---|---|
 | 原始数据 | 历史 dump；生产由第三方／Airflow 写入 MarketInsight MySQL | 帖子、评论、提及和用户事实 |
 | 真实查询 | `DATA_PROVIDER=sql` | 让五个页面读取真实统计 |
-| 外部生成式模型 | OpenAI-compatible API，实际模型 ID 待供应商确认 | 冷启动标注、复杂抽取、摘要、难例 |
-| 本地分类器 P0 | `Langboat/mengzi-bert-base-fin` 微调 | 评论相关性、产品态度、帖子分类 |
-| 本地向量模型 P0 | `BAAI/bge-m3` | 近重复、候选召回、主题聚类、证据检索 |
-| 本地重排模型 P0 | `BAAI/bge-reranker-v2-m3` | 产品候选消歧、Top-K 相关性重排 |
-| 本地分类挑战者 P1 | `Qwen/Qwen3-1.7B-Base` 微调 | 当 Mengzi 质量不达标时比较替换 |
-| 本地教师/隐私兜底 P1 | `Qwen/Qwen3.5-4B` | 外部 API 不可用时做难例、抽取和摘要 |
+| Layer A 远程模型 | TypeSafe System One 或 OpenAI-compatible，型号由 `AI_PRIMARY_*` 配置 | 逐条评论、帖子、KOL 观点标注 |
+| Layer B 远程模型 | OpenAI-compatible，型号由 `AI_SYNTH_*` 配置 | 汇总、摘要和其他文字生成物 |
 | 行情 | Futu OpenAPI/OpenD | 港股 ETF 小时线、日线、最新价格 |
 | 在线社区数据 | 第三方服务 → Airflow → MarketInsight MySQL | Radar 只读数据库；不直连社区接口 |
 
@@ -83,7 +83,6 @@ gpt-5.6-luna
   → 确认 GPT API 的真实 base_url 与 model ID
   → 建 AI 标注表、任务和统一模型客户端
   → GPT 影子标注 + 人工抽查
-  → 接入本地 Hugging Face 分类/向量模型
   → SqlProvider 读取 annotations
   → 接行情
   → 接第三方／Airflow 写入的 MarketInsight MySQL 增量同步
@@ -170,7 +169,8 @@ gpt-5.6-luna
 | `worker/jobs/` | 无 annotate/embed/model job | 当前运行代码 | ✅ `worker/jobs/annotate.py` 已建；`embed`/本地模型 job 待 Gate 3 |
 | `backend/providers/sql.py` | AI 字段固定 `None` | 当前运行代码 | annotations 可用后逐项接通 |
 
-结论：现阶段“模型在哪里引用”分成两类——现有引用全部在文档，未来实际引用应集中在 `worker/models/registry.py` 和 `worker/ai/providers/`，业务模块不得各自硬编码模型名。
+当前运行模型由 `worker/ai/config.py` 读取环境配置，`worker/ai/providers/` 实现远程调用；
+业务模块不得各自硬编码模型名。本地模型注册表已删除，旧选型文档不再作为部署依据。
 
 ---
 
@@ -184,7 +184,6 @@ gpt-5.6-luna
 | 120 只产品正式主数据与别名 | 是 | 客户 | 产品绑定、候选召回 | 当前有 fixture，需业务核验 |
 | 官号/KOL 真实 UID 映射 | 是 | 客户 | 替代不稳定的名称匹配 | 当前只部分命中 |
 | OpenAI-compatible API 资料 | AI P0 必需 | 模型供应商 | 冷启动、摘要、难例 | `GPT-5.6 Luna` 待确认 |
-| Hugging Face 权重 | AI P0 必需 | Hugging Face | 本地分类、向量、重排 | 公开模型可下载 |
 | 人工金标 | AI P0 必需 | 产品/标注团队 | 选型、阈值、校准 | 建议评论 3,000、帖子 1,000 |
 | Futu OpenD 账号和行情权限 | 行情必需 | Futu | 港股 ETF K 线 | 需确认 120 只配额 |
 
@@ -487,10 +486,6 @@ AI_SCHEMA_VERSION=v3
 # 只有供应商明确支持时启用
 AI_STRUCTURED_OUTPUT=true
 AI_THINKING_ENABLED=false
-
-# Hugging Face；公开模型通常不要求 Token
-HF_TOKEN=
-HF_HOME=D:\futu-radar-models\cache
 ```
 
 生产环境不应直接从 `.env` 读取长期密钥，应由 Secret Manager 注入同名变量。
@@ -632,144 +627,24 @@ GPT 不能：
 
 ---
 
-## 7. Hugging Face 模型总表
+## 7. 本地模型已移除
 
-### 7.1 P0 必须接入
+当前没有本地分类、训练、ONNX 导出或权重下载入口。评论任务直接进入 `llm` 队列，
+由已配置的远程供应商处理；无需安装 PyTorch、Transformers 或 ONNX Runtime。
 
-| 模型 ID | 类型 | 许可证 | 项目用途 | 计划引用位置 | 是否直接可用 |
-|---|---|---|---|---|---|
-| [`Langboat/mengzi-bert-base-fin`](https://huggingface.co/Langboat/mengzi-bert-base-fin) | 中文金融 Encoder | Apache-2.0 | 评论相关性、三分类态度、帖子类型/方向的本地学生模型 | `worker/models/registry.py`、`worker/models/classifier.py`、`worker/jobs/annotate.py` | 否，必须用项目金标微调 |
-| [`BAAI/bge-m3`](https://huggingface.co/BAAI/bge-m3) | 多语 Embedding | MIT | 产品/别名召回、近重复、主题聚类、证据检索 | `worker/models/registry.py`、`worker/jobs/embed.py`、`worker/ai/retrieval.py` | 可直接产向量，但阈值/聚类需项目校准 |
-| [`BAAI/bge-reranker-v2-m3`](https://huggingface.co/BAAI/bge-reranker-v2-m3) | Cross-encoder Reranker | Apache-2.0 | 对 Top-K 产品候选或证据候选做相关性重排 | `worker/models/registry.py`、`worker/ai/rerank.py` | 可打相关性分，不会输出情感 |
-
-P0 不应下载和同时运行十个模型。以上三个模型加一个外部 GPT Provider 足够建立首个闭环。
-
-### 7.2 P1 挑战者和兜底
-
-| 模型 ID | 角色 | 何时启用 | 计划引用位置 |
-|---|---|---|---|
-| [`Qwen/Qwen3-1.7B-Base`](https://huggingface.co/Qwen/Qwen3-1.7B-Base) | 更强本地分类挑战者 | Mengzi 在繁体、粤语、否定、比较句或未见产品切片不达标时 | `worker/models/classifier_qwen.py` |
-| [`Qwen/Qwen3.5-2B-Base`](https://huggingface.co/Qwen/Qwen3.5-2B-Base) | 新架构分类实验 | Qwen3-1.7B 后仍需比较；先验证 Transformers 版本和显存 | 离线 benchmark，不先接生产 |
-| [`Qwen/Qwen3.5-4B`](https://huggingface.co/Qwen/Qwen3.5-4B) | 本地生成式教师/隐私兜底 | 外部 GPT 不获数据治理批准，或需本地难例和摘要 | `worker/ai/providers/local_qwen.py` |
-| [`Qwen/Qwen3-Embedding-0.6B`](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) | BGE-M3 挑战者 | 同一金标集显著提高繁简/港式召回或主题稳定性时 | 离线 benchmark → 可替换 registry |
-| [`Qwen/Qwen3-Reranker-0.6B`](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B) | BGE Reranker 挑战者 | 在 hard negatives 上显著更好时 | 离线 benchmark → 可替换 registry |
-
-Qwen3.5 需要较新的 Transformers/serving 版本，必须锁定可复现版本，不能长期跟随 `main/nightly`。
-
-### 7.3 只用于基线评测，不接生产
-
-| 模型 ID | 用途 | 不作为生产默认的原因 |
-|---|---|---|
-| [`hfl/chinese-macbert-base`](https://huggingface.co/hfl/chinese-macbert-base) | 通用中文分类基线 | 没有金融社区标签知识；已有项目反馈效果不佳 |
-| [`hfl/chinese-roberta-wwm-ext`](https://huggingface.co/hfl/chinese-roberta-wwm-ext) | 回归基线 | 通用 MLM，必须微调 |
-| [`yiyanghkust/finbert-tone-chinese`](https://huggingface.co/yiyanghkust/finbert-tone-chinese) | 开箱中文金融三分类 smoke test | 训练语料是私有分析师报告，不是社区产品态度 |
-| [`IDEA-CCNL/Erlangshen-Roberta-330M-Sentiment`](https://huggingface.co/IDEA-CCNL/Erlangshen-Roberta-330M-Sentiment) | 通用中文正负二分类下限 | 没有中性、产品目标和 ETF 口径 |
-| `FacebookAI/xlm-roberta-base` | 固化旧错误集 | 已有漏识别/误判反馈，不继续投入主线 |
-
-### 7.4 暂不使用
-
-| 模型 | 原因 |
-|---|---|
-| `ProsusAI/finbert` | 英文金融文本，不适配中文/繁体/粤语 |
-| `nghuyong/ernie-3.0-base-zh` | 社区转换权重许可不清晰 |
-| `Qwen3.8-27B` | 对本项目批量短文本分类过重 |
-| 任意 Embedding 单独做情感 | 相似度不等于正负态度 |
-| 任意 Reranker 单独做三分类态度 | 只输出 query-document 相关性 |
+历史 `student` 队列值仅用于兼容旧数据。编排会将符合当前产品过滤规则、未完成且无有效
+租约的旧任务转交远程模型；已完成任务和历史标注保持不变。人工核对工具默认抽取远程
+模型结论，仍能读取旧报告与历史本地模型记录，不加载权重。
 
 ---
 
-## 8. Hugging Face 获取、存储与加载
+## 8. 当前模型配置与依赖
 
-### 8.1 获取方式
+安装 `worker/requirements.txt`，按 `worker/.env.example` 配置远程供应商即可。
+Layer A 用 TypeSafe 时必须另外配置支持文字生成的 Layer B。模型型号、地址和密钥
+分别由 `AI_PRIMARY_*` 与 `AI_SYNTH_*` 提供，业务代码不得硬编码。
 
-上述 P0 模型是公开权重，不需要购买 API。可注册 [Hugging Face](https://huggingface.co/)账号并创建只读 Token，以提高下载稳定性和审计能力；Token 同样只能写入环境变量。
-
-模型缓存不要放在 `P:` 网络盘或 Git 仓库。建议：
-
-```powershell
-$env:HF_HOME = 'D:\futu-radar-models\cache'
-$env:HF_TOKEN = ''
-```
-
-安装下载工具：
-
-```powershell
-py -3.11 -m venv D:\futu-radar-models\.venv
-& D:\futu-radar-models\.venv\Scripts\python.exe -m pip install --upgrade pip
-& D:\futu-radar-models\.venv\Scripts\python.exe -m pip install 'huggingface_hub[cli]'
-```
-
-下载 P0 模型：
-
-```powershell
-& D:\futu-radar-models\.venv\Scripts\hf.exe download `
-    Langboat/mengzi-bert-base-fin `
-    --local-dir D:\futu-radar-models\mengzi-bert-base-fin
-
-& D:\futu-radar-models\.venv\Scripts\hf.exe download `
-    BAAI/bge-m3 `
-    --local-dir D:\futu-radar-models\bge-m3
-
-& D:\futu-radar-models\.venv\Scripts\hf.exe download `
-    BAAI/bge-reranker-v2-m3 `
-    --local-dir D:\futu-radar-models\bge-reranker-v2-m3
-```
-
-下载后记录：
-
-- 完整模型 ID；
-- commit revision；
-- 下载日期；
-- License 文件；
-- 文件 SHA256；
-- Transformers/FlagEmbedding 版本。
-
-生产配置必须锁定 revision，不能只写会变化的 `main`。
-
-### 8.2 P0 Python 依赖
-
-建议新增独立 AI requirements/lock 文件，而不是立即污染 backend：
-
-```text
-torch
-transformers
-sentence-transformers
-FlagEmbedding
-accelerate
-datasets
-scikit-learn
-pydantic
-openai
-tenacity
-```
-
-具体版本应在目标 GPU/CPU 完成 smoke test 后锁定。AI 依赖属于 worker，不应安装到浏览器或 Flask 查询进程。
-
-### 8.3 推荐模型注册表
-
-未来 `worker/models/registry.py` 应是型号唯一入口：
-
-```python
-MODEL_REGISTRY = {
-    "classifier_primary": {
-        "model_id": "Langboat/mengzi-bert-base-fin",
-        "revision": "",
-        "task": "sequence_classification",
-    },
-    "embedding_primary": {
-        "model_id": "BAAI/bge-m3",
-        "revision": "",
-        "task": "embedding",
-    },
-    "reranker_primary": {
-        "model_id": "BAAI/bge-reranker-v2-m3",
-        "revision": "",
-        "task": "reranking",
-    },
-}
-```
-
-业务代码不能在多个文件中散落硬编码模型 ID。
+人工核对集导出依赖 `openpyxl`，已保留在 worker 的常规依赖中，不需要任何 ML 依赖。
 
 ---
 
@@ -1074,7 +949,6 @@ frontend/
 - `worker/jobs/review.py`：人工复核，**可选工具**（[ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md)：
   模型写下即发布，没有批准门槛）。`--reject` 是把一条错结论从页面上拿下来的唯一通道；
   `--correct` 留下 Gate 3 训练金标所需的人工对照；`--approve` 只在库里留痕，不改变显示；
-- `worker/models/*`：本地 Hugging Face 推理；
 - `backend/providers/sql.py`：读取事实和 annotations；
 - `backend/core/*`：把原子标签聚合成页面指标；
 - 前端：只渲染后端结果和六态，不自行重新算口径。
@@ -1409,25 +1283,10 @@ cd worker
 .venv/Scripts/python -m jobs.review --id 42 --correct '"positive"' --reviewer <你的名字>
 ```
 
-### Gate 3：P0 Hugging Face
+### Gate 3：本地模型（已取消）
 
-> **本轮未执行 —— 阻塞。** 三个阻塞点：(1) 需要先建 3,000 条评论 ＋ 1,000 篇帖子
-> 的人工金标，这是人力排期问题，不是代码问题；(2) 概率校准必须在**独立**校准集上做，
-> 而校准集还不存在 —— 没有它就只能拿模型自报的 softmax 当概率，那正是
-> `calibrated_confidence` 现在全为 NULL 的原因；(3) 模型权重下载与 revision 锁定
-> 需要确认内网出口与存储位置。
-
-
-- [ ] 下载并锁定 Mengzi revision。
-- [ ] 下载并锁定 BGE-M3 revision。
-- [ ] 下载并锁定 BGE Reranker revision。
-- [ ] 建 3,000 条评论、1,000 篇帖子金标。
-- [ ] 训练相关性和态度分类头。
-- [ ] 完成概率校准。
-- [ ] 建向量和 Top-K 重排。
-- [ ] 比较本地模型与 GPT。
-
-完成标准：达到业务确认的切片指标；低置信可正确升级 GPT/人工。
+2026-10-09 已删除本地模型代码及依赖；不再下载、训练或校准本地模型，不构成运行门禁。
+以下 Gate 3-alt 保留原发布策略的历史记录，当前运行方式见 §7、§8。
 
 #### Gate 3-alt：零金标冷启动（已按 [ADR-0019](adr/0019-ai-auto-publish-no-human-gate.md) 定案）
 

@@ -1,37 +1,32 @@
-# 构建上下文是**仓库根**，不是 backend/ —— 见 docker-compose.yml 顶部注释。
-# 所以下面的 COPY 路径都带 backend/ 前缀。
-FROM python:3.11-slim
-
-WORKDIR /app
+FROM python:3.11.14-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8 \
+    PYTHONPATH=/app \
     APP_ENV=production \
-    APP_HOST=0.0.0.0 \
-    APP_PORT=8008
+    TZ=Asia/Hong_Kong \
+    HOME=/home/app \
+    XDG_CACHE_HOME=/home/app/.cache
 
-RUN groupadd -g 1000 appuser && useradd -r -u 1000 -g appuser appuser
+RUN apt-get update && apt-get install -y --no-install-recommends tini tzdata ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 10001 app && useradd -r -u 10001 -g app -d /home/app app \
+    && mkdir -p /home/app && chmod 1777 /home/app /tmp
 
-# curl 供 HEALTHCHECK。gcc/g++ 是 wheel 缺失时的编译兜底（SQLAlchemy 的 C 扩展、greenlet），
-# 依赖集定稿后若确认全程走 wheel 可以去掉，能省掉约 200MB。
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl gcc g++ \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app/backend
+COPY backend/requirements.txt backend/requirements.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock \
+    && pip install --no-cache-dir --no-index --no-deps -r requirements.txt \
+    && pip check
 
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+COPY backend/ /app/backend/
+COPY radar_db/ /app/radar_db/
+COPY deploy/runtime.py /app/deploy/runtime.py
 
-COPY backend/ /app
-# 表结构 backend 与 worker 共用一份，源在仓库根（radar_db/__init__.py 说明了为什么）。
-COPY radar_db/ /app/radar_db
-RUN chown -R appuser:appuser /app
-
-USER appuser
-
+USER 10001:10001
 EXPOSE 8008
-
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8008/health || exit 1
-
-CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:8008", "app:create_app()"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD ["python", "/app/deploy/runtime.py", "--healthcheck", "srvapp"]
+ENTRYPOINT ["/usr/bin/tini", "--", "python", "/app/deploy/runtime.py", "srvapp"]
+CMD ["gunicorn", "--config", "gunicorn.conf.py", "app:create_app()"]

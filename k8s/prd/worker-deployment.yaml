@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: futuradar-worker
+  namespace: futu-radar
+  labels:
+    app: prd-futuradar
+    component: worker
+    env: prd
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: prd-futuradar
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: prd-futuradar
+        component: worker
+        env: prd
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 900
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: migrate
+          image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/prd-futuradar-worker:latest
+          imagePullPolicy: Always
+          args: [python, -m, alembic, -c, /app/radar_db/alembic.ini, upgrade, head]
+          envFrom:
+            - configMapRef:
+                name: futuradar-worker-config
+            - secretRef:
+                name: futuradar-worker-secret
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/app
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      containers:
+        - name: worker
+          image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/prd-futuradar-worker:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: futuradar-worker-config
+            - secretRef:
+                name: futuradar-worker-secret
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/app
+            - name: reports
+              mountPath: /app/.scratch
+          startupProbe:
+            exec:
+              command: [python, /app/deploy/runtime.py, --healthcheck, worker]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: [python, /app/deploy/runtime.py, --healthcheck, worker]
+            periodSeconds: 30
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: [python, /app/deploy/runtime.py, --healthcheck, worker]
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: reports
+          emptyDir:
+            sizeLimit: 512Mi
