@@ -63,8 +63,8 @@ spec:
               cpu: 100m
               memory: 256Mi
             limits:
-              cpu: "1"
-              memory: 1Gi
+              cpu: 200m
+              memory: 512Mi
         - name: bootstrap-data
           image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/ih-prd-remote-opinion-radar-srvapp:latest
           imagePullPolicy: Always
