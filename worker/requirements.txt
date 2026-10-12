@@ -6,7 +6,7 @@ pytest==8.3.4
 # 原 clickhouse-driver 已删除：存储选型改为 MySQL 8（ADR-0002 推翻 plan.md §6 Q4），
 # 且 ETL 要写 backend 读的同一批表，schema 共用 radar_db/（ADR-0009）。
 SQLAlchemy==2.0.36
-PyMySQL==1.1.1
+PyMySQL[rsa]==1.1.1
 
 # 数据库迁移（ADR-0017、runbook Gate 2）。`metadata.create_all()` 只会**新建缺失的表**，
 # 它不会给已存在的表加列、改类型或加约束 —— 本机那个 5.27 GB 的库已经建过表了，
