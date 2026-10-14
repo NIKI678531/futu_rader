@@ -62,6 +62,7 @@ None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲�
 """
 
 import json
+import logging
 import re
 import sys
 import unicodedata
@@ -126,6 +127,9 @@ from radar_db.schema import (  # noqa: E402
 )
 from radar_db.time_windows import HKT, hkt_range_utc_naive, utc_naive_to_hkt  # noqa: E402
 
+
+log = logging.getLogger(__name__)
+
 KOL_OPINION_PROMPT_VERSION = "kol-opinion-v2"
 
 # ``price_instruments`` is the single active, verified identity for a product.
@@ -142,6 +146,7 @@ class SqlProvider:
 
     def __init__(self, url=None):
         self._engine = make_engine(url)
+        self._last_meta_error = None
         self._products = load_products(engine=self._engine)
         self._by_code = {p["code"]: p for p in self._products}
         accounts = load_accounts()
@@ -167,9 +172,74 @@ class SqlProvider:
         没接上库的环境应该看到「暂不可用」，而不是 500。"""
         try:
             with self._engine.connect() as conn:
-                return {k: v for k, v in conn.execute(select(meta_kv.c.k, meta_kv.c.v))}
-        except Exception:
+                meta = {k: v for k, v in conn.execute(select(meta_kv.c.k, meta_kv.c.v))}
+        except Exception as exc:
+            self._last_meta_error = type(exc).__name__
+            log.exception(
+                "meta_read_failed database=%s table=meta_kv error_type=%s "
+                "possible_causes=database_unreachable;invalid_credentials_or_permissions;"
+                "schema_not_initialized_or_migrated;wrong_RADAR_DB_URL",
+                self._database_target(),
+                self._last_meta_error,
+            )
             return {}
+        self._last_meta_error = None
+        return meta
+
+    def _database_target(self):
+        """Return a useful DB location without logging credentials or URL query secrets."""
+        url = self._engine.url
+        backend = url.get_backend_name()
+        if backend == "sqlite":
+            return f"sqlite:///{url.database or ':memory:'}"
+        host = url.host or "<missing-host>"
+        port = f":{url.port}" if url.port else ""
+        database = url.database or "<missing-database>"
+        return f"{backend}://{host}{port}/{database}"
+
+    @staticmethod
+    def _safe_log_value(value, limit=120):
+        """Keep metadata diagnostics single-line and bounded."""
+        text = repr(value).replace("\r", "\\r").replace("\n", "\\n")
+        return text if len(text) <= limit else text[: limit - 3] + "..."
+
+    def range_unavailable_diagnostics(self, key):
+        """Explain why ``build_range`` cannot produce a range, without secrets."""
+        anchor_present = "anchor" in self._meta
+        raw_anchor = self._meta.get("anchor")
+
+        if key not in PRESETS:
+            reason = "unsupported_range_key"
+            causes = "caller_requested_unknown_range_key"
+        elif self._last_meta_error:
+            reason = "meta_read_failed"
+            causes = (
+                "database_unreachable;invalid_credentials_or_permissions;"
+                "schema_not_initialized_or_migrated;wrong_RADAR_DB_URL"
+            )
+        elif not anchor_present:
+            reason = "anchor_missing"
+            causes = (
+                "import_or_sync_not_completed;meta_kv_anchor_row_missing;"
+                "wrong_or_empty_database;wrong_RADAR_DB_URL"
+            )
+        elif raw_anchor is None or not str(raw_anchor).strip():
+            reason = "anchor_blank"
+            causes = "meta_kv_anchor_value_is_null_or_blank;incomplete_import_or_sync"
+        elif parse_anchor(raw_anchor) is None:
+            reason = "anchor_invalid"
+            causes = "meta_kv_anchor_is_not_ISO_date;corrupt_or_incompatible_metadata"
+        else:
+            reason = "provider_returned_none"
+            causes = "unexpected_provider_state;inspect_preceding_provider_logs"
+
+        return {
+            "reason": reason,
+            "database": self._database_target(),
+            "anchor": self._safe_log_value(raw_anchor) if anchor_present else "<missing>",
+            "meta_key_count": len(self._meta),
+            "possible_causes": causes,
+        }
 
     def refresh(self):
         """库在进程活着的时候被重写了，就重新认一遍。每次请求入口调一次。

@@ -10,8 +10,13 @@ PRD §5 逐字：区间与桶由**后端下发，前端不自行算桶**。这�
 **只会有这一份**（铁律 1）。
 """
 
+import logging
+
 from providers import get_provider
 from providers.sentinel import MISSING
+
+
+log = logging.getLogger(__name__)
 
 # PRD §3.1 的预设，加上「当天」d0。未知 key 不做兜底回落——静默回落到 d7 会让前端以为自己拿到了
 # 请求的区间，图表横轴和标题却是另一段时间。
@@ -26,4 +31,77 @@ def build_range(key):
     """
     if key not in VALID_KEYS:
         return MISSING
-    return get_provider().build_range(key)
+
+    try:
+        provider = get_provider()
+    except Exception:
+        log.exception(
+            "range_provider_resolution_failed key=%s "
+            "possible_causes=invalid_DATA_PROVIDER_or_RADAR_DB_URL;missing_database_driver;"
+            "database_engine_initialization_failed",
+            key,
+        )
+        raise
+
+    provider_class = type(provider).__name__
+    provider_name = getattr(provider, "name", provider_class)
+    try:
+        data = provider.build_range(key)
+    except Exception:
+        log.exception(
+            "range_build_failed key=%s provider=%s provider_name=%s "
+            "possible_causes=provider_query_failed;calendar_build_failed;unexpected_provider_data",
+            key,
+            provider_class,
+            provider_name,
+        )
+        raise
+
+    if data is None:
+        diagnostics = {
+            "reason": "provider_returned_none",
+            "database": "unknown",
+            "anchor": "unknown",
+            "meta_key_count": "unknown",
+            "possible_causes": (
+                "required_metadata_missing;data_source_not_initialized;"
+                "data_source_configuration_mismatch;provider_read_failed"
+            ),
+        }
+        diagnose = getattr(provider, "range_unavailable_diagnostics", None)
+        if callable(diagnose):
+            try:
+                diagnostics.update(diagnose(key) or {})
+            except Exception:
+                log.exception(
+                    "range_diagnostics_failed key=%s provider=%s provider_name=%s",
+                    key,
+                    provider_class,
+                    provider_name,
+                )
+
+        log.warning(
+            "range_unavailable key=%s provider=%s provider_name=%s reason=%s "
+            "database=%s anchor=%s meta_key_count=%s possible_causes=%s",
+            key,
+            provider_class,
+            provider_name,
+            diagnostics["reason"],
+            diagnostics["database"],
+            diagnostics["anchor"],
+            diagnostics["meta_key_count"],
+            diagnostics["possible_causes"],
+        )
+    else:
+        log.info(
+            "range_available key=%s provider=%s provider_name=%s from=%s to=%s "
+            "granularity=%s bucket_count=%s",
+            key,
+            provider_class,
+            provider_name,
+            data.get("from") if isinstance(data, dict) else "unknown",
+            data.get("to") if isinstance(data, dict) else "unknown",
+            data.get("gran") if isinstance(data, dict) else "unknown",
+            len(data.get("buckets", [])) if isinstance(data, dict) else "unknown",
+        )
+    return data

@@ -4,7 +4,9 @@
 函数返回一致」），前端直接承接，**不自行算桶**。
 """
 
-from flask import abort
+import logging
+
+from flask import abort, request
 
 from core.envelope import respond
 from core.ranges import build_range
@@ -13,11 +15,37 @@ from providers.sentinel import MISSING
 from . import v1_bp
 
 
+log = logging.getLogger(__name__)
+
+
 @v1_bp.get("/ranges/<key>")
 def ranges(key):
+    log.info(
+        "range_request key=%s path=%s remote_addr=%s",
+        key,
+        request.path,
+        request.remote_addr or "unknown",
+    )
     data = build_range(key)
     # 未知预设 key＝没这条资源，走 404 错误信封；与「有资源但取不到值」（→ 200 +
     # unavailable）严格分开，前端才分得清「路由写错了」和「这个数暂时没有」。
     if data is MISSING:
+        log.warning("range_response_not_found key=%s path=%s", key, request.path)
         abort(404, description=f"未知的区间预设 {key!r}")
+    if data is None:
+        log.warning(
+            "range_response_unavailable key=%s path=%s "
+            "diagnostics=see_core.ranges_range_unavailable",
+            key,
+            request.path,
+        )
+    else:
+        log.info(
+            "range_response_ok key=%s path=%s from=%s to=%s bucket_count=%s",
+            key,
+            request.path,
+            data.get("from") if isinstance(data, dict) else "unknown",
+            data.get("to") if isinstance(data, dict) else "unknown",
+            len(data.get("buckets", [])) if isinstance(data, dict) else "unknown",
+        )
     return respond(data)

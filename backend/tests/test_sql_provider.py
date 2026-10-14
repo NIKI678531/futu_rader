@@ -41,6 +41,7 @@ from sql_fixture import (
 )
 
 from providers.sentinel import MISSING
+from providers.sql import SqlProvider
 
 # 另一只自家产品。合规四态里「扫过了、这只没命中」（empty）与「压根没扫过」
 # （unavailable）只能靠两只产品分开测：一只命中让扫描算作跑过，另一只才轮得到 empty。
@@ -81,6 +82,17 @@ class TestAnchor:
 
     def test_unknown_range_key_is_none(self, provider):
         assert provider.build_range("d999") is None
+
+    def test_meta_read_failure_logs_exception_and_safe_diagnostic_target(self, caplog):
+        with caplog.at_level("ERROR", logger="providers.sql"):
+            provider = SqlProvider("sqlite://")
+
+        assert provider._meta == {}
+        message = "\n".join(caplog.messages)
+        assert "meta_read_failed" in message
+        assert "database=sqlite:///" in message
+        assert "table=meta_kv" in message
+        assert "schema_not_initialized_or_migrated" in message
 
 
 # ── 计数：真实字段 ─────────────────────────────────────────────────────

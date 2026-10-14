@@ -6,6 +6,9 @@
 
 import pytest
 
+import core.ranges as ranges_core
+from sql_fixture import make_sql_provider
+
 RANGE_KEYS = ["d0", "d1", "d2", "d7", "d14", "d30"]
 
 
@@ -104,3 +107,40 @@ def test_deterministic(client):
     a = client.get("/api/v1/ranges/d7").get_data()
     b = client.get("/api/v1/ranges/d7").get_data()
     assert a == b
+
+
+def test_unavailable_range_logs_actionable_diagnostics(client, monkeypatch, caplog):
+    """provider 返回 None 时，线上日志必须说明资源、provider 与排查方向。"""
+
+    class UnavailableProvider:
+        def build_range(self, key):
+            return None
+
+    monkeypatch.setattr(ranges_core, "get_provider", lambda: UnavailableProvider())
+
+    with caplog.at_level("WARNING", logger="core.ranges"):
+        response = client.get("/api/v1/ranges/d7")
+
+    assert response.get_json() == {"status": "unavailable", "data": None}
+    message = "\n".join(caplog.messages)
+    assert "range_unavailable" in message
+    assert "key=d7" in message
+    assert "provider=UnavailableProvider" in message
+    assert "possible_causes=" in message
+
+
+def test_sql_range_log_identifies_a_missing_anchor(client, monkeypatch, caplog):
+    provider = make_sql_provider(anchor=None)
+    monkeypatch.setattr(ranges_core, "get_provider", lambda: provider)
+
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="core.ranges"):
+        response = client.get("/api/v1/ranges/d7")
+
+    assert response.get_json() == {"status": "unavailable", "data": None}
+    message = "\n".join(caplog.messages)
+    assert "provider=SqlProvider" in message
+    assert "reason=anchor_missing" in message
+    assert "database=sqlite:///" in message
+    assert "anchor=<missing>" in message
+    assert "import_or_sync_not_completed" in message
