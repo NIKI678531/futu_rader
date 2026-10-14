@@ -16,7 +16,7 @@ class HealthcheckFilter(logging.Filter):
         atoms = record.args
         return not (
             isinstance(atoms, dict)
-            and atoms.get("U") == "/health"
+            and atoms.get("U") in {"/health", "/health/ready"}
             and str(atoms.get("s")) == "200"
         )
 

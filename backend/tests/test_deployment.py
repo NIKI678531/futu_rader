@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, insert
 
 from app import create_app
 
@@ -86,6 +86,32 @@ def test_deep_health_checks_database(monkeypatch):
     assert response.json == {"status": "ok", "dependencies": {"database": "ok"}}
 
 
+def test_ready_health_requires_a_real_data_anchor(tmp_path, monkeypatch):
+    from radar_db.schema import meta_kv, metadata
+
+    engine = create_engine("sqlite:///" + (tmp_path / "ready.db").as_posix())
+    metadata.create_all(engine)
+    monkeypatch.setattr("radar_db.make_engine", lambda: engine)
+    client = create_app().test_client()
+
+    missing = client.get("/health/ready")
+    assert missing.status_code == 503
+    assert missing.json == {
+        "status": "not_ready",
+        "dependencies": {"database": "ok", "anchor": "missing"},
+    }
+
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k="anchor", v="2026-10-13"))
+
+    ready = client.get("/health/ready")
+    assert ready.status_code == 200
+    assert ready.json == {
+        "status": "ok",
+        "dependencies": {"database": "ok", "anchor": "ok"},
+    }
+
+
 def test_shallow_health_survives_dependency_failure_without_leaking_secrets(monkeypatch):
     def unavailable():
         raise RuntimeError("mysql://private-user:private-password@private-host/app")
@@ -96,14 +122,43 @@ def test_shallow_health_survives_dependency_failure_without_leaking_secrets(monk
     response = client.get("/health/deep")
     assert response.status_code == 503
     assert response.json == {"status": "degraded", "dependencies": {"database": "unavailable"}}
+    ready = client.get("/health/ready")
+    assert ready.status_code == 503
+    assert ready.json == {
+        "status": "not_ready",
+        "dependencies": {"database": "unavailable", "anchor": "unknown"},
+    }
 
 
-def test_gunicorn_filters_only_successful_shallow_probes():
+def test_worker_readiness_requires_heartbeat_and_anchor(tmp_path, monkeypatch):
+    from radar_db.schema import meta_kv, metadata
+
+    health_file = tmp_path / "heartbeat"
+    health_file.touch()
+    monkeypatch.setenv("WORKER_HEALTH_FILE", str(health_file))
+    engine = create_engine("sqlite:///" + (tmp_path / "worker-ready.db").as_posix())
+    metadata.create_all(engine)
+    monkeypatch.setattr("radar_db.make_engine", lambda: engine)
+
+    with pytest.raises(ValueError, match="anchor"):
+        runtime.healthcheck("worker-ready")
+
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k="anchor", v="2026-10-13"))
+
+    runtime.healthcheck("worker-ready")
+
+
+def test_gunicorn_filters_only_successful_health_probes():
     spec = importlib.util.spec_from_file_location("gunicorn_config", ROOT / "backend" / "gunicorn.conf.py")
     config = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(config)
     probe_filter = config.HealthcheckFilter()
     record = logging.makeLogRecord({"args": {"U": "/health", "s": "200"}})
+    assert not probe_filter.filter(record)
+    record.args["s"] = "503"
+    assert probe_filter.filter(record)
+    record.args = {"U": "/health/ready", "s": "200"}
     assert not probe_filter.filter(record)
     record.args["s"] = "503"
     assert probe_filter.filter(record)
@@ -266,6 +321,19 @@ def test_prd_shared_backend_image_keeps_explicit_worker_role(prd_resources):
                 assert container["args"][0] == "/opt/worker/bin/python"
     assert "build" not in services["worker"]
     assert services["worker"]["healthcheck"]["test"][-2:] == ["--healthcheck", "worker"]
+    worker_pod = prd_resources[
+        "Deployment", "ih-prd-remote-opinion-radar-worker"
+    ]["spec"]["template"]["spec"]
+    assert [container["name"] for container in worker_pod["initContainers"]] == [
+        "migrate", "bootstrap-data",
+    ]
+    assert worker_pod["initContainers"][1]["args"][-2:] == ["-m", "jobs.bootstrap"]
+    assert worker_pod["containers"][0]["readinessProbe"]["exec"]["command"][-1] == "worker-ready"
+
+    srvapp_pod = prd_resources[
+        "Deployment", "ih-prd-remote-opinion-radar-srvapp"
+    ]["spec"]["template"]["spec"]
+    assert srvapp_pod["containers"][0]["readinessProbe"]["httpGet"]["path"] == "/health/ready"
     dockerfile = (ROOT / "backend/Dockerfile").read_text(encoding="utf-8")
     for component in ("srvapp", "worker"):
         assert f"COPY --from=dependencies /opt/{component} /opt/{component}" in dockerfile

@@ -73,9 +73,12 @@ micro batch `1`。沿用代码默认：香港时间 08:00 全量刷新，13:00�
 3. 从现有安全配置填写本机 `.env.prd` 的五个机密字段，并确认对应生产权限。不要把文件提交。
 4. 从集群侧验证两台 RDS 的网络、MySQL 8、`utf8mb4`、时区和账号权限。
    应用账号需要运行及 Alembic 迁移的 DDL 权限，源账号只允许 SELECT。
-5. 确认应用库已有业务数据或完成首次同步。迁移只创建表结构，不会把本地 SQLite 数据搬到 RDS。
-   已有库必须核对 `alembic_version`，不允许未经核验直接 stamp；空库可直接 upgrade head。
-   参考 [数据库迁移说明](../radar_db/migrations/README.md)。
+5. 确认应用库已有业务数据，或源库已有最近一次成功且完整的 `comments_all` 回执。
+   迁移只创建表结构，不会把本地 SQLite 数据搬到 RDS；空库发布时，worker 的
+   `bootstrap-data` initContainer 会通过该回执执行首次同步并生成真实 `meta_kv.anchor`。
+   回执缺失、源库不可读或同步失败时 rollout 会保持未完成，不再把空库服务标为 Ready。
+   已有库必须核对 `alembic_version`，不允许未经核验直接 stamp；需要保留本地历史时仍须先按
+   [数据库迁移说明](../radar_db/migrations/README.md)迁移，bootstrap 不替代历史搬迁。
 6. 确认出网可以访问配置的两个 AI 端点、FMP、Yahoo Finance 行情端点及系统 DNS。
 7. 比对集群中共享 Ingress 的最新版本，保留其他应用的新增规则后再 apply。
    当前文件沿用用户提供的证书 ARN、子网与无 host 限制规则；确认现有域名、证书和入口访问控制
@@ -121,6 +124,7 @@ docker compose -f docker-compose.prd.yml run --rm worker /opt/worker/bin/python 
 docker compose -f docker-compose.prd.yml up -d
 curl -f http://127.0.0.1:18008/health
 curl -f http://127.0.0.1:18008/health/deep
+curl -f http://127.0.0.1:18008/health/ready
 curl -f http://127.0.0.1:18080/healthz
 curl -f http://127.0.0.1:18080/remote/opinion-radar/remoteEntry.js
 curl -f http://127.0.0.1:18080/remote/opinion-radar/sector
@@ -148,9 +152,11 @@ kubectl apply -f k8s/prd/webapp-deployment.yaml -f k8s/prd/webapp-service.yaml
 kubectl -n ih rollout status deploy/ih-prd-remote-opinion-radar-webapp --timeout=3m
 ```
 
-worker 的 initContainer 先运行 `alembic upgrade head`；失败时不启动调度器。
-不要在 API 或多个 worker 中并行迁移。首次发布前应备份应用库；已有数据库不匹配时
-查看迁移日志并按实际版本处理，不能删除数据库绕过失败。
+worker 的 initContainer 依次运行 `alembic upgrade head` 与 `jobs.bootstrap`。后者仅在
+`meta_kv.anchor` 缺失时调用正常 MarketInsight 同步；只有带完整回执的同步真正发布了 anchor
+才成功。任一步失败都不会启动调度器。不要在 API 或多个 worker 中并行迁移或首次同步。
+首次发布前应备份应用库；已有数据库不匹配时查看迁移日志并按实际版本处理，不能删除数据库
+或手工插入 anchor 绕过失败。
 
 Pod 验证成功、现有域名和证书确认后，先比较共享 Ingress，再由平台执行：
 
@@ -170,9 +176,10 @@ kubectl -n ih get ingress hkg-csop-prd-lb16-ih
 ```bash
 kubectl -n ih get pods,deploy,svc -l app=ih-prd-remote-opinion-radar
 kubectl -n ih logs deploy/ih-prd-remote-opinion-radar-worker -c migrate --tail=40
+kubectl -n ih logs deploy/ih-prd-remote-opinion-radar-worker -c bootstrap-data --tail=80
 kubectl -n ih logs deploy/ih-prd-remote-opinion-radar-worker -c worker --tail=40
 kubectl -n ih logs deploy/ih-prd-remote-opinion-radar-srvapp -c srvapp --tail=40
-kubectl -n ih exec deploy/ih-prd-remote-opinion-radar-srvapp -- python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8008/health/deep').read().decode())"
+kubectl -n ih exec deploy/ih-prd-remote-opinion-radar-srvapp -- python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8008/health/ready').read().decode())"
 kubectl -n ih exec deploy/ih-prd-remote-opinion-radar-webapp -- wget -qO- http://127.0.0.1:8080/remote/opinion-radar/api/v1/meta
 kubectl -n ih exec deploy/ih-prd-remote-opinion-radar-worker -- /opt/worker/bin/python /app/deploy/runtime.py worker /opt/worker/bin/python -m jobs.refresh check-source --codes 3033,2802 --sample-size 25
 ```
@@ -184,8 +191,10 @@ exec 使用容器原始环境，不继承主进程已规范化的数据库驱动
 管理路径为 404。真实模型冒烟按 [AI 操作文档](../docs/llm-90d-operations.md) 使用
 明确的模型与最小请求预算；不会由本部署脚本自动调用。AI 结论仍未经人工验证。
 
-API 探针仅使用浅 `/health`；深 `/health/deep` 只检查 API 自身依赖的应用库，不返回
-连接信息。worker 用独立于数据库结果的本地心跳检查，AI 就绪情况继续由应用管理接口解释。
+API 的 startup/liveness 探针使用浅 `/health`，readiness 使用 `/health/ready` 并要求目标库存在
+合法 anchor；深 `/health/deep` 仍只检查数据库连通性，不返回连接信息。worker 的
+startup/liveness 使用本地心跳，readiness 另外检查同一目标库的 anchor。AI 就绪情况继续由
+应用管理接口解释。
 根文件系统只读，只有 `/tmp`、`/home/app` 与 worker `/app/.scratch` 是限额临时目录；
 任务报告和行情客户端缓存随 Pod 删除，不承担持久化职责，结果持久化在 RDS。
 资源数值是首次部署起点，尚未压测，需根据内存、CPU、磁盘用量调整。

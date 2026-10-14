@@ -13,6 +13,7 @@ PRD 第 5 章其余 22 组端点的映射表见 plan.md §2.1，前端尚未接�
 import logging
 import os
 import sys
+from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -67,6 +68,46 @@ def create_app():
             if engine is not None:
                 engine.dispose()
         return jsonify({"status": "ok", "dependencies": {"database": "ok"}})
+
+    @app.get(root + "/health/ready")
+    def ready_health():
+        """Require a source-backed calendar anchor before accepting traffic."""
+        from sqlalchemy import select
+        from radar_db import make_engine
+        from radar_db.schema import meta_kv
+
+        engine = None
+        try:
+            engine = make_engine()
+            with engine.connect() as connection:
+                value = connection.execute(
+                    select(meta_kv.c.v).where(meta_kv.c.k == "anchor")
+                ).scalar_one_or_none()
+        except Exception:
+            return jsonify({
+                "status": "not_ready",
+                "dependencies": {"database": "unavailable", "anchor": "unknown"},
+            }), 503
+        finally:
+            if engine is not None:
+                engine.dispose()
+
+        if value is None or not str(value).strip():
+            return jsonify({
+                "status": "not_ready",
+                "dependencies": {"database": "ok", "anchor": "missing"},
+            }), 503
+        try:
+            date.fromisoformat(str(value).strip()[:10])
+        except ValueError:
+            return jsonify({
+                "status": "not_ready",
+                "dependencies": {"database": "ok", "anchor": "invalid"},
+            }), 503
+        return jsonify({
+            "status": "ok",
+            "dependencies": {"database": "ok", "anchor": "ok"},
+        })
 
     @app.errorhandler(HTTPException)
     def json_errors(e):

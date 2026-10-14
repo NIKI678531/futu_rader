@@ -64,11 +64,31 @@ def validate(service):
 
 
 def healthcheck(service):
-    if service == "worker":
+    if service in {"worker", "worker-ready"}:
         path = Path(os.getenv("WORKER_HEALTH_FILE", "/tmp/worker-heartbeat"))
         age = time.time() - path.stat().st_mtime
         if not -5 <= age < 180:
             raise ValueError("Worker heartbeat expired")
+        if service == "worker-ready":
+            from datetime import date
+            from sqlalchemy import select
+            from radar_db import make_engine
+            from radar_db.schema import meta_kv
+
+            engine = make_engine()
+            try:
+                with engine.connect() as connection:
+                    value = connection.execute(
+                        select(meta_kv.c.v).where(meta_kv.c.k == "anchor")
+                    ).scalar_one_or_none()
+            finally:
+                engine.dispose()
+            if value is None or not str(value).strip():
+                raise ValueError("Worker target anchor is missing")
+            try:
+                date.fromisoformat(str(value).strip()[:10])
+            except ValueError as exc:
+                raise ValueError("Worker target anchor is invalid") from exc
     elif service == "srvapp":
         with urlopen("http://127.0.0.1:8008/health", timeout=3) as response:
             if response.status != 200:

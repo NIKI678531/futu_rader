@@ -65,6 +65,37 @@ spec:
             limits:
               cpu: "1"
               memory: 1Gi
+        - name: bootstrap-data
+          image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/ih-prd-remote-opinion-radar-srvapp:latest
+          imagePullPolicy: Always
+          workingDir: /app/worker
+          command: [/usr/bin/tini, --, /opt/worker/bin/python, /app/deploy/runtime.py, worker]
+          args: [/opt/worker/bin/python, -m, jobs.bootstrap]
+          env:
+            - name: PATH
+              value: /opt/worker/bin:/opt/srvapp/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+          envFrom:
+            - configMapRef:
+                name: ih-prd-remote-opinion-radar-worker-config
+            - secretRef:
+                name: ih-prd-remote-opinion-radar-worker-secret
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/app
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
       containers:
         - name: worker
           image: 449732370091.dkr.ecr.ap-east-1.amazonaws.com/ih-prd-remote-opinion-radar-srvapp:latest
@@ -100,7 +131,7 @@ spec:
             failureThreshold: 30
           readinessProbe:
             exec:
-              command: [/opt/worker/bin/python, /app/deploy/runtime.py, --healthcheck, worker]
+              command: [/opt/worker/bin/python, /app/deploy/runtime.py, --healthcheck, worker-ready]
             periodSeconds: 30
             timeoutSeconds: 5
           livenessProbe:
