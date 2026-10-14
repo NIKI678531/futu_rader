@@ -218,9 +218,12 @@ The always-on worker (`python scheduler.py`) runs the same function at
 `AI_DAILY_CRON` (default `0 8 * * *`, Hong Kong time; `off` disables it):
 
 1. **Sync** when `MARKET_INSIGHT_DATABASE_URL` is set: the latest successful
-   `comments_all` receipt for today or the previous evening is passed as
-   `--through-source-run-id`, so the complete date (`meta_kv.anchor`) advances.
-   Without the URL the database is the imported dump and the step is skipped.
+   `comments_all` receipt for today or the previous evening is used when the
+   optional receipt table exists. Without that table, Radar synchronizes the
+   non-empty intersection of its product pool and the source catalog, publishes
+   an `observed_partial` anchor from the latest already-ended HKT day containing
+   observed facts, and leaves `sourceCompleteThrough` unverified. Without the
+   URL the database is the imported dump and the step is skipped.
 2. **Prices** when `FMP_API_KEY` is set.
 3. **Analysis**: `d7,d1,d2` are enqueued as scheduled requests, in that priority
    order, and executed by the worker for every active product. `d14,d30,mtd`

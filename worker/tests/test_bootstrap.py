@@ -56,7 +56,7 @@ def test_empty_database_runs_the_real_sync_seam_until_it_publishes_an_anchor():
     }
 
 
-def test_bootstrap_fails_closed_when_sync_has_no_complete_receipt():
+def test_bootstrap_fails_closed_when_sync_publishes_no_anchor():
     result = bootstrap.ensure_anchor(
         _engine(),
         today=date(2026, 10, 14),

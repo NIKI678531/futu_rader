@@ -233,9 +233,16 @@ class MarketInsightMySqlAdapter:
         self.pool_stock_ids = tuple(
             stock_id for stock_id, code in self.stock_codes.items() if code in self.pool_codes
         )
-        missing_codes = self.pool_codes - set(self.stock_codes.values())
-        if missing_codes:
-            raise SourceSchemaError(f"Product pool codes missing from source: {sorted(missing_codes)}")
+        available_codes = self.pool_codes & set(self.stock_codes.values())
+        self.available_pool_codes = frozenset(available_codes)
+        self.missing_pool_codes = tuple(sorted(self.pool_codes - available_codes))
+        # MarketInsight can lag the reviewed Radar catalog while newly listed
+        # products are being onboarded.  Synchronize the non-empty intersection
+        # and publish the missing set to the target instead of holding every
+        # already-covered product offline.
+        if not available_codes:
+            raise SourceSchemaError("All product pool codes are missing from source")
+        self.completion_receipts_available = self.collection_runs is not None
         invalid_tickers = [
             stock_id for stock_id in self.pool_stock_ids
             if source_ticker_to_code(self.stock_tickers.get(stock_id))

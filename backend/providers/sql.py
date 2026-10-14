@@ -365,6 +365,36 @@ class SqlProvider:
             "platformCommentCount": None,
             "parsedCommentCount": None,
         }
+
+        def source_scope():
+            requested_raw = self._meta.get("source_pool_requested_count")
+            available_raw = self._meta.get("source_pool_available_count")
+            if requested_raw is None and available_raw is None:
+                return {}
+            try:
+                missing = json.loads(self._meta.get("source_missing_codes") or "[]")
+            except (TypeError, ValueError):
+                missing = []
+            if not isinstance(missing, list):
+                missing = []
+
+            def count(value):
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return None
+
+            anchor_mode = self._meta.get("source_anchor_mode")
+            return {
+                "sourceProductCoverage": self._meta.get(
+                    "source_product_coverage", "unknown"
+                ),
+                "requestedProductCount": count(requested_raw),
+                "availableProductCount": count(available_raw),
+                "missingProductCodes": [str(code) for code in missing],
+                "anchorMode": anchor_mode,
+                "completionVerified": anchor_mode == "receipt",
+            }
         if self._meta.get("fact_source") == "market_insight":
             with self._engine.connect() as conn:
                 coverage = conn.execute(select(
@@ -381,6 +411,7 @@ class SqlProvider:
                 "parsedCommentCount": parsed if coverage else None,
                 "factSource": "market_insight",
                 "sourceRevision": self._meta.get("data_revision"),
+                **source_scope(),
             }
         try:
             with self._engine.connect() as conn:
@@ -472,6 +503,7 @@ class SqlProvider:
             "lastSuccessfulSyncAt": iso_utc(latest_success),
             "platformCommentCount": platform_count,
             "parsedCommentCount": parsed_count,
+            **source_scope(),
         }
 
     def build_range(self, key):
