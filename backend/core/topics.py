@@ -163,7 +163,11 @@ def market_outlook_row(product, topics, attitude_counts):
     # are complete by construction.
     label_status = primary.get("labelStatus")
     stale = bool(primary.get("stale"))
-    summary = primary.get("summary") if label_status in (None, "ok") and not stale else None
+    # Freshness is an operational signal, not an availability gate.  The
+    # currently published generation stays visible while the dirty/older
+    # input is being recomputed (ADR-0033); unsupported prompt versions are
+    # still rejected independently through ``labelStatus``.
+    summary = primary.get("summary") if label_status in (None, "ok") else None
     return {
         **base,
         **opinion,

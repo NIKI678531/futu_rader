@@ -324,8 +324,8 @@ class TestTopics:
             "summary": "旧的泛化市场观点。", "stale": True,
             "reviewState": "pending", "evidenceIds": ["c-old"],
         }], {"positive": 91, "negative": 209, "neutral": 286})
-        assert stale["status"] == "unavailable"
-        assert stale["summary"] is None
+        assert stale["status"] == "ok"
+        assert stale["summary"] == "旧的泛化市场观点。"
         assert stale["stale"] is True
         assert stale["reviewState"] == "pending"
         assert stale["evidenceIds"] == ["c-old"]

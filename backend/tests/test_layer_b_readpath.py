@@ -453,8 +453,8 @@ class TestTopicsAndHot:
         p._meta[f"synth_dirty_{OWN_CODE}_d1"] = "1"
         p._cache.clear()
         stale = p.market_outlook(OWN_CODE, "d1")["list"][0]
-        assert stale["status"] == "unavailable"
-        assert stale["summary"] is None
+        assert stale["status"] == "ok"
+        assert stale["summary"] == "多条评论看空大市。"
         assert stale["stale"] is True
         assert stale["reviewState"] == "pending"
         assert stale["evidenceIds"] == ["c100"]
