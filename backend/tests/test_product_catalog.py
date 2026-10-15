@@ -2,7 +2,12 @@
 
 from datetime import date, datetime
 
-from radar_db.product_catalog import load_pending_products, load_products
+from radar_db.product_catalog import (
+    load_accounts,
+    load_kol_aliases,
+    load_pending_products,
+    load_products,
+)
 
 
 NEW_OWN_CODES = {"3447", "3121", "3537"}
@@ -94,4 +99,25 @@ def test_catalog_products_have_runtime_contract_fields():
         assert required <= set(product), product["code"]
         if product["ownership"] == "own":
             assert "ownCode" not in product
+
+
+def test_latest_kol_roster_uses_current_names_and_keeps_source_aliases():
+    requested = {
+        "股海中的G妹", "年頭旺到年尾", "Zona投資隨筆", "港美猎人", "財媽價值輪回",
+        "价值投资叶荣添", "守猪逮兔估值模型", "圣者为王", "一颗财丸", "知常公子",
+        "深夜学堂", "耀文港古", "潘驴邓晓闲缺一", "嘉哥爱投资", "杨杨得亿",
+        "股市魔术师", "海梦5/不知名选手", "只做主升不做调整", "牛头法师", "逍遥游",
+        "摩帥", "搏盡佢啦", "孫子的末代傳人", "中戶變大戶小牛變大牛", "丹尼斯王子",
+        "站在Ju人肩上", "陈达美股投资", "六爷漫谈", "中环杰哥投资探秘",
+    }
+    names = {row["name"] for row in load_accounts()["kols"]}
+    aliases = load_kol_aliases()
+
+    assert requested <= names
+    assert "嘉哥爱自由" not in names
+    assert "不知名选手" not in names
+    assert aliases["嘉哥爱投资"] == ("嘉哥爱投资", "嘉哥爱自由")
+    assert aliases["海梦5/不知名选手"] == (
+        "海梦5/不知名选手", "海梦5", "不知名选手",
+    )
 

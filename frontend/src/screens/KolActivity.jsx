@@ -9,6 +9,7 @@ import {
 } from '../lib/view'
 import { kolProfile } from '../lib/profile'
 import { compareKolReach } from '../lib/kolMetrics'
+import { dataSourceBadge } from '../lib/dataSource'
 import { s, hover, focus } from '../lib/dc'
 import Shell from '../components/Shell'
 import DatePresetTabs from '../components/DatePresetTabs'
@@ -661,7 +662,7 @@ class KolActivity extends React.Component {
               <div onClick={v.clearScope} style={s('flex:none;display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:9999px;background:var(--csop-blue-50);font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-100)')}>恢复全部<span style={s('font:400 12px/1 var(--font-cjk)')}>✕</span></div>
             )}
 
-            <div style={s('margin-left:auto;flex:none;display:flex;align-items:center;gap:8px;padding:5px 13px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 13px/1.4 var(--font-cjk);color:var(--ink-600)')}>演示数据</div>
+            <div style={s('margin-left:auto;flex:none;display:flex;align-items:center;gap:8px;padding:5px 13px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 13px/1.4 var(--font-cjk);color:var(--ink-600)')}>{dataSourceBadge(R.DATA_PROVIDER)}</div>
           </div>
         </Shell>
 

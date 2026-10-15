@@ -138,19 +138,31 @@ def test_anchor_comes_from_meta_kv_not_the_clock(real):
     assert body(real, f"/api/v1/ranges/{RANGE}")["to"] == row[0]
 
 
-def test_data_cutoff_is_the_real_anchor_not_the_frozen_demo_constant(real):
-    """`/meta.updatedAt`（页面上的「数据截至」）随真数据走。
+def test_data_cutoff_uses_the_latest_observed_fact_not_the_frozen_demo_constant(real):
+    """`/meta.updatedAt`（页面上的「数据截至」）随真数据的最大时间走。
 
     这一条是补一个**真实发生过的**谎：`updatedAt` 原来手写在 `fixtures/meta.json` 里，
     值是演示锚点 `2026-09-02 09:00 HKT`。接真库之后 `core/meta.py` 照发，页面给
     截止到 `2026-08-25` 的数据落了 `09-02` 的款 —— 虚报一周，且页面上没有任何迹象。
     缺失有「暂不可用」兜着，这种错没有。
+
+    ``anchor`` 是最近一个完整自然日，``data_max_ts`` 可以落在次日的部分采集窗口；
+    两者故意不同（ADR-0012）。页面更新时间必须使用后者，普通 d1/d7 区间仍使用前者。
     """
+    import sqlite3
+    from datetime import datetime
+
+    con = sqlite3.connect(f"file:{DB_PATH.as_posix()}?mode=ro", uri=True)
+    try:
+        data_max_ts = con.execute(
+            "select v from meta_kv where k = 'data_max_ts'"
+        ).fetchone()[0]
+    finally:
+        con.close()
     updated = body(real, "/api/v1/meta").get("updatedAt")
-    assert updated is not None, "真库有 anchor_ts 却没下发 updatedAt"
-    assert updated.startswith(body(real, f"/api/v1/ranges/{RANGE}")["to"]), (
-        f"数据截至 {updated!r} 与真实锚点对不上 —— 又落回常量了"
-    )
+    expected = datetime.fromisoformat(data_max_ts).strftime("%Y-%m-%d %H:%M")
+
+    assert updated == expected
 
 
 def test_range_buckets_cover_the_window(real):

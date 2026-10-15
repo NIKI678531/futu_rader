@@ -7,7 +7,16 @@ from sqlalchemy import create_engine
 
 from jobs import refresh
 from radar_db import make_engine
-from radar_db.source_db import make_source_engine, require_separate_databases
+from radar_db.source_db import _parse_url, make_source_engine, require_separate_databases
+
+
+def test_local_worker_normalizes_legacy_mysql_driver_to_installed_pymysql():
+    parsed = _parse_url(
+        "mysql+mysqldb://reader:p%24ss@source/market_insight?charset=utf8mb4"
+    )
+
+    assert parsed.drivername == "mysql+pymysql"
+    assert parsed.password == "p$ss"
 
 
 def test_source_connection_is_read_only_and_does_not_create_files(tmp_path, monkeypatch):

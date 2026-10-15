@@ -12,9 +12,14 @@ from sqlalchemy.exc import ArgumentError
 
 def _parse_url(value):
     try:
-        return make_url(value)
+        parsed = make_url(value)
     except (ArgumentError, TypeError, ValueError):
         raise ValueError("Invalid database URL; check the environment configuration") from None
+    # 本仓库只安装 PyMySQL。部署入口会做同一层规范化，但本地 worker 直接读取
+    # ``worker/.env`` 时不会经过 deploy/runtime.py，旧的 mysqldb 写法不能因此炸在导入驱动。
+    if parsed.drivername in {"mysql", "mysql+mysqldb"}:
+        parsed = parsed.set(drivername="mysql+pymysql")
+    return parsed
 
 
 def _identity(url):

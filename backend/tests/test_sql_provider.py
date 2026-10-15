@@ -388,6 +388,27 @@ class TestKolImpact:
         assert r["posts"][0]["kol"] == KOL_NAME
         assert r["posts"][0]["views"] == 888  # browse_count 是真的
 
+    def test_legacy_source_alias_is_published_under_the_current_kol_name(self, provider):
+        with provider._engine.begin() as conn:
+            conn.execute(insert(feeds).values(
+                feed_id=99, code=OWN_CODE, source_ticker=f"0{OWN_CODE}.HK",
+                posted_at=datetime(2026, 8, 25, 2), feed_type=1,
+                author_uid="legacy-kol", author_name="嘉哥爱自由",
+                title=None, content=FEED_TEXT, like_count=1, comment_count=0,
+                image_count=0, share_count=0, browse_count=10, raw_json_broken=False,
+            ))
+            conn.execute(insert(mentions).values(
+                feed_id=99, code=OWN_CODE, source="anchor", in_pool=True,
+            ))
+            conn.execute(insert(feed_mentions).values(
+                feed_id=99, raw_ticker=f"0{OWN_CODE}.HK", market="HK", occurrences=1,
+            ))
+        provider._cache.clear()
+
+        posts = provider.kol_impact("d1")["posts"]
+
+        assert next(row for row in posts if row["id"] == "kol-99")["kol"] == "嘉哥爱投资"
+
     def test_engagement_is_unknown_when_shares_are(self, provider):
         """互动数 = 赞 + 评 + 转。转发未知 ⇒ 互动未知，leaders 的合计也跟着未知。"""
         r = provider.kol_impact("d1")

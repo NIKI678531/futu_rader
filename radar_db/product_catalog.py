@@ -26,6 +26,7 @@ FIXTURES_ROOT = (
 )
 DEMO_MASTER = FIXTURES_ROOT / "demo" / "master.json"
 ADDITIONS = FIXTURES_ROOT / "product_catalog_additions.json"
+KOL_ROSTER_UPDATES = FIXTURES_ROOT / "kol_roster_updates.json"
 _CODE_RE = re.compile(r"^[1-9][0-9]{3}$")
 _NEW_LISTING_DAYS = 30
 CATALOG_POLICY_VERSION = "hkex-etp-catalog-v1"
@@ -338,10 +339,46 @@ def review_candidate(engine, code, decision, *, own_code=None, reviewer="admin",
     return {"code": code, "status": status, "ownCode": selected_own_code}
 
 
-def load_accounts(base_path=DEMO_MASTER):
-    """官号与 KOL 仍沿用演示主数据；本次 Excel 只维护产品。"""
+def _kol_replacements(updates_path=KOL_ROSTER_UPDATES):
+    payload = _read_json(updates_path)
+    replacements = payload.get("replacements", [])
+    by_alias = {}
+    aliases_by_name = {}
+    for row in replacements:
+        name = str(row.get("name") or "").strip()
+        aliases = tuple(str(value).strip() for value in row.get("aliases", []) if str(value).strip())
+        if not name or not aliases:
+            raise ValueError("KOL roster replacements require a current name and aliases")
+        if name in by_alias or any(alias in by_alias for alias in aliases):
+            raise ValueError(f"Duplicate KOL roster alias for {name!r}")
+        aliases_by_name[name] = (name, *aliases)
+        for alias in aliases:
+            by_alias[alias] = name
+    return by_alias, aliases_by_name
+
+
+def load_accounts(base_path=DEMO_MASTER, updates_path=KOL_ROSTER_UPDATES):
+    """返回当前官号／KOL 名单；KOL 改名不丢失源库里的历史作者名。"""
     master = _read_json(base_path)
-    return {"officials": master["officials"], "kols": master["kols"]}
+    by_alias, _aliases_by_name = _kol_replacements(updates_path)
+    kols = [
+        {**row, "name": by_alias.get(row["name"], row["name"])}
+        for row in master["kols"]
+    ]
+    names = [row["name"] for row in kols]
+    if len(names) != len(set(names)):
+        raise ValueError("KOL roster update produced duplicate current names")
+    return {"officials": master["officials"], "kols": kols}
+
+
+def load_kol_aliases(base_path=DEMO_MASTER, updates_path=KOL_ROSTER_UPDATES):
+    """按当前 KOL 名返回可在 MarketInsight ``author_name`` 中出现的所有写法。"""
+    accounts = load_accounts(base_path=base_path, updates_path=updates_path)
+    _by_alias, aliases_by_name = _kol_replacements(updates_path)
+    return {
+        row["name"]: aliases_by_name.get(row["name"], (row["name"],))
+        for row in accounts["kols"]
+    }
 
 
 def load_pending_products(additions_path=ADDITIONS, *, as_of=None):

@@ -107,7 +107,7 @@ from radar_db.comment_routes import (  # noqa: E402
     readiness_on_connection as comment_routes_ready_on_connection,
     route_exists_predicate,
 )
-from radar_db.product_catalog import load_accounts, load_products  # noqa: E402
+from radar_db.product_catalog import load_accounts, load_kol_aliases, load_products  # noqa: E402
 from radar_db.product_identity import maximal_name_codes  # noqa: E402
 from radar_db.revisions import ai_source_version, synthesis_generation_key  # noqa: E402
 from radar_db.schema import (  # noqa: E402
@@ -152,12 +152,18 @@ class SqlProvider:
         accounts = load_accounts()
         self._officials = accounts["officials"]
         self._kols = accounts["kols"]
+        self._kol_aliases = load_kol_aliases()
+        self._kol_name_by_source = {
+            source_name: current_name
+            for current_name, source_names in self._kol_aliases.items()
+            for source_name in source_names
+        }
         # 证据卡上的作者身份靠名单认（模块头第 1 点：uid 对不上）。官号两个写法都收，
         # 因为帖子作者名在真实数据里用全称，而契约里的 `account` 是简称。
         self._official_names = {o["full"] for o in self._officials} | {
             o["short"] for o in self._officials
         }
-        self._kol_names = {k["name"] for k in self._kols}
+        self._kol_names = set(self._kol_name_by_source)
         self._meta = self._read_meta()
         self._anchor = parse_anchor(self._meta.get("anchor"))
         # The config loader is deliberately strict: an invalid deployment must
@@ -1078,10 +1084,15 @@ class SqlProvider:
         if rng is None:
             return None
         by_name = {k["name"]: k for k in self._kols if k.get("active")}
+        source_to_name = {
+            source_name: current_name
+            for source_name, current_name in self._kol_name_by_source.items()
+            if current_name in by_name
+        }
         ai = self._post_ai(rng)
         posts, seen = [], set()
-        for row, codes in self._posts(rng, list(by_name)):
-            k = by_name[row.author_name]
+        for row, codes in self._posts(rng, list(source_to_name)):
+            k = by_name[source_to_name[row.author_name]]
             seen.add(k["name"])
             posts.append(
                 {
@@ -1469,7 +1480,7 @@ class SqlProvider:
         if code is not None:
             q = q.where(code_column == code)
         if kol is not None:
-            q = q.where(comments.c.author_name == kol)
+            q = q.where(comments.c.author_name.in_(self._kol_aliases.get(kol, (kol,))))
         try:
             with self._engine.connect() as conn:
                 return {(r.comment_id, r.code) for r in conn.execute(q)}
@@ -2174,6 +2185,11 @@ class SqlProvider:
             return None
 
         active_kols = {k["name"]: k for k in self._kols if k.get("active")}
+        active_source_names = {
+            source_name: current_name
+            for source_name, current_name in self._kol_name_by_source.items()
+            if current_name in active_kols
+        }
         posts = [
             post for post in impact["posts"]
             if any(mentioned["code"] == code for mentioned in post["mentioned"])
@@ -2245,9 +2261,13 @@ class SqlProvider:
         quotes = self._evidence_rows([summary["annotation_id"] for summary in summaries.values()])
         for unit, summary in summaries.items():
             source = comment_sources.get(unit[0])
+            current_name = (
+                active_source_names.get(source["authorName"])
+                if source is not None else None
+            )
             if (
                 source is None
-                or source["authorName"] not in active_kols
+                or current_name is None
                 or (relevance.get(unit) or {}).get("value") != "relevant"
             ):
                 continue
@@ -2255,16 +2275,16 @@ class SqlProvider:
             if attitude not in attitude_labels:
                 attitude = None
             quote = (quotes.get(summary["annotation_id"]) or [(None, None, None)])[0][2]
-            by_kol[source["authorName"]].append({
+            by_kol[current_name].append({
                 "postedAt": source["postedAt"],
                 "isPost": False,
                 "summary": summary["value"].strip(),
                 "attitude": attitude,
                 "evidence": {
-                    "id": f"{code}-km-{source['authorName']}-{unit[0]}",
+                    "id": f"{code}-km-{current_name}-{unit[0]}",
                     "productCodes": [code],
                     "publishedAt": _stamp(source["postedAt"]),
-                    "authorName": source["authorName"],
+                    "authorName": current_name,
                     "authorType": "合作 KOL",
                     "isKnownKol": True,
                     "kolType": "partner",
@@ -2367,7 +2387,10 @@ class SqlProvider:
         for (cid, code), a in summ.items():
             r = src.get(cid)
             p = self._by_code.get(code)
-            if r is None or p is None or r["authorName"] != kol:
+            if (
+                r is None or p is None
+                or self._kol_name_by_source.get(r["authorName"]) != kol
+            ):
                 continue
             action = (actions.get((cid, code)) or {}).get("value")
             type_row = types.get((cid, code))

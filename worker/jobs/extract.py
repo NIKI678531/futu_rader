@@ -63,6 +63,7 @@ from jobs.import_dump import pool_codes  # noqa: E402
 from core.calendar import PRESETS, build as build_range  # noqa: E402
 from core.data_clock import analysis_range_anchor  # noqa: E402
 from radar_db import make_engine  # noqa: E402
+from radar_db.product_catalog import load_accounts, load_kol_aliases  # noqa: E402
 from radar_db.comment_filter import (  # noqa: E402
     load_comment_filter_config,
     require_filter_ready,
@@ -96,10 +97,14 @@ def new_scope_id():
 
 
 def master_accounts(path=MASTER):
-    """KOL 32 位＋官号 20 个的作者名（全称与简称都算）。与 `SqlProvider._author_type` 同一份名单。"""
-    with open(path, encoding="utf-8") as fh:
-        m = json.load(fh)
-    kols = [k["name"] for k in m["kols"]]
+    """KOL 当前名及历史别名＋官号全称／简称；与 SQL provider 共用一份名单。"""
+    m = load_accounts(base_path=path)
+    aliases = load_kol_aliases(base_path=path)
+    kols = list(dict.fromkeys(
+        source_name
+        for kol in m["kols"]
+        for source_name in aliases[kol["name"]]
+    ))
     officials = [o["full"] for o in m["officials"]] + [o["short"] for o in m["officials"]]
     return kols, officials
 
