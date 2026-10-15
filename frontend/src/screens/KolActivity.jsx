@@ -13,6 +13,7 @@ import { dataSourceBadge } from '../lib/dataSource'
 import { s, hover, focus } from '../lib/dc'
 import Shell from '../components/Shell'
 import DatePresetTabs from '../components/DatePresetTabs'
+import AccountSummaryStrip from '../components/AccountSummaryStrip'
 import withTransition from '../components/withTransition'
 import DcLink from '../components/DcLink'
 
@@ -555,7 +556,7 @@ class KolActivity extends React.Component {
         {v.typeMenu.map((m) => (
           <div key={m.key} onClick={m.go} style={s(`display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--ink-100);background:${m.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
             <span style={s(`flex:none;width:14px;height:14px;box-sizing:border-box;border:1px solid ${m.boxBc};border-radius:3px;background:${m.boxBg};display:flex;align-items:center;justify-content:center;font:600 10px/1 var(--font-cjk);color:#fff`)}>{m.tick}</span>
-            <span style={s(`flex:none;width:68px;padding:1px 8px;box-sizing:border-box;border-radius:4px;background:${m.tbg};font:600 12px/1.6 var(--font-cjk);color:${m.tfg};text-align:center;white-space:nowrap`)}>{m.label}</span>
+            <span style={s(`flex:none;width:68px;padding:1px 8px;box-sizing:border-box;border-radius:var(--radius-small);background:${m.tbg};font:600 12px/1.6 var(--font-cjk);color:${m.tfg};text-align:center;white-space:nowrap`)}>{m.label}</span>
             <span style={s('flex:1;min-width:0;font:400 12px/1.4 var(--font-cjk);color:var(--ink-500);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{m.def}</span>
             <span style={s('flex:none;font:500 12px/1.3 var(--font-mono);color:var(--ink-500)')}>{m.n} 篇</span>
           </div>
@@ -564,7 +565,7 @@ class KolActivity extends React.Component {
         {v.dirMenu.map((m) => (
           <div key={m.key} onClick={m.go} style={s(`display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--ink-100);background:${m.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
             <span style={s(`flex:none;width:14px;height:14px;box-sizing:border-box;border:1px solid ${m.boxBc};border-radius:3px;background:${m.boxBg};display:flex;align-items:center;justify-content:center;font:600 10px/1 var(--font-cjk);color:#fff`)}>{m.tick}</span>
-            <span style={s(`flex:none;min-width:68px;padding:1px 8px;box-sizing:border-box;border-radius:4px;background:${m.tbg};font:600 12px/1.6 var(--font-cjk);color:${m.tfg};text-align:center;white-space:nowrap`)}>{m.label}</span>
+            <span style={s(`flex:none;min-width:68px;padding:1px 8px;box-sizing:border-box;border-radius:var(--radius-small);background:${m.tbg};font:600 12px/1.6 var(--font-cjk);color:${m.tfg};text-align:center;white-space:nowrap`)}>{m.label}</span>
             <span style={s('flex:1;min-width:0;font:400 12px/1.4 var(--font-cjk);color:var(--ink-500);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{m.def}</span>
             <span style={s('flex:none;font:500 12px/1.3 var(--font-mono);color:var(--ink-500)')}>{m.n} 篇</span>
           </div>
@@ -580,23 +581,23 @@ class KolActivity extends React.Component {
       <div data-screen-label="KOL 影响力" style={s('width:100%;min-width:1200px;min-height:100vh;box-sizing:border-box;background:var(--canvas);font-family:var(--font-cjk);color:var(--ink-900);font-size:14px')}>
 
         <Shell vals={v}>
-          <div data-shell-filter style={s('display:flex;align-items:center;gap:12px;min-height:48px;box-sizing:border-box;padding:7px 24px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1);flex-wrap:wrap')}>
+          <div data-shell-filter style={s('display:flex;align-items:center;gap:9px;min-height:44px;box-sizing:border-box;padding:5px 16px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1);flex-wrap:wrap')}>
             <DatePresetTabs presets={v.presets} />
 
             <div style={s('position:relative;flex:none')}>
-              <div onClick={v.etfToggle} style={s(`display:flex;align-items:center;gap:8px;padding:6px 11px;border:1px solid ${v.etfBc};border-radius:6px;background:${v.etfBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
-                <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>① ETF</span>
+              <div onClick={v.etfToggle} style={s(`display:flex;align-items:center;gap:8px;padding:6px 11px;border:1px solid ${v.etfBc};border-radius:var(--radius-control);background:${v.etfBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
+                <span style={s('font:600 11px/1.4 var(--font-cjk);color:var(--ink-400)')}>ETF</span>
                 <span style={s('font:600 14px/1.4 var(--font-mono);color:var(--csop-blue-700)')}>{v.etfLabel}</span>
                 <span style={s('font:400 9px/1 var(--font-cjk);color:var(--ink-400)')}>{v.etfCaret}</span>
               </div>
               {v.etfOpen && (
-                <div onMouseLeave={v.etfClose} style={s('position:absolute;left:0;top:38px;z-index:45;width:380px;max-height:342px;overflow-y:auto;background:#fff;border:1px solid var(--border-2);border-radius:8px;box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
+                <div onMouseLeave={v.etfClose} style={s('position:absolute;left:0;top:38px;z-index:45;width:380px;max-height:342px;overflow-y:auto;background:#fff;border:1px solid var(--border-2);border-radius:var(--radius-card);box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
                   <div style={s('padding:7px 12px;border-bottom:1px solid var(--border-1);background:var(--canvas);font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>发帖提及的产品（自家 + 竞品）</div>
                   {v.etfMenu.map((m) => (
                     <div key={m.key} onClick={m.go} style={s(`display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--ink-100);background:${m.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
                       <span style={s('flex:none;width:10px;font:600 12px/1.3 var(--font-cjk);color:var(--csop-blue-600)')}>{m.tick}</span>
                       <span style={s('flex:none;width:46px;font:600 14px/1.3 var(--font-mono);color:var(--ink-900)')}>{m.code}</span>
-                      <span style={s(`flex:none;padding:1px 6px;border-radius:9999px;background:${m.obg};font:600 11px/1.5 var(--font-cjk);color:${m.ofg}`)}>{m.own}</span>
+                      <span style={s(`flex:none;padding:1px 6px;border-radius:var(--radius-pill);background:${m.obg};font:600 11px/1.5 var(--font-cjk);color:${m.ofg}`)}>{m.own}</span>
                       <span style={s('flex:1;min-width:0;font:400 13px/1.4 var(--font-cjk);color:var(--ink-600);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{m.name}</span>
                       <span style={s('flex:none;font:500 12px/1.3 var(--font-cjk);color:var(--ink-500)')}>{m.n} 篇</span>
                     </div>
@@ -606,13 +607,13 @@ class KolActivity extends React.Component {
             </div>
 
             <div style={s('position:relative;flex:none')}>
-              <div onClick={v.kolToggle} style={s(`display:flex;align-items:center;gap:8px;padding:6px 11px;border:1px solid ${v.kolBc};border-radius:6px;background:${v.kolBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
-                <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>② KOL</span>
+              <div onClick={v.kolToggle} style={s(`display:flex;align-items:center;gap:8px;padding:6px 11px;border:1px solid ${v.kolBc};border-radius:var(--radius-control);background:${v.kolBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
+                <span style={s('font:600 11px/1.4 var(--font-cjk);color:var(--ink-400)')}>KOL</span>
                 <span style={s('font:600 14px/1.4 var(--font-cjk);color:var(--csop-blue-700)')}>{v.kolLabel}</span>
                 <span style={s('font:400 9px/1 var(--font-cjk);color:var(--ink-400)')}>{v.kolCaret}</span>
               </div>
               {v.kolOpen && (
-                <div onMouseLeave={v.kolClose} style={s('position:absolute;left:0;top:38px;z-index:45;width:320px;max-height:342px;overflow-y:auto;background:#fff;border:1px solid var(--border-2);border-radius:8px;box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
+                <div onMouseLeave={v.kolClose} style={s('position:absolute;left:0;top:38px;z-index:45;width:320px;max-height:342px;overflow-y:auto;background:#fff;border:1px solid var(--border-2);border-radius:var(--radius-card);box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
                   <div style={s('padding:7px 12px;border-bottom:1px solid var(--border-1);background:var(--canvas);font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>{v.kolMenuNote}</div>
                   {v.kolMenu.map((m) => (
                     <div key={m.key} onClick={m.go} style={s(`display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--ink-100);background:${m.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
@@ -626,13 +627,13 @@ class KolActivity extends React.Component {
             </div>
 
             <div style={s('position:relative;flex:none')}>
-              <div onClick={v.postToggle} style={s(`display:flex;align-items:center;gap:8px;padding:6px 11px;border:1px solid ${v.postBc};border-radius:6px;background:${v.postBg};cursor:${v.postCursor};opacity:${v.postOp};transition:background 120ms cubic-bezier(.4,0,.2,1)`)}>
-                <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>③ 帖子</span>
+              <div onClick={v.postToggle} style={s(`display:flex;align-items:center;gap:8px;padding:6px 11px;border:1px solid ${v.postBc};border-radius:var(--radius-control);background:${v.postBg};cursor:${v.postCursor};opacity:${v.postOp};transition:background 120ms cubic-bezier(.4,0,.2,1)`)}>
+                <span style={s('font:600 11px/1.4 var(--font-cjk);color:var(--ink-400)')}>帖子</span>
                 <span style={s(`font:600 14px/1.4 var(--font-mono);color:${v.postFg}`)}>{v.postLabel}</span>
                 <span style={s('font:400 9px/1 var(--font-cjk);color:var(--ink-400)')}>{v.postCaret}</span>
               </div>
               {v.postOpen && (
-                <div onMouseLeave={v.postClose} style={s('position:absolute;left:0;top:38px;z-index:45;width:360px;max-height:342px;overflow-y:auto;background:#fff;border:1px solid var(--border-2);border-radius:8px;box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
+                <div onMouseLeave={v.postClose} style={s('position:absolute;left:0;top:38px;z-index:45;width:360px;max-height:342px;overflow-y:auto;background:#fff;border:1px solid var(--border-2);border-radius:var(--radius-card);box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
                   {v.postMenu.map((m) => (
                     <div key={m.key} onClick={m.go} style={s(`display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--ink-100);background:${m.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
                       <span style={s('flex:none;width:10px;font:600 12px/1.3 var(--font-cjk);color:var(--csop-blue-600)')}>{m.tick}</span>
@@ -646,58 +647,38 @@ class KolActivity extends React.Component {
             </div>
 
             <div style={s('position:relative;flex:none')}>
-              <div onClick={v.typeToggle} style={s(`display:flex;align-items:center;gap:8px;padding:6px 11px;border:1px solid ${v.typeBc};border-radius:6px;background:${v.typeBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
-                <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>④ 类型</span>
+              <div onClick={v.typeToggle} style={s(`display:flex;align-items:center;gap:8px;padding:6px 11px;border:1px solid ${v.typeBc};border-radius:var(--radius-control);background:${v.typeBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
+                <span style={s('font:600 11px/1.4 var(--font-cjk);color:var(--ink-400)')}>类型</span>
                 <span style={s('font:600 14px/1.4 var(--font-cjk);color:var(--csop-blue-700)')}>{v.typeLabel}</span>
                 <span style={s('font:400 9px/1 var(--font-cjk);color:var(--ink-400)')}>{v.typeCaret}</span>
               </div>
               {v.typeOpen && (
-                <div onMouseLeave={v.typeClose} style={s('position:absolute;left:0;top:38px;z-index:45;width:372px;background:#fff;border:1px solid var(--border-2);border-radius:8px;box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
+                <div onMouseLeave={v.typeClose} style={s('position:absolute;left:0;top:38px;z-index:45;width:372px;background:#fff;border:1px solid var(--border-2);border-radius:var(--radius-card);box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
                   {this.typeMenuBody(v, '多选 · AI 判定的帖子类型 · 内容形式与操作方向可跨组选（交集）')}
                 </div>
               )}
             </div>
 
             {v.hasScope && (
-              <div onClick={v.clearScope} style={s('flex:none;display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:9999px;background:var(--csop-blue-50);font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-100)')}>恢复全部<span style={s('font:400 12px/1 var(--font-cjk)')}>✕</span></div>
+              <div onClick={v.clearScope} style={s('flex:none;display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:var(--radius-pill);background:var(--csop-blue-50);font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-100)')}>恢复全部<span style={s('font:400 12px/1 var(--font-cjk)')}>✕</span></div>
             )}
 
-            <div style={s('margin-left:auto;flex:none;display:flex;align-items:center;gap:8px;padding:5px 13px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 13px/1.4 var(--font-cjk);color:var(--ink-600)')}>{dataSourceBadge(R.DATA_PROVIDER)}</div>
+            <div style={s('margin-left:auto;flex:none;display:flex;align-items:center;gap:8px;padding:5px 13px;border-radius:var(--radius-pill);background:#fff;border:1px solid var(--border-2);font:500 13px/1.4 var(--font-cjk);color:var(--ink-600)')}>{dataSourceBadge(R.DATA_PROVIDER)}</div>
           </div>
         </Shell>
 
-        <div style={s('padding:26px 24px 64px')}>
+        <div style={s('padding:12px 16px 64px')}>
 
-          <div style={s('display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding-bottom:20px;margin-bottom:22px;border-bottom:1px solid var(--border-2)')}>
-            <div>
-              <div style={s('font:600 12px/1.2 var(--font-cjk);letter-spacing:0.18em;color:var(--csop-blue-600);margin-bottom:10px')}>账号 · KOL 影响力</div>
-              <div style={s('font:600 28px/1.2 var(--font-cjk);letter-spacing:-0.015em')}>KOL 发帖内容与阵地分布</div>
-            </div>
-            <DcLink href="sector-overview.dc.html" style={s('flex:none;display:flex;align-items:center;padding:8px 15px;border:1px solid var(--border-2);border-radius:9999px;background:#fff;font:500 14px/1.4 var(--font-cjk);color:var(--ink-700);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>← 返回板块总览</DcLink>
-          </div>
+          <AccountSummaryStrip eyebrow="账号 · KOL 影响力" title="KOL 发帖内容与阵地分布" kpis={v.kpis} />
 
-          <div style={s('display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px')}>
-            {v.kpis.map((k) => (
-              <div key={k.label} style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);padding:16px 17px')}>
-                <div style={s('font:500 13px/1.4 var(--font-cjk);color:var(--ink-500);margin-bottom:11px')}>{k.label}</div>
-                <div style={s('display:flex;align-items:baseline;gap:6px')}>
-                  <span style={s(`font:600 30px/1 var(--font-cjk);letter-spacing:-0.02em;color:${k.vfg}`)}>{k.value}</span>
-                  <span style={s('font:500 14px/1 var(--font-cjk);color:var(--ink-500)')}>{k.unit}</span>
-                  <span style={s(`margin-left:auto;font:600 15px/1 var(--font-mono);color:${k.pfg}`)}>{k.pct}</span>
-                </div>
-                <div style={s('margin-top:9px;font:400 13px/1.5 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>{k.sub}</div>
-              </div>
-            ))}
-          </div>
-
-          <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:18px')}>
+          <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:18px')}>
             <div style={s('display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 20px;border-bottom:1px solid var(--border-1)')}>
               <div style={s('font:600 18px/1.3 var(--font-cjk)')}>发帖记录</div>
               <div style={s('flex:none;display:flex;align-items:center;gap:8px')}>
-                <div onClick={v.exportCsv} title={v.exportTip} style={s(`display:flex;align-items:center;gap:6px;height:30px;box-sizing:border-box;padding:0 12px;border:1px solid ${v.exportBc};border-radius:6px;background:#fff;font:500 13px/1.4 var(--font-cjk);color:${v.exportFg};cursor:${v.exportCursor};opacity:${v.exportOp};white-space:nowrap;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>导出 CSV（{v.postCount} 条）</div>
+                <div onClick={v.exportCsv} title={v.exportTip} style={s(`display:flex;align-items:center;gap:6px;height:30px;box-sizing:border-box;padding:0 12px;border:1px solid ${v.exportBc};border-radius:var(--radius-control);background:#fff;font:500 13px/1.4 var(--font-cjk);color:${v.exportFg};cursor:${v.exportCursor};opacity:${v.exportOp};white-space:nowrap;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>导出 CSV（{v.postCount} 条）</div>
                 <span style={s('width:1px;height:16px;background:var(--border-2);margin:0 4px')}></span>
                 <span style={s('font:600 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>排序</span>
-                <div style={s('display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden')}>
+                <div style={s('display:flex;border:1px solid var(--border-2);border-radius:var(--radius-control);overflow:hidden')}>
                   {v.sorts.map((f) => (
                     <div key={f.label} onClick={f.go} style={s(`padding:5px 11px;font:${f.fw} 13px/1.4 var(--font-cjk);color:${f.fg};background:${f.bg};cursor:pointer;border-right:1px solid var(--border-1)`)}>{f.label}</div>
                   ))}
@@ -705,32 +686,32 @@ class KolActivity extends React.Component {
               </div>
             </div>
             <div style={s('display:flex;align-items:center;gap:10px;padding:10px 20px;border-bottom:1px solid var(--border-1);background:var(--canvas);flex-wrap:wrap')}>
-              <input type="text" value={v.q} onChange={v.setQ} placeholder="搜 KOL / 产品代码 / 摘要关键词" style={s(`flex:none;width:262px;height:30px;box-sizing:border-box;padding:0 10px;border:1px solid ${v.qBc};border-radius:6px;background:#fff;font:400 13px/1.4 var(--font-cjk);color:var(--ink-800);outline:none`)} className={focus('border-color:var(--csop-blue-600);box-shadow:0 0 0 2px var(--csop-blue-100)')} />
+              <input type="text" value={v.q} onChange={v.setQ} placeholder="搜 KOL / 产品代码 / 摘要关键词" style={s(`flex:none;width:262px;height:30px;box-sizing:border-box;padding:0 10px;border:1px solid ${v.qBc};border-radius:var(--radius-control);background:#fff;font:400 13px/1.4 var(--font-cjk);color:var(--ink-800);outline:none`)} className={focus('border-color:var(--csop-blue-600);box-shadow:0 0 0 2px var(--csop-blue-100)')} />
               <div style={s('position:relative;flex:none')}>
-                <div onClick={v.tTypeToggle} style={s(`display:flex;align-items:center;gap:8px;height:30px;box-sizing:border-box;padding:0 11px;border:1px solid ${v.tTypeBc};border-radius:6px;background:${v.tTypeBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
+                <div onClick={v.tTypeToggle} style={s(`display:flex;align-items:center;gap:8px;height:30px;box-sizing:border-box;padding:0 11px;border:1px solid ${v.tTypeBc};border-radius:var(--radius-control);background:${v.tTypeBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
                   <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>类型</span>
                   <span style={s('font:600 13px/1.4 var(--font-cjk);color:var(--csop-blue-700)')}>{v.typeLabel}</span>
                   <span style={s('font:400 9px/1 var(--font-cjk);color:var(--ink-400)')}>{v.tTypeCaret}</span>
                 </div>
                 {v.tTypeOpen && (
-                  <div onMouseLeave={v.tTypeClose} style={s('position:absolute;left:0;top:36px;z-index:45;width:372px;background:#fff;border:1px solid var(--border-2);border-radius:8px;box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
+                  <div onMouseLeave={v.tTypeClose} style={s('position:absolute;left:0;top:36px;z-index:45;width:372px;background:#fff;border:1px solid var(--border-2);border-radius:var(--radius-card);box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
                     {this.typeMenuBody(v, '多选 · 与顶部「④ 类型」同步 · 内容形式 × 操作方向')}
                   </div>
                 )}
               </div>
               <div style={s('flex:none;display:flex;align-items:center;gap:7px')}>
                 <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>提及范围</span>
-                <div style={s('display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden;background:#fff')}>
+                <div style={s('display:flex;border:1px solid var(--border-2);border-radius:var(--radius-control);overflow:hidden;background:#fff')}>
                   {v.camps.map((f) => (
                     <div key={f.label} onClick={f.go} style={s(`padding:5px 11px;font:${f.fw} 13px/1.4 var(--font-cjk);color:${f.fg};background:${f.bg};cursor:pointer;border-right:1px solid var(--border-1)`)}>{f.label}</div>
                   ))}
                 </div>
               </div>
-              <div onClick={v.pendToggle} style={s(`flex:none;display:flex;align-items:center;height:30px;box-sizing:border-box;padding:0 12px;border:1px solid ${v.pendBc};border-radius:9999px;background:${v.pendBg};font:500 13px/1.4 var(--font-cjk);color:${v.pendFg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)}>仅看待确认</div>
+              <div onClick={v.pendToggle} style={s(`flex:none;display:flex;align-items:center;height:30px;box-sizing:border-box;padding:0 12px;border:1px solid ${v.pendBc};border-radius:var(--radius-pill);background:${v.pendBg};font:500 13px/1.4 var(--font-cjk);color:${v.pendFg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)}>仅看待确认</div>
               <div style={s('margin-left:auto;flex:none;display:flex;align-items:center;gap:12px')}>
                 <span style={s('font:500 13px/1.4 var(--font-cjk);color:var(--ink-500)')}><span style={s('font:600 14px/1 var(--font-mono);color:var(--ink-800)')}>{v.postCount}</span> 篇</span>
                 {v.hasTf && (
-                  <div onClick={v.clearTf} style={s('display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:9999px;background:var(--csop-blue-50);font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-100)')}>清除筛选<span style={s('font:400 12px/1 var(--font-cjk)')}>✕</span></div>
+                  <div onClick={v.clearTf} style={s('display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:var(--radius-pill);background:var(--csop-blue-50);font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-100)')}>清除筛选<span style={s('font:400 12px/1 var(--font-cjk)')}>✕</span></div>
                 )}
               </div>
             </div>
@@ -758,21 +739,21 @@ class KolActivity extends React.Component {
                       </td>
                       <td style={s('padding:11px 6px;vertical-align:top;font:500 13px/1.6 var(--font-mono);color:var(--ink-600);border-bottom:1px solid var(--ink-100);white-space:nowrap')}>{r.time}</td>
                       <td style={s('padding:11px 6px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
-                        <span style={s(`display:inline-block;padding:2px 7px;border-radius:9999px;background:${r.pbg};font:600 12px/1.5 var(--font-mono);color:${r.pfg}`)}>{r.code}</span>
+                        <span style={s(`display:inline-block;padding:2px 7px;border-radius:var(--radius-pill);background:${r.pbg};font:600 12px/1.5 var(--font-mono);color:${r.pfg}`)}>{r.code}</span>
                         <div style={s('margin-top:4px;font:400 11px/1.3 var(--font-cjk);color:var(--ink-400);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:80px')}>{r.issuer}</div>
                       </td>
                       <td style={s('padding:11px 6px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
                         <div style={s('display:flex;flex-direction:column;align-items:flex-start;gap:4px')}>
-                          <span style={s(`padding:2px 8px;border-radius:4px;background:${r.tbg};font:600 12px/1.6 var(--font-cjk);color:${r.tfg};white-space:nowrap`)}>{r.type}</span>
+                          <span style={s(`padding:2px 8px;border-radius:var(--radius-small);background:${r.tbg};font:600 12px/1.6 var(--font-cjk);color:${r.tfg};white-space:nowrap`)}>{r.type}</span>
                           {r.hasDir && (
-                            <span title="操作方向 · AI 判定" style={s(`padding:2px 8px;border-radius:4px;background:${r.dbg};font:600 12px/1.6 var(--font-cjk);color:${r.dfg};white-space:nowrap`)}>{r.dir}</span>
+                            <span title="操作方向 · AI 判定" style={s(`padding:2px 8px;border-radius:var(--radius-small);background:${r.dbg};font:600 12px/1.6 var(--font-cjk);color:${r.dfg};white-space:nowrap`)}>{r.dir}</span>
                           )}
                           {/* 如实声明（ADR-0019 §2／§4）：标注过的帖子都挂一枚，文案由
                               `review_state` 决定，逐字取自 PRD §3.9。置信度不再跟在徽章
                               后面 —— 它是模型自报的数，不是「有没有人看过」的事实，两件事
                               挂在一枚徽章上会被读成一件。数值仍在右侧抽屉与 CSV 里。 */}
                           {r.review && (
-                            <span style={s('padding:0 6px;border-radius:9999px;background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500);white-space:nowrap')}>{r.review}</span>
+                            <span style={s('padding:0 6px;border-radius:var(--radius-pill);background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500);white-space:nowrap')}>{r.review}</span>
                           )}
                         </div>
                       </td>
@@ -788,12 +769,12 @@ class KolActivity extends React.Component {
                         )}
                       </td>
                       <td style={s('padding:11px 6px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
-                        <span style={s(`display:inline-block;padding:2px 8px;border-radius:9999px;background:${r.ownership.bg};font:600 12px/1.5 var(--font-cjk);color:${r.ownership.fg};white-space:nowrap`)}>{r.ownership.label}</span>
+                        <span style={s(`display:inline-block;padding:2px 8px;border-radius:var(--radius-pill);background:${r.ownership.bg};font:600 12px/1.5 var(--font-cjk);color:${r.ownership.fg};white-space:nowrap`)}>{r.ownership.label}</span>
                       </td>
                       <td style={s('padding:11px 6px;vertical-align:top;text-align:right;font:500 13px/1.6 var(--font-mono);color:var(--ink-700);border-bottom:1px solid var(--ink-100);white-space:nowrap')}>{r.likes} / {r.comments} / {r.shares}</td>
                       <td data-testid="kol-post-view-cell" data-screen-diff-new="kol-view-column" style={s('padding:11px 6px;vertical-align:top;text-align:right;font:500 13px/1.6 var(--font-mono);color:var(--ink-700);border-bottom:1px solid var(--ink-100);white-space:nowrap')}>{r.views}</td>
                       <td style={s('padding:11px 16px 11px 6px;vertical-align:top;text-align:right;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
-                        <a href={r.url} target="_blank" rel="noopener" onClick={r.stop} style={s('display:inline-flex;align-items:center;padding:4px 11px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>原帖 ↗</a>
+                        <a href={r.url} target="_blank" rel="noopener" onClick={r.stop} style={s('display:inline-flex;align-items:center;padding:4px 11px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>原帖 ↗</a>
                       </td>
                     </tr>
                   ))}
@@ -802,12 +783,12 @@ class KolActivity extends React.Component {
             </div>
           </div>
 
-          <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06)')}>
+          <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06)')}>
             <div style={s('display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 20px;border-bottom:1px solid var(--border-1)')}>
               <div style={s('font:600 18px/1.3 var(--font-cjk)')}>KOL 声量排名</div>
               <div style={s('flex:none;display:flex;align-items:center;gap:8px')}>
                 <span style={s('font:600 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>排序</span>
-                <div style={s('display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden')}>
+                <div style={s('display:flex;border:1px solid var(--border-2);border-radius:var(--radius-control);overflow:hidden')}>
                   {v.leaderSorts.map((f) => (
                     <div key={f.label} data-screen-diff-new={f.label === '按浏览量' ? 'kol-view-sort' : undefined} onClick={f.go} style={s(`padding:5px 11px;font:${f.fw} 13px/1.4 var(--font-cjk);color:${f.fg};background:${f.bg};cursor:pointer;border-right:1px solid var(--border-1)`)}>{f.label}</div>
                   ))}
@@ -815,23 +796,23 @@ class KolActivity extends React.Component {
               </div>
             </div>
             <div style={s('display:flex;align-items:center;gap:10px;padding:10px 20px;border-bottom:1px solid var(--border-1);background:var(--canvas);flex-wrap:wrap')}>
-              <input type="text" value={v.lq} onChange={v.setLq} placeholder="搜 KOL 名称 / 标签" style={s(`flex:none;width:220px;height:30px;box-sizing:border-box;padding:0 10px;border:1px solid ${v.lqBc};border-radius:6px;background:#fff;font:400 13px/1.4 var(--font-cjk);color:var(--ink-800);outline:none`)} className={focus('border-color:var(--csop-blue-600);box-shadow:0 0 0 2px var(--csop-blue-100)')} />
+              <input type="text" value={v.lq} onChange={v.setLq} placeholder="搜 KOL 名称 / 标签" style={s(`flex:none;width:220px;height:30px;box-sizing:border-box;padding:0 10px;border:1px solid ${v.lqBc};border-radius:var(--radius-control);background:#fff;font:400 13px/1.4 var(--font-cjk);color:var(--ink-800);outline:none`)} className={focus('border-color:var(--csop-blue-600);box-shadow:0 0 0 2px var(--csop-blue-100)')} />
               <div style={s('flex:none;display:flex;align-items:center;gap:7px')}>
                 <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>提及范围</span>
-                <div style={s('display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden;background:#fff')}>
+                <div style={s('display:flex;border:1px solid var(--border-2);border-radius:var(--radius-control);overflow:hidden;background:#fff')}>
                   {v.lCamps.map((f) => (
                     <div key={f.label} onClick={f.go} style={s(`padding:5px 11px;font:${f.fw} 13px/1.4 var(--font-cjk);color:${f.fg};background:${f.bg};cursor:pointer;border-right:1px solid var(--border-1)`)}>{f.label}</div>
                   ))}
                 </div>
               </div>
               <div style={s('position:relative;flex:none')}>
-                <div onClick={v.lTypeToggle} style={s(`display:flex;align-items:center;gap:8px;height:30px;box-sizing:border-box;padding:0 11px;border:1px solid ${v.lTypeBc};border-radius:6px;background:${v.lTypeBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
+                <div onClick={v.lTypeToggle} style={s(`display:flex;align-items:center;gap:8px;height:30px;box-sizing:border-box;padding:0 11px;border:1px solid ${v.lTypeBc};border-radius:var(--radius-control);background:${v.lTypeBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
                   <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>主要类型</span>
                   <span style={s('font:600 13px/1.4 var(--font-cjk);color:var(--csop-blue-700)')}>{v.lTypeLabel}</span>
                   <span style={s('font:400 9px/1 var(--font-cjk);color:var(--ink-400)')}>{v.lTypeCaret}</span>
                 </div>
                 {v.lTypeOpen && (
-                  <div onMouseLeave={v.lTypeClose} style={s('position:absolute;left:0;top:36px;z-index:45;width:372px;background:#fff;border:1px solid var(--border-2);border-radius:8px;box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
+                  <div onMouseLeave={v.lTypeClose} style={s('position:absolute;left:0;top:36px;z-index:45;width:372px;background:#fff;border:1px solid var(--border-2);border-radius:var(--radius-card);box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
                     <div style={s('padding:7px 12px;border-bottom:1px solid var(--border-1);background:var(--canvas);font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>单选 · 该 KOL 区间内最多的一类</div>
                     {v.lTypeNaNote && (
                       <div style={s('padding:6px 12px;border-bottom:1px solid var(--border-1);background:var(--warning-100);font:400 12px/1.5 var(--font-cjk);color:var(--warning-700)')}>{v.lTypeNaNote}</div>
@@ -839,7 +820,7 @@ class KolActivity extends React.Component {
                     {v.lTypeMenu.map((m) => (
                       <div key={m.key} onClick={m.go} style={s(`display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--ink-100);background:${m.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
                         <span style={s('flex:none;width:10px;font:600 12px/1.3 var(--font-cjk);color:var(--csop-blue-600)')}>{m.tick}</span>
-                        <span style={s(`flex:none;min-width:68px;padding:1px 8px;box-sizing:border-box;border-radius:4px;background:${m.tbg};font:600 12px/1.6 var(--font-cjk);color:${m.tfg};text-align:center;white-space:nowrap`)}>{m.label}</span>
+                        <span style={s(`flex:none;min-width:68px;padding:1px 8px;box-sizing:border-box;border-radius:var(--radius-small);background:${m.tbg};font:600 12px/1.6 var(--font-cjk);color:${m.tfg};text-align:center;white-space:nowrap`)}>{m.label}</span>
                         <span style={s('flex:1;min-width:0;font:400 12px/1.4 var(--font-cjk);color:var(--ink-500);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{m.def}</span>
                         <span style={s('flex:none;font:500 12px/1.3 var(--font-mono);color:var(--ink-500)')}>{m.n} 位</span>
                       </div>
@@ -850,7 +831,7 @@ class KolActivity extends React.Component {
               <div style={s('margin-left:auto;flex:none;display:flex;align-items:center;gap:12px')}>
                 <span style={s('font:500 13px/1.4 var(--font-cjk);color:var(--ink-500)')}><span style={s('font:600 14px/1 var(--font-mono);color:var(--ink-800)')}>{v.leaderCount}</span> 位</span>
                 {v.hasLf && (
-                  <div onClick={v.clearLf} style={s('display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:9999px;background:var(--csop-blue-50);font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-100)')}>清除筛选<span style={s('font:400 12px/1 var(--font-cjk)')}>✕</span></div>
+                  <div onClick={v.clearLf} style={s('display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:var(--radius-pill);background:var(--csop-blue-50);font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-100)')}>清除筛选<span style={s('font:400 12px/1 var(--font-cjk)')}>✕</span></div>
                 )}
               </div>
             </div>
@@ -871,7 +852,7 @@ class KolActivity extends React.Component {
                     <div key={l.key} onClick={l.go} style={s(`display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--ink-100);background:${l.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
                       <span style={s(`flex:none;width:22px;font:600 13px/1.4 var(--font-mono);color:${l.rankFg}`)}>{l.rank}</span>
                       <div style={s('flex:1;min-width:0;display:flex;align-items:center;gap:6px')}>
-                        <span style={s(`flex:none;width:7px;height:7px;border-radius:9999px;background:${l.dot}`)}></span>
+                        <span style={s(`flex:none;width:7px;height:7px;border-radius:var(--radius-pill);background:${l.dot}`)}></span>
                         <span style={s(`font:${l.fw} 14px/1.4 var(--font-cjk);color:var(--ink-800);white-space:nowrap;overflow:hidden;text-overflow:ellipsis`)}>{l.kol}</span>
                       </div>
                       <span style={s('flex:none;width:28px;text-align:right;font:500 13px/1.4 var(--font-mono);color:var(--ink-600)')}>{l.n}</span>
@@ -885,8 +866,8 @@ class KolActivity extends React.Component {
                       </div>
                       <span data-testid="kol-leader-views" data-screen-diff-new="kol-view-column" style={s('flex:none;width:68px;text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{l.views}</span>
                       <span style={s('flex:none;width:52px;text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{l.eng}</span>
-                      <span style={s('flex:none;width:68px;padding-left:6px;box-sizing:border-box')}><span style={s(`display:inline-block;padding:1px 7px;border-radius:4px;background:${l.tbg};font:600 11px/1.6 var(--font-cjk);color:${l.tfg};white-space:nowrap`)}>{l.type}</span></span>
-                      <DcLink href={l.href} onClick={l.stop} style={s('flex:none;width:54px;box-sizing:border-box;text-align:center;padding:3px 0;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>详情 →</DcLink>
+                      <span style={s('flex:none;width:68px;padding-left:6px;box-sizing:border-box')}><span style={s(`display:inline-block;padding:1px 7px;border-radius:var(--radius-small);background:${l.tbg};font:600 11px/1.6 var(--font-cjk);color:${l.tfg};white-space:nowrap`)}>{l.type}</span></span>
+                      <DcLink href={l.href} onClick={l.stop} style={s('flex:none;width:54px;box-sizing:border-box;text-align:center;padding:3px 0;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>详情 →</DcLink>
                     </div>
                   ))}
                 </div>
@@ -906,20 +887,20 @@ class KolActivity extends React.Component {
                     <div style={s('font:600 19px/1.3 var(--font-cjk);color:var(--ink-900)')}>{v.sel.kol}</div>
                     <div style={s('margin-top:6px;font:400 13px/1.5 var(--font-cjk);color:var(--ink-500)')}>{v.sel.kolTags} · {v.sel.time} HKT</div>
                   </div>
-                  <div onClick={v.closeSel} style={s('flex:none;width:30px;height:30px;border:1px solid var(--border-2);border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;font:400 16px/1 var(--font-cjk);color:var(--ink-600);background:#fff')} className={hover('background:var(--csop-blue-50)')}>×</div>
+                  <div onClick={v.closeSel} style={s('flex:none;width:30px;height:30px;border:1px solid var(--border-2);border-radius:var(--radius-control);display:flex;align-items:center;justify-content:center;cursor:pointer;font:400 16px/1 var(--font-cjk);color:var(--ink-600);background:#fff')} className={hover('background:var(--csop-blue-50)')}>×</div>
                 </div>
                 <div style={s('margin-top:14px;display:flex;align-items:center;gap:6px;flex-wrap:wrap')}>
-                  <span style={s(`padding:3px 9px;border-radius:9999px;background:${v.sel.pbg};font:600 13px/1.5 var(--font-mono);color:${v.sel.pfg}`)}>{v.sel.code}</span>
+                  <span style={s(`padding:3px 9px;border-radius:var(--radius-pill);background:${v.sel.pbg};font:600 13px/1.5 var(--font-mono);color:${v.sel.pfg}`)}>{v.sel.code}</span>
                   <span style={s('font:400 13px/1.5 var(--font-cjk);color:var(--ink-600);max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{v.sel.name}</span>
-                  <span style={s(`padding:3px 9px;border-radius:4px;background:${v.sel.tbg};font:600 12px/1.5 var(--font-cjk);color:${v.sel.tfg}`)}>{v.sel.type}</span>
+                  <span style={s(`padding:3px 9px;border-radius:var(--radius-small);background:${v.sel.tbg};font:600 12px/1.5 var(--font-cjk);color:${v.sel.tfg}`)}>{v.sel.type}</span>
                   {v.sel.hasDir && (
-                    <span title="操作方向 · AI 判定" style={s(`padding:3px 9px;border-radius:4px;background:${v.sel.dbg};font:600 12px/1.5 var(--font-cjk);color:${v.sel.dfg}`)}>{v.sel.dir}</span>
+                    <span title="操作方向 · AI 判定" style={s(`padding:3px 9px;border-radius:var(--radius-small);background:${v.sel.dbg};font:600 12px/1.5 var(--font-cjk);color:${v.sel.dfg}`)}>{v.sel.dir}</span>
                   )}
                   {v.sel.review && (
-                    <span style={s('padding:2px 7px;border-radius:9999px;background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500)')}>{v.sel.review}</span>
+                    <span style={s('padding:2px 7px;border-radius:var(--radius-pill);background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500)')}>{v.sel.review}</span>
                   )}
                   {v.sel.camps.map((c) => (
-                    <span key={c.label} style={s(`padding:3px 9px;border-radius:9999px;background:${c.bg};font:600 12px/1.5 var(--font-cjk);color:${c.fg}`)}>{c.label}</span>
+                    <span key={c.label} style={s(`padding:3px 9px;border-radius:var(--radius-pill);background:${c.bg};font:600 12px/1.5 var(--font-cjk);color:${c.fg}`)}>{c.label}</span>
                   ))}
                 </div>
                 {v.sel.hasSwitch && (
@@ -927,7 +908,7 @@ class KolActivity extends React.Component {
                     <div style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400);margin-bottom:8px')}>这位 KOL 在区间内的 {v.sel.switchN} 篇</div>
                     <div style={s('display:flex;flex-wrap:wrap;gap:6px')}>
                       {v.sel.switch.map((w) => (
-                        <div key={w.key} onClick={w.go} style={s(`display:flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid ${w.bc};border-radius:9999px;background:${w.bg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
+                        <div key={w.key} onClick={w.go} style={s(`display:flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid ${w.bc};border-radius:var(--radius-pill);background:${w.bg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
                           <span style={s(`font:${w.fw} 13px/1.4 var(--font-mono);color:${w.fg}`)}>{w.time}</span>
                           <span style={s('font:500 12px/1.4 var(--font-mono);color:var(--ink-500)')}>{w.code}</span>
                           <span style={s('font:500 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>{w.type}</span>
@@ -940,35 +921,35 @@ class KolActivity extends React.Component {
 
               <div style={s('flex:1;min-height:0;overflow-y:auto;padding:20px 24px 28px')}>
                 <div style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400);margin-bottom:8px')}>AI 摘要</div>
-                <div style={s('padding:16px 18px;border-radius:8px;background:var(--csop-blue-50);font:500 17px/1.6 var(--font-cjk);color:var(--csop-navy-900);text-wrap:pretty')}>{v.sel.summary}</div>
+                <div style={s('padding:16px 18px;border-radius:var(--radius-card);background:var(--csop-blue-50);font:500 17px/1.6 var(--font-cjk);color:var(--csop-navy-900);text-wrap:pretty')}>{v.sel.summary}</div>
                 <div style={s('margin-top:8px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-400)')}>类型「{v.sel.type}」置信度 {v.sel.confidence} · {v.sel.evidenceNote}</div>
 
                 <div style={s('margin-top:22px;font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400);margin-bottom:8px')}>原文</div>
                 {v.sel.hasText ? (
-                  <div style={s('padding:14px 16px;border:1px solid var(--border-1);border-radius:8px;background:var(--canvas);font:400 14px/1.9 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>
+                  <div style={s('padding:14px 16px;border:1px solid var(--border-1);border-radius:var(--radius-card);background:var(--canvas);font:400 14px/1.9 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>
                     {v.sel.sentences.map((q, i) => <span key={i} style={s(`background:${q.bg};box-shadow:${q.sh};border-radius:2px`)}>{q.text}</span>)}
                   </div>
                 ) : (
-                  <div style={s('padding:14px 16px;border:1px solid var(--border-1);border-radius:8px;background:var(--canvas);font:400 14px/1.9 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>原文暂不可用：正文分句尚未生成。</div>
+                  <div style={s('padding:14px 16px;border:1px solid var(--border-1);border-radius:var(--radius-card);background:var(--canvas);font:400 14px/1.9 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>原文暂不可用：正文分句尚未生成。</div>
                 )}
 
                 <div style={s('margin-top:22px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px')}>
                   <div style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>提及产品</div>
                   <div style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>{v.sel.campNote}</div>
                 </div>
-                <div style={s('border:1px solid var(--border-1);border-radius:8px;overflow:hidden')}>
+                <div style={s('border:1px solid var(--border-1);border-radius:var(--radius-card);overflow:hidden')}>
                   {v.sel.mentioned.map((m) => (
                     <div key={m.code} style={s('display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--ink-100);background:#fff')}>
                       <span style={s('flex:none;font:600 14px/1.4 var(--font-mono);color:var(--ink-900)')}>{m.code}</span>
                       <span style={s('flex:1;min-width:0;font:400 13px/1.4 var(--font-cjk);color:var(--ink-800);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{m.name}</span>
                       <span style={s('flex:none;font:400 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>{m.issuer}</span>
-                      <span style={s(`flex:none;padding:2px 8px;border-radius:9999px;background:${m.tbg};font:600 12px/1.5 var(--font-cjk);color:${m.tfg}`)}>{m.tag}</span>
+                      <span style={s(`flex:none;padding:2px 8px;border-radius:var(--radius-pill);background:${m.tbg};font:600 12px/1.5 var(--font-cjk);color:${m.tfg}`)}>{m.tag}</span>
                     </div>
                   ))}
                 </div>
 
                 <div style={s('margin-top:22px;font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400);margin-bottom:8px')}>互动计数</div>
-                <div style={s('display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border-1);border:1px solid var(--border-1);border-radius:6px;overflow:hidden')}>
+                <div style={s('display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border-1);border:1px solid var(--border-1);border-radius:var(--radius-control);overflow:hidden')}>
                   {v.sel.counts.map((c) => (
                     <div key={c.label} style={s('background:#fff;padding:12px 13px')}>
                       <div style={s('font:500 12px/1.4 var(--font-cjk);color:var(--ink-500);margin-bottom:7px')}>{c.label}</div>
@@ -980,8 +961,8 @@ class KolActivity extends React.Component {
               </div>
 
               <div style={s('flex:none;padding:16px 24px;border-top:1px solid var(--border-1);background:var(--canvas);display:flex;align-items:center;gap:12px')}>
-                <DcLink href={v.sel.detailHref} style={s('flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:11px 16px;border-radius:6px;background:var(--csop-blue-600);font:600 14px/1.4 var(--font-cjk);color:#fff;text-decoration:none')} className={hover('background:var(--csop-blue-800);text-decoration:none')}>查看 {v.sel.kol} 的完整详情 →</DcLink>
-                <a href={v.sel.url} target="_blank" rel="noopener" style={s('flex:none;display:flex;align-items:center;justify-content:center;padding:11px 16px;border-radius:6px;background:#fff;border:1px solid var(--border-2);font:600 14px/1.4 var(--font-cjk);color:var(--ink-700);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>在 Futu 查看原帖 ↗</a>
+                <DcLink href={v.sel.detailHref} style={s('flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:11px 16px;border-radius:var(--radius-control);background:var(--csop-blue-600);font:600 14px/1.4 var(--font-cjk);color:#fff;text-decoration:none')} className={hover('background:var(--csop-blue-800);text-decoration:none')}>查看 {v.sel.kol} 的完整详情 →</DcLink>
+                <a href={v.sel.url} target="_blank" rel="noopener" style={s('flex:none;display:flex;align-items:center;justify-content:center;padding:11px 16px;border-radius:var(--radius-control);background:#fff;border:1px solid var(--border-2);font:600 14px/1.4 var(--font-cjk);color:var(--ink-700);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>在 Futu 查看原帖 ↗</a>
               </div>
             </div>
           </>

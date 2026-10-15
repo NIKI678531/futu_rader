@@ -18,21 +18,21 @@ export default function EvidenceDrawer({ v }) {
                   <div style={s('font:600 12px/1.2 var(--font-cjk);letter-spacing:0.16em;color:var(--ink-400);margin-bottom:8px')}>原文证据</div>
                   <div style={s('font:600 16px/1.4 var(--font-cjk);text-wrap:pretty')}>{v.panelTitle}</div>
                   <div style={s('margin-top:8px;display:flex;flex-wrap:wrap;gap:6px')}>
-                    <span style={s('padding:2px 9px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:600 12px/1.7 var(--font-mono);color:var(--ink-700)')}>{v.code}</span>
-                    <span style={s('padding:2px 9px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.7 var(--font-mono);color:var(--ink-600)')}>{v.rangeText}</span>
-                    <span style={s('padding:2px 9px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.7 var(--font-cjk);color:var(--ink-600)')}>{v.panelFilter}</span>
+                    <span style={s('padding:2px 9px;border-radius:var(--radius-pill);background:#fff;border:1px solid var(--border-2);font:600 12px/1.7 var(--font-mono);color:var(--ink-700)')}>{v.code}</span>
+                    <span style={s('padding:2px 9px;border-radius:var(--radius-pill);background:#fff;border:1px solid var(--border-2);font:500 12px/1.7 var(--font-mono);color:var(--ink-600)')}>{v.rangeText}</span>
+                    <span style={s('padding:2px 9px;border-radius:var(--radius-pill);background:#fff;border:1px solid var(--border-2);font:500 12px/1.7 var(--font-cjk);color:var(--ink-600)')}>{v.panelFilter}</span>
                     {v.panelCountOk
-                      ? <span style={s('padding:2px 9px;border-radius:9999px;background:var(--csop-blue-50);font:600 12px/1.7 var(--font-cjk);color:var(--csop-blue-700)')}>{v.panelCount} 条结果</span>
-                      : <span style={s('padding:2px 9px;border-radius:9999px;background:var(--ink-100);font:600 12px/1.7 var(--font-cjk);color:var(--ink-500)')}>{v.panelCount}</span>}
+                      ? <span style={s('padding:2px 9px;border-radius:var(--radius-pill);background:var(--csop-blue-50);font:600 12px/1.7 var(--font-cjk);color:var(--csop-blue-700)')}>{v.panelCount} 条结果</span>
+                      : <span style={s('padding:2px 9px;border-radius:var(--radius-pill);background:var(--ink-100);font:600 12px/1.7 var(--font-cjk);color:var(--ink-500)')}>{v.panelCount}</span>}
                   </div>
                 </div>
-                <div onClick={v.closePanel} style={s('flex:none;width:28px;height:28px;border-radius:6px;border:1px solid var(--border-2);background:#fff;display:flex;align-items:center;justify-content:center;font:400 15px/1 var(--font-cjk);color:var(--ink-500);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>✕</div>
+                <div onClick={v.closePanel} style={s('flex:none;width:28px;height:28px;border-radius:var(--radius-control);border:1px solid var(--border-2);background:#fff;display:flex;align-items:center;justify-content:center;font:400 15px/1 var(--font-cjk);color:var(--ink-500);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>✕</div>
               </div>
             </div>
 
             <div style={s('flex:1;min-height:0;overflow-y:auto;padding:16px 22px 24px')}>
               {v.panelHasExtra && (
-                <div style={s('border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);padding:13px 14px;margin-bottom:14px')}>
+                <div style={s('border:1px solid var(--border-1);border-radius:var(--radius-control);background:var(--canvas);padding:13px 14px;margin-bottom:14px')}>
                   {v.panelExtra.map((e) => (
                     <div key={e.k} style={s('display:flex;gap:12px;padding:4px 0')}>
                       <span style={s('flex:none;width:76px;font:500 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>{e.k}</span>
@@ -43,7 +43,7 @@ export default function EvidenceDrawer({ v }) {
               )}
 
               {v.evidence.map((e) => (
-                <div key={e.id} onClick={e.go} style={s(`border:1px solid ${e.bc};border-radius:6px;padding:13px 14px;margin-bottom:10px;background:${e.bg};cursor:pointer`)} className={hover('border-color:var(--csop-blue-400)')}>
+                <div key={e.id} onClick={e.go} style={s(`border:1px solid ${e.bc};border-radius:var(--radius-control);padding:13px 14px;margin-bottom:10px;background:${e.bg};cursor:pointer`)} className={hover('border-color:var(--csop-blue-400)')}>
                   <div style={s('display:flex;align-items:center;gap:9px;margin-bottom:8px;flex-wrap:wrap')}>
                     <span style={s('font:500 13px/1.4 var(--font-mono);color:var(--ink-600)')}>{e.time}</span>
                     <span style={s('font:500 13px/1.4 var(--font-cjk);color:var(--ink-800)')}>{e.author}</span>
@@ -55,9 +55,9 @@ export default function EvidenceDrawer({ v }) {
                   {e.hasRisk && (
                     <div style={s('display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:8px')}>
                       {e.riskTags.map((g) => (
-                        <span key={g.label} style={s('padding:1px 8px;border-radius:9999px;background:var(--negative-50);border:1px solid var(--negative-100);font:600 11px/1.7 var(--font-cjk);color:var(--negative-700)')}>{g.label}</span>
+                        <span key={g.label} style={s('padding:1px 8px;border-radius:var(--radius-pill);background:var(--negative-50);border:1px solid var(--negative-100);font:600 11px/1.7 var(--font-cjk);color:var(--negative-700)')}>{g.label}</span>
                       ))}
-                      <span style={s('margin-left:auto;padding:1px 8px;border-radius:9999px;background:var(--warning-100);font:600 11px/1.7 var(--font-cjk);color:var(--warning-700)')}>AI 识别 · 待人工确认</span>
+                      <span style={s('margin-left:auto;padding:1px 8px;border-radius:var(--radius-pill);background:var(--warning-100);font:600 11px/1.7 var(--font-cjk);color:var(--warning-700)')}>AI 识别 · 待人工确认</span>
                     </div>
                   )}
                   <div style={s('font:400 14px/1.75 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>{e.excerpt}</div>
@@ -66,7 +66,7 @@ export default function EvidenceDrawer({ v }) {
                   )}
                   <div style={s('margin-top:9px;display:flex;align-items:center;gap:14px;flex-wrap:wrap')}>
                     {e.codes.map((p) => (
-                      <span key={p.code} style={s('padding:1px 7px;border-radius:9999px;background:var(--csop-blue-50);font:600 12px/1.7 var(--font-mono);color:var(--csop-blue-700)')}>{p.code}</span>
+                      <span key={p.code} style={s('padding:1px 7px;border-radius:var(--radius-pill);background:var(--csop-blue-50);font:600 12px/1.7 var(--font-mono);color:var(--csop-blue-700)')}>{p.code}</span>
                     ))}
                     <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>评论 <span style={s('font:600 12px/1.4 var(--font-mono);color:var(--ink-800)')}>{e.comments}</span></span>
                     <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>互动 <span style={s('font:600 12px/1.4 var(--font-mono);color:var(--ink-800)')}>{e.inter}</span></span>
@@ -84,7 +84,7 @@ export default function EvidenceDrawer({ v }) {
                           </div>
                         ))}
                       </div>
-                      <div style={s('padding:10px 12px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>关系数据暂不可用 — 该帖的回复／转发关系尚未核验，不展示推测连线。</div>
+                      <div style={s('padding:10px 12px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>关系数据暂不可用 — 该帖的回复／转发关系尚未核验，不展示推测连线。</div>
                       <div style={s('margin-top:10px;font:400 12px/1.5 var(--font-cjk);color:var(--ink-400)')}>来源：{e.source} · 「Futu 原文」为演示链接，正式接入后指向真实帖子或评论</div>
                     </div>
                   )}
@@ -92,10 +92,10 @@ export default function EvidenceDrawer({ v }) {
               ))}
 
               {v.panelEmpty && (
-                <div style={s('padding:16px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 当前筛选范围内没有可展示的原文证据。</div>
+                <div style={s('padding:16px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 当前筛选范围内没有可展示的原文证据。</div>
               )}
               {v.panelUnavailable && (
-                <div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 原文证据尚未生成或数据源未提供，本区域不展示推测内容。</div>
+                <div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 原文证据尚未生成或数据源未提供，本区域不展示推测内容。</div>
               )}
             </div>
           </div>

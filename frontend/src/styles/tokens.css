@@ -15,14 +15,15 @@
   --positive-50:#F0F8F4; --positive-100:#DFF1E7; --positive-600:#1F8A5B; --positive-700:#176B47;
   --negative-50:#FDF2F2; --negative-100:#FBE4E4; --negative-600:#C53030; --negative-700:#9B2424;
   --warning-100:#F6EFDB; --warning-600:#C9A961; --warning-700:#95752F;
-  --font-cjk:"Noto Sans HK","Microsoft JhengHei","Microsoft YaHei","PingFang HK","Heiti TC",sans-serif;
-  --font-mono:"JetBrains Mono",Consolas,ui-monospace,Menlo,monospace;
+  --font-cjk:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","PingFang SC","Microsoft YaHei UI","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  --font-mono:var(--font-cjk);
+  --radius-card:12px; --radius-control:10px; --radius-small:8px; --radius-pill:9999px;
 }
 
-body { margin:0; background:var(--canvas); font-family:var(--font-cjk); font-variant-numeric:tabular-nums; }
+body { margin:0; background:var(--canvas); font-family:var(--font-cjk); font-variant-numeric:tabular-nums; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
 a { color:var(--csop-blue-600); text-decoration:none; }
 a:hover { color:var(--csop-blue-800); text-decoration:underline; text-underline-offset:3px; }
 table { border-collapse:collapse; width:100%; }
 canvas { display:block; }
-input { font-family:var(--font-cjk); }
+button, input, select, textarea { font-family:var(--font-cjk); font-variant-numeric:tabular-nums; }
 input:focus { outline:2px solid var(--csop-blue-600); outline-offset:2px; }

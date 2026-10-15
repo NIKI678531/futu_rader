@@ -50,7 +50,7 @@ function heatWhy(o) {
 class SectorOverview extends React.Component {
   state = {
     sel: null, sector: 'all', rangeKey: 'd7', notes: false,
-    sort: 'comments', heatMode: 'net', scope: 'all', view: 'sector', q: '', listAll: false,
+    sort: 'comments', heatMode: 'net', scope: 'all', view: 'split', q: '', listAll: false,
     onlyNew: false, onlyNeg: false, onlyRisk: false, scrollRisk: false,
     secOpen: {}, secAll: {}, flatAll: false, tip: null, bucket: null
   };
@@ -542,6 +542,7 @@ class SectorOverview extends React.Component {
       boardNote: SORTS[sortKey].note + (sorted.length > 10
         ? (s.listAll ? ' · 已展开全部 ' + sorted.length + ' 只' : ' · 默认显示前 10 只')
         : ' · 共 ' + sorted.length + ' 只'),
+      boardHeaderNote: SORTS[sortKey].note.replace('区间', '').split(' · ')[0],
       sortComments: mkSort('comments'), sortGrowth: mkSort('growth'),
       sortHeat: mkSort('heat'), sortNeg: mkSort('neg'), sortAtt: mkSort('att'),
       heatRef: self.heatRef,
@@ -595,6 +596,12 @@ class SectorOverview extends React.Component {
         self.seg(s.scope === 'all', '全部', { scope: 'all', sel: null }),
         self.seg(s.scope === 'own', '仅看自家', { scope: 'own', sel: null }),
         self.seg(s.scope === 'peer', '仅看同业产品', { scope: 'peer', sel: null })
+      ],
+      viewMode: ['split', 'list', 'heat'].indexOf(s.view) >= 0 ? s.view : 'split',
+      viewOptions: [
+        self.seg(s.view === 'split', '并排', { view: 'split', tip: null }),
+        self.seg(s.view === 'list', '榜单', { view: 'list', tip: null }),
+        self.seg(s.view === 'heat', '热力图', { view: 'heat', tip: null })
       ],
       notesOpen: s.notes, toggleNotes: () => this.go({ notes: !s.notes }),
       notesCaret: s.notes ? '▲' : '▼',
@@ -831,28 +838,15 @@ class SectorOverview extends React.Component {
         </Shell>
 
         {v.loading && (
-          <div style={s('display:flex;align-items:center;gap:10px;margin:14px 24px 0;padding:9px 15px;border:1px solid var(--csop-blue-200);border-radius:6px;background:var(--csop-blue-50)')}>
-            <span style={s('width:8px;height:8px;border-radius:9999px;background:var(--csop-blue-600)')}></span>
+          <div style={s('display:flex;align-items:center;gap:10px;margin:14px 24px 0;padding:9px 15px;border:1px solid var(--csop-blue-200);border-radius:var(--radius-control);background:var(--csop-blue-50)')}>
+            <span style={s('width:8px;height:8px;border-radius:var(--radius-pill);background:var(--csop-blue-600)')}></span>
             <span style={s('font:500 14px/1.4 var(--font-cjk);color:var(--csop-blue-800)')}>数据加载中 — 正在按新的日期范围与板块筛选重新聚合</span>
           </div>
         )}
 
-        <div style={s(`padding:24px 24px 64px;opacity:${v.bodyOpacity};transition:opacity 200ms cubic-bezier(.4,0,.2,1)`)}>
-
-          <div style={s('display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding-bottom:18px;margin-bottom:20px;border-bottom:1px solid var(--border-2)')}>
-            <div>
-              <div style={s('font:600 12px/1.2 var(--font-cjk);letter-spacing:0.18em;color:var(--csop-blue-600);margin-bottom:10px')}>市场 · 板块总览</div>
-              <div style={s('font:600 28px/1.2 var(--font-cjk);letter-spacing:-0.015em')}>全市场活跃 ETF 舆情分布</div>
-            </div>
-            <div style={s('flex:none;text-align:right')}>
-              <div style={s('font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>数据范围 <span style={s('font:600 13px/1.6 var(--font-mono);color:var(--ink-800)')}>{v.rangeText}</span></div>
-              <div style={s('font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>最近更新 <span style={s('font:600 13px/1.6 var(--font-mono);color:var(--ink-800)')}>{v.updated}</span></div>
-            </div>
-          </div>
-
-          {v.notesOpen && <Notes v={v} />}
-
+        <div style={s(`padding:12px 16px 64px;opacity:${v.bodyOpacity};transition:opacity 200ms cubic-bezier(.4,0,.2,1)`)}>
           <Kpis v={v} />
+          {v.notesOpen && <Notes v={v} />}
           <Board v={v} />
 
         </div>

@@ -10,8 +10,22 @@ test('business and page navigation share the compact shell header', () => {
   assert.match(shell, /data-shell-header/)
   assert.match(shell, /aria-label="业务域"/)
   assert.match(shell, /aria-label="页面"/)
-  assert.ok(shell.indexOf('aria-label="页面"') < shell.indexOf('数据范围'))
+  assert.ok(shell.indexOf('aria-label="页面"') < shell.indexOf('{rangeText}'))
+  assert.doesNotMatch(shell, />数据范围</)
+  assert.doesNotMatch(shell, />最近更新</)
   assert.doesNotMatch(shell, /height:42px/)
+})
+
+test('business screens share the simplified-Chinese Apple font and radius scale', () => {
+  const tokens = source('styles/tokens.css')
+
+  assert.match(tokens, /--font-cjk:-apple-system,BlinkMacSystemFont/)
+  assert.match(tokens, /"PingFang SC"/)
+  assert.match(tokens, /"Microsoft YaHei UI"/)
+  assert.match(tokens, /--font-mono:var\(--font-cjk\)/)
+  assert.match(tokens, /--radius-card:12px/)
+  assert.match(tokens, /--radius-control:10px/)
+  assert.match(tokens, /--radius-small:8px/)
 })
 
 test('collection and pool progress disclosures stay globally hidden', () => {

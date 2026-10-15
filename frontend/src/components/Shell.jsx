@@ -57,21 +57,21 @@ export default function Shell({ vals, children }) {
 
   return (
     <div style={s('position:sticky;top:0;z-index:40;box-shadow:0 1px 0 var(--border-2)')}>
-      <div data-shell-header style={s('display:flex;align-items:center;height:54px;box-sizing:border-box;padding:0 24px;background:#fff;border-bottom:1px solid var(--border-1)')}>
+      <div data-shell-header style={s('display:flex;align-items:center;height:48px;box-sizing:border-box;padding:0 16px;background:#fff;border-bottom:1px solid var(--border-1)')}>
         <DcLink
           href="sector-overview.dc.html"
           style={s('display:flex;align-items:center;gap:10px;flex:none;color:var(--csop-navy-900);text-decoration:none')}
           className={hover('text-decoration:none')}
         >
-          <span style={s('font:600 22px/1.2 var(--font-cjk);letter-spacing:0.02em;white-space:nowrap')}>舆情雷达</span>
+          <span style={s('font:600 21px/1.2 var(--font-cjk);letter-spacing:0.01em;white-space:nowrap')}>舆情雷达</span>
         </DcLink>
         <div style={s('width:1px;height:20px;background:var(--border-2);margin:0 12px 0 14px;flex:none')}></div>
-        <nav aria-label="业务域" style={s('display:flex;align-items:center;gap:4px;padding:3px;border-radius:9px;background:var(--ink-100);flex:none')}>
+        <nav aria-label="业务域" style={s('display:flex;align-items:center;gap:4px;padding:3px;border-radius:var(--radius-control);background:var(--ink-100);flex:none')}>
           {navGroups.map((g) => (
             <DcLink
               key={g.name}
               href={g.href}
-              style={s(`display:flex;align-items:center;padding:6px 12px;border-radius:7px;font:${g.fw} 14px/1.2 var(--font-cjk);color:${g.fg};background:${g.bg};box-shadow:${g.sh};text-decoration:none;white-space:nowrap;transition:all 120ms cubic-bezier(.4,0,.2,1)`)}
+              style={s(`display:flex;align-items:center;padding:5px 12px;border-radius:var(--radius-small);font:${g.fw} 14px/1.2 var(--font-cjk);color:${g.fg};background:${g.bg};box-shadow:${g.sh};text-decoration:none;white-space:nowrap;transition:all 120ms cubic-bezier(.4,0,.2,1)`)}
               className={hover('color:var(--csop-navy-900);text-decoration:none')}
             >
               {g.name}
@@ -95,23 +95,21 @@ export default function Shell({ vals, children }) {
             </nav>
           </>
         )}
-        <div style={s('margin-left:auto;flex:none;display:flex;align-items:center;gap:10px;white-space:nowrap')}>
+        <div style={s('margin-left:auto;flex:none;display:flex;align-items:center;gap:8px;white-space:nowrap')}>
           <div style={s('flex:none;display:flex;align-items:baseline;gap:5px;white-space:nowrap')}>
-            <span style={s('font:600 12px/1.4 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)')}>数据范围</span>
-            <span style={s('font:600 14px/1.4 var(--font-mono);color:var(--ink-800)')}>{rangeText}</span>
-            <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>HKT 自然日</span>
+            <span style={s('font:600 12px/1.4 var(--font-mono);color:var(--ink-800)')}>{rangeText}</span>
+            <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>HKT 自然日</span>
           </div>
           <div style={s('width:1px;height:15px;background:var(--border-2)')}></div>
           <div style={s('flex:none;display:flex;align-items:baseline;gap:5px;white-space:nowrap')}>
-            <span style={s('font:600 12px/1.4 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)')}>最近更新</span>
-            <span style={s('font:600 14px/1.4 var(--font-mono);color:var(--ink-800)')}>{updated}</span>
+            <span style={s('font:600 12px/1.4 var(--font-mono);color:var(--ink-800)')}>{updated}</span>
           </div>
           {isSql && <ProgressButton />}
           {isSql && adminEnabled && (
             <DcLink
               href="/admin"
               title="查看评论进入与 AI 分析链路"
-              style={s('display:inline-flex;align-items:center;height:30px;padding:0 11px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:600 12px/1.2 var(--font-cjk);color:var(--ink-700);text-decoration:none')}
+              style={s('display:inline-flex;align-items:center;height:30px;padding:0 11px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:600 12px/1.2 var(--font-cjk);color:var(--ink-700);text-decoration:none')}
               className={hover('background:var(--canvas-alt);color:var(--csop-blue-700);text-decoration:none')}
             >
               数据管理

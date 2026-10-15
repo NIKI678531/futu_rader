@@ -5,23 +5,23 @@ import R from '../../data/radar'
 /* 热度变化与阶段观点 — 热度折线（SVG）＋ 阶段带 ＋ 可展开的阶段表 */
 export default function Stages({ v }) {
   return (
-    <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:14px')}>
+    <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:14px')}>
       <div style={s('display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 20px;border-bottom:1px solid var(--border-1)')}>
         <div style={s('display:flex;align-items:baseline;gap:11px;min-width:0')}>
           <span style={s('flex:none;white-space:nowrap;font:600 18px/1.3 var(--font-cjk)')}>热度变化与阶段观点</span>
           <span style={s('min-width:0;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500);text-wrap:pretty')}>讨论热度随时间变化 · AI 按时段归纳主流观点（{v.stageGranLabel}）· 与上方趋势面板同一时间轴</span>
         </div>
         <div style={s('flex:none;display:flex;align-items:center;gap:8px')}>
-          {v.stageUnavailable && <span style={s('padding:3px 10px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>AI 阶段观点 · 待分析</span>}
-          <span style={s('padding:3px 10px;border-radius:9999px;background:var(--csop-blue-50);font:500 12px/1.6 var(--font-cjk);color:var(--csop-blue-700);white-space:nowrap')}>折线粒度 {v.heatGranLabel}</span>
+          {v.stageUnavailable && <span style={s('padding:3px 10px;border-radius:var(--radius-pill);background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>AI 阶段观点 · 待分析</span>}
+          <span style={s('padding:3px 10px;border-radius:var(--radius-pill);background:var(--csop-blue-50);font:500 12px/1.6 var(--font-cjk);color:var(--csop-blue-700);white-space:nowrap')}>折线粒度 {v.heatGranLabel}</span>
         </div>
       </div>
       {v.heatDisclosure && <div style={s('padding:10px 20px;font:400 12px/1.6 var(--font-cjk);color:var(--warning-700)')}>{v.heatDisclosure}</div>}
       {v.stageUnavailable && (
-        <div style={s('margin:16px 20px 0;padding:14px 16px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>AI 阶段观点待分析 — 下方仅展示数据库中的原始热度；积极／消极与分阶段观点暂不可用。</div>
+        <div style={s('margin:16px 20px 0;padding:14px 16px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>AI 阶段观点待分析 — 下方仅展示数据库中的原始热度；积极／消极与分阶段观点暂不可用。</div>
       )}
       {v.stageEmpty && (
-        <div style={s('margin:16px 20px;padding:14px 16px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 当前日期范围内该 ETF 没有讨论，不输出阶段观点。</div>
+        <div style={s('margin:16px 20px;padding:14px 16px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 当前日期范围内该 ETF 没有讨论，不输出阶段观点。</div>
       )}
       {v.heatChartVisible && (
         <>
@@ -29,7 +29,7 @@ export default function Stages({ v }) {
             <div style={s(`position:relative;width:${v.trendW}px;height:150px`)}>
               {v.stageBands.map((b) => (
                 <div key={b.n} onClick={b.go} onMouseEnter={b.in} onMouseLeave={b.out} title={b.title} style={s(`position:absolute;left:${b.x}px;top:0;width:${b.w}px;height:150px;box-sizing:border-box;background:${b.bg};opacity:${b.op};border-left:1px dashed var(--border-2);box-shadow:${b.ring};cursor:pointer;transition:opacity 120ms cubic-bezier(.4,0,.2,1)`)}>
-                  <span style={s(`position:absolute;left:5px;top:4px;padding:0 6px;border-radius:9999px;background:${b.tagBg};font:600 11px/1.6 var(--font-mono);color:${b.fg}`)}>{b.n}</span>
+                  <span style={s(`position:absolute;left:5px;top:4px;padding:0 6px;border-radius:var(--radius-pill);background:${b.tagBg};font:600 11px/1.6 var(--font-mono);color:${b.fg}`)}>{b.n}</span>
                 </div>
               ))}
               {v.heatGrid.map((g, i) => (
@@ -43,7 +43,7 @@ export default function Stages({ v }) {
                 <path d={v.heatPath} fill="none" stroke="#2361AD" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"></path>
               </svg>
               {v.heatLowDots.map((d, i) => (
-                <span key={i} title={d.tip} style={s(`position:absolute;left:${d.x}px;top:136px;width:6px;height:6px;margin-left:-3px;border-radius:9999px;background:var(--ink-300)`)}></span>
+                <span key={i} title={d.tip} style={s(`position:absolute;left:${d.x}px;top:136px;width:6px;height:6px;margin-left:-3px;border-radius:var(--radius-pill);background:var(--ink-300)`)}></span>
               ))}
               {v.heatCols.map((c, i) => (
                 <div key={i} onMouseEnter={c.in} onMouseLeave={c.out} style={s(`position:absolute;left:${c.x}px;top:0;width:${c.w}px;height:150px`)}></div>
@@ -51,8 +51,8 @@ export default function Stages({ v }) {
               {v.heatHoverOn && (
                 <>
                   <div style={s(`position:absolute;left:${v.heatHoverX}px;top:8px;width:1px;height:130px;background:var(--csop-navy-900);pointer-events:none`)}></div>
-                  <span style={s(`position:absolute;left:${v.heatHoverX}px;top:${v.heatHoverY}px;width:9px;height:9px;margin:-4px 0 0 -4px;border-radius:9999px;background:#fff;border:2px solid var(--csop-blue-600);box-sizing:border-box;pointer-events:none`)}></span>
-                  <div style={s(`position:absolute;left:${v.heatTipX}px;top:6px;z-index:5;width:250px;box-sizing:border-box;padding:10px 12px;border-radius:6px;background:var(--csop-navy-900);color:#fff;box-shadow:0 6px 20px rgba(14,42,82,0.28);pointer-events:none`)}>
+                  <span style={s(`position:absolute;left:${v.heatHoverX}px;top:${v.heatHoverY}px;width:9px;height:9px;margin:-4px 0 0 -4px;border-radius:var(--radius-pill);background:#fff;border:2px solid var(--csop-blue-600);box-sizing:border-box;pointer-events:none`)}></span>
+                  <div style={s(`position:absolute;left:${v.heatTipX}px;top:6px;z-index:5;width:250px;box-sizing:border-box;padding:10px 12px;border-radius:var(--radius-control);background:var(--csop-navy-900);color:#fff;box-shadow:0 6px 20px rgba(14,42,82,0.28);pointer-events:none`)}>
                     <div style={s('font:600 13px/1.4 var(--font-mono);margin-bottom:6px')}>{v.heatTipTitle}</div>
                     {v.heatTipRows.map((h) => (
                       <div key={h.k} style={s('display:flex;align-items:center;justify-content:space-between;gap:10px;padding:2px 0')}>
@@ -92,20 +92,20 @@ export default function Stages({ v }) {
             {v.stageRows.map((st) => (
               <React.Fragment key={st.n}>
                 <div onClick={st.toggle} onMouseEnter={st.in} onMouseLeave={st.out} style={s(`display:flex;align-items:center;gap:14px;padding:11px 20px;border-bottom:1px solid var(--ink-100);background:${st.rowBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)}>
-                  <span style={s(`flex:none;width:26px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:9999px;background:${st.catBg};font:600 12px/1 var(--font-mono);color:${st.catFg}`)}>{st.n}</span>
+                  <span style={s(`flex:none;width:26px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-pill);background:${st.catBg};font:600 12px/1 var(--font-mono);color:${st.catFg}`)}>{st.n}</span>
                   <span style={s('flex:none;width:148px;font:600 13px/1.4 var(--font-mono);color:var(--ink-900);white-space:nowrap')}>{st.label}</span>
                   <span style={s('flex:none;width:96px;font:400 12px/1.4 var(--font-mono);color:var(--ink-400);white-space:nowrap')}>{st.sub}</span>
                   <span style={s('flex:none;width:176px;display:flex;align-items:center;gap:6px')}>
-                    <span style={s(`padding:2px 9px;border-radius:4px;background:${st.catBg};font:600 12px/1.6 var(--font-cjk);color:${st.catFg};white-space:nowrap`)}>{st.cat}</span>
+                    <span style={s(`padding:2px 9px;border-radius:var(--radius-small);background:${st.catBg};font:600 12px/1.6 var(--font-cjk);color:${st.catFg};white-space:nowrap`)}>{st.cat}</span>
                     {st.hasSent && (
-                      <span style={s(`padding:2px 8px;border-radius:9999px;background:${st.sbg};font:600 12px/1.5 var(--font-cjk);color:${st.sfg};white-space:nowrap`)}>{st.sent}</span>
+                      <span style={s(`padding:2px 8px;border-radius:var(--radius-pill);background:${st.sbg};font:600 12px/1.5 var(--font-cjk);color:${st.sfg};white-space:nowrap`)}>{st.sent}</span>
                     )}
                   </span>
                   <span style={s(`flex:1;min-width:0;font:400 14px/1.5 var(--font-cjk);color:${st.sumFg};text-wrap:pretty`)}>{st.summary}</span>
                   <span style={s('flex:none;width:72px;text-align:right;font:500 13px/1.4 var(--font-mono);color:var(--ink-500);white-space:nowrap')}>{st.sample}</span>
                   <span style={s('flex:none;width:120px;display:flex;justify-content:flex-end')}>
                     {st.hasEv && (
-                      <span onClick={st.openEvidence} style={s('display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);white-space:nowrap;cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>证据 {st.evidence} →</span>
+                      <span onClick={st.openEvidence} style={s('display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);white-space:nowrap;cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>证据 {st.evidence} →</span>
                     )}
                     {st.noEv && (
                       <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>—</span>
@@ -120,7 +120,7 @@ export default function Stages({ v }) {
                       <div key={i} style={s('display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px dashed var(--border-1)')}>
                         <span style={s('flex:none;width:112px;font:600 12px/1.4 var(--font-mono);color:var(--ink-800);white-space:nowrap')}>{d.label}</span>
                         <span style={s('flex:none;width:96px;font:400 12px/1.4 var(--font-mono);color:var(--ink-400);white-space:nowrap')}>{d.sub}</span>
-                        <span style={s(`flex:none;width:64px;padding:1px 8px;box-sizing:border-box;border-radius:9999px;background:${d.tbg};font:600 11px/1.6 var(--font-cjk);color:${d.tfg};text-align:center;white-space:nowrap`)}>{d.tone}</span>
+                        <span style={s(`flex:none;width:64px;padding:1px 8px;box-sizing:border-box;border-radius:var(--radius-pill);background:${d.tbg};font:600 11px/1.6 var(--font-cjk);color:${d.tfg};text-align:center;white-space:nowrap`)}>{d.tone}</span>
                         <span style={s(`flex:1;min-width:0;font:400 13px/1.5 var(--font-cjk);color:${d.dfg}`)}>{d.digest}</span>
                         <span style={s('flex:none;font:400 12px/1.4 var(--font-mono);color:var(--ink-400);white-space:nowrap')}>{d.meta}</span>
                       </div>

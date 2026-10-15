@@ -304,8 +304,8 @@ var NAV = [
     { k: 'sector', name: '板块总览', href: 'sector-overview.dc.html' },
     { k: 'product', name: '产品监控', href: 'product-monitor.dc.html' } ] },
   { k: 'accounts', name: '账号', items: [
-    { k: 'kol', name: 'KOL 影响力', href: 'kol-activity.dc.html' },
-    { k: 'official', name: '官号动态', href: 'official-activity.dc.html' } ] }
+    { k: 'official', name: '官号动态', href: 'official-activity.dc.html' },
+    { k: 'kol', name: 'KOL 影响力', href: 'kol-activity.dc.html' } ] }
 ];
 
 /* 双层导航（浅色）：一级为域（市场／账号）分段标签，二级为当前域的页面标签 */

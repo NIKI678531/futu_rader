@@ -273,40 +273,40 @@ class KolDetail extends React.Component {
         <Shell vals={v}>
           <div data-shell-filter style={s('display:flex;align-items:center;gap:12px;min-height:48px;box-sizing:border-box;padding:7px 24px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1);flex-wrap:wrap')}>
             <DatePresetTabs presets={v.presets} />
-            <div style={s('display:flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 14px/1.4 var(--font-mono);color:var(--ink-700);white-space:nowrap')}>
+            <div style={s('display:flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 14px/1.4 var(--font-mono);color:var(--ink-700);white-space:nowrap')}>
               <span>{v.rangeFrom}</span><span style={s('color:var(--ink-300)')}>→</span><span>{v.rangeTo}</span>
             </div>
-            <div style={s('margin-left:auto;flex:none;display:flex;align-items:center;gap:8px;padding:5px 13px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 13px/1.4 var(--font-cjk);color:var(--ink-600)')}>{dataSourceBadge(R.DATA_PROVIDER)}</div>
+            <div style={s('margin-left:auto;flex:none;display:flex;align-items:center;gap:8px;padding:5px 13px;border-radius:var(--radius-pill);background:#fff;border:1px solid var(--border-2);font:500 13px/1.4 var(--font-cjk);color:var(--ink-600)')}>{dataSourceBadge(R.DATA_PROVIDER)}</div>
           </div>
         </Shell>
 
         <div style={s('padding:22px 24px 64px')}>
 
           <div style={s('display:flex;align-items:center;gap:10px;margin-bottom:18px')}>
-            <DcLink href="kol-activity.dc.html" style={s('display:flex;align-items:center;padding:7px 14px;border:1px solid var(--border-2);border-radius:9999px;background:#fff;font:500 14px/1.4 var(--font-cjk);color:var(--ink-700);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>← 返回 KOL 影响力</DcLink>
+            <DcLink href="kol-activity.dc.html" style={s('display:flex;align-items:center;padding:7px 14px;border:1px solid var(--border-2);border-radius:var(--radius-pill);background:#fff;font:500 14px/1.4 var(--font-cjk);color:var(--ink-700);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>← 返回 KOL 影响力</DcLink>
             <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>{v.rangeText}</span>
           </div>
 
-          <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:20px')}>
+          <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:20px')}>
             <div style={s('display:flex;align-items:flex-start;justify-content:space-between;gap:24px;padding:20px 22px 18px')}>
               <div style={s('min-width:0')}>
                 <div style={s('font:600 12px/1.2 var(--font-cjk);letter-spacing:0.18em;color:var(--csop-blue-600);margin-bottom:10px')}>重点KOL</div>
                 <div style={s('display:flex;align-items:center;gap:12px;flex-wrap:wrap')}>
                   <div style={s('font:600 28px/1.2 var(--font-cjk);letter-spacing:-0.015em')}>{v.kolName}</div>
                   {v.hasStyle && (
-                    <span style={s('display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border-radius:9999px;background:var(--csop-navy-900);font:600 13px/1.5 var(--font-cjk);color:#fff')}><span style={s('font:600 10px/1 var(--font-cjk);letter-spacing:0.12em;color:rgba(255,255,255,0.62)')}>AI 画像</span>{v.styleTag}</span>
+                    <span style={s('display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border-radius:var(--radius-pill);background:var(--csop-navy-900);font:600 13px/1.5 var(--font-cjk);color:#fff')}><span style={s('font:600 10px/1 var(--font-cjk);letter-spacing:0.12em;color:rgba(255,255,255,0.62)')}>AI 画像</span>{v.styleTag}</span>
                   )}
                 </div>
                 <div style={s('margin-top:11px;display:flex;align-items:center;gap:6px;flex-wrap:wrap')}>
                   {v.tags.map((t) => (
-                    <span key={t.label} style={s('padding:3px 10px;border-radius:9999px;background:var(--csop-blue-50);font:500 13px/1.5 var(--font-cjk);color:var(--csop-blue-700)')}>{t.label}</span>
+                    <span key={t.label} style={s('padding:3px 10px;border-radius:var(--radius-pill);background:var(--csop-blue-50);font:500 13px/1.5 var(--font-cjk);color:var(--csop-blue-700)')}>{t.label}</span>
                   ))}
                   <span style={s('font:400 12px/1.5 var(--font-cjk);color:var(--ink-400);margin-left:4px')}>标签来自重点KOL名单 · 画像由区间内类型分布自动生成</span>
                 </div>
               </div>
               <div style={s('flex:none;display:flex;align-items:center;gap:10px')}>
-                <div onClick={v.prevGo} style={s(`display:flex;align-items:center;padding:7px 13px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 14px/1.4 var(--font-cjk);color:${v.prevFg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>← 上一位</div>
-                <div onClick={v.nextGo} style={s(`display:flex;align-items:center;padding:7px 13px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 14px/1.4 var(--font-cjk);color:${v.nextFg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>下一位 →</div>
+                <div onClick={v.prevGo} style={s(`display:flex;align-items:center;padding:7px 13px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 14px/1.4 var(--font-cjk);color:${v.prevFg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>← 上一位</div>
+                <div onClick={v.nextGo} style={s(`display:flex;align-items:center;padding:7px 13px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 14px/1.4 var(--font-cjk);color:${v.nextFg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>下一位 →</div>
               </div>
             </div>
             <div style={s('display:flex;align-items:stretch;border-top:1px solid var(--border-1)')}>
@@ -326,7 +326,7 @@ class KolDetail extends React.Component {
 
           <div style={s('display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:20px;margin-bottom:20px')}>
 
-            <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);min-width:0;display:flex;flex-direction:column')}>
+            <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);min-width:0;display:flex;flex-direction:column')}>
               <div style={s('padding:16px 20px;border-bottom:1px solid var(--border-1)')}>
                 <div style={s('font:600 18px/1.3 var(--font-cjk)')}>这段时间发的帖</div>
                 <div style={s('margin-top:5px;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>共 {v.postCount} 篇 · 点一行，右侧时间线高亮那一天，并展开原文</div>
@@ -347,17 +347,17 @@ class KolDetail extends React.Component {
                       <tr key={p.key} onClick={p.go} style={s(`background:${p.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
                         <td style={s('padding:11px 14px;vertical-align:top;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
                           <div style={s('font:500 13px/1.5 var(--font-mono);color:var(--ink-800)')}>{p.time}</div>
-                          <span style={s(`display:inline-block;margin-top:5px;padding:1px 7px;border-radius:9999px;background:${p.pbg};font:600 12px/1.5 var(--font-mono);color:${p.pfg}`)}>{p.code}</span>
+                          <span style={s(`display:inline-block;margin-top:5px;padding:1px 7px;border-radius:var(--radius-pill);background:${p.pbg};font:600 12px/1.5 var(--font-mono);color:${p.pfg}`)}>{p.code}</span>
                         </td>
                         <td style={s('padding:11px 6px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
                           <div style={s('display:flex;flex-direction:column;align-items:flex-start;gap:4px')}>
-                            <span style={s(`padding:2px 7px;border-radius:4px;background:${p.tbg};font:600 12px/1.6 var(--font-cjk);color:${p.tfg};white-space:nowrap`)}>{p.type}</span>
+                            <span style={s(`padding:2px 7px;border-radius:var(--radius-small);background:${p.tbg};font:600 12px/1.6 var(--font-cjk);color:${p.tfg};white-space:nowrap`)}>{p.type}</span>
                             {p.hasDir && (
-                              <span title="操作方向 · AI 判定" style={s(`padding:2px 7px;border-radius:4px;background:${p.dbg};font:600 12px/1.6 var(--font-cjk);color:${p.dfg};white-space:nowrap`)}>{p.dir}</span>
+                              <span title="操作方向 · AI 判定" style={s(`padding:2px 7px;border-radius:var(--radius-small);background:${p.dbg};font:600 12px/1.6 var(--font-cjk);color:${p.dfg};white-space:nowrap`)}>{p.dir}</span>
                             )}
                             {/* 徽章文案由 `review_state` 决定（ADR-0019 §2），逐字取自 PRD §3.9 */}
                             {p.review && (
-                              <span style={s('padding:0 6px;border-radius:9999px;background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500);white-space:nowrap')}>{p.review}</span>
+                              <span style={s('padding:0 6px;border-radius:var(--radius-pill);background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500);white-space:nowrap')}>{p.review}</span>
                             )}
                           </div>
                         </td>
@@ -372,23 +372,23 @@ class KolDetail extends React.Component {
                           {p.open && (
                             <>
                               {p.hasText ? (
-                                <div style={s('margin-top:9px;padding:10px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-700);text-wrap:pretty')}>
+                                <div style={s('margin-top:9px;padding:10px 12px;border:1px solid var(--border-1);border-radius:var(--radius-control);background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-700);text-wrap:pretty')}>
                                   {p.sentences.map((q, i) => <span key={i} style={s(`background:${q.bg};box-shadow:${q.sh};border-radius:2px`)}>{q.text}</span>)}
                                 </div>
                               ) : (
-                                <div style={s('margin-top:9px;padding:10px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>原文暂不可用：正文分句尚未生成。</div>
+                                <div style={s('margin-top:9px;padding:10px 12px;border:1px solid var(--border-1);border-radius:var(--radius-control);background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>原文暂不可用：正文分句尚未生成。</div>
                               )}
                               <div style={s('margin-top:5px;font:400 12px/1.5 var(--font-cjk);color:var(--ink-400)')}>{p.confidenceText}{p.evidenceNote}</div>
                             </>
                           )}
                         </td>
                         <td style={s('padding:11px 6px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
-                          <span style={s(`display:inline-block;padding:2px 8px;border-radius:9999px;background:${p.ownership.bg};font:600 12px/1.5 var(--font-cjk);color:${p.ownership.fg};white-space:nowrap`)}>{p.ownership.label}</span>
+                          <span style={s(`display:inline-block;padding:2px 8px;border-radius:var(--radius-pill);background:${p.ownership.bg};font:600 12px/1.5 var(--font-cjk);color:${p.ownership.fg};white-space:nowrap`)}>{p.ownership.label}</span>
                         </td>
                         <td style={s('padding:11px 14px 11px 6px;vertical-align:top;text-align:right;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
                           <div title={`赞 ${p.likes} · 评 ${p.comments} · 转 ${p.shares}`} style={s('font:600 13px/1.5 var(--font-mono);color:var(--ink-800)')}>{p.eng}</div>
                           <div style={s('font:400 11px/1.4 var(--font-mono);color:var(--ink-400)')}>{p.likes}/{p.comments}/{p.shares}</div>
-                          <a href={p.url} target="_blank" rel="noopener" onClick={p.stop} style={s('display:inline-flex;align-items:center;margin-top:5px;padding:2px 9px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>原帖 ↗</a>
+                          <a href={p.url} target="_blank" rel="noopener" onClick={p.stop} style={s('display:inline-flex;align-items:center;margin-top:5px;padding:2px 9px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>原帖 ↗</a>
                         </td>
                       </tr>
                     ))}
@@ -398,7 +398,7 @@ class KolDetail extends React.Component {
             </div>
 
             <div style={s('display:flex;flex-direction:column;gap:20px;min-width:0')}>
-              <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06)')}>
+              <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06)')}>
                 <div style={s('padding:16px 20px;border-bottom:1px solid var(--border-1)')}>
                   <div style={s('font:600 18px/1.3 var(--font-cjk)')}>南方东英 vs 其他公司发帖时间线</div>
                   <div style={s('margin-top:5px;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>按天 · 每格一篇 · {v.chartNote}</div>
@@ -423,7 +423,7 @@ class KolDetail extends React.Component {
                       <div key={d.key} style={s(`flex:1;min-width:0;text-align:center;font:${d.lfw} 10px/1.4 var(--font-mono);color:${d.lfg};white-space:nowrap;overflow:hidden`)}>{d.label}</div>
                     ))}
                   </div>
-                  <div style={s('margin-top:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border-1);border:1px solid var(--border-1);border-radius:6px;overflow:hidden')}>
+                  <div style={s('margin-top:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border-1);border:1px solid var(--border-1);border-radius:var(--radius-control);overflow:hidden')}>
                     {v.campCells.map((c) => (
                       <div key={c.label} style={s('background:#fff;padding:10px 12px')}>
                         <div style={s('font:500 12px/1.4 var(--font-cjk);color:var(--ink-500);margin-bottom:6px')}>{c.label}</div>
@@ -432,7 +432,7 @@ class KolDetail extends React.Component {
                     ))}
                   </div>
                   {v.chartCompetitors.length > 0 && (
-                    <div data-testid="kol-chart-competitor-details" style={s('margin-top:10px;padding:9px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);display:flex;align-items:flex-start;gap:10px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>
+                    <div data-testid="kol-chart-competitor-details" style={s('margin-top:10px;padding:9px 12px;border:1px solid var(--border-1);border-radius:var(--radius-control);background:var(--canvas);display:flex;align-items:flex-start;gap:10px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>
                           <span style={s('flex:none;font-weight:600;color:var(--ink-700)')}>其他公司产品</span>
                       <span style={s('min-width:0;display:flex;gap:6px 14px;flex-wrap:wrap')}>
                         {v.chartCompetitors.map((p) => (
@@ -444,7 +444,7 @@ class KolDetail extends React.Component {
                 </div>
               </div>
 
-              <div data-testid="kol-product-composition" style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06)')}>
+              <div data-testid="kol-product-composition" style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06)')}>
                 <div style={s('padding:16px 20px;border-bottom:1px solid var(--border-1)')}>
                   <div style={s('font:600 18px/1.3 var(--font-cjk)')}>产品归属构成</div>
                   <div style={s('margin-top:5px;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>按每篇帖子的主 ETF 归属统计 · 共 {v.postCount} 篇</div>
@@ -473,7 +473,7 @@ class KolDetail extends React.Component {
                     {v.otherCompanies.length ? (
                       <div style={s('display:flex;flex-direction:column;gap:10px')}>
                         {v.otherCompanies.map((company) => (
-                          <div key={company.issuer} style={s('padding:10px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas)')}>
+                          <div key={company.issuer} style={s('padding:10px 12px;border:1px solid var(--border-1);border-radius:var(--radius-control);background:var(--canvas)')}>
                             <div style={s('display:flex;align-items:baseline;justify-content:space-between;gap:8px')}>
                               <span style={s('font:600 13px/1.4 var(--font-cjk);color:var(--ink-800)')}>{company.issuer}</span>
                               <span style={s('font:500 12px/1.4 var(--font-mono);color:var(--ink-500)')}>{company.n} 篇 · {company.pct}</span>
@@ -490,7 +490,7 @@ class KolDetail extends React.Component {
                         ))}
                       </div>
                     ) : (
-                      <div style={s('padding:10px 12px;border-radius:6px;background:var(--canvas);font:400 13px/1.5 var(--font-cjk);color:var(--ink-400)')}>本区间没有以其他公司产品为主 ETF 的帖子</div>
+                      <div style={s('padding:10px 12px;border-radius:var(--radius-control);background:var(--canvas);font:400 13px/1.5 var(--font-cjk);color:var(--ink-400)')}>本区间没有以其他公司产品为主 ETF 的帖子</div>
                     )}
                   </div>
                 </div>

@@ -23,8 +23,8 @@ function ThemeCard({ t, accent, tint, shareLabel }) {
       </div>
       {t.hasMeta && (
         <div style={s('display:flex;align-items:center;gap:6px;margin-bottom:7px')}>
-          <span style={s(`padding:2px 8px;border-radius:9999px;background:${t.sevBg};font:600 11px/1.7 var(--font-cjk);color:${t.sevFg}`)}>关注程度 {t.severity}</span>
-          <span style={s(`padding:2px 8px;border-radius:9999px;background:${t.lifeBg};font:600 11px/1.7 var(--font-cjk);color:${t.lifeFg}`)}>{t.life}</span>
+          <span style={s(`padding:2px 8px;border-radius:var(--radius-pill);background:${t.sevBg};font:600 11px/1.7 var(--font-cjk);color:${t.sevFg}`)}>关注程度 {t.severity}</span>
+          <span style={s(`padding:2px 8px;border-radius:var(--radius-pill);background:${t.lifeBg};font:600 11px/1.7 var(--font-cjk);color:${t.lifeFg}`)}>{t.life}</span>
           <span style={s('font:400 11px/1.7 var(--font-mono);color:var(--ink-500)')}>{t.first} → {t.last}</span>
         </div>
       )}
@@ -54,7 +54,7 @@ function ThemeCard({ t, accent, tint, shareLabel }) {
 /* 积极 ／ 消极整体态度 + 两栏观点排行 */
 export default function Attitude({ v }) {
   return (
-    <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:14px')}>
+    <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:14px')}>
       <div style={s('display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 20px;border-bottom:1px solid var(--border-1)')}>
         <div style={s('display:flex;align-items:baseline;gap:11px')}>
           <span style={s('font:600 18px/1.3 var(--font-cjk)')}>积极 ／ 消极整体态度</span>
@@ -81,7 +81,7 @@ export default function Attitude({ v }) {
               <span style={s(`font:500 13px/1.4 var(--font-mono);color:${v.posDfg}`)}>{v.posDelta}</span>
             </div>
             <div style={s('height:30px')}></div>
-            <div style={s('padding:11px 13px;border:1px solid var(--border-1);border-radius:6px;background:var(--positive-50)')}>
+            <div style={s('padding:11px 13px;border:1px solid var(--border-1);border-radius:var(--radius-control);background:var(--positive-50)')}>
               <div style={s('font:600 12px/1.4 var(--font-cjk);color:var(--positive-700);margin-bottom:6px')}>AI 观点总结</div>
               <div style={s('font:400 13px/1.8 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>{v.posLead}{v.posSummary}</div>
             </div>
@@ -97,22 +97,22 @@ export default function Attitude({ v }) {
               <span style={s(`font:500 13px/1.4 var(--font-mono);color:${v.negDfg}`)}>{v.negDelta}</span>
             </div>
             <div style={s('height:30px')}></div>
-            <div style={s('padding:11px 13px;border:1px solid var(--border-1);border-radius:6px;background:var(--negative-50)')}>
+            <div style={s('padding:11px 13px;border:1px solid var(--border-1);border-radius:var(--radius-control);background:var(--negative-50)')}>
               <div style={s('font:600 12px/1.4 var(--font-cjk);color:var(--negative-700);margin-bottom:6px')}>AI 观点总结</div>
               <div style={s('font:400 13px/1.8 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>{v.negLead}{v.negSummary}</div>
             </div>
           </div>
         </div>
-        <div style={s('margin-top:16px;padding:11px 14px;background:var(--canvas);border:1px solid var(--border-1);border-radius:6px;display:flex;align-items:center;gap:16px;flex-wrap:wrap')}>
+        <div style={s('margin-top:16px;padding:11px 14px;background:var(--canvas);border:1px solid var(--border-1);border-radius:var(--radius-control);display:flex;align-items:center;gap:16px;flex-wrap:wrap')}>
           <span style={s('font:500 14px/1.4 var(--font-cjk);color:var(--ink-600)')}>中性内容 <span style={s('font:600 15px/1.4 var(--font-mono);color:var(--ink-900)')}>{v.neuTotal}</span> 条，占全部有效内容 <span style={s('font:600 14px/1.4 var(--font-mono);color:var(--ink-900)')}>{v.neuShare}</span></span>
           <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>中性内容不进入积极／消极占比；占比分母为积极＋消极＝{v.validN} 条</span>
           {v.lowSample && (
-            <span style={s('padding:3px 10px;border-radius:9999px;background:var(--warning-100);font:600 13px/1.5 var(--font-cjk);color:var(--warning-700)')}>样本不足 · 低于 {v.threshold} 条阈值，不输出倾向结论</span>
+            <span style={s('padding:3px 10px;border-radius:var(--radius-pill);background:var(--warning-100);font:600 13px/1.5 var(--font-cjk);color:var(--warning-700)')}>样本不足 · 低于 {v.threshold} 条阈值，不输出倾向结论</span>
           )}
           {/* 与「样本不足」互斥：那一枚说的是「数过了，样本太少」，这一枚说的是
               「三态标注还没有」。徽章位用短文案「暂不可用」（PRD §3.6）。 */}
           {v.attNa && (
-            <span style={s('padding:3px 10px;border-radius:9999px;background:var(--ink-100);font:600 13px/1.5 var(--font-cjk);color:var(--ink-600)')}>暂不可用 · 三态标注尚未生成</span>
+            <span style={s('padding:3px 10px;border-radius:var(--radius-pill);background:var(--ink-100);font:600 13px/1.5 var(--font-cjk);color:var(--ink-600)')}>暂不可用 · 三态标注尚未生成</span>
           )}
         </div>
       </div>
@@ -132,10 +132,10 @@ export default function Attitude({ v }) {
             <ThemeCard key={t.title} t={t} accent="var(--positive-600)" tint="var(--positive-50)" shareLabel="占积极" />
           ))}
           {v.noPos && (
-            <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 区间内没有可归类的积极观点。</div>
+            <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 区间内没有可归类的积极观点。</div>
           )}
           {v.posUnavailable && (
-            <div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 积极观点聚类尚未生成或数据源未提供，本区域不展示推测内容。</div>
+            <div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 积极观点聚类尚未生成或数据源未提供，本区域不展示推测内容。</div>
           )}
         </div>
 
@@ -154,14 +154,14 @@ export default function Attitude({ v }) {
             <ThemeCard key={t.title} t={t} accent="var(--negative-600)" tint="var(--negative-50)" shareLabel="占消极" />
           ))}
           {v.noNeg && (
-            <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 区间内没有可归类的消极观点。</div>
+            <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 区间内没有可归类的消极观点。</div>
           )}
           {v.negUnavailable && (
-            <div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 消极观点聚类尚未生成或数据源未提供，本区域不展示推测内容。</div>
+            <div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 消极观点聚类尚未生成或数据源未提供，本区域不展示推测内容。</div>
           )}
         </div>
       </div>
-      {v.showIssuerOpinions && <section style={s('margin:0 20px 20px;padding:16px;border:1px solid var(--csop-blue-200);border-radius:7px;background:var(--csop-blue-50)')}>
+      {v.showIssuerOpinions && <section style={s('margin:0 20px 20px;padding:16px;border:1px solid var(--csop-blue-200);border-radius:var(--radius-control);background:var(--csop-blue-50)')}>
         <div style={s('display:flex;align-items:baseline;gap:12px;margin-bottom:10px')}>
           <strong style={s('font:600 15px/1.4 var(--font-cjk);color:var(--csop-blue-800)')}>南方东英发行商观点</strong>
           <span style={s('font:400 12px/1.5 var(--font-cjk);color:var(--ink-600)')}>仅展示与当前 ETF 明确关联的评价；同一评论只展示一次</span>

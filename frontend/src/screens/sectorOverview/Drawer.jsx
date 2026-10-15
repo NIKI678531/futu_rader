@@ -35,39 +35,39 @@ export default function Drawer({ v }) {
               <div style={s('display:flex;align-items:flex-start;justify-content:space-between;gap:14px')}>
                 <div style={s('min-width:0')}>
                   <div style={s('display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap')}>
-                    <span style={s('padding:3px 10px;border-radius:9999px;background:var(--csop-navy-900);font:600 14px/1.5 var(--font-mono);color:#fff')}>{sel.code}</span>
-                    <span style={s('padding:3px 9px;border-radius:4px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>{sel.sector}</span>
-                    <span style={s('padding:3px 9px;border-radius:4px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>{sel.struct}</span>
-                    <span style={s(`padding:3px 9px;border-radius:4px;background:${sel.obg};font:600 12px/1.6 var(--font-cjk);color:${sel.ofg}`)}>{sel.own}</span>
+                    <span style={s('padding:3px 10px;border-radius:var(--radius-pill);background:var(--csop-navy-900);font:600 14px/1.5 var(--font-mono);color:#fff')}>{sel.code}</span>
+                    <span style={s('padding:3px 9px;border-radius:var(--radius-small);background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>{sel.sector}</span>
+                    <span style={s('padding:3px 9px;border-radius:var(--radius-small);background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>{sel.struct}</span>
+                    <span style={s(`padding:3px 9px;border-radius:var(--radius-small);background:${sel.obg};font:600 12px/1.6 var(--font-cjk);color:${sel.ofg}`)}>{sel.own}</span>
                     {sel.isNew && (
-                      <span style={s('padding:3px 9px;border-radius:4px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700)')}>新品</span>
+                      <span style={s('padding:3px 9px;border-radius:var(--radius-small);background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700)')}>新品</span>
                     )}
                   </div>
                   <div style={s('font:600 17px/1.4 var(--font-cjk);text-wrap:pretty')}>{sel.name}</div>
                   <div style={s('margin-top:5px;font:400 13px/1.5 var(--font-cjk);color:var(--ink-500)')}>发行商 {sel.issuer} · 上市 {sel.listing}</div>
                 </div>
-                <div onClick={v.closeDrawer} style={s('flex:none;width:28px;height:28px;border-radius:6px;border:1px solid var(--border-2);background:#fff;display:flex;align-items:center;justify-content:center;font:400 15px/1 var(--font-cjk);color:var(--ink-500);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>✕</div>
+                <div onClick={v.closeDrawer} style={s('flex:none;width:28px;height:28px;border-radius:var(--radius-control);border:1px solid var(--border-2);background:#fff;display:flex;align-items:center;justify-content:center;font:400 15px/1 var(--font-cjk);color:var(--ink-500);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>✕</div>
               </div>
             </div>
 
             <div ref={v.drawerBodyRef} style={s('flex:1;min-height:0;overflow-y:auto;padding:18px 22px 24px')}>
 
               <div style={s('font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400);margin-bottom:10px')}>当前舆情总结</div>
-              <div style={s('border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);padding:14px 15px;margin-bottom:20px')}>
+              <div style={s('border:1px solid var(--border-1);border-radius:var(--radius-control);background:var(--canvas);padding:14px 15px;margin-bottom:20px')}>
                 <div style={s('font:400 14px/1.8 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>{sel.summary}</div>
                 <div style={s('margin-top:11px;padding-top:10px;border-top:1px solid var(--border-1);display:flex;flex-wrap:wrap;gap:6px')}>
-                  <span style={s('padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-mono);color:var(--ink-600)')}>{sel.rangeText}</span>
-                  <span style={s('padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-mono);color:var(--ink-600)')}>更新 {v.updated}</span>
+                  <span style={s('padding:2px 8px;border-radius:var(--radius-pill);background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-mono);color:var(--ink-600)')}>{sel.rangeText}</span>
+                  <span style={s('padding:2px 8px;border-radius:var(--radius-pill);background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-mono);color:var(--ink-600)')}>更新 {v.updated}</span>
                   {sel.sampleOk
-                    ? <span style={s('padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>有效样本 {sel.sample} 条</span>
-                    : <span style={s('padding:2px 8px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>有效样本 {sel.sample}</span>}
-                  {sel.sumAiLabel && <span style={s('padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700)')}>{sel.sumAiLabel}</span>}
+                    ? <span style={s('padding:2px 8px;border-radius:var(--radius-pill);background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>有效样本 {sel.sample} 条</span>
+                    : <span style={s('padding:2px 8px;border-radius:var(--radius-pill);background:#fff;border:1px solid var(--border-2);font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>有效样本 {sel.sample}</span>}
+                  {sel.sumAiLabel && <span style={s('padding:2px 8px;border-radius:var(--radius-pill);background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700)')}>{sel.sumAiLabel}</span>}
                 </div>
               </div>
 
               <div style={s('display:flex;align-items:center;gap:10px;margin-bottom:10px')}>
                 <span style={s('font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)')}>分时段讨论热度</span>
-                <span style={s('padding:2px 8px;border-radius:9999px;background:var(--csop-blue-50);font:500 12px/1.6 var(--font-cjk);color:var(--csop-blue-700)')}>粒度 {v.granLabel}</span>
+                <span style={s('padding:2px 8px;border-radius:var(--radius-pill);background:var(--csop-blue-50);font:500 12px/1.6 var(--font-cjk);color:var(--csop-blue-700)')}>粒度 {v.granLabel}</span>
                 <div style={s('margin-left:auto;display:flex;align-items:center;gap:5px')}>
                   <span style={s('font:500 11px/1.4 var(--font-mono);color:var(--ink-400)')}>低</span>
                   <div style={s('display:flex')}>
@@ -78,7 +78,7 @@ export default function Drawer({ v }) {
                   <span style={s('font:500 11px/1.4 var(--font-mono);color:var(--ink-400)')}>高</span>
                 </div>
               </div>
-              <div style={s('border:1px solid var(--border-1);border-radius:6px;background:#fff;padding:13px 14px 12px;margin-bottom:20px')}>
+              <div style={s('border:1px solid var(--border-1);border-radius:var(--radius-control);background:#fff;padding:13px 14px 12px;margin-bottom:20px')}>
                 <div onMouseMove={sel.cellMove} onMouseLeave={sel.cellLeave} style={s('display:flex;gap:2px;height:86px;cursor:pointer')}>
                   {sel.cells.map((c, i) => (
                     <div key={i} onClick={c.pick} style={s(`flex:1;min-width:3px;background:${c.bg};box-shadow:${c.ring};border-radius:2px`)}></div>
@@ -101,7 +101,7 @@ export default function Drawer({ v }) {
                 )}
                 <div style={s('margin-top:11px;padding-top:10px;border-top:1px solid var(--border-1)')}>
                   <div style={s('display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:9px')}>
-                    <span style={s(`padding:3px 11px;border-radius:9999px;background:${sel.readBg};font:600 13px/1.5 var(--font-mono);color:#fff;white-space:nowrap`)}>{sel.readTime}</span>
+                    <span style={s(`padding:3px 11px;border-radius:var(--radius-pill);background:${sel.readBg};font:600 13px/1.5 var(--font-mono);color:#fff;white-space:nowrap`)}>{sel.readTime}</span>
                     <span style={s('font:400 12px/1.5 var(--font-cjk);color:var(--ink-500)')}>{sel.readHint}</span>
                     {sel.hasPick && (
                       <span onClick={sel.clearPick} style={s('font:500 12px/1.5 var(--font-cjk);color:var(--csop-blue-600);cursor:pointer')}>回到峰值时段</span>
@@ -117,7 +117,7 @@ export default function Drawer({ v }) {
 
               <div style={s('display:flex;align-items:center;gap:8px;margin-bottom:10px')}>
                 <span style={s('font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)')}>积极 ／ 消极观点</span>
-                {sel.partialData && sel.coverageLabel && <span style={s('padding:1px 7px;border-radius:9999px;background:var(--warning-100);font:600 11px/1.6 var(--font-cjk);color:var(--warning-700);letter-spacing:0;white-space:nowrap')}>{sel.coverageLabel}</span>}
+                {sel.partialData && sel.coverageLabel && <span style={s('padding:1px 7px;border-radius:var(--radius-pill);background:var(--warning-100);font:600 11px/1.6 var(--font-cjk);color:var(--warning-700);letter-spacing:0;white-space:nowrap')}>{sel.coverageLabel}</span>}
               </div>
               <div style={s('display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px')}>
                 <div>
@@ -130,10 +130,10 @@ export default function Drawer({ v }) {
                     <ThemeCard key={t.id} t={t} accent="var(--positive-600)" tint="var(--positive-50)" />
                   ))}
                   {sel.noPos && (
-                    <div style={s('padding:12px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容</div>
+                    <div style={s('padding:12px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容</div>
                   )}
                   {sel.posUnavailable && (
-                    <div style={s('padding:12px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 13px/1.6 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用</div>
+                    <div style={s('padding:12px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 13px/1.6 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用</div>
                   )}
                 </div>
                 <div>
@@ -146,16 +146,16 @@ export default function Drawer({ v }) {
                     <ThemeCard key={t.id} t={t} accent="var(--negative-600)" tint="var(--negative-50)" />
                   ))}
                   {sel.noNeg && (
-                    <div style={s('padding:12px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容</div>
+                    <div style={s('padding:12px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容</div>
                   )}
                   {sel.negUnavailable && (
-                    <div style={s('padding:12px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 13px/1.6 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用</div>
+                    <div style={s('padding:12px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 13px/1.6 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用</div>
                   )}
                 </div>
               </div>
 
               <div style={s('display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px')}>
-                <div style={s('border:1px solid var(--border-1);border-radius:6px;padding:13px 14px')}>
+                <div style={s('border:1px solid var(--border-1);border-radius:var(--radius-control);padding:13px 14px')}>
                   <div style={s('font:500 13px/1.4 var(--font-cjk);color:var(--ink-500);margin-bottom:8px')}>讨论热度</div>
                   <div style={s('display:flex;align-items:baseline;gap:9px')}>
                     <span title={sel.heatWhy} style={s('font:600 24px/1 var(--font-mono);color:var(--ink-900)')}>{sel.heat}</span>
@@ -163,12 +163,12 @@ export default function Drawer({ v }) {
                   </div>
                   <div style={s('margin-top:8px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-500)')}>筛后评论 {sel.comments} · 相关评论 {sel.relatedComments}<br />点赞 {sel.likes} · 转发 {sel.shares}<br />全市场筛后评论量排名 第 {sel.rank} ／ {sel.rankTotal}</div>
                 </div>
-                <div style={s('border:1px solid var(--border-1);border-radius:6px;padding:13px 14px')}>
+                <div style={s('border:1px solid var(--border-1);border-radius:var(--radius-control);padding:13px 14px')}>
                   <div style={s('display:flex;align-items:center;justify-content:space-between;margin-bottom:8px')}>
-                    <span style={s('display:flex;align-items:center;gap:6px;font:500 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>整体态度{sel.partialData && sel.coverageLabel && <span style={s('padding:1px 6px;border-radius:9999px;background:var(--warning-100);font:600 10px/1.5 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>{sel.coverageLabel}</span>}</span>
+                    <span style={s('display:flex;align-items:center;gap:6px;font:500 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>整体态度{sel.partialData && sel.coverageLabel && <span style={s('padding:1px 6px;border-radius:var(--radius-pill);background:var(--warning-100);font:600 10px/1.5 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>{sel.coverageLabel}</span>}</span>
                     <span style={s(`font:500 12px/1.4 var(--font-cjk);color:${sel.netFg}`)}>{sel.net}</span>
                   </div>
-                  <div style={s('display:flex;height:22px;border-radius:4px;overflow:hidden;background:var(--ink-100);margin-bottom:8px')}>
+                  <div style={s('display:flex;height:22px;border-radius:var(--radius-small);overflow:hidden;background:var(--ink-100);margin-bottom:8px')}>
                     <div style={s(`width:${sel.posPct}%;background:var(--positive-600)`)}></div>
                     <div style={s(`width:${sel.negPct}%;background:var(--negative-600)`)}></div>
                   </div>
@@ -182,11 +182,11 @@ export default function Drawer({ v }) {
 
               <div ref={v.riskRef} style={s('display:flex;align-items:center;gap:8px;margin-bottom:10px')}>
                 <span style={s('font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)')}>重点舆情</span>
-                <span style={s('padding:2px 8px;border-radius:9999px;background:var(--negative-100);font:600 12px/1.5 var(--font-cjk);color:var(--negative-700)')}>需合规关注</span>
+                <span style={s('padding:2px 8px;border-radius:var(--radius-pill);background:var(--negative-100);font:600 12px/1.5 var(--font-cjk);color:var(--negative-700)')}>需合规关注</span>
                 {sel.riskOk && (
                   <span style={s('font:600 14px/1.2 var(--font-mono);color:var(--negative-700)')}>{sel.riskN}</span>
                 )}
-                <span style={s('margin-left:auto;padding:2px 8px;border-radius:9999px;background:var(--warning-100);font:600 11px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>AI 识别 · 待人工确认</span>
+                <span style={s('margin-left:auto;padding:2px 8px;border-radius:var(--radius-pill);background:var(--warning-100);font:600 11px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>AI 识别 · 待人工确认</span>
               </div>
               {sel.riskOk && (
                 <div style={s('margin-bottom:20px')}>
@@ -194,7 +194,7 @@ export default function Drawer({ v }) {
                     <DcLink key={r.id} href={r.href} style={s('display:block;border:1px solid var(--border-1);border-left:3px solid var(--negative-600);border-radius:0 6px 6px 0;padding:11px 13px;margin-bottom:8px;background:#fff;text-decoration:none;color:inherit')} className={hover('background:var(--negative-50);text-decoration:none')}>
                       <div style={s('display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:7px')}>
                         {r.tags.map((g) => (
-                          <span key={g.label} style={s('padding:1px 8px;border-radius:9999px;background:var(--negative-50);border:1px solid var(--negative-100);font:600 11px/1.7 var(--font-cjk);color:var(--negative-700)')}>{g.label}</span>
+                          <span key={g.label} style={s('padding:1px 8px;border-radius:var(--radius-pill);background:var(--negative-50);border:1px solid var(--negative-100);font:600 11px/1.7 var(--font-cjk);color:var(--negative-700)')}>{g.label}</span>
                         ))}
                         <span style={s('margin-left:auto;font:500 12px/1.4 var(--font-mono);color:var(--ink-500);white-space:nowrap')}>{r.time}</span>
                       </div>
@@ -209,7 +209,7 @@ export default function Drawer({ v }) {
                     </DcLink>
                   ))}
                   <div style={s('display:flex;align-items:center;gap:12px;flex-wrap:wrap')}>
-                    <DcLink href={sel.riskHref} style={s('display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>查看全部原文证据 →</DcLink>
+                    <DcLink href={sel.riskHref} style={s('display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>查看全部原文证据 →</DcLink>
                     {sel.riskHasMore && (
                       <span style={s('font:400 12px/1.5 var(--font-cjk);color:var(--ink-500)')}>{sel.riskMore}</span>
                     )}
@@ -218,14 +218,14 @@ export default function Drawer({ v }) {
                 </div>
               )}
               {sel.riskEmpty && (
-                <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500);margin-bottom:20px')}>暂无相关内容 — 区间内未识别到需合规关注的言论；普通消极观点与负面问题见相邻模块。</div>
+                <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500);margin-bottom:20px')}>暂无相关内容 — 区间内未识别到需合规关注的言论；普通消极观点与负面问题见相邻模块。</div>
               )}
               {sel.riskUnavailable && (
-                <div style={s('padding:14px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 14px/1.6 var(--font-cjk);color:var(--warning-700);margin-bottom:20px')}>数据暂不可用 — 风险识别结果尚未核验或数据源未提供，不展示推测内容。</div>
+                <div style={s('padding:14px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 14px/1.6 var(--font-cjk);color:var(--warning-700);margin-bottom:20px')}>数据暂不可用 — 风险识别结果尚未核验或数据源未提供，不展示推测内容。</div>
               )}
               {sel.riskNa && (
-                <div style={s('display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid var(--border-1);border-radius:6px;background:#fff;margin-bottom:20px')}>
-                  <span style={s('flex:none;min-width:26px;padding:2px 8px;border-radius:9999px;background:var(--ink-100);font:600 13px/1.4 var(--font-mono);color:var(--ink-700);text-align:center')}>—</span>
+                <div style={s('display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid var(--border-1);border-radius:var(--radius-control);background:#fff;margin-bottom:20px')}>
+                  <span style={s('flex:none;min-width:26px;padding:2px 8px;border-radius:var(--radius-pill);background:var(--ink-100);font:600 13px/1.4 var(--font-mono);color:var(--ink-700);text-align:center')}>—</span>
                   <span style={s('font:400 13px/1.6 var(--font-cjk);color:var(--ink-500);text-wrap:pretty')}>同业产品不纳入重点舆情（需合规关注）识别范围，字段不适用。</span>
                 </div>
               )}
@@ -236,10 +236,10 @@ export default function Drawer({ v }) {
               {sel.hasNegCats && (
                 <div style={s('margin-bottom:20px')}>
                   {sel.negCats.map((c) => (
-                    <div key={c.label} style={s('border:1px solid var(--border-1);border-radius:6px;padding:11px 13px;margin-bottom:8px;background:#fff')}>
+                    <div key={c.label} style={s('border:1px solid var(--border-1);border-radius:var(--radius-control);padding:11px 13px;margin-bottom:8px;background:#fff')}>
                       <div style={s('display:flex;align-items:center;gap:8px;margin-bottom:6px')}>
                         <span style={s('font:600 14px/1.4 var(--font-cjk);color:var(--ink-900)')}>{c.label}</span>
-                        <span style={s(`padding:1px 7px;border-radius:9999px;background:${c.lbg};font:600 11px/1.7 var(--font-cjk);color:${c.lfg}`)}>{c.life}</span>
+                        <span style={s(`padding:1px 7px;border-radius:var(--radius-pill);background:${c.lbg};font:600 11px/1.7 var(--font-cjk);color:${c.lfg}`)}>{c.life}</span>
                         <span style={s('margin-left:auto;font:600 13px/1.4 var(--font-mono);color:var(--negative-700)')}>{c.mentions} 条 · {c.share}</span>
                       </div>
                       <div style={s('font:400 13px/1.6 var(--font-cjk);color:var(--ink-600);text-wrap:pretty')}>{c.summary}</div>
@@ -248,10 +248,10 @@ export default function Drawer({ v }) {
                 </div>
               )}
               {sel.noNegCats && (
-                <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500);margin-bottom:20px')}>暂无相关内容 — 区间内没有可归类为需关注负面舆情的内容。</div>
+                <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500);margin-bottom:20px')}>暂无相关内容 — 区间内没有可归类为需关注负面舆情的内容。</div>
               )}
               {sel.negCatsUnavailable && (
-                <div style={s('padding:14px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 14px/1.6 var(--font-cjk);color:var(--warning-700);margin-bottom:20px')}>数据暂不可用 — 负面归类尚未生成或数据源未提供，本区域不展示推测内容。</div>
+                <div style={s('padding:14px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 14px/1.6 var(--font-cjk);color:var(--warning-700);margin-bottom:20px')}>数据暂不可用 — 负面归类尚未生成或数据源未提供，本区域不展示推测内容。</div>
               )}
 
               <div style={s('display:flex;align-items:center;gap:8px;margin-bottom:10px')}>
@@ -260,11 +260,11 @@ export default function Drawer({ v }) {
               {sel.hasComps && (
                 <div>
                   {sel.comps.map((c) => (
-                    <div key={c.code} style={s('border:1px solid var(--border-1);border-radius:6px;padding:12px 13px;margin-bottom:8px;background:#fff')}>
+                    <div key={c.code} style={s('border:1px solid var(--border-1);border-radius:var(--radius-control);padding:12px 13px;margin-bottom:8px;background:#fff')}>
                       <div style={s('display:flex;align-items:center;gap:8px;margin-bottom:8px')}>
-                        <span style={s('padding:2px 8px;border-radius:9999px;background:var(--ink-100);font:600 13px/1.5 var(--font-mono);color:var(--ink-700)')}>{c.code}</span>
+                        <span style={s('padding:2px 8px;border-radius:var(--radius-pill);background:var(--ink-100);font:600 13px/1.5 var(--font-mono);color:var(--ink-700)')}>{c.code}</span>
                         <span style={s('flex:1;min-width:0;font:500 14px/1.4 var(--font-cjk);color:var(--ink-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{c.name}</span>
-                        <span style={s(`padding:1px 7px;border-radius:9999px;background:${c.rbg};font:600 11px/1.7 var(--font-cjk);color:${c.rfg}`)}>{c.relation}</span>
+                        <span style={s(`padding:1px 7px;border-radius:var(--radius-pill);background:${c.rbg};font:600 11px/1.7 var(--font-cjk);color:${c.rfg}`)}>{c.relation}</span>
                       </div>
                       <div style={s('display:flex;align-items:center;gap:12px;margin-bottom:8px;font:500 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>
                         <span>{c.issuer}</span>
@@ -272,11 +272,11 @@ export default function Drawer({ v }) {
                         <span style={s(`font:500 12px/1.4 var(--font-mono);color:${c.dfg}`)}>{c.delta}</span>
                       </div>
                       <div style={s('display:grid;grid-template-columns:1fr 1fr;gap:9px')}>
-                        <div style={s('background:var(--positive-50);border-radius:4px;padding:8px 9px')}>
+                        <div style={s('background:var(--positive-50);border-radius:var(--radius-small);padding:8px 9px')}>
                           <div style={s('font:600 12px/1.4 var(--font-cjk);color:var(--positive-700);margin-bottom:4px')}>用户认可</div>
                           <div style={s('font:400 12px/1.6 var(--font-cjk);color:var(--ink-700);text-wrap:pretty')}>{c.pos}</div>
                         </div>
-                        <div style={s('background:var(--negative-50);border-radius:4px;padding:8px 9px')}>
+                        <div style={s('background:var(--negative-50);border-radius:var(--radius-small);padding:8px 9px')}>
                           <div style={s('font:600 12px/1.4 var(--font-cjk);color:var(--negative-700);margin-bottom:4px')}>用户质疑</div>
                           <div style={s('font:400 12px/1.6 var(--font-cjk);color:var(--ink-700);text-wrap:pretty')}>{c.neg}</div>
                         </div>
@@ -286,12 +286,12 @@ export default function Drawer({ v }) {
                 </div>
               )}
               {sel.noComps && (
-                <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:6px;background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500)')}>{sel.compsEmptyText}</div>
+                <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500)')}>{sel.compsEmptyText}</div>
               )}
             </div>
 
             <div style={s('flex:none;padding:14px 22px;border-top:1px solid var(--border-1);background:var(--canvas)')}>
-              <DcLink href={sel.monitorHref} style={s('display:flex;align-items:center;justify-content:center;padding:11px;border-radius:6px;background:var(--csop-blue-600);color:#fff;font:600 14px/1.4 var(--font-cjk);text-decoration:none;transition:background 120ms cubic-bezier(.4,0,.2,1)')} className={hover('background:var(--csop-blue-800);text-decoration:none')}>进入完整产品监控</DcLink>
+              <DcLink href={sel.monitorHref} style={s('display:flex;align-items:center;justify-content:center;padding:11px;border-radius:var(--radius-control);background:var(--csop-blue-600);color:#fff;font:600 14px/1.4 var(--font-cjk);text-decoration:none;transition:background 120ms cubic-bezier(.4,0,.2,1)')} className={hover('background:var(--csop-blue-800);text-decoration:none')}>进入完整产品监控</DcLink>
             </div>
           </div>
         )}

@@ -5,13 +5,13 @@ import { s } from '../../lib/dc'
    DOM 轴、图例开关与 hover 浮层。ref 回调来自 renderVals()。 */
 export default function Trend({ v }) {
   return (
-    <div style={s('position:relative;background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:14px')}>
+    <div style={s('position:relative;background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:14px')}>
       <div style={s('display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 20px;border-bottom:1px solid var(--border-1)')}>
         <div style={s('display:flex;align-items:baseline;gap:11px;min-width:0')}>
           <span style={s('flex:none;white-space:nowrap;font:600 18px/1.3 var(--font-cjk)')}>{v.trendTitle}</span>
           <span style={s('min-width:0;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500);text-wrap:pretty')}>实线为当前区间，虚线为基准区间 {v.benchText}；K 线仅显示当前区间</span>
           {v.pxUnavailable && (
-            <span style={s('flex:none;padding:2px 9px;border-radius:9999px;background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>价格数据暂不可用</span>
+            <span style={s('flex:none;padding:2px 9px;border-radius:var(--radius-pill);background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>价格数据暂不可用</span>
           )}
         </div>
         <div style={s('flex:none;display:flex;align-items:center;gap:14px')}>
@@ -56,7 +56,7 @@ export default function Trend({ v }) {
       <div style={s('padding:0 20px 14px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>两条轨道共享同一时间轴与 hover：讨论轨道为筛后评论数、活跃账号数（左轴）与互动数（右轴），情绪轨道为积极与消极内容数（左轴）；所选 ETF 的 OHLC K 线叠加在两条轨道底层，{v.pxKLabel}，刻度使用最右侧独立的价格轴，不与舆情单位共用标尺；当前舆情粒度{v.granLabel}，{v.pxNote}。同步观察所选 ETF 的价格波动、筛后评论量与活跃账号变化；时间上的同步或先后关系不代表价格变化必然导致舆情变化。{v.pxSourceDisclosure}</div>
 
       {v.hoverOpen && (
-        <div style={s(`position:absolute;left:${v.hoverX}px;top:${v.hoverY}px;z-index:20;pointer-events:none;background:var(--csop-navy-900);color:#fff;border-radius:6px;padding:11px 13px;box-shadow:0 6px 20px rgba(14,42,82,0.28);width:336px;box-sizing:border-box`)}>
+        <div style={s(`position:absolute;left:${v.hoverX}px;top:${v.hoverY}px;z-index:20;pointer-events:none;background:var(--csop-navy-900);color:#fff;border-radius:var(--radius-control);padding:11px 13px;box-shadow:0 6px 20px rgba(14,42,82,0.28);width:336px;box-sizing:border-box`)}>
           <div style={s('font:600 13px/1.4 var(--font-mono);margin-bottom:9px')}>{v.hoverTitle}</div>
           {v.hoverRows.map((h) => (
             <div key={h.label} style={s('display:flex;align-items:center;gap:12px;padding:3px 0')}>

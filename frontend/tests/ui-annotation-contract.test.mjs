@@ -16,11 +16,11 @@ test('sector summary cards omit auxiliary annotations', () => {
   assert.doesNotMatch(kpis, /note=\{v\.topNote\}/)
 })
 
-test('sector keeps useful legends dark and bold', () => {
+test('sector keeps the leaderboard legend compact and the heatmap legends prominent', () => {
   const table = source('screens/sectorOverview/ProductTable.jsx')
   const heatmap = source('screens/sectorOverview/Heatmap.jsx')
 
-  assert.match(table, /font:600 12px\/1\.4[^']*color:var\(--ink-900\)[^>]*>热度＝筛后评论量＋0\.3×点赞＋转发 · 点表头排序/)
+  assert.match(table, /font:400 11px\/1\.4[^']*color:var\(--ink-500\)[^>]*>\{v\.boardHeaderNote\} · 点表头排序/)
   assert.match(heatmap, /font:600 12px\/1\.4[^']*color:var\(--ink-900\)/)
   assert.match(heatmap, /font:700 11px\/1\.4[^']*color:var\(--ink-900\)[^>]*>面积/)
   assert.match(heatmap, /font:700 11px\/1\.4[^']*color:var\(--ink-900\)[^>]*>颜色/)

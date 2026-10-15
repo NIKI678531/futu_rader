@@ -3,7 +3,7 @@ import { s, hover } from '../../lib/dc'
 /* 产品话题情绪 — 不计入产品积极／消极态度的市场／宏观类讨论 */
 export default function Topics({ v }) {
   return (
-    <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:14px')}>
+    <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:14px')}>
       <div style={s('display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 20px;border-bottom:1px solid var(--border-1)')}>
         <div style={s('display:flex;align-items:baseline;gap:11px')}>
           <span style={s('font:600 18px/1.3 var(--font-cjk)')}>产品话题情绪</span>
@@ -50,7 +50,7 @@ export default function Topics({ v }) {
         <div style={s('padding:20px;font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 区间内没有识别到该产品的话题讨论。</div>
       )}
       {v.topicsUnavailable && (
-        <div style={s('padding:20px')}><div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:6px;background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 话题识别结果尚未生成或数据源未提供，本区域不展示推测内容。</div></div>
+        <div style={s('padding:20px')}><div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 话题识别结果尚未生成或数据源未提供，本区域不展示推测内容。</div></div>
       )}
     </div>
   )

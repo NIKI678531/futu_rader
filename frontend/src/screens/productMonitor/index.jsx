@@ -653,6 +653,7 @@ export default class ProductMonitor extends React.Component {
       navGroups: navGroups('portfolio', 'product'), presets: presets,
       rangeText: range.text, rangeFrom: range.from, rangeTo: range.to,
       granLabel: range.granLabel, benchText: range.benchText, benchLabel: range.benchLabel,
+      rangeDays: range.days,
       updated: stamp(R.UPDATED), rangeKey: s.rangeKey,
       loading: s.loading, bodyOpacity: s.loading ? '0.45' : '1',
       code: code, name: o.name, sectorName: o.sectorName, struct: o.struct, issuer: o.issuer,
@@ -1039,13 +1040,13 @@ export default class ProductMonitor extends React.Component {
         </Shell>
 
         {v.loading && (
-          <div style={s('display:flex;align-items:center;gap:10px;margin:14px 24px 0;padding:9px 15px;border:1px solid var(--csop-blue-200);border-radius:6px;background:var(--csop-blue-50)')}>
-            <span style={s('width:8px;height:8px;border-radius:9999px;background:var(--csop-blue-600)')}></span>
+          <div style={s('display:flex;align-items:center;gap:10px;margin:14px 24px 0;padding:9px 15px;border:1px solid var(--csop-blue-200);border-radius:var(--radius-control);background:var(--csop-blue-50)')}>
+            <span style={s('width:8px;height:8px;border-radius:var(--radius-pill);background:var(--csop-blue-600)')}></span>
             <span style={s('font:500 14px/1.4 var(--font-cjk);color:var(--csop-blue-800)')}>数据加载中 — 正在按新的产品与日期范围重新聚合舆情、KOL、重点舆情与行情数据</span>
           </div>
         )}
 
-        <div style={s(`padding:22px 24px 72px;opacity:${v.bodyOpacity};transition:opacity 200ms cubic-bezier(.4,0,.2,1)`)}>
+        <div style={s(`padding:12px 16px 72px;opacity:${v.bodyOpacity};transition:opacity 200ms cubic-bezier(.4,0,.2,1)`)}>
           <ProductHeader v={v} />
           <Overview v={v} />
           <KolList v={v} />

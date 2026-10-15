@@ -15,8 +15,8 @@ import { dataSourceBadge } from '../lib/dataSource'
 import { s, hover, focus } from '../lib/dc'
 import Shell from '../components/Shell'
 import DatePresetTabs from '../components/DatePresetTabs'
+import AccountSummaryStrip from '../components/AccountSummaryStrip'
 import withTransition from '../components/withTransition'
-import DcLink from '../components/DcLink'
 
 class OfficialActivity extends React.Component {
   /* From the .dc.html `data-props` block: editor-tweakable knobs and their defaults. */
@@ -429,52 +429,33 @@ class OfficialActivity extends React.Component {
       <div data-screen-label="官号动态" style={s('width:100%;min-width:1200px;min-height:100vh;box-sizing:border-box;background:var(--canvas);font-family:var(--font-cjk);color:var(--ink-900);font-size:14px')}>
 
         <Shell vals={v}>
-          <div data-shell-filter style={s('display:flex;align-items:center;gap:12px;min-height:48px;box-sizing:border-box;padding:7px 24px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1);flex-wrap:wrap')}>
+          <div data-shell-filter style={s('display:flex;align-items:center;gap:10px;min-height:44px;box-sizing:border-box;padding:5px 16px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1);flex-wrap:wrap')}>
             <DatePresetTabs presets={v.presets} />
-            <div style={s('display:flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 14px/1.4 var(--font-mono);color:var(--ink-700);white-space:nowrap')}>
+            <div style={s('display:flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 14px/1.4 var(--font-mono);color:var(--ink-700);white-space:nowrap')}>
               <span>{v.rangeFrom}</span><span style={s('color:var(--ink-300)')}>→</span><span>{v.rangeTo}</span>
             </div>
-            <div style={s('display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden;background:#fff')}>
+            <div style={s('display:flex;border:1px solid var(--border-2);border-radius:var(--radius-control);overflow:hidden;background:#fff')}>
               {v.tabs.map((f) => (
                 <div key={f.label} onClick={f.go} style={s(`padding:6px 13px;font:${f.fw} 14px/1.4 var(--font-cjk);color:${f.fg};background:${f.bg};cursor:pointer;border-right:1px solid var(--border-1)`)}>{f.label}</div>
               ))}
             </div>
-            <div style={s('margin-left:auto;flex:none;display:flex;align-items:center;gap:8px;padding:5px 13px;border-radius:9999px;background:#fff;border:1px solid var(--border-2);font:500 13px/1.4 var(--font-cjk);color:var(--ink-600)')}>{dataSourceBadge(R.DATA_PROVIDER)}</div>
+            <div style={s('margin-left:auto;flex:none;display:flex;align-items:center;gap:8px;padding:5px 13px;border-radius:var(--radius-pill);background:#fff;border:1px solid var(--border-2);font:500 13px/1.4 var(--font-cjk);color:var(--ink-600)')}>{dataSourceBadge(R.DATA_PROVIDER)}</div>
           </div>
         </Shell>
 
-        <div style={s('padding:26px 24px 64px')}>
+        <div style={s('padding:12px 16px 64px')}>
 
-          <div style={s('display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding-bottom:20px;margin-bottom:22px;border-bottom:1px solid var(--border-2)')}>
-            <div>
-              <div style={s('font:600 12px/1.2 var(--font-cjk);letter-spacing:0.18em;color:var(--csop-blue-600);margin-bottom:10px')}>账号 · 官号动态</div>
-              <div style={s('font:600 28px/1.2 var(--font-cjk);letter-spacing:-0.015em')}>重点官号发布与内容摘要</div>
-            </div>
-            <DcLink href="sector-overview.dc.html" style={s('flex:none;display:flex;align-items:center;padding:8px 15px;border:1px solid var(--border-2);border-radius:9999px;background:#fff;font:500 14px/1.4 var(--font-cjk);color:var(--ink-700);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>← 返回板块总览</DcLink>
-          </div>
-
-          <div style={s('display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px')}>
-            {v.kpis.map((k) => (
-              <div key={k.label} style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);padding:16px 17px')}>
-                <div style={s('font:500 13px/1.4 var(--font-cjk);color:var(--ink-500);margin-bottom:11px')}>{k.label}</div>
-                <div style={s('display:flex;align-items:baseline;gap:6px')}>
-                  <span style={s(`font:600 30px/1 var(--font-cjk);letter-spacing:-0.02em;color:${k.vfg}`)}>{k.value}</span>
-                  <span style={s('font:500 14px/1 var(--font-cjk);color:var(--ink-500)')}>{k.unit}</span>
-                </div>
-                <div style={s('margin-top:9px;font:400 13px/1.5 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>{k.sub}</div>
-              </div>
-            ))}
-          </div>
+          <AccountSummaryStrip eyebrow="账号 · 官号动态" title="重点官号发布与内容摘要" kpis={v.kpis} />
 
           <div data-testid="official-overview-grid" style={s('display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:18px;margin-bottom:20px')}>
-            <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);display:flex;flex-direction:column;min-width:0')}>
+            <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);display:flex;flex-direction:column;min-width:0')}>
               <div style={s('display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 20px;border-bottom:1px solid var(--border-1)')}>
                 <div style={s('display:flex;align-items:baseline;gap:10px;min-width:0')}>
                   <div style={s('font:600 18px/1.3 var(--font-cjk)')}>官号清单</div>
                 </div>
                 <div style={s('flex:none;display:flex;align-items:center;gap:8px')}>
                   <span style={s('font:600 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>排序</span>
-                  <div style={s('display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden')}>
+                  <div style={s('display:flex;border:1px solid var(--border-2);border-radius:var(--radius-control);overflow:hidden')}>
                     {v.listSorts.map((f) => (
                       <div key={f.label} onClick={f.go} style={s(`padding:5px 11px;font:${f.fw} 13px/1.4 var(--font-cjk);color:${f.fg};background:${f.bg};cursor:pointer;border-right:1px solid var(--border-1)`)}>{f.label}</div>
                     ))}
@@ -482,20 +463,20 @@ class OfficialActivity extends React.Component {
                 </div>
               </div>
               <div style={s('display:flex;align-items:center;gap:10px;padding:10px 20px;border-bottom:1px solid var(--border-1);background:var(--canvas);flex-wrap:wrap')}>
-                <input type="text" value={v.lq} onChange={v.setLq} placeholder="搜官号简称 / 全称" style={s(`flex:none;width:190px;height:30px;box-sizing:border-box;padding:0 10px;border:1px solid ${v.lqBc};border-radius:6px;background:#fff;font:400 13px/1.4 var(--font-cjk);color:var(--ink-800);outline:none`)} className={focus('border-color:var(--csop-blue-600);box-shadow:0 0 0 2px var(--csop-blue-100)')} />
+                <input type="text" value={v.lq} onChange={v.setLq} placeholder="搜官号简称 / 全称" style={s(`flex:none;width:190px;height:30px;box-sizing:border-box;padding:0 10px;border:1px solid ${v.lqBc};border-radius:var(--radius-control);background:#fff;font:400 13px/1.4 var(--font-cjk);color:var(--ink-800);outline:none`)} className={focus('border-color:var(--csop-blue-600);box-shadow:0 0 0 2px var(--csop-blue-100)')} />
                 <div style={s('flex:none;display:flex;align-items:center;gap:7px')}>
                   <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>类型</span>
-                  <div style={s('display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden;background:#fff')}>
+                  <div style={s('display:flex;border:1px solid var(--border-2);border-radius:var(--radius-control);overflow:hidden;background:#fff')}>
                     {v.tabs.map((f) => (
                       <div key={f.label} onClick={f.go} style={s(`padding:5px 11px;font:${f.fw} 13px/1.4 var(--font-cjk);color:${f.fg};background:${f.bg};cursor:pointer;border-right:1px solid var(--border-1)`)}>{f.label}</div>
                     ))}
                   </div>
                 </div>
-                <div onClick={v.activeToggle} style={s(`flex:none;display:flex;align-items:center;height:30px;box-sizing:border-box;padding:0 12px;border:1px solid ${v.activeBc};border-radius:9999px;background:${v.activeBg};font:500 13px/1.4 var(--font-cjk);color:${v.activeFg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)}>仅区间内有发布</div>
+                <div onClick={v.activeToggle} style={s(`flex:none;display:flex;align-items:center;height:30px;box-sizing:border-box;padding:0 12px;border:1px solid ${v.activeBc};border-radius:var(--radius-pill);background:${v.activeBg};font:500 13px/1.4 var(--font-cjk);color:${v.activeFg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)}>仅区间内有发布</div>
                 <div style={s('margin-left:auto;flex:none;display:flex;align-items:center;gap:12px')}>
                   <span style={s('font:500 13px/1.4 var(--font-cjk);color:var(--ink-500)')}><span style={s('font:600 14px/1 var(--font-mono);color:var(--ink-800)')}>{v.listCount}</span> 个</span>
                   {v.hasLf && (
-                    <div onClick={v.clearLf} style={s('display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:9999px;background:var(--csop-blue-50);font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-100)')}>清除筛选<span style={s('font:400 12px/1 var(--font-cjk)')}>✕</span></div>
+                    <div onClick={v.clearLf} style={s('display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:var(--radius-pill);background:var(--csop-blue-50);font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-100)')}>清除筛选<span style={s('font:400 12px/1 var(--font-cjk)')}>✕</span></div>
                   )}
                 </div>
               </div>
@@ -521,7 +502,7 @@ class OfficialActivity extends React.Component {
                           <div title={r.full} style={s('margin-top:2px;font:400 12px/1.4 var(--font-cjk);color:var(--ink-400);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{r.full}</div>
                         </td>
                         <td style={s('padding:11px 6px;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
-                          <span style={s(`padding:2px 7px;border-radius:9999px;background:${r.tbg};font:600 12px/1.6 var(--font-cjk);color:${r.tfg}`)}>{r.type}</span>
+                          <span style={s(`padding:2px 7px;border-radius:var(--radius-pill);background:${r.tbg};font:600 12px/1.6 var(--font-cjk);color:${r.tfg}`)}>{r.type}</span>
                         </td>
                         <td style={s('padding:11px 6px;border-bottom:1px solid var(--ink-100)')}>
                           <span style={s('display:inline-flex;align-items:center;gap:7px')}>
@@ -541,7 +522,7 @@ class OfficialActivity extends React.Component {
                           </div>
                         </td>
                         <td style={s('padding:11px 16px 11px 6px;text-align:right;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
-                          <a href={r.url} target="_blank" rel="noopener" onClick={r.stop} style={s('display:inline-flex;align-items:center;padding:4px 9px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>主页 ↗</a>
+                          <a href={r.url} target="_blank" rel="noopener" onClick={r.stop} style={s('display:inline-flex;align-items:center;padding:4px 9px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>主页 ↗</a>
                         </td>
                       </tr>
                     ))}
@@ -551,7 +532,7 @@ class OfficialActivity extends React.Component {
             </div>
 
             <div style={s('display:flex;flex-direction:column;gap:18px;min-width:0')}>
-              <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);padding:16px 20px 14px;flex:1')}>
+              <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);padding:16px 20px 14px;flex:1')}>
                 <div style={s('font:600 18px/1.3 var(--font-cjk);margin-bottom:4px')}>发行商官号发布强度 Top 8</div>
                 <div style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500);margin-bottom:10px')}>仅统计发行商官号 · 篇数 / 互动 · 点击筛选发帖流</div>
                 {v.topIssuers.map((t) => (
@@ -566,12 +547,12 @@ class OfficialActivity extends React.Component {
             </div>
           </div>
 
-          <div ref={v.feedRef} style={s('background:#fff;border:1px solid var(--border-1);border-radius:8px;box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06)')}>
+          <div ref={v.feedRef} style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06)')}>
             <div style={s('display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 20px;border-bottom:1px solid var(--border-1)')}>
               <div style={s('font:600 18px/1.3 var(--font-cjk)')}>官号发帖流</div>
               <div style={s('flex:none;display:flex;align-items:center;gap:8px')}>
                 <span style={s('font:600 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>排序</span>
-                <div style={s('display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden')}>
+                <div style={s('display:flex;border:1px solid var(--border-2);border-radius:var(--radius-control);overflow:hidden')}>
                   {v.feedSorts.map((f) => (
                     <div key={f.label} onClick={f.go} style={s(`padding:5px 11px;font:${f.fw} 13px/1.4 var(--font-cjk);color:${f.fg};background:${f.bg};cursor:pointer;border-right:1px solid var(--border-1)`)}>{f.label}</div>
                   ))}
@@ -579,21 +560,21 @@ class OfficialActivity extends React.Component {
               </div>
             </div>
             <div style={s('display:flex;align-items:center;gap:10px;padding:10px 20px;border-bottom:1px solid var(--border-1);background:var(--canvas);flex-wrap:wrap')}>
-              <input type="text" value={v.fq} onChange={v.setFq} placeholder="搜产品代码 / 名称 / 官号 / 摘要关键词" style={s(`flex:none;width:290px;height:30px;box-sizing:border-box;padding:0 10px;border:1px solid ${v.fqBc};border-radius:6px;background:#fff;font:400 13px/1.4 var(--font-cjk);color:var(--ink-800);outline:none`)} className={focus('border-color:var(--csop-blue-600);box-shadow:0 0 0 2px var(--csop-blue-100)')} />
+              <input type="text" value={v.fq} onChange={v.setFq} placeholder="搜产品代码 / 名称 / 官号 / 摘要关键词" style={s(`flex:none;width:290px;height:30px;box-sizing:border-box;padding:0 10px;border:1px solid ${v.fqBc};border-radius:var(--radius-control);background:#fff;font:400 13px/1.4 var(--font-cjk);color:var(--ink-800);outline:none`)} className={focus('border-color:var(--csop-blue-600);box-shadow:0 0 0 2px var(--csop-blue-100)')} />
               <div style={s('position:relative;flex:none')}>
-                <div onClick={v.acctToggle} style={s(`display:flex;align-items:center;gap:8px;height:30px;box-sizing:border-box;padding:0 11px;border:1px solid ${v.acctBc};border-radius:6px;background:${v.acctBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
+                <div onClick={v.acctToggle} style={s(`display:flex;align-items:center;gap:8px;height:30px;box-sizing:border-box;padding:0 11px;border:1px solid ${v.acctBc};border-radius:var(--radius-control);background:${v.acctBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
                   <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>官号</span>
                   <span style={s('font:600 13px/1.4 var(--font-cjk);color:var(--csop-blue-700)')}>{v.acctLabel}</span>
                   <span style={s('font:400 9px/1 var(--font-cjk);color:var(--ink-400)')}>{v.acctCaret}</span>
                 </div>
                 {v.acctOpen && (
-                  <div onMouseLeave={v.acctClose} style={s('position:absolute;left:0;top:36px;z-index:45;width:340px;max-height:342px;overflow-y:auto;background:#fff;border:1px solid var(--border-2);border-radius:8px;box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
+                  <div onMouseLeave={v.acctClose} style={s('position:absolute;left:0;top:36px;z-index:45;width:340px;max-height:342px;overflow-y:auto;background:#fff;border:1px solid var(--border-2);border-radius:var(--radius-card);box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
                     <div style={s('padding:7px 12px;border-bottom:1px solid var(--border-1);background:var(--canvas);font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>{v.acctMenuNote}</div>
                     {v.acctMenu.map((m) => (
                       <div key={m.key} onClick={m.go} style={s(`display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--ink-100);background:${m.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
                         <span style={s('flex:none;width:10px;font:600 12px/1.3 var(--font-cjk);color:var(--csop-blue-600)')}>{m.tick}</span>
                         <span style={s('flex:1;min-width:0;font:500 13px/1.4 var(--font-cjk);color:var(--ink-800);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{m.name}</span>
-                        <span style={s(`flex:none;padding:1px 7px;border-radius:9999px;background:${m.tbg};font:600 11px/1.5 var(--font-cjk);color:${m.tfg}`)}>{m.type}</span>
+                        <span style={s(`flex:none;padding:1px 7px;border-radius:var(--radius-pill);background:${m.tbg};font:600 11px/1.5 var(--font-cjk);color:${m.tfg}`)}>{m.type}</span>
                         <span style={s('flex:none;font:500 12px/1.3 var(--font-mono);color:var(--ink-500)')}>{m.n} 篇</span>
                       </div>
                     ))}
@@ -601,15 +582,15 @@ class OfficialActivity extends React.Component {
                 )}
               </div>
               <div style={s('position:relative;flex:none')}>
-                <div onClick={v.prodToggle} style={s(`display:flex;align-items:center;gap:8px;height:30px;box-sizing:border-box;padding:0 11px;border:1px solid ${v.prodBc};border-radius:6px;background:${v.prodBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
+                <div onClick={v.prodToggle} style={s(`display:flex;align-items:center;gap:8px;height:30px;box-sizing:border-box;padding:0 11px;border:1px solid ${v.prodBc};border-radius:var(--radius-control);background:${v.prodBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
                   <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>产品</span>
                   <span style={s('font:600 13px/1.4 var(--font-mono);color:var(--csop-blue-700)')}>{v.prodLabel}</span>
                   <span style={s('font:400 9px/1 var(--font-cjk);color:var(--ink-400)')}>{v.prodCaret}</span>
                 </div>
                 {v.prodOpen && (
-                  <div onMouseLeave={v.prodClose} style={s('position:absolute;left:0;top:36px;z-index:45;width:400px;max-height:400px;display:flex;flex-direction:column;background:#fff;border:1px solid var(--border-2);border-radius:8px;box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
+                  <div onMouseLeave={v.prodClose} style={s('position:absolute;left:0;top:36px;z-index:45;width:400px;max-height:400px;display:flex;flex-direction:column;background:#fff;border:1px solid var(--border-2);border-radius:var(--radius-card);box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
                     <div style={s('flex:none;padding:9px 12px 8px;border-bottom:1px solid var(--border-1);background:var(--canvas)')}>
-                      <input type="text" value={v.prodQ} onChange={v.setProdQ} placeholder="输入代码或名称，即时过滤" style={s('width:100%;height:28px;box-sizing:border-box;padding:0 9px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:400 13px/1.4 var(--font-cjk);color:var(--ink-800);outline:none')} className={focus('border-color:var(--csop-blue-600);box-shadow:0 0 0 2px var(--csop-blue-100)')} />
+                      <input type="text" value={v.prodQ} onChange={v.setProdQ} placeholder="输入代码或名称，即时过滤" style={s('width:100%;height:28px;box-sizing:border-box;padding:0 9px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:400 13px/1.4 var(--font-cjk);color:var(--ink-800);outline:none')} className={focus('border-color:var(--csop-blue-600);box-shadow:0 0 0 2px var(--csop-blue-100)')} />
                       <div style={s('margin-top:6px;font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>{v.prodMenuNote}</div>
                     </div>
                     <div style={s('flex:1;min-height:0;overflow-y:auto')}>
@@ -617,7 +598,7 @@ class OfficialActivity extends React.Component {
                         <div key={m.key} onClick={m.go} style={s(`display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--ink-100);background:${m.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
                           <span style={s('flex:none;width:10px;font:600 12px/1.3 var(--font-cjk);color:var(--csop-blue-600)')}>{m.tick}</span>
                           <span style={s('flex:none;width:46px;font:600 14px/1.3 var(--font-mono);color:var(--ink-900)')}>{m.code}</span>
-                          <span style={s(`flex:none;padding:1px 6px;border-radius:9999px;background:${m.obg};font:600 11px/1.5 var(--font-cjk);color:${m.ofg}`)}>{m.own}</span>
+                          <span style={s(`flex:none;padding:1px 6px;border-radius:var(--radius-pill);background:${m.obg};font:600 11px/1.5 var(--font-cjk);color:${m.ofg}`)}>{m.own}</span>
                           <span style={s('flex:1;min-width:0;font:400 13px/1.4 var(--font-cjk);color:var(--ink-600);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{m.name}</span>
                           <span style={s('flex:none;font:500 12px/1.3 var(--font-cjk);color:var(--ink-500)')}>{m.n} 篇</span>
                         </div>
@@ -630,13 +611,13 @@ class OfficialActivity extends React.Component {
                 )}
               </div>
               <div style={s('position:relative;flex:none')}>
-                <div onClick={v.typeToggle} style={s(`display:flex;align-items:center;gap:8px;height:30px;box-sizing:border-box;padding:0 11px;border:1px solid ${v.typeBc};border-radius:6px;background:${v.typeBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
+                <div onClick={v.typeToggle} style={s(`display:flex;align-items:center;gap:8px;height:30px;box-sizing:border-box;padding:0 11px;border:1px solid ${v.typeBc};border-radius:var(--radius-control);background:${v.typeBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
                   <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>类型</span>
                   <span style={s('font:600 13px/1.4 var(--font-cjk);color:var(--csop-blue-700)')}>{v.typeLabel}</span>
                   <span style={s('font:400 9px/1 var(--font-cjk);color:var(--ink-400)')}>{v.typeCaret}</span>
                 </div>
                 {v.typeOpen && (
-                  <div onMouseLeave={v.typeClose} style={s('position:absolute;left:0;top:36px;z-index:45;width:372px;background:#fff;border:1px solid var(--border-2);border-radius:8px;box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
+                  <div onMouseLeave={v.typeClose} style={s('position:absolute;left:0;top:36px;z-index:45;width:372px;background:#fff;border:1px solid var(--border-2);border-radius:var(--radius-card);box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
                     <div style={s('display:flex;align-items:center;justify-content:space-between;padding:7px 12px;border-bottom:1px solid var(--border-1);background:var(--canvas);font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>
                       <span>多选 · AI 判定的帖子类型</span>
                       <span onClick={v.typeAll} style={s('font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);cursor:pointer')}>清除选择</span>
@@ -647,7 +628,7 @@ class OfficialActivity extends React.Component {
                     {v.typeMenu.map((m) => (
                       <div key={m.key} onClick={m.go} style={s(`display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--ink-100);background:${m.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
                         <span style={s(`flex:none;width:14px;height:14px;box-sizing:border-box;border:1px solid ${m.boxBc};border-radius:3px;background:${m.boxBg};display:flex;align-items:center;justify-content:center;font:600 10px/1 var(--font-cjk);color:#fff`)}>{m.tick}</span>
-                        <span style={s(`flex:none;width:68px;padding:1px 8px;box-sizing:border-box;border-radius:4px;background:${m.tbg};font:600 12px/1.6 var(--font-cjk);color:${m.tfg};text-align:center;white-space:nowrap`)}>{m.label}</span>
+                        <span style={s(`flex:none;width:68px;padding:1px 8px;box-sizing:border-box;border-radius:var(--radius-small);background:${m.tbg};font:600 12px/1.6 var(--font-cjk);color:${m.tfg};text-align:center;white-space:nowrap`)}>{m.label}</span>
                         <span style={s('flex:1;min-width:0;font:400 12px/1.4 var(--font-cjk);color:var(--ink-500);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{m.def}</span>
                         <span style={s('flex:none;font:500 12px/1.3 var(--font-mono);color:var(--ink-500)')}>{m.n} 篇</span>
                       </div>
@@ -657,7 +638,7 @@ class OfficialActivity extends React.Component {
               </div>
               <div style={s('flex:none;display:flex;align-items:center;gap:7px')}>
                 <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>阵营</span>
-                <div style={s('display:flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden;background:#fff')}>
+                <div style={s('display:flex;border:1px solid var(--border-2);border-radius:var(--radius-control);overflow:hidden;background:#fff')}>
                   {v.camps.map((f) => (
                     <div key={f.label} onClick={f.go} style={s(`padding:5px 11px;font:${f.fw} 13px/1.4 var(--font-cjk);color:${f.fg};background:${f.bg};cursor:pointer;border-right:1px solid var(--border-1)`)}>{f.label}</div>
                   ))}
@@ -666,7 +647,7 @@ class OfficialActivity extends React.Component {
               <div style={s('margin-left:auto;flex:none;display:flex;align-items:center;gap:12px')}>
                 <span style={s('font:500 13px/1.4 var(--font-cjk);color:var(--ink-500)')}><span style={s('font:600 14px/1 var(--font-mono);color:var(--ink-800)')}>{v.feedCount}</span> 篇</span>
                 {v.hasFf && (
-                  <div onClick={v.clearFf} style={s('display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:9999px;background:var(--csop-blue-50);font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-100)')}>清除筛选<span style={s('font:400 12px/1 var(--font-cjk)')}>✕</span></div>
+                  <div onClick={v.clearFf} style={s('display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:var(--radius-pill);background:var(--csop-blue-50);font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-100)')}>清除筛选<span style={s('font:400 12px/1 var(--font-cjk)')}>✕</span></div>
                 )}
               </div>
             </div>
@@ -679,7 +660,7 @@ class OfficialActivity extends React.Component {
                 <span style={s('font:600 13px/1.4 var(--font-mono)')}>{v.srcCode}</span>
                 <span>{v.srcName}</span>
                 <span style={s('color:var(--ink-500)')}>· 当前日期范围 {v.rangeFrom} → {v.rangeTo} · {v.feedCount} 篇</span>
-                <span onClick={v.clearSrc} style={s('margin-left:auto;display:flex;align-items:center;gap:6px;padding:3px 10px;border-radius:9999px;border:1px solid var(--csop-blue-200);background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-100)')}>清除 <span style={s('font:400 11px/1 var(--font-cjk)')}>✕</span></span>
+                <span onClick={v.clearSrc} style={s('margin-left:auto;display:flex;align-items:center;gap:6px;padding:3px 10px;border-radius:var(--radius-pill);border:1px solid var(--csop-blue-200);background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-700);cursor:pointer')} className={hover('background:var(--csop-blue-100)')}>清除 <span style={s('font:400 11px/1 var(--font-cjk)')}>✕</span></span>
               </div>
             )}
             {v.feedEmpty && (
@@ -687,24 +668,24 @@ class OfficialActivity extends React.Component {
             )}
             <div style={s(`display:grid;grid-template-columns:repeat(${v.feedCols},minmax(0,1fr));gap:14px;padding:18px 20px 20px`)}>
               {v.cards.map((c) => (
-                <div key={c.key} style={s('border:1px solid var(--border-1);border-radius:8px;background:#fff;display:flex;flex-direction:column;min-width:0')}>
+                <div key={c.key} style={s('border:1px solid var(--border-1);border-radius:var(--radius-card);background:#fff;display:flex;flex-direction:column;min-width:0')}>
                   <div style={s('display:flex;align-items:center;gap:8px;padding:12px 14px 0;flex-wrap:wrap')}>
                     <span style={s('font:600 14px/1.4 var(--font-cjk);color:var(--ink-900)')}>{c.account}</span>
-                    <span style={s(`padding:1px 8px;border-radius:9999px;background:${c.atBg};font:600 11px/1.6 var(--font-cjk);color:${c.atFg};white-space:nowrap`)}>{c.accountType}</span>
+                    <span style={s(`padding:1px 8px;border-radius:var(--radius-pill);background:${c.atBg};font:600 11px/1.6 var(--font-cjk);color:${c.atFg};white-space:nowrap`)}>{c.accountType}</span>
                     <span style={s('margin-left:auto;font:500 12px/1.4 var(--font-mono);color:var(--ink-400);white-space:nowrap')}>{c.time}</span>
                   </div>
                   <div style={s('display:flex;align-items:center;gap:6px;padding:9px 14px 0;flex-wrap:wrap')}>
-                    <span style={s(`padding:2px 8px;border-radius:4px;background:${c.tbg};font:600 12px/1.6 var(--font-cjk);color:${c.tfg};white-space:nowrap`)}>{c.type}</span>
+                    <span style={s(`padding:2px 8px;border-radius:var(--radius-small);background:${c.tbg};font:600 12px/1.6 var(--font-cjk);color:${c.tfg};white-space:nowrap`)}>{c.type}</span>
                     {c.hasDir && (
-                      <span title="操作方向 · AI 判定" style={s(`padding:2px 8px;border-radius:4px;background:${c.dbg};font:600 12px/1.6 var(--font-cjk);color:${c.dfg};white-space:nowrap`)}>{c.dir}</span>
+                      <span title="操作方向 · AI 判定" style={s(`padding:2px 8px;border-radius:var(--radius-small);background:${c.dbg};font:600 12px/1.6 var(--font-cjk);color:${c.dfg};white-space:nowrap`)}>{c.dir}</span>
                     )}
                     {/* 徽章文案由 `review_state` 决定（ADR-0019 §2），逐字取自 PRD §3.9。
                         置信度不再跟在后面：它是模型自报的数，不是「有没有人看过」的事实。 */}
                     {c.review && (
-                      <span style={s('padding:0 6px;border-radius:9999px;background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500)')}>{c.review}</span>
+                      <span style={s('padding:0 6px;border-radius:var(--radius-pill);background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500)')}>{c.review}</span>
                     )}
                     {c.camps.map((k) => (
-                      <span key={k.label} style={s(`padding:2px 8px;border-radius:9999px;background:${k.bg};font:600 12px/1.5 var(--font-cjk);color:${k.fg}`)}>{k.label}</span>
+                      <span key={k.label} style={s(`padding:2px 8px;border-radius:var(--radius-pill);background:${k.bg};font:600 12px/1.5 var(--font-cjk);color:${k.fg}`)}>{k.label}</span>
                     ))}
                   </div>
                   <div style={s('padding:10px 14px 0;font:400 15px/1.6 var(--font-cjk);color:var(--ink-900);text-wrap:pretty')}>{c.summary}</div>
@@ -717,24 +698,24 @@ class OfficialActivity extends React.Component {
                   {c.open && (
                     <>
                       {c.hasText ? (
-                        <div style={s('margin:10px 14px 0;padding:10px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-700);text-wrap:pretty')}>
+                        <div style={s('margin:10px 14px 0;padding:10px 12px;border:1px solid var(--border-1);border-radius:var(--radius-control);background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-700);text-wrap:pretty')}>
                           {c.sentences.map((q, i) => <span key={i} style={s(`background:${q.bg};box-shadow:${q.sh};border-radius:2px`)}>{q.text}</span>)}
                         </div>
                       ) : (
-                        <div style={s('margin:10px 14px 0;padding:10px 12px;border:1px solid var(--border-1);border-radius:6px;background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>原文暂不可用：正文分句尚未生成。</div>
+                        <div style={s('margin:10px 14px 0;padding:10px 12px;border:1px solid var(--border-1);border-radius:var(--radius-control);background:var(--canvas);font:400 13px/1.8 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>原文暂不可用：正文分句尚未生成。</div>
                       )}
                       <div style={s('padding:5px 14px 0;font:400 12px/1.5 var(--font-cjk);color:var(--ink-400)')}>类型置信度 {c.conf}{c.evidenceNote}</div>
                     </>
                   )}
                   <div style={s('display:flex;align-items:center;gap:6px;padding:10px 14px 0;flex-wrap:wrap')}>
                     {c.mentioned.map((m) => (
-                      <span key={m.code} title={m.title} style={s(`display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:9999px;background:${m.bg};font:600 12px/1.5 var(--font-mono);color:${m.fg};white-space:nowrap`)}>{m.code}<span style={s('font:400 11px/1.4 var(--font-cjk);opacity:0.85')}>{m.short}</span></span>
+                      <span key={m.code} title={m.title} style={s(`display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:var(--radius-pill);background:${m.bg};font:600 12px/1.5 var(--font-mono);color:${m.fg};white-space:nowrap`)}>{m.code}<span style={s('font:400 11px/1.4 var(--font-cjk);opacity:0.85')}>{m.short}</span></span>
                     ))}
-                    {c.attributionEmpty && <span title={c.attributionTitle} style={s('display:inline-flex;align-items:center;padding:2px 9px;border-radius:9999px;background:var(--ink-100);font:500 12px/1.5 var(--font-cjk);color:var(--ink-500)')}>未归属产品</span>}
+                    {c.attributionEmpty && <span title={c.attributionTitle} style={s('display:inline-flex;align-items:center;padding:2px 9px;border-radius:var(--radius-pill);background:var(--ink-100);font:500 12px/1.5 var(--font-cjk);color:var(--ink-500)')}>未归属产品</span>}
                   </div>
                   <div style={s('display:flex;align-items:center;gap:10px;margin:12px 0 0;padding:10px 14px 12px;border-top:1px solid var(--ink-100)')}>
                     <span style={s('font:500 13px/1.4 var(--font-mono);color:var(--ink-600);white-space:nowrap')}>赞 {c.likes} · 评 {c.comments} · 转 {c.shares}</span>
-                    <span onClick={c.toggle} style={s(`margin-left:auto;display:inline-flex;align-items:center;padding:3px 10px;border:1px solid ${c.linkBc};border-radius:6px;background:${c.linkBg};font:500 12px/1.4 var(--font-cjk);color:${c.linkFg};cursor:pointer;white-space:nowrap`)} className={hover('background:var(--csop-blue-50)')}>{c.openLabel}</span>
+                    <span onClick={c.toggle} style={s(`margin-left:auto;display:inline-flex;align-items:center;padding:3px 10px;border:1px solid ${c.linkBc};border-radius:var(--radius-control);background:${c.linkBg};font:500 12px/1.4 var(--font-cjk);color:${c.linkFg};cursor:pointer;white-space:nowrap`)} className={hover('background:var(--csop-blue-50)')}>{c.openLabel}</span>
                   </div>
                 </div>
               ))}
@@ -742,7 +723,7 @@ class OfficialActivity extends React.Component {
             {v.hasMore && (
               <div style={s('display:flex;align-items:center;justify-content:center;gap:14px;padding:4px 20px 20px')}>
                 <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-400)')}>已显示 {v.shownCount} / {v.feedCount} 篇</span>
-                <div onClick={v.loadMore} style={s('display:flex;align-items:center;padding:8px 18px;border:1px solid var(--border-2);border-radius:6px;background:#fff;font:500 14px/1.4 var(--font-cjk);color:var(--csop-blue-600);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>再看 {v.pageSize} 篇</div>
+                <div onClick={v.loadMore} style={s('display:flex;align-items:center;padding:8px 18px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 14px/1.4 var(--font-cjk);color:var(--csop-blue-600);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>再看 {v.pageSize} 篇</div>
               </div>
             )}
           </div>

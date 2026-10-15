@@ -5,10 +5,9 @@ import { s, hover } from '../../lib/dc'
 export default function ProductTable({ v }) {
   return (
     <div style={s('flex:1;min-width:0;box-sizing:border-box;display:flex;flex-direction:column')}>
-      <div style={s('flex:none;display:flex;align-items:center;gap:10px;height:44px;padding:0 14px;border-bottom:1px solid var(--border-1)')}>
+      <div style={s('flex:none;display:flex;align-items:center;gap:9px;height:38px;padding:0 14px;border-bottom:1px solid var(--border-1)')}>
         <span style={s('flex:none;font:600 14px/1.3 var(--font-cjk);color:var(--ink-900)')}>产品榜单</span>
-        <span style={s('flex:none;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>{v.boardNote}</span>
-        <span style={s('margin-left:auto;min-width:0;text-align:right;font:600 12px/1.4 var(--font-cjk);color:var(--ink-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>热度＝筛后评论量＋0.3×点赞＋转发 · 点表头排序</span>
+        <span style={s('min-width:0;font:400 11px/1.4 var(--font-cjk);color:var(--ink-500);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{v.boardHeaderNote} · 点表头排序</span>
       </div>
       <div style={s('flex:none;display:flex;align-items:center;gap:8px;height:40px;padding:0 14px;background:var(--canvas-alt);border-bottom:1px solid var(--border-1)')}>
         <span style={s('flex:none;width:36px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-800)')}>序号</span>
@@ -19,7 +18,7 @@ export default function ProductTable({ v }) {
         <div onClick={v.sortHeat.go} style={s(`flex:none;width:72px;display:flex;align-items:center;justify-content:flex-end;gap:3px;cursor:pointer;font:${v.sortHeat.fw} 14px/1.4 var(--font-cjk);color:${v.sortHeat.fg}`)} className={hover('color:var(--csop-blue-600)')}>讨论热度<span style={s('font:600 9px/1 var(--font-mono)')}>{v.sortHeat.caret}</span></div>
         <div onClick={v.sortAtt.go} style={s(`flex:none;width:120px;display:flex;align-items:center;gap:3px;cursor:pointer;font:${v.sortAtt.fw} 14px/1.4 var(--font-cjk);color:${v.sortAtt.fg}`)} className={hover('color:var(--csop-blue-600)')}>正面 ／ 负面<span style={s('font:600 9px/1 var(--font-mono)')}>{v.sortAtt.caret}</span></div>
         <div onClick={v.sortNeg.go} style={s(`flex:none;width:48px;display:flex;align-items:center;justify-content:flex-end;gap:3px;cursor:pointer;font:${v.sortNeg.fw} 14px/1.4 var(--font-cjk);color:${v.sortNeg.fg}`)} className={hover('color:var(--csop-blue-600)')}>舆情<span style={s('font:600 9px/1 var(--font-mono)')}>{v.sortNeg.caret}</span></div>
-        <span title={v.hotRule} style={s('flex:1.3;min-width:220px;display:flex;align-items:center;gap:6px;padding-left:10px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-800);white-space:nowrap')}>热议总结<span style={s('padding:0 6px;border-radius:9999px;background:var(--csop-blue-50);font:500 11px/1.6 var(--font-cjk);color:var(--csop-blue-700)')}>AI 生成</span></span>
+        <span title={v.hotRule} style={s('flex:1.3;min-width:220px;display:flex;align-items:center;gap:6px;padding-left:10px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-800);white-space:nowrap')}>热议总结<span style={s('padding:0 6px;border-radius:var(--radius-pill);background:var(--csop-blue-50);font:500 11px/1.6 var(--font-cjk);color:var(--csop-blue-700)')}>AI 生成</span></span>
       </div>
       <div style={s(`flex:none;height:540px;overflow-y:${v.listAll ? 'auto' : 'hidden'}`)}>
         {v.rows.map((r) => (
@@ -68,7 +67,7 @@ export default function ProductTable({ v }) {
             </div>
             <span style={s('flex:none;width:48px;display:flex;justify-content:flex-end')}>
               {r.alert && (
-                <span title="可归类为需关注问题的内容条数" style={s('padding:1px 7px;border-radius:9999px;background:var(--negative-100);font:600 12px/1.6 var(--font-mono);color:var(--negative-700)')}>{r.alertN}</span>
+                <span title="可归类为需关注问题的内容条数" style={s('padding:1px 7px;border-radius:var(--radius-pill);background:var(--negative-100);font:600 12px/1.6 var(--font-mono);color:var(--negative-700)')}>{r.alertN}</span>
               )}
               {r.alertNa && (
                 <span title="舆情条数暂不可用：该产品尚未做负面类别标注" style={s('font:400 11px/1.4 var(--font-cjk);color:var(--ink-400);white-space:nowrap')}>暂不可用</span>

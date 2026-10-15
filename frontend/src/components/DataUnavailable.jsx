@@ -15,7 +15,7 @@ export default function DataUnavailable({ screenLabel, reason }) {
       role="status"
       style={s('width:100%;min-width:1200px;min-height:100vh;box-sizing:border-box;background:var(--canvas);font-family:var(--font-cjk);color:var(--ink-900);font-size:14px;padding:24px')}
     >
-      <div style={s('padding:18px 20px;border:1px dashed var(--warning-600);border-radius:8px;background:var(--warning-100);color:var(--warning-700);font:500 14px/1.7 var(--font-cjk)')}>
+      <div style={s('padding:18px 20px;border:1px dashed var(--warning-600);border-radius:var(--radius-card);background:var(--warning-100);color:var(--warning-700);font:500 14px/1.7 var(--font-cjk)')}>
         <div style={s('font:600 18px/1.4 var(--font-cjk);margin-bottom:4px')}>数据暂不可用</div>
         <div>{reason || '父帖筛选数据尚未完成回填或当前配置版本尚未就绪。完成校验并发布 readiness 后，本页会恢复显示。'}</div>
       </div>

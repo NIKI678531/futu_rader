@@ -4,7 +4,7 @@ import { s } from '../../lib/dc'
    it is fixed to the viewport and never takes pointer events. */
 export default function Tooltip({ v }) {
   return (
-    <div style={s(`position:fixed;left:${v.tipX}px;top:${v.tipY}px;transform:translate(-50%,-100%);z-index:80;pointer-events:none;background:var(--csop-navy-900);color:#fff;border-radius:6px;padding:10px 12px;box-shadow:0 6px 20px rgba(14,42,82,0.28);min-width:186px`)}>
+    <div style={s(`position:fixed;left:${v.tipX}px;top:${v.tipY}px;transform:translate(-50%,-100%);z-index:80;pointer-events:none;background:var(--csop-navy-900);color:#fff;border-radius:var(--radius-control);padding:10px 12px;box-shadow:0 6px 20px rgba(14,42,82,0.28);min-width:186px`)}>
       <div style={s('font:600 13px/1.4 var(--font-mono);margin-bottom:8px;color:#fff')}>{v.tipTitle}</div>
       {v.tipRows.map((t) => (
         <div key={t.k} style={s('display:flex;align-items:center;justify-content:space-between;gap:18px;padding:2px 0')}>
