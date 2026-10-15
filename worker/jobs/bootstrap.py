@@ -1,10 +1,12 @@
-"""Publish the first complete data anchor before production services become ready.
+"""Publish the first usable data anchor before production services become ready.
 
 Schema migration deliberately does not invent data. A new production database
-therefore needs one real MarketInsight sync, bounded by a successful
-``comments_all`` receipt, before range APIs can answer honestly. Kubernetes
-runs this module after Alembic and retries the init container until the source
-can publish that anchor.
+therefore needs one real MarketInsight sync before range APIs can answer. A
+verified ``comments_all`` receipt remains authoritative when available. When
+the source has no receipt table, the normal sync publishes an explicitly
+unverified observed anchor and records partial product coverage. Kubernetes
+runs this module after Alembic and retries until either path publishes an
+anchor backed by actual facts.
 """
 
 from __future__ import annotations
@@ -35,7 +37,7 @@ def _anchor(engine) -> str | None:
 
 
 def ensure_anchor(engine, *, today: date | None = None, sync=None) -> dict:
-    """Run the normal source sync once when the target has no complete anchor."""
+    """Run the normal source sync once when the target has no usable anchor."""
 
     existing = _anchor(engine)
     if existing:

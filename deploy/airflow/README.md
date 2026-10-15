@@ -12,7 +12,10 @@ Source failures retain the previous active catalog and never delete products.
 
 `futu_radar_sync` subscribes to the Airflow Dataset
 `market-insight://futu-community`. It starts paused, permits only one active
-run, and retries failures twice. The producer must publish the Dataset only
+run, and retries failures twice. This exact-replay DAG is optional; the
+always-on worker can use intersection/observed-partial synchronization when
+MarketInsight has no receipt table. If this DAG is enabled, the producer must
+publish the Dataset only
 after committing a successful, complete `comments_all` receipt to
 `futu_comments_collection_runs`, with this event metadata:
 
@@ -44,8 +47,9 @@ counts and `completeThrough`, then perform one manually observed real sync.
 `futu_radar_ai_analysis` runs every day at 08:00 Asia/Hong_Kong and executes
 `python -m jobs.daily --now --drain` ([ADR-0031](../../docs/adr/0031-daily-full-refresh-single-queue.md)):
 
-1. sync MarketInsight through the latest completed `comments_all` receipt
-   (today's, or the previous evening's 19:30 run), so `meta_kv.anchor` advances;
+1. sync MarketInsight through the latest completed `comments_all` receipt when
+   available; otherwise the always-on worker path publishes an explicitly
+   unverified observed-partial anchor for the available product intersection;
 2. sync prices when `FMP_API_KEY` is present;
 3. enqueue `d1,d2,d7,d14,d30,mtd` (`requested_by=schedule`) and execute the
    queue inside the pod until it is empty.

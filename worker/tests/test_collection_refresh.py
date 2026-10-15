@@ -182,6 +182,38 @@ def test_incremental_pages_advance_data_max_ts_monotonically(tmp_path):
         )).scalar_one() == "2026-09-21 13:00:00"
 
 
+def test_source_without_receipts_publishes_observed_anchor_and_partial_scope(tmp_path):
+    target = engine(tmp_path)
+    item = feed_observation(1, datetime(2026, 9, 21, 6))
+    item.feed["posted_at"] = datetime(2026, 9, 21, 5)  # 13:00 HKT
+    source = MemorySourceAdapter({"feeds": [item]})
+    source.pool_codes = {"3033", "3408"}
+    source.available_pool_codes = frozenset({"3033"})
+    source.missing_pool_codes = ("3408",)
+    source.completion_receipts_available = False
+
+    result = FutuRefresh(
+        target,
+        source,
+        now=lambda: datetime(2026, 9, 22, 4),  # 12:00 HKT
+    ).sync(SyncRequest(run_id="best-effort-initial"))
+
+    assert result.complete_through is None
+    with target.connect() as conn:
+        values = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v)).all())
+        run = conn.execute(select(ingestion_runs)).mappings().one()
+    assert values["anchor"] == "2026-09-21"
+    assert values["source_observed_anchor"] == "2026-09-21"
+    assert values["source_anchor_mode"] == "observed_partial"
+    assert values["source_product_coverage"] == "partial"
+    assert values["source_pool_requested_count"] == "2"
+    assert values["source_pool_available_count"] == "1"
+    assert json.loads(values["source_missing_codes"]) == ["3408"]
+    assert "source_complete_through" not in values
+    assert run["source_kind"] == "partial"
+    assert run["complete_through"] is None
+
+
 def test_duplicate_feed_observation_cannot_change_its_original_section(tmp_path):
     target = engine(tmp_path)
     first_at = datetime(2026, 9, 20, 3, 0)
@@ -1496,6 +1528,63 @@ def test_market_insight_adapter_rejects_numeric_symbol_from_another_market(tmp_p
 
     with pytest.raises(SourceSchemaError, match="missing from source"):
         MarketInsightMySqlAdapter(source_engine, {"3033"})
+
+
+def test_market_insight_adapter_accepts_nonempty_product_intersection(tmp_path):
+    source_engine = receipt_source_engine(
+        tmp_path,
+        full_run_receipt(pool_codes=("3033", "3408")),
+    )
+
+    adapter = MarketInsightMySqlAdapter(source_engine, {"3033", "3408"})
+
+    assert adapter.pool_codes == {"3033", "3408"}
+    assert adapter.available_pool_codes == frozenset({"3033"})
+    assert adapter.missing_pool_codes == ("3408",)
+    assert adapter.pool_stock_ids == (1,)
+
+
+def test_market_insight_without_receipt_table_bootstraps_available_intersection(tmp_path):
+    source_engine = receipt_source_engine(tmp_path, full_run_receipt())
+    source_feeds = Table(
+        "futu_comments_feeds", MetaData(), autoload_with=source_engine
+    )
+    with source_engine.begin() as conn:
+        conn.exec_driver_sql("DROP TABLE futu_comments_collection_runs")
+        conn.execute(source_feeds.insert().values(
+            feed_id=1,
+            stock_id=1,
+            feed_type=1,
+            posted_at=datetime(2026, 10, 13, 4),
+            author_uid="u1",
+            feed_title="标题",
+            content_text="$03033.HK$ 正文",
+            like_count=1,
+            comment_count=0,
+            image_count=0,
+            raw_json=json.dumps({
+                "common": {"share_count": 0},
+                "comment": {"comment_items": [], "has_more": False},
+            }),
+            scraped_at=datetime(2026, 10, 14, 2),
+            detail_updated_at=datetime(2026, 10, 14, 2),
+        ))
+    adapter = MarketInsightMySqlAdapter(source_engine, {"3033", "3408"})
+    target = engine(tmp_path)
+
+    result = FutuRefresh(
+        target,
+        adapter,
+        now=lambda: datetime(2026, 10, 14, 4),
+    ).sync(SyncRequest(run_id="initial-without-receipt"))
+
+    assert result.complete_through is None
+    with target.connect() as conn:
+        values = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v)).all())
+        assert conn.execute(select(func.count()).select_from(feeds)).scalar_one() == 1
+    assert values["anchor"] == "2026-10-13"
+    assert values["source_anchor_mode"] == "observed_partial"
+    assert json.loads(values["source_missing_codes"]) == ["3408"]
 
 
 def test_configured_symbols_fingerprint_has_a_stable_cross_repository_format():

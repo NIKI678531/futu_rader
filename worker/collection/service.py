@@ -263,6 +263,26 @@ class FutuRefresh:
                 if not request.dry_run:
                     with self.target.begin() as conn:
                         complete, anchor_changed = self._advance_complete_through(conn, complete)
+                        observed_anchor = None
+                        if (
+                            complete is None
+                            and not targeted
+                            and not getattr(
+                                self.source, "completion_receipts_available", True
+                            )
+                        ):
+                            observed_anchor, observed_changed = self._advance_observed_anchor(conn)
+                            anchor_changed = anchor_changed or observed_changed
+                        self._publish_source_scope(
+                            conn,
+                            anchor_mode=(
+                                "receipt"
+                                if complete is not None
+                                else "observed_partial"
+                                if observed_anchor is not None
+                                else "unavailable"
+                            ),
+                        )
                         if anchor_changed:
                             last_revision = bump_revision(conn, "data")
                         if request.mode == "backfill" and not targeted:
@@ -606,6 +626,64 @@ class FutuRefresh:
                 _put_meta(conn, "anchor", candidate.isoformat())
                 _put_meta(conn, "anchor_ts", datetime.combine(candidate, time.max).replace(microsecond=0))
         return candidate, changed
+
+    def _advance_observed_anchor(self, conn):
+        """Publish a best-effort page anchor when the source has no receipt table.
+
+        The target still leaves ``source_complete_through`` and the ingestion
+        run's ``complete_through`` empty: this date means only that facts were
+        observed for the latest already-ended HKT day, not that every requested
+        product was collected completely.
+        """
+
+        raw = conn.execute(
+            select(meta_kv.c.v).where(meta_kv.c.k == "data_max_ts")
+        ).scalar_one_or_none()
+        if not raw:
+            return None, False
+        try:
+            observed_day = datetime.fromisoformat(str(raw)).date()
+        except ValueError:
+            return None, False
+        latest_ended_day = utc_naive_to_hkt(self.now()).date() - timedelta(days=1)
+        candidate = min(observed_day, latest_ended_day)
+        current_raw = conn.execute(
+            select(meta_kv.c.v).where(meta_kv.c.k == "anchor")
+        ).scalar_one_or_none()
+        try:
+            current = date.fromisoformat(str(current_raw)[:10]) if current_raw else None
+        except ValueError:
+            current = None
+        changed = current is None or candidate > current
+        if changed:
+            _put_meta(conn, "anchor", candidate.isoformat())
+            _put_meta(
+                conn,
+                "anchor_ts",
+                datetime.combine(candidate, time.max).replace(microsecond=0),
+            )
+        _put_meta(conn, "source_observed_anchor", candidate.isoformat())
+        return candidate, changed
+
+    def _publish_source_scope(self, conn, *, anchor_mode):
+        requested = set(getattr(self.source, "pool_codes", ()) or ())
+        if not requested:
+            return
+        available = set(
+            getattr(self.source, "available_pool_codes", requested) or ()
+        )
+        missing = sorted(
+            getattr(self.source, "missing_pool_codes", requested - available) or ()
+        )
+        _put_meta(conn, "source_pool_requested_count", len(requested))
+        _put_meta(conn, "source_pool_available_count", len(available))
+        _put_meta(conn, "source_missing_codes", _json(missing))
+        _put_meta(
+            conn,
+            "source_product_coverage",
+            "complete" if not missing else "partial",
+        )
+        _put_meta(conn, "source_anchor_mode", anchor_mode)
 
     @staticmethod
     def _coverage(values):

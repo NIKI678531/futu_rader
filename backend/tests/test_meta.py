@@ -6,9 +6,9 @@ CLAUDE.md 的铁律 1、2 就已经破了，测试必须先红。逐字来源 PR
 
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import delete, update
+from sqlalchemy import delete, insert, update
 
-from radar_db.schema import comments, feeds, ingestion_runs
+from radar_db.schema import comments, feeds, ingestion_runs, meta_kv
 
 # PRD §3.6 状态体系（六态，STATUS_LEGEND 逐字）
 STATUS_LEGEND = [
@@ -115,6 +115,41 @@ def test_successful_collection_run_exposes_coverage_counts_and_utc_timestamp(sql
         "platformCommentCount": 17,
         "parsedCommentCount": 4,
     }
+
+
+def test_partial_product_intersection_is_disclosed_without_claiming_completion(sql_provider):
+    finished = datetime(2026, 10, 14, 4, 15)
+    with sql_provider._engine.begin() as conn:
+        conn.execute(insert(ingestion_runs).values(
+            run_id="sync-partial",
+            source="market_insight",
+            source_run_id=None,
+            source_kind="partial",
+            status="succeeded",
+            started_at=finished - timedelta(minutes=5),
+            finished_at=finished,
+            complete_through=None,
+        ))
+        conn.execute(insert(meta_kv), [
+            {"k": "source_pool_requested_count", "v": "135"},
+            {"k": "source_pool_available_count", "v": "128"},
+            {"k": "source_missing_codes", "v": '["2843", "3408"]'},
+            {"k": "source_product_coverage", "v": "partial"},
+            {"k": "source_anchor_mode", "v": "observed_partial"},
+        ])
+    sql_provider.refresh()
+
+    collection = sql_provider.collection_metadata()
+
+    assert collection["freshness"] == "stale"
+    assert collection["sourceCompleteThrough"] is None
+    assert collection["lastSuccessfulSyncAt"] == "2026-10-14T04:15:00Z"
+    assert collection["sourceProductCoverage"] == "partial"
+    assert collection["requestedProductCount"] == 135
+    assert collection["availableProductCount"] == 128
+    assert collection["missingProductCodes"] == ["2843", "3408"]
+    assert collection["anchorMode"] == "observed_partial"
+    assert collection["completionVerified"] is False
 
 
 def test_latest_failed_collection_marks_previous_success_stale(sql_provider):

@@ -73,10 +73,12 @@ micro batch `1`。沿用代码默认：香港时间 08:00 全量刷新，13:00�
 3. 从现有安全配置填写本机 `.env.prd` 的五个机密字段，并确认对应生产权限。不要把文件提交。
 4. 从集群侧验证两台 RDS 的网络、MySQL 8、`utf8mb4`、时区和账号权限。
    应用账号需要运行及 Alembic 迁移的 DDL 权限，源账号只允许 SELECT。
-5. 确认应用库已有业务数据，或源库已有最近一次成功且完整的 `comments_all` 回执。
+5. 确认应用库已有业务数据，或 MarketInsight 至少包含一个当前产品池标的及其事实数据。
    迁移只创建表结构，不会把本地 SQLite 数据搬到 RDS；空库发布时，worker 的
-   `bootstrap-data` initContainer 会通过该回执执行首次同步并生成真实 `meta_kv.anchor`。
-   回执缺失、源库不可读或同步失败时 rollout 会保持未完成，不再把空库服务标为 Ready。
+   `bootstrap-data` initContainer 会执行首次同步并生成真实 `meta_kv.anchor`。源库存在
+   完整 `comments_all` 回执时采用其核实日期；没有可选回执表时，同步当前产品交集并根据
+   已观测事实生成 `observed_partial` 锚点，同时保留 `sourceCompleteThrough=null` 和缺失代码
+   清单。交集为空、源库不可读、没有任何事实或同步失败时 rollout 仍保持未完成。
    已有库必须核对 `alembic_version`，不允许未经核验直接 stamp；需要保留本地历史时仍须先按
    [数据库迁移说明](../radar_db/migrations/README.md)迁移，bootstrap 不替代历史搬迁。
 6. 确认出网可以访问配置的两个 AI 端点、FMP、Yahoo Finance 行情端点及系统 DNS。
@@ -153,8 +155,9 @@ kubectl -n ih rollout status deploy/ih-prd-remote-opinion-radar-webapp --timeout
 ```
 
 worker 的 initContainer 依次运行 `alembic upgrade head` 与 `jobs.bootstrap`。后者仅在
-`meta_kv.anchor` 缺失时调用正常 MarketInsight 同步；只有带完整回执的同步真正发布了 anchor
-才成功。任一步失败都不会启动调度器。不要在 API 或多个 worker 中并行迁移或首次同步。
+`meta_kv.anchor` 缺失时调用正常 MarketInsight 同步。完整回执优先发布核实 anchor；没有
+回执表时，非空产品交集的成功同步发布观测 anchor，并把产品覆盖与完成验证状态明确标为
+partial/unverified。任一步失败都不会启动调度器。不要在 API 或多个 worker 中并行迁移或首次同步。
 首次发布前应备份应用库；已有数据库不匹配时查看迁移日志并按实际版本处理，不能删除数据库
 或手工插入 anchor 绕过失败。
 

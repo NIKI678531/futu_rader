@@ -1,9 +1,11 @@
 # MarketInsight producer contract
 
-This folder is a hand-off contract, not a second collector. Apply
-`futu_comments_collection_runs.mysql` as an
-Alembic migration in the MarketInsight repository and add receipt writes to its
-existing `comments_all` DAG.
+This folder is an optional exact-completeness hand-off contract, not a second
+collector. Radar can run in observed-partial mode without this table. Apply
+`futu_comments_collection_runs.mysql` through an Alembic migration in the
+MarketInsight repository only when exact bounded replay and verified
+`sourceCompleteThrough` are required, then add receipt writes to the existing
+`comments_all` DAG.
 
 For every run:
 
