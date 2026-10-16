@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import DcLink from '../components/DcLink'
-import { loadAdminPipeline, runAdminAnalysis } from '../lib/adminApi'
+import {
+  loadAdminPipeline,
+  runAdminAnalysis,
+} from '../lib/adminApi'
 import '../styles/admin.css'
 
 const RANGES = ['d0', 'd1', 'd2', 'd7', 'd14', 'd30', 'mtd']
@@ -71,7 +74,9 @@ export default function Admin() {
         setError('')
       }
     } catch (reason) {
-      if (serial === requestSerial.current) setError(reason.message || '数据库状态读取失败')
+      if (serial === requestSerial.current) {
+        setError(reason.message || '数据库状态读取失败')
+      }
     } finally {
       if (!quiet && serial === requestSerial.current) setLoading(false)
     }
@@ -143,6 +148,7 @@ export default function Admin() {
       <div><p className="admin-eyebrow">FUTU RADAR / ADMIN</p><h1>数据链路管理</h1></div>
       <div className="admin-actions">
         <DcLink href="/product">查看产品页</DcLink>
+        <button className="is-secondary" onClick={() => refresh()} disabled={loading}>{loading ? '刷新中…' : '刷新状态'}</button>
       </div>
     </header>
 

@@ -31,6 +31,7 @@ COPY backend/core/ /app/backend/core/
 COPY backend/fixtures/demo/master.json /app/backend/fixtures/demo/master.json
 COPY backend/fixtures/product_catalog_additions.json /app/backend/fixtures/product_catalog_additions.json
 COPY deploy/runtime.py /app/deploy/runtime.py
+RUN chmod -R a+rX /app/backend /app/worker /app/radar_db /app/deploy
 
 WORKDIR /app/worker
 USER 10001:10001

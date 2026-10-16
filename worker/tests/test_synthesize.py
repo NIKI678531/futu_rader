@@ -19,6 +19,7 @@ from ai.schemas import SchemaError  # noqa: E402
 from jobs import synthesize  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
 from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config  # noqa: E402
+from radar_db.revisions import synthesis_generation_key  # noqa: E402
 from radar_db.schema import (  # noqa: E402
     annotation_runs,
     annotations,
@@ -64,12 +65,18 @@ class TestSynthSchemas:
                 {"c1"},
             )
 
-    def test_topic_summary_requires_two_to_four_grounded_sentences(self):
+    def test_topic_summary_allows_one_grounded_sentence_for_one_evidence(self):
+        parsed = synth.parse(
+            "topic_label",
+            {"title": "存储景气修复", "summary": "评论关注存储行业景气修复。", "evidence_ids": ["c1"]},
+            {"c1"},
+        )
+        assert parsed.summary == "评论关注存储行业景气修复。"
         with pytest.raises(SchemaError, match="2–4 句"):
             synth.parse(
                 "topic_label",
-                {"title": "存储景气修复", "summary": "评论关注存储行业景气修复。", "evidence_ids": ["c1"]},
-                {"c1"},
+                {"title": "存储景气修复", "summary": "评论关注存储行业景气修复。", "evidence_ids": ["c1", "c2"]},
+                {"c1", "c2"},
             )
         with pytest.raises(SchemaError, match="至少引用"):
             synth.parse(
@@ -228,6 +235,45 @@ def test_today_anchor_is_observed_and_never_joins_default_batch_ranges(engine):
     assert synthesize.resolve_anchor(engine, ["d0"]).isoformat() == "2026-08-26"
     with pytest.raises(ValueError, match="single range"):
         synthesize.resolve_anchor(engine, ["d0", "d1"])
+
+
+def test_missing_generations_treats_dirty_outputs_as_recovery_work(engine):
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv), [
+            {
+                "k": synthesis_generation_key(CODE, "d7", kind),
+                "v": "2026-08-25|fingerprint",
+            }
+            for kind in synthesize.KINDS
+        ])
+
+    assert synthesize.missing_generations(engine, [CODE], "d7", "2026-08-25") == []
+
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k=f"synth_dirty_{CODE}_d7", v="1"))
+
+    assert synthesize.missing_generations(engine, [CODE], "d7", "2026-08-25") == [
+        {"code": CODE, "kinds": list(synthesize.KINDS)}
+    ]
+
+
+def test_topic_fallback_is_grounded_and_marked_for_review():
+    value, evidence_ids, review = synthesize.Synthesizer._topic_fallback(
+        {"code": "7747", "name": "三星電子每日槓桿產品"},
+        [
+            {"id": "c1", "text": "三星電子公布新一代記憶體產品"},
+            {"id": "c2", "text": "評論關注記憶體需求與價格走勢"},
+            {"id": "c2", "text": "重複證據不應再次引用"},
+        ],
+    )
+
+    assert value["title"] == "三星電子每日槓桿產品动态"
+    assert value["summary"] == (
+        "原评论提到：三星電子公布新一代記憶體產品。"
+        "原评论提到：評論關注記憶體需求與價格走勢。"
+    )
+    assert value["evidence_ids"] == evidence_ids == ["c1", "c2"]
+    assert review == "needs_review"
 
 
 def test_7709_topic_payload_keeps_specific_comment_context_instead_of_short_direction_quote():

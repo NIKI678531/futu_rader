@@ -183,6 +183,9 @@ class MarketInsightMySqlAdapter:
     """Read-only adapter over the existing MarketInsight Futu tables."""
 
     source_id = "market_insight"
+    # d30 plus its immediately preceding benchmark needs 60 complete days.
+    # Two extra days absorb the partial source day and timezone boundary.
+    bootstrap_window_days = 62
 
     _required = {
         "futu_comments_stocks": {"stock_id", "ticker"},
@@ -290,6 +293,48 @@ class MarketInsightMySqlAdapter:
             raise SourceSchemaError(
                 "MarketInsight is missing required keyset indexes: " + ", ".join(gaps)
             )
+
+    def available_incremental_streams(self, requested=STREAMS) -> tuple[str, ...]:
+        """Return streams that can use bounded keyset reads on the live source.
+
+        A first import already reads each feed row's current text and embedded
+        comment snapshot through the ``feeds`` stream.  The detail and profile
+        streams enrich that snapshot, but neither is allowed to turn bootstrap
+        into an unindexed sort over the production source.  Keep SQLite test
+        snapshots unchanged: this guard is for the live MySQL seam, whose
+        source account is deliberately read-only and cannot create indexes.
+
+        The primary feeds stream is not optional.  Without its composite index
+        there are no facts from which a truthful data clock can be published.
+        """
+        streams = tuple(requested)
+        if self.engine.dialect.name != "mysql":
+            return streams
+
+        gaps = set(self.incremental_index_gaps())
+        requirements = {
+            "feeds": f"{self.feeds.name}(scraped_at,feed_id)",
+            "feed_details": f"{self.feeds.name}(detail_updated_at,feed_id)",
+            "users": f"{self.users.name}(scraped_at,user_id)",
+        }
+        primary_gap = requirements["feeds"]
+        if "feeds" in streams and primary_gap in gaps:
+            raise SourceSchemaError(
+                "MarketInsight is missing the required primary keyset index: "
+                + primary_gap
+            )
+        return tuple(
+            stream for stream in streams if requirements.get(stream) not in gaps
+        )
+
+    def bootstrap_cursor(self, stream: str, through: Cursor | None) -> Cursor | None:
+        """Bound an empty target's first scan to the full UI analysis horizon."""
+        if stream != "feeds" or through is None:
+            return None
+        return Cursor(
+            through.observed_at - timedelta(days=self.bootstrap_window_days),
+            0,
+        )
 
     def high_watermark(self, stream, through_source_run_id=None):
         table, timestamp_col, id_col = self._stream(stream)

@@ -44,6 +44,7 @@ from sqlalchemy import insert, select, update
 
 import clock
 from core.data_clock import analysis_range_anchor
+from core.top_products import analysis_products, parse_own_limit
 from radar_db import make_engine
 from radar_db.analysis_requests import (
     RANGE_PRIORITY,
@@ -58,6 +59,7 @@ log = logging.getLogger("worker.daily")
 
 HKT = ZoneInfo("Asia/Hong_Kong")
 DAILY_RANGES = ("d7", "d1", "d2")
+RECOVERY_RANGES = ("d0", *DAILY_RANGES)
 LAST_RUN_KEY = "ai_daily_last_run"
 INTRADAY_LAST_RUN_KEY = "ai_intraday_last_run"
 INTRADAY_LAST_SLOT_KEY = "ai_intraday_last_enqueued_slot"
@@ -136,9 +138,6 @@ def intraday_sync_step(at: datetime) -> dict:
                 "reason": "未配置 MARKET_INSIGHT_DATABASE_URL：日内增量同步已跳过"}
     slot = at.astimezone(HKT) if at.tzinfo is not None else at.replace(tzinfo=HKT)
     service = refresh._refresh()
-    require_indexes = getattr(service.source, "require_incremental_indexes", None)
-    if callable(require_indexes):
-        require_indexes()
     payload = refresh.sync_once(
         mode="incremental",
         run_id=f"intraday-{slot:%Y%m%d-%H}",
@@ -198,6 +197,125 @@ def intraday_price_step(engine, today: date) -> dict:
         intraday_start=today,
         force_intraday=True,
     )
+
+
+def recover_missing_analysis(engine=None, *, ranges=RECOVERY_RANGES) -> dict:
+    """Recreate short-range requests after bootstrap/restart when outputs are absent.
+
+    Published-generation markers cover generated text, low-sample results and
+    intentional empty results. ``enqueue`` makes this safe when a request for
+    the same range is already queued or running.
+    """
+
+    from jobs import synthesize
+
+    engine = engine or make_engine()
+    complete_anchor = _anchor(engine)
+    if complete_anchor is None:
+        return {
+            "status": "skipped",
+            "reason": "meta_kv 里没有 anchor",
+            "queued": [],
+        }
+
+    own_limit = parse_own_limit(os.getenv("AI_OWN_TOP_LIMIT"))
+    queued = []
+    complete = []
+    unavailable = []
+    for range_key in ranges:
+        effective_anchor = analysis_range_anchor(engine, range_key, complete_anchor)
+        if effective_anchor is None:
+            unavailable.append(range_key)
+            continue
+        codes = [
+            row["code"]
+            for row in analysis_products(engine, range_key, own_limit=own_limit)
+        ]
+        missing = synthesize.missing_generations(
+            engine,
+            codes,
+            range_key,
+            effective_anchor.isoformat(),
+        )
+        if not missing:
+            complete.append(range_key)
+            continue
+        request, created = enqueue(engine, range_key, requested_by="schedule")
+        queued.append({
+            "range": range_key,
+            "id": request["id"],
+            "created": created,
+            "missingProducts": len(missing),
+        })
+    return {
+        "status": "queued" if queued else "complete",
+        "anchor": complete_anchor.isoformat(),
+        "queued": queued,
+        "complete": complete,
+        "unavailable": unavailable,
+    }
+
+
+def recover_missing_prices(engine=None) -> dict:
+    """Fill products without a price-sync receipt covering the latest data day."""
+
+    if not os.getenv("FMP_API_KEY", "").strip():
+        return {"status": "skipped", "reason": "未配置 FMP_API_KEY", "missing": []}
+    from jobs import sync_prices
+    from market_data.fmp import FmpClient
+    from market_data.yahoo import YahooFinanceClient
+    from radar_db.schema import price_syncs
+
+    engine = engine or make_engine()
+    complete_anchor = _anchor(engine)
+    if complete_anchor is None:
+        return {"status": "skipped", "reason": "meta_kv 里没有 anchor", "missing": []}
+    observed = analysis_range_anchor(engine, "d0", complete_anchor)
+    through = observed or complete_anchor
+    codes = [product["code"] for product in load_products(engine=engine)]
+    through_text = through.isoformat()
+    intraday_from = through - timedelta(days=2)
+    with engine.connect() as conn:
+        receipts = conn.execute(
+            select(
+                price_syncs.c.code,
+                price_syncs.c.interval,
+                price_syncs.c.date_from,
+            ).where(
+                price_syncs.c.date_to >= through_text,
+            )
+        ).all()
+    intervals = {}
+    for code, interval, date_from in receipts:
+        required_from = intraday_from if interval == "30min" else through
+        if date.fromisoformat(str(date_from)[:10]) > required_from:
+            continue
+        intervals.setdefault(code, set()).add(interval)
+    missing = [code for code in codes if not {"1d", "30min"} <= intervals.get(code, set())]
+    if not missing:
+        return {
+            "status": "complete",
+            "through": through_text,
+            "products": len(codes),
+            "missing": [],
+        }
+    rows = sync_prices.sync(
+        engine,
+        FmpClient(),
+        missing,
+        through - timedelta(days=PRICE_LOOKBACK_DAYS),
+        through,
+        intraday_start=intraday_from,
+        fallback_client=YahooFinanceClient(),
+    )
+    return {
+        "status": "recovered",
+        "through": through_text,
+        "products": len(codes),
+        "missing": missing,
+        "ok": sum(row["status"] in ("ok", "reused") for row in rows),
+        "unavailable": sum(row["status"] == "unavailable" for row in rows),
+    }
 
 
 def run_daily(engine=None, *, ranges=DAILY_RANGES, sync=sync_step, prices=price_step) -> dict:

@@ -3,7 +3,7 @@ import test from 'node:test'
 
 const admin = await import('../src/lib/adminApi.js')
 
-test('pipeline reads one range without browser credentials', async () => {
+test('pipeline reads one range without a management token', async () => {
   let request
   global.fetch = async (url, options) => {
     request = { url, options }

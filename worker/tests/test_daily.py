@@ -77,6 +77,109 @@ def test_repeated_daily_run_reuses_active_requests():
     assert len(list_requests(engine)) == 3
 
 
+def test_startup_recovery_enqueues_only_short_ranges_with_missing_outputs(monkeypatch):
+    engine = _engine()
+    monkeypatch.setattr(
+        daily,
+        "analysis_products",
+        lambda _engine, _range, own_limit=None: [{"code": "3033"}],
+    )
+
+    def missing(_engine, _codes, range_key, anchor):
+        assert anchor == "2026-08-25"
+        return [{"code": "3033", "kinds": ["hot_summary"]}] if range_key != "d2" else []
+
+    monkeypatch.setattr("jobs.synthesize.missing_generations", missing)
+
+    report = daily.recover_missing_analysis(engine)
+    repeated = daily.recover_missing_analysis(engine)
+
+    assert [row["range"] for row in report["queued"]] == ["d7", "d1"]
+    assert report["complete"] == ["d2"]
+    assert {row["created"] for row in report["queued"]} == {True}
+    assert {row["created"] for row in repeated["queued"]} == {False}
+    assert {row["range"] for row in list_requests(engine)} == {"d7", "d1"}
+
+
+def test_startup_recovery_includes_today_when_current_day_facts_exist(monkeypatch):
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k="data_max_ts", v="2026-08-26 12:00:00"))
+    monkeypatch.setattr(
+        daily,
+        "analysis_products",
+        lambda _engine, _range, own_limit=None: [{"code": "3033"}],
+    )
+    monkeypatch.setattr(
+        "jobs.synthesize.missing_generations",
+        lambda _engine, _codes, range_key, anchor: (
+            [{"code": "3033", "kinds": ["hot_summary"]}]
+            if range_key == "d0" and anchor == "2026-08-26"
+            else []
+        ),
+    )
+
+    report = daily.recover_missing_analysis(engine)
+
+    assert [row["range"] for row in report["queued"]] == ["d0"]
+    assert {row["range"] for row in list_requests(engine)} == {"d0"}
+
+
+def test_startup_price_recovery_fetches_only_products_without_current_receipts(monkeypatch):
+    from jobs import sync_prices
+    from radar_db.schema import price_syncs
+
+    engine = _engine()
+    with engine.begin() as conn:
+        for interval in ("1d", "30min"):
+            conn.execute(insert(price_syncs).values(
+                code="3033",
+                interval=interval,
+                date_from="2026-08-23" if interval == "30min" else "2026-08-25",
+                date_to="2026-08-25",
+                status="ok",
+                reason=None,
+                row_count=1,
+                updated_at=datetime(2026, 8, 25, 16),
+            ))
+    monkeypatch.setenv("FMP_API_KEY", "test-key")
+    monkeypatch.setattr(
+        daily,
+        "load_products",
+        lambda **_kwargs: [{"code": "3033"}, {"code": "2802"}],
+    )
+    monkeypatch.setattr("market_data.fmp.FmpClient", lambda: "fmp")
+    monkeypatch.setattr("market_data.yahoo.YahooFinanceClient", lambda: "yahoo")
+    captured = {}
+    monkeypatch.setattr(
+        sync_prices,
+        "sync",
+        lambda engine, client, codes, start, end, **kwargs: (
+            captured.update(codes=codes, start=start, end=end, kwargs=kwargs) or []
+        ),
+    )
+
+    report = daily.recover_missing_prices(engine)
+
+    assert report["status"] == "recovered"
+    assert report["missing"] == ["2802"]
+    assert captured["codes"] == ["2802"]
+    assert captured["end"].isoformat() == "2026-08-25"
+    assert captured["kwargs"]["intraday_start"].isoformat() == "2026-08-23"
+
+
+def test_startup_recovery_waits_for_bootstrap_anchor():
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(meta_kv.delete().where(meta_kv.c.k == "anchor"))
+
+    assert daily.recover_missing_analysis(engine) == {
+        "status": "skipped",
+        "reason": "meta_kv 里没有 anchor",
+        "queued": [],
+    }
+
+
 def test_intraday_slots_enqueue_d0_idempotently_and_coalesce_an_active_followup():
     engine = _engine()
     with engine.begin() as conn:

@@ -22,7 +22,8 @@ RUN apk add --no-cache tzdata \
     && chmod 1777 /etc/nginx/conf.d /tmp
 COPY frontend/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY frontend/docker-entrypoint.d/25-require-rendered-config.sh /docker-entrypoint.d/
-RUN chmod 755 /docker-entrypoint.d/25-require-rendered-config.sh
+RUN chmod 644 /etc/nginx/templates/default.conf.template \
+    && chmod 755 /docker-entrypoint.d/25-require-rendered-config.sh
 COPY --from=build /src/frontend/dist/ /usr/share/nginx/html/remote/opinion-radar/
 USER 101:101
 EXPOSE 8080

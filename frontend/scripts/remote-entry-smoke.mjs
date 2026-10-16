@@ -68,7 +68,7 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 
 const RemoteApp = React.lazy(() => import('opinionRadar/App'))
-const remote = React.createElement(Suspense, { fallback: React.createElement('div', null, 'loading') }, React.createElement(RemoteApp, { allowAdmin: true }))
+const remote = React.createElement(Suspense, { fallback: React.createElement('div', null, 'loading') }, React.createElement(RemoteApp))
 const routes = React.createElement(Routes, null, React.createElement(Route, { path: '/opinion-radar/*', element: remote }))
 createRoot(document.getElementById('root')).render(React.createElement(BrowserRouter, null, routes))
 `)

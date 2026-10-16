@@ -1695,8 +1695,15 @@ class SqlProvider:
         name = self._by_code[code]["name"]
         peak_text = ""
         if s["mentions"] and s["buckets"]:
-            peak_index, peak = max(enumerate(s["buckets"]), key=lambda pair: pair[1]["mentions"])
-            if peak["mentions"]:
+            observed_buckets = [
+                pair for pair in enumerate(s["buckets"])
+                if pair[1]["mentions"] is not None
+            ]
+            if observed_buckets:
+                peak_index, peak = max(
+                    observed_buckets,
+                    key=lambda pair: pair[1]["mentions"],
+                )
                 peak_text = f"，讨论最集中的时间桶为 {rng['buckets'][peak_index]['tip']}"
         overview_sentence = (
             f"数据显示，{name}（{code}）在 {rng['from']} 至 {rng['to']} "

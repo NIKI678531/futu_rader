@@ -21,6 +21,8 @@ test('partially analysed own products show honest lower bounds and coverage', ()
 
   assert.equal(view.neg, '≥ 333')
   assert.equal(view.pos, '≥ 734')
+  assert.equal(view.negPercentage, '31%')
+  assert.equal(view.posPercentage, '69%')
   assert.equal(view.negDelta, '待补齐')
   assert.equal(view.posDelta, '待补齐')
   assert.equal(view.partial, true)
@@ -45,6 +47,8 @@ test('fully analysed own products keep exact values and deltas', () => {
 
   assert.equal(view.neg, '4')
   assert.equal(view.pos, '6')
+  assert.equal(view.negPercentage, '40%')
+  assert.equal(view.posPercentage, '60%')
   assert.equal(view.negDelta, '-20%')
   assert.equal(view.posDelta, '+50%')
   assert.equal(view.partial, false)

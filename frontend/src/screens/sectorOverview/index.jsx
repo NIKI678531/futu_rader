@@ -17,7 +17,7 @@
        保持可见并变淡。构造函数里把本屏已知端点一次性预取（radar.js `urlsFor`）。 */
 import React from 'react'
 import R, { prefetchScreen } from '../../data/radar'
-import { shortName, navGroups, num, numRaw, stamp, naBox, aiValidationNote, heatLowerBoundNote, kolDisplayLabel } from '../../lib/view'
+import { shortName, navGroups, num, numRaw, stamp, naBox, heatLowerBoundNote, kolDisplayLabel } from '../../lib/view'
 import { commentFunnelView } from '../../lib/commentFunnel'
 import { ownManagementView } from '../../lib/ownManagement'
 import { sectorAttitudeBar } from '../../lib/attitudeDisplay'
@@ -26,7 +26,6 @@ import DataUnavailable from '../../components/DataUnavailable'
 import Shell from '../../components/Shell'
 import withTransition, { split } from '../../components/withTransition'
 import FilterBar from './FilterBar'
-import Notes from './Notes'
 import Kpis from './Kpis'
 import Board from './Board'
 import Tooltip from './Tooltip'
@@ -49,7 +48,7 @@ function heatWhy(o) {
 
 class SectorOverview extends React.Component {
   state = {
-    sel: null, sector: 'all', rangeKey: 'd7', notes: false,
+    sel: null, sector: 'all', rangeKey: 'd7',
     sort: 'comments', heatMode: 'net', scope: 'all', view: 'split', q: '', listAll: false,
     onlyNew: false, onlyNeg: false, onlyRisk: false, scrollRisk: false,
     secOpen: {}, secAll: {}, flatAll: false, tip: null, bucket: null
@@ -495,8 +494,8 @@ class SectorOverview extends React.Component {
     var ownPartial = ownFunnelViews.some(function (funnel) { return funnel.partial; });
     var ownCoverageUnavailable = ownFunnelViews.some(function (funnel) { return !funnel.available; });
     var k2 = {
-      neg: management.neg, negDelta: management.negDelta, negDfg: management.negDir > 0 ? 'var(--negative-600)' : (management.negDir < 0 ? 'var(--positive-700)' : 'var(--ink-400)'),
-      pos: management.pos, posDelta: management.posDelta, posDfg: management.posDir > 0 ? 'var(--positive-700)' : (management.posDir < 0 ? 'var(--negative-600)' : 'var(--ink-400)'),
+      negPercentage: management.negPercentage,
+      posPercentage: management.posPercentage,
       partialData: ownPartial || management.partial,
       coverageLabel: management.partial ? management.coverageLabel : (ownCoverageUnavailable ? '数据暂不可用' : ''),
       negW: management.negWidth, posW: management.posWidth,
@@ -602,26 +601,6 @@ class SectorOverview extends React.Component {
         self.seg(s.view === 'split', '并排', { view: 'split', tip: null }),
         self.seg(s.view === 'list', '榜单', { view: 'list', tip: null }),
         self.seg(s.view === 'heat', '热力图', { view: 'heat', tip: null })
-      ],
-      notesOpen: s.notes, toggleNotes: () => this.go({ notes: !s.notes }),
-      notesCaret: s.notes ? '▲' : '▼',
-      notesBc: s.notes ? 'var(--csop-blue-600)' : 'var(--border-2)',
-      notesBg: s.notes ? 'var(--csop-blue-50)' : '#fff',
-      notesFg: s.notes ? 'var(--csop-blue-700)' : 'var(--ink-700)',
-      statusLegend: R.STATUS_LEGEND,
-      notesBlocks: [
-        { title: '筛后评论量与讨论热度', body: '筛后评论量为合格父帖的平台回复总数，用于热度和排名；筛选前平台总量只在评论漏斗中用于审计。它不等于经现有评论规则与 AI 确认的产品相关评论数。' + R.HEAT_FORMULA + '；' + R.HEAT_NOTE + ' 热度只用于排序与快速扫描，不作为绝对水平解读。' },
-        { title: '积极、消极与中性', body: '「积极／消极」为 AI 对内容中产品态度的分类，不是 Futu 平台的互动行为。只判断针对产品本身的态度（费用、流动性、跟踪表现、机制、分红、使用体验）；仅预测指数、资产或价格涨跌且未明确关联产品的评论不进入产品情绪统计。积极／消极占比的分母为积极＋消极，中性单独计数。有效态度评论少于 ' + R.LOW_SAMPLE + ' 条时显示样本不足。「舆情」列为可归类为需关注问题的内容条数。' },
-        { title: '热议总结（AI 生成）', body: R.HOT_RULE + ' 总结为「现象 + 主流观点／动作倾向」一句话，与产品监控页的舆情总结出自同一次生成；字段缺失显示「数据暂不可用」。' },
-        { title: '排名、基准与热力粒度', body: '卡片名次为全市场筛后评论量排名，基于完整活跃 ETF 池与同一父帖筛选口径计算，板块筛选不重算。基准区间为 ' + range.benchText + '（' + range.benchLabel + '）。热力粒度随日期筛选自适应：1–2 天按小时、3–14 天按自然日、15 天及以上按自然周；当前为' + range.granLabel + '。' },
-        /* AI 结论的验证程度（ADR-0019 §4）。放进这个面板而不是某个角标，是因为它管的
-           不是某一格而是整页：上面几块每一块都写着「AI 判定」「AI 生成」，读的人默认
-           这些结论上线前被人看过。本期没有人看过，这句得自己说出来。
-           文案由 /meta 的 `aiValidation` 决定，不在这里写死 —— 见 lib/view.js。 */
-        { title: 'AI 结论的验证程度', body: aiValidationNote(R.AI_VALIDATION, R.AI_VALIDATION_DETAIL) + (R.AI_VALIDATION === 'spot_check' && R.AI_VALIDATION_DETAIL
-          ? '抽检是样本统计，不是对页面上每一条结论的逐条确认 —— 对不对请点开证据以原文为准。'
-          : '本期未安排人工复核，也没有金标集 —— 页面上任何一条 AI 结论都没有经过人工确认，对不对请点开证据以原文为准。') },
-        { title: '重点舆情（需合规关注）与同业产品', body: '重点舆情为 AI 识别的高风险言论信号，标签包括监管举报、严重指控、疑似未经证实指控、煽动扩散、合规质疑；系统只识别信号并保留原文与命中依据，不判定言论真伪或产品是否违规，状态统一为「AI 识别 · 待人工确认」。同一条评论可同时属于消极观点与重点舆情。识别范围为自家产品，同业产品不适用。「仅看同业产品」对应产品池中已标记为非自家的产品，不由 AI 临时推断关系。' }
       ],
       tipOpen: !!s.tip,
       tipX: s.tip ? s.tip.x : 0, tipY: s.tip ? s.tip.y : 0,
@@ -846,7 +825,6 @@ class SectorOverview extends React.Component {
 
         <div style={s(`padding:12px 16px 64px;opacity:${v.bodyOpacity};transition:opacity 200ms cubic-bezier(.4,0,.2,1)`)}>
           <Kpis v={v} />
-          {v.notesOpen && <Notes v={v} />}
           <Board v={v} />
 
         </div>

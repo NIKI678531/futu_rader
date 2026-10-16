@@ -151,6 +151,12 @@ class FutuRefresh:
 
         targeted = bool(request.feed_ids)
         streams = ("feeds",) if targeted else STREAMS
+        if not targeted:
+            available_streams = getattr(
+                self.source, "available_incremental_streams", None
+            )
+            if callable(available_streams):
+                streams = tuple(available_streams(streams))
         partition = (
             f"targeted:{run_id[-32:]}" if targeted
             else ("live" if request.mode == "incremental" else f"{request.mode}:{run_id[-32:]}")
@@ -167,6 +173,18 @@ class FutuRefresh:
                 stream: self.source.high_watermark(stream, source_run_id) for stream in streams
             }
         ))
+        if not targeted and self._anchor_missing():
+            bootstrap_cursor = getattr(self.source, "bootstrap_cursor", None)
+            if callable(bootstrap_cursor):
+                for stream in streams:
+                    floor = bootstrap_cursor(stream, highwaters.get(stream))
+                    current = cursors.get(stream)
+                    if floor is not None and (
+                        current is None
+                        or (current.observed_at, current.entity_id)
+                        < (floor.observed_at, floor.entity_id)
+                    ):
+                        cursors[stream] = floor
         result = SyncResult(run_id=run_id, status="dry_run" if request.dry_run else "succeeded")
         result.cursors = {stream: _cursor_payload(cursor) for stream, cursor in cursors.items()}
         prior_counts = json.loads(prior.get("counts_json") or "{}") if prior else {}
@@ -282,6 +300,7 @@ class FutuRefresh:
                                 if observed_anchor is not None
                                 else "unavailable"
                             ),
+                            streams=streams,
                         )
                         if anchor_changed:
                             last_revision = bump_revision(conn, "data")
@@ -627,6 +646,13 @@ class FutuRefresh:
                 _put_meta(conn, "anchor_ts", datetime.combine(candidate, time.max).replace(microsecond=0))
         return candidate, changed
 
+    def _anchor_missing(self):
+        with self.target.connect() as conn:
+            value = conn.execute(
+                select(meta_kv.c.v).where(meta_kv.c.k == "anchor")
+            ).scalar_one_or_none()
+        return value is None or not str(value).strip()
+
     def _advance_observed_anchor(self, conn):
         """Publish a best-effort page anchor when the source has no receipt table.
 
@@ -665,7 +691,7 @@ class FutuRefresh:
         _put_meta(conn, "source_observed_anchor", candidate.isoformat())
         return candidate, changed
 
-    def _publish_source_scope(self, conn, *, anchor_mode):
+    def _publish_source_scope(self, conn, *, anchor_mode, streams=STREAMS):
         requested = set(getattr(self.source, "pool_codes", ()) or ())
         if not requested:
             return
@@ -684,6 +710,19 @@ class FutuRefresh:
             "complete" if not missing else "partial",
         )
         _put_meta(conn, "source_anchor_mode", anchor_mode)
+        synced = tuple(streams)
+        _put_meta(conn, "source_synced_streams", _json(synced))
+        _put_meta(
+            conn,
+            "source_skipped_streams",
+            _json(tuple(stream for stream in STREAMS if stream not in synced)),
+        )
+        index_gaps = getattr(self.source, "incremental_index_gaps", None)
+        if callable(index_gaps):
+            _put_meta(conn, "source_incremental_index_gaps", _json(index_gaps()))
+        window_days = getattr(self.source, "bootstrap_window_days", None)
+        if window_days is not None:
+            _put_meta(conn, "source_bootstrap_window_days", window_days)
 
     @staticmethod
     def _coverage(values):

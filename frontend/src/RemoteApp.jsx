@@ -4,6 +4,6 @@ import App from './App'
 
 export const HOST_ROUTE = '/opinion-radar'
 
-export default function RemoteApp({ basePath = HOST_ROUTE, allowAdmin = !basePath }) {
+export default function RemoteApp({ basePath = HOST_ROUTE, allowAdmin = true }) {
   return <div className="opinion-radar-app"><App basePath={basePath} includeAdmin={allowAdmin} /></div>
 }

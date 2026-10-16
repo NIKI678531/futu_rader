@@ -222,8 +222,10 @@ class TopicLabel(BaseModel):
         if not self.evidence_ids:
             raise ValueError("topic_label: 至少引用一条证据")
         sentences = [part.strip() for part in re.split(r"[。！？!?]+", self.summary) if part.strip()]
-        if not 2 <= len(sentences) <= 4:
-            raise ValueError(f"topic.summary: 应写 2–4 句，当前为 {len(sentences)} 句")
+        minimum = 1 if len(set(self.evidence_ids)) == 1 else 2
+        if not minimum <= len(sentences) <= 4:
+            expected = "1–4" if minimum == 1 else "2–4"
+            raise ValueError(f"topic.summary: 应写 {expected} 句，当前为 {len(sentences)} 句")
         generic = [sentence for sentence in sentences if _topic_sentence_is_generic(sentence)]
         if generic:
             raise ValueError(f"topic.summary: 存在无具体证据锚点的泛化套话 {generic[0]!r}")

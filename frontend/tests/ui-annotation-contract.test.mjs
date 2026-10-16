@@ -16,6 +16,20 @@ test('sector summary cards omit auxiliary annotations', () => {
   assert.doesNotMatch(kpis, /note=\{v\.topNote\}/)
 })
 
+test('sector header uses percentage sentiment and omits the methodology toggle', () => {
+  const index = source('screens/sectorOverview/index.jsx')
+  const filters = source('screens/sectorOverview/FilterBar.jsx')
+  const kpis = source('screens/sectorOverview/Kpis.jsx')
+
+  assert.doesNotMatch(filters, /口径与数据状态|toggleNotes/)
+  assert.doesNotMatch(index, /notesOpen|toggleNotes|<Notes/)
+  assert.match(kpis, /\{k2\.negPercentage\}/)
+  assert.match(kpis, /\{k2\.posPercentage\}/)
+  assert.doesNotMatch(kpis, /\{k2\.neg\}|\{k2\.pos\}/)
+  assert.match(kpis, /grid-template-columns:minmax\(330px,24fr\) 15fr 17fr 22fr 22fr/)
+  assert.match(kpis, /全市场活跃 ETF 舆情分布/)
+})
+
 test('sector keeps the leaderboard legend compact and the heatmap legends prominent', () => {
   const table = source('screens/sectorOverview/ProductTable.jsx')
   const heatmap = source('screens/sectorOverview/Heatmap.jsx')

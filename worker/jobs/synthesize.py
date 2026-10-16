@@ -80,7 +80,10 @@ from radar_db.comment_routes import (  # noqa: E402
 )
 from radar_db.events import emit  # noqa: E402
 from radar_db.product_catalog import load_products  # noqa: E402
-from radar_db.revisions import set_synthesis_generation  # noqa: E402
+from radar_db.revisions import (  # noqa: E402
+    set_synthesis_generation,
+    synthesis_generation_key,
+)
 from radar_db.schema import (  # noqa: E402
     NO_SUBJECT,
     analysis_scopes,
@@ -133,6 +136,35 @@ def read_anchor(engine, range_key=None):
         complete,
         meta=meta,
     )
+
+
+def missing_generations(engine, codes, range_key, anchor):
+    """Return Layer-B kinds that are absent or dirty for the effective anchor."""
+
+    keys = {
+        synthesis_generation_key(code, range_key, kind): (code, kind)
+        for code in codes for kind in KINDS
+    }
+    if not keys:
+        return []
+    with engine.connect() as conn:
+        published = dict(conn.execute(
+            select(meta_kv.c.k, meta_kv.c.v).where(
+                meta_kv.c.k.like(f"synth_current_%_{range_key}_%")
+            )
+        ).all())
+        dirty = dict(conn.execute(
+            select(meta_kv.c.k, meta_kv.c.v).where(
+                meta_kv.c.k.like(f"synth_dirty_%_{range_key}")
+            )
+        ).all())
+    prefix = f"{anchor}|"
+    missing = {}
+    for key, (code, kind) in keys.items():
+        dirty_key = f"synth_dirty_{code}_{range_key}"
+        if dirty.get(dirty_key) == "1" or not str(published.get(key) or "").startswith(prefix):
+            missing.setdefault(code, []).append(kind)
+    return [{"code": code, "kinds": kinds} for code, kinds in missing.items()]
 
 
 def resolve_anchor(engine, ranges, anchor_override=None):
@@ -775,7 +807,8 @@ class Synthesizer:
                 facts, evidence, allowed = tp
                 self._generate(code, range_key, anchor, "topic_label", core_topics.MARKET_SUBKEY,
                                mat.ann_ids, facts, evidence, allowed,
-                               product, rng_info, lambda obj: obj.model_dump())
+                               product, rng_info, lambda obj: obj.model_dump(),
+                               fallback=lambda: self._topic_fallback(product, evidence))
             else:
                 self._publish_empty(code, range_key, anchor, "topic_label", "no_topic_bucket")
 
@@ -886,6 +919,32 @@ class Synthesizer:
             "text": text,
             "evidence_ids": evidence_ids,
             "needs_review": True,
+        }, evidence_ids, "needs_review"
+
+    @staticmethod
+    def _topic_fallback(product, evidence):
+        """Publish a review-marked, source-grounded topic when model prose is invalid."""
+
+        selected = []
+        seen = set()
+        for item in evidence:
+            evidence_id = str(item["id"])
+            excerpt = " ".join(str(item.get("text") or "").split()).strip("。；;，, ")
+            if evidence_id in seen or not excerpt:
+                continue
+            seen.add(evidence_id)
+            selected.append((evidence_id, excerpt))
+            if len(selected) == 2:
+                break
+        if not selected:
+            raise ValueError("topic fallback requires at least one non-empty evidence item")
+        title = (str(product.get("name") or product.get("code") or "市场讨论") + "动态")[:16]
+        summary = "".join(f"原评论提到：{excerpt[:70]}。" for _id, excerpt in selected)
+        evidence_ids = [evidence_id for evidence_id, _excerpt in selected]
+        return {
+            "title": title,
+            "summary": summary[:180],
+            "evidence_ids": evidence_ids,
         }, evidence_ids, "needs_review"
 
     def _generate(self, code, range_key, anchor, kind, subkey, ann_ids, facts, evidence, allowed,

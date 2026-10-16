@@ -1484,6 +1484,18 @@ def test_d0_uses_partial_data_cutoff_and_keeps_future_hours_unknown(provider):
     assert observation["buckets"][3]["comments"] == 3
     assert observation["buckets"][4]["comments"] is None
     assert observation["buckets"][-1]["active"] is None
+    add_comments(provider, [{
+        "comment_id": 999,
+        "feed_id": 99,
+        "content": "$3033 当天评论",
+    }])
+    add_annotations(provider, [
+        {"annotation_id": 9001, "target_id": 999, "kind": "relevance", "value": "relevant"},
+        {"annotation_id": 9002, "target_id": 999, "kind": "attitude", "value": "positive"},
+    ])
+    summary = provider.summary_for(OWN_CODE, "d0")
+    assert summary["sample"] == 1
+    assert "讨论最集中的时间桶为 08-26 03:00–04:00" in summary["text"]
     benchmark = provider.benchmark(OWN_CODE, "d0")
     assert benchmark["base"]["comments"] == 0
 

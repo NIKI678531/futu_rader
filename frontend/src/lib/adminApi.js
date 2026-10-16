@@ -15,7 +15,9 @@ async function adminRequest(path, { method = 'GET', body } = {}) {
   const options = {
     method,
     cache: 'no-store',
-    headers: { Accept: 'application/json' },
+    headers: {
+      Accept: 'application/json',
+    },
   }
   if (body !== undefined) {
     options.headers['Content-Type'] = 'application/json'

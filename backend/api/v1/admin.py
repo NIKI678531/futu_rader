@@ -1,4 +1,4 @@
-"""Database-only endpoints for the internal pipeline management page."""
+"""Database endpoints for the pipeline management page."""
 
 from functools import lru_cache
 

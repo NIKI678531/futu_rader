@@ -37,6 +37,7 @@ COPY backend/ /app/backend/
 COPY worker/ /app/worker/
 COPY radar_db/ /app/radar_db/
 COPY deploy/runtime.py /app/deploy/runtime.py
+RUN chmod -R a+rX /app/backend /app/worker /app/radar_db /app/deploy
 
 USER 10001:10001
 EXPOSE 8008

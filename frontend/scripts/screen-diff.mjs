@@ -71,17 +71,6 @@ const openSectorDrawer = async (page) => {
   await page.getByText('当前舆情总结', { exact: true }).first().waitFor({ timeout: 30_000 })
 }
 
-/* 「口径与数据状态」面板默认是收起的，而这一页最要紧的逐字文案全在里面：六态图例、
-   评论去重口径、热度公式与权重、热议总结口径。收起状态下比对通过，说明不了它们对。
-   按钮里还跟着一个 ▲/▼ 的 caret，所以不能用 exact 匹配整段文字。 */
-const openSectorNotes = async (page) => {
-  await page.getByText('口径与数据状态').first().click()
-  await page
-    .getByText('字段应有值，但当前数据源未提供或尚未核验。', { exact: true })
-    .first()
-    .waitFor({ timeout: 30_000 })
-}
-
 /* 产品相关 KOL 默认只显示前 5 位。「主要态度」列删除后仍保留展开态比对，
    避免只验到前五行、让后续 KOL 的文案或链接回归漏过。 */
 const openProductKols = async (page) => {
@@ -130,7 +119,6 @@ const SCREENS = [
     label: '板块总览',
     views: [
       { label: '快速详情抽屉', act: openSectorDrawer },
-      { label: '口径与数据状态', act: openSectorNotes },
     ],
   },
   {

@@ -13,3 +13,8 @@ test('design CSS is a module entry, not a cross-root PostCSS import', () => {
   )
   assert.doesNotMatch(tokens, /@import\s+['"][^'"]*design\//)
 })
+
+test('federated host enables the data management route by default', () => {
+  const remoteApp = read('../src/RemoteApp.jsx')
+  assert.match(remoteApp, /allowAdmin\s*=\s*true/)
+})

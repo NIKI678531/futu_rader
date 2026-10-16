@@ -29,7 +29,6 @@ from radar_db.analysis_requests import (
     renew,
     requeue,
 )
-from radar_db.revisions import synthesis_generation_key
 from radar_db.schema import annotation_jobs, feeds, meta_kv
 
 import clock
@@ -171,20 +170,7 @@ def revive_failed_jobs(engine, codes) -> int:
 def missing_layer_b(engine, codes, range_key, anchor) -> list[dict]:
     """``[{code, kinds}]`` for every product whose Layer B is not published for ``anchor``."""
 
-    keys = {
-        synthesis_generation_key(code, range_key, kind): (code, kind)
-        for code in codes for kind in synthesize.KINDS
-    }
-    with engine.connect() as conn:
-        published = dict(conn.execute(
-            select(meta_kv.c.k, meta_kv.c.v).where(meta_kv.c.k.like(f"synth_current_%_{range_key}_%"))
-        ).all())
-    prefix = f"{anchor}|"
-    missing = {}
-    for key, (code, kind) in keys.items():
-        if not str(published.get(key) or "").startswith(prefix):
-            missing.setdefault(code, []).append(kind)
-    return [{"code": code, "kinds": kinds} for code, kinds in missing.items()]
+    return synthesize.missing_generations(engine, codes, range_key, anchor)
 
 
 def run_analysis(range_key: str, *, engine=None) -> dict:

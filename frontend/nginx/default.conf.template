@@ -26,17 +26,9 @@ server {
         return 200 "ok\n";
     }
 
-    location = /admin { return 404; }
-    location ^~ /admin/ { return 404; }
-    location ^~ /api/v1/admin { return 404; }
-
     location = /remote/opinion-radar {
         return 308 /remote/opinion-radar/$is_args$args;
     }
-
-    location = /remote/opinion-radar/admin { return 404; }
-    location ^~ /remote/opinion-radar/admin/ { return 404; }
-    location ^~ /remote/opinion-radar/api/v1/admin { return 404; }
 
     location = /remote/opinion-radar/remoteEntry.js {
         try_files $uri =404;

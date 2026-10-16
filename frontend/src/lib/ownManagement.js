@@ -2,6 +2,12 @@ function count(value) {
   return value == null ? '数据暂不可用' : value.toLocaleString('en-US')
 }
 
+function percentage(value, total) {
+  if (value == null || total == null) return '数据暂不可用'
+  if (total === 0) return '0%'
+  return `${(value / total * 100).toFixed(0)}%`
+}
+
 /**
  * Presentation-only mapping for the CSOP management headline.
  *
@@ -25,10 +31,14 @@ export function ownManagementView(own) {
   const negValue = negExact ? own.neg : (negHasLowerBound ? own.negLowerBound : null)
   const posValue = posExact ? own.pos : (posHasLowerBound ? own.posLowerBound : null)
   const valueTotal = negValue == null || posValue == null ? null : negValue + posValue
+  const negPercentage = percentage(negValue, valueTotal)
+  const posPercentage = percentage(posValue, valueTotal)
 
   return {
     neg: negExact ? count(own.neg) : (negHasLowerBound ? `≥ ${count(own.negLowerBound)}` : count(null)),
     pos: posExact ? count(own.pos) : (posHasLowerBound ? `≥ ${count(own.posLowerBound)}` : count(null)),
+    negPercentage,
+    posPercentage,
     negDelta: negExact ? own.dNeg.short : (negHasLowerBound ? '待补齐' : '暂不可用'),
     posDelta: posExact ? own.dPos.short : (posHasLowerBound ? '待补齐' : '暂不可用'),
     negDir: negExact ? own.dNeg.dir : 0,
@@ -38,7 +48,7 @@ export function ownManagementView(own) {
     partial,
     coverageLabel: partial ? `AI ${completed}/${total}` : '',
     barTitle: partial
-      ? `当前已分析范围下限：负面 ${count(negValue)}，正面 ${count(posValue)} · AI 覆盖 ${completed}/${total} 只产品`
-      : `负面 ${count(own.neg)} ： 正面 ${count(own.pos)}${valueTotal ? ` · 负面占 ${(own.neg / valueTotal * 100).toFixed(0)}%` : ''}`,
+      ? `当前已分析范围：负面 ${negPercentage}，正面 ${posPercentage} · AI 覆盖 ${completed}/${total} 只产品`
+      : `负面 ${negPercentage} ： 正面 ${posPercentage}`,
   }
 }

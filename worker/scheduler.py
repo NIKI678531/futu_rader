@@ -82,6 +82,38 @@ def intraday_refresh(*, engine=None):
     run_intraday(engine=engine)
 
 
+def recover_analysis_requests(*, engine=None):
+    """Catch up page analysis missed before bootstrap produced a usable anchor."""
+
+    from jobs.daily import recover_missing_analysis
+
+    engine = engine or make_engine()
+    result = recover_missing_analysis(engine)
+    queued = result.get("queued", ())
+    if queued:
+        log.info(
+            "startup recovery —— 已补交 %s",
+            ",".join(item["range"] for item in queued),
+        )
+    else:
+        log.info("startup recovery —— %s", result.get("status"))
+    return result
+
+
+def recover_prices(*, engine=None):
+    """Backfill missed FMP sync receipts without blocking the analysis queue."""
+
+    from jobs.daily import recover_missing_prices
+
+    result = recover_missing_prices(engine or make_engine())
+    log.info(
+        "startup price recovery —— %s（缺 %s 只）",
+        result.get("status"),
+        len(result.get("missing", ())),
+    )
+    return result
+
+
 def upgrade_schema(engine):
     """Apply pending Alembic migrations; databases without a version table are left alone."""
     from sqlalchemy import inspect
@@ -135,6 +167,14 @@ def build_scheduler(
         coalesce=True,
         kwargs={"engine": engine},
     )
+    scheduler.add_job(
+        recover_prices,
+        "date",
+        id="startup-price-recovery",
+        max_instances=1,
+        misfire_grace_time=300,
+        kwargs={"engine": engine},
+    )
     from jobs.daily import daily_cron, intraday_cron
 
     expression = daily_cron(cron)
@@ -172,6 +212,10 @@ def main():
         "Worker 存活进程启动：%s", [(j.id, str(j.trigger)) for j in scheduler.get_jobs()]
     )
     heartbeat(engine=engine)  # 先跑一次，免得启动后要等满一个间隔才看得到反馈
+    try:
+        recover_analysis_requests(engine=engine)
+    except Exception:  # noqa: BLE001 - recovery must not stop the queue consumer
+        log.exception("startup recovery 失败；worker 继续运行，等待定时或手动补齐")
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):

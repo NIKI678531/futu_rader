@@ -206,7 +206,10 @@ mentions = Table(
     "mentions",
     metadata,
     Column("feed_id", BigInteger, primary_key=True, autoincrement=False),
-    Column("code", String(10), primary_key=True),
+    # Body mentions may be non-catalog market symbols such as
+    # ``HSICURRENT.HK``.  Ten characters made MySQL truncate the value and
+    # collide on the composite primary key during a repeated source row.
+    Column("code", String(32), primary_key=True),
     # 'anchor' = 挂载标的（帖子所属讨论区）；'body' = 正文提及（raw_json 的 rich_text）。
     # 两者语义不同，市场域与账号域的提及口径也不同（CONTEXT.md「提及」），不能合并成一列。
     Column("source", String(10), primary_key=True),

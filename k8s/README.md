@@ -86,12 +86,9 @@ micro batch `1`。沿用代码默认：香港时间 08:00 全量刷新，13:00�
    当前文件沿用用户提供的证书 ARN、子网与无 host 限制规则；确认现有域名、证书和入口访问控制
    适用于 `/remote/opinion-radar`，不要另建 DNS 或修改共享 ALB 属性。
 
-当前业务页没有 Entra 登录。代码未消费 `ADMIN_API_TOKEN`，所以没有把这个无效变量
-放进 Secret，也没有伪造鉴权配置。生产 nginx 对子路径下的 `/admin` 与 `/api/v1/admin*` 返回 404。
-管理 API 仅供有 Kubernetes 权限的运维经受控端口转发访问；后端应用层仍无鉴权，
-同集群网络访问也需由平台权限/网络边界控制。正式开放管理页面之前必须先实现鉴权。
-共享 ALB 已是公网入口；nginx 的管理接口拦截不等于业务页面鉴权。上线前必须确认现有入口的
-鉴权或访问限制覆盖本子路径。曾经出现在日志或聊天中的凭据应轮换，不应复用。
+当前业务页没有 Entra 登录，数据管理页面与 `/api/v1/admin*` 也不再使用独立管理令牌。
+共享 ALB 或上层站点访问控制是当前唯一访问边界；如果入口对公网开放，分析提交与目录审核
+接口也会随之开放。后续若接入统一身份认证，应在共享入口实施，不再由页面保存独立令牌。
 
 ## 4. 构建与本地镜像验收
 
@@ -171,7 +168,8 @@ kubectl -n ih get ingress hkg-csop-prd-lb16-ih
 
 不需要新建 DNS；使用现有域名的 `/remote/opinion-radar/`。
 共享 Ingress 的 `/remote/opinion-radar` 和 `/remote/opinion-radar/api` 两条规则都指向
-`ih-prd-remote-opinion-radar-webapp:3026`，由 nginx 统一执行路径改写与管理接口拦截。
+`ih-prd-remote-opinion-radar-webapp:3026`，由 nginx 统一执行路径改写；数据管理页面与
+管理 API 使用相同的站点访问边界。
 前端 Service 单独指定 ALB 健康检查 `/healthz`，不改变其他应用的健康检查。
 
 ## 6. 验证、更新与回滚
@@ -191,7 +189,7 @@ kubectl -n ih exec deploy/ih-prd-remote-opinion-radar-worker -- /opt/worker/bin/
 exec 使用容器原始环境，不继承主进程已规范化的数据库驱动与字符集。
 
 确认三个服务 `Running 1/1`，前端刷新深链可用、HTTP 跳转 HTTPS、五个业务页面可读，
-管理路径为 404。真实模型冒烟按 [AI 操作文档](../docs/llm-90d-operations.md) 使用
+`/opinion-radar/admin` 可直接打开。真实模型冒烟按 [AI 操作文档](../docs/llm-90d-operations.md) 使用
 明确的模型与最小请求预算；不会由本部署脚本自动调用。AI 结论仍未经人工验证。
 
 API 的 startup/liveness 探针使用浅 `/health`，readiness 使用 `/health/ready` 并要求目标库存在
@@ -221,7 +219,7 @@ ConfigMap 和 Secret 必须恢复到匹配版本；`rollout undo` 不会恢复�
 可变的 `latest`。数据库先确认旧代码兼容，不能把镜像回滚等同于数据库回滚。
 
 受控运维入口：`kubectl -n ih port-forward svc/ih-prd-remote-opinion-radar-srvapp 18008:8026`，
-仅绑定本机回环地址。不得用 `--address 0.0.0.0` 暴露无鉴权的管理 API。
+仅绑定本机回环地址。不得用 `--address 0.0.0.0` 扩大暴露面。
 
 本次只生成并离线验证文件，没有推镜像、操作集群、迁移真实数据库或发起付费模型请求。
 Docker 引擎未启动，镜像构建、只读容器运行、RDS 连通性与真实 ALB/TLS 仍须上线前实测。

@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from radar_db.schema import meta_kv, metadata  # noqa: E402
-from scheduler import build_scheduler, heartbeat  # noqa: E402
+from scheduler import build_scheduler, heartbeat, recover_analysis_requests, recover_prices  # noqa: E402
 
 
 def _engine():
@@ -27,8 +27,37 @@ def test_heartbeat_queue_and_daily_jobs_are_registered(monkeypatch):
     monkeypatch.delenv("AI_INTRADAY_CRON", raising=False)
     jobs = build_scheduler(interval_seconds=30).get_jobs()
     assert [j.id for j in jobs] == [
-        "heartbeat", "admin-ai-requests", "daily-refresh", "intraday-refresh",
+        "heartbeat", "admin-ai-requests", "startup-price-recovery",
+        "daily-refresh", "intraday-refresh",
     ]
+
+
+def test_startup_recovery_delegates_to_missing_analysis_check(monkeypatch):
+    engine = _engine()
+    expected = {"status": "queued", "queued": [{"range": "d7"}]}
+    monkeypatch.setattr(
+        "jobs.daily.recover_missing_analysis",
+        lambda supplied: expected if supplied is engine else None,
+    )
+
+    assert recover_analysis_requests(engine=engine) == expected
+
+
+def test_startup_price_recovery_delegates_to_missing_price_check(monkeypatch):
+    engine = _engine()
+    expected = {"status": "complete", "missing": []}
+    monkeypatch.setattr(
+        "jobs.daily.recover_missing_prices",
+        lambda supplied: expected if supplied is engine else None,
+    )
+
+    assert recover_prices(engine=engine) == expected
+
+
+def test_startup_price_recovery_tolerates_initialization_delay():
+    jobs = {job.id: job for job in build_scheduler(interval_seconds=30).get_jobs()}
+
+    assert jobs["startup-price-recovery"].misfire_grace_time == 300
 
 
 def test_daily_refresh_runs_at_eight_hong_kong_time_and_can_be_switched_off(monkeypatch):
@@ -42,7 +71,9 @@ def test_daily_refresh_runs_at_eight_hong_kong_time_and_can_be_switched_off(monk
     assert str(trigger.timezone) == "Asia/Hong_Kong"
 
     off = build_scheduler(interval_seconds=30, cron="off").get_jobs()
-    assert [j.id for j in off] == ["heartbeat", "admin-ai-requests", "intraday-refresh"]
+    assert [j.id for j in off] == [
+        "heartbeat", "admin-ai-requests", "startup-price-recovery", "intraday-refresh",
+    ]
 
 
 def test_intraday_refresh_runs_at_thirteen_and_fifteen_hong_kong_time(monkeypatch):
@@ -60,7 +91,9 @@ def test_intraday_refresh_runs_at_thirteen_and_fifteen_hong_kong_time(monkeypatc
         cron="off",
         intraday_expression="off",
     ).get_jobs()
-    assert [job.id for job in off] == ["heartbeat", "admin-ai-requests"]
+    assert [job.id for job in off] == [
+        "heartbeat", "admin-ai-requests", "startup-price-recovery",
+    ]
 
 
 def test_startup_upgrade_applies_pending_migrations(tmp_path, monkeypatch):

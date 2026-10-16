@@ -262,6 +262,27 @@ def test_duplicate_feed_observation_cannot_change_its_original_section(tmp_path)
     assert anchors == ["3033"]
 
 
+def test_long_non_catalog_body_symbol_is_preserved(tmp_path):
+    target = engine(tmp_path)
+    item = feed_observation(
+        1,
+        datetime(2026, 9, 20, 3),
+        # The production payload already includes the market suffix in
+        # stock_code and also supplies market_type_label.
+        body_codes=["HSICURRENT.HK"],
+    )
+
+    FutuRefresh(target, MemorySourceAdapter({"feeds": [item, item]})).sync(
+        SyncRequest(run_id="long-body-symbol")
+    )
+
+    with target.connect() as conn:
+        stored = conn.execute(
+            select(mentions.c.code).where(mentions.c.source == "body")
+        ).scalars().all()
+    assert stored == ["HSICURRENT.HK"]
+
+
 def test_partial_snapshot_never_deletes_previously_seen_comments(tmp_path):
     target = engine(tmp_path)
     first_at = datetime(2026, 9, 20, 3, 0)
@@ -1722,6 +1743,45 @@ def test_intraday_source_preflight_requires_composite_keyset_indexes(tmp_path):
     ]
     with pytest.raises(SourceSchemaError, match="required keyset indexes"):
         adapter.require_incremental_indexes()
+
+
+def test_live_source_uses_only_indexed_streams_and_requires_primary_feed_index(
+    tmp_path, monkeypatch
+):
+    source_engine = receipt_source_engine(tmp_path, full_run_receipt())
+    adapter = MarketInsightMySqlAdapter(source_engine, {"3033"})
+    monkeypatch.setattr(adapter.engine.dialect, "name", "mysql")
+    monkeypatch.setattr(
+        adapter,
+        "incremental_index_gaps",
+        lambda: [
+            "futu_comments_feeds(detail_updated_at,feed_id)",
+            "futu_comments_users(scraped_at,user_id)",
+        ],
+    )
+
+    assert adapter.available_incremental_streams() == ("feeds",)
+
+    monkeypatch.setattr(
+        adapter,
+        "incremental_index_gaps",
+        lambda: ["futu_comments_feeds(scraped_at,feed_id)"],
+    )
+    with pytest.raises(SourceSchemaError, match="required primary keyset index"):
+        adapter.available_incremental_streams()
+
+
+def test_live_source_bootstrap_cursor_covers_d30_and_its_benchmark(
+    tmp_path,
+):
+    source_engine = receipt_source_engine(tmp_path, full_run_receipt())
+    adapter = MarketInsightMySqlAdapter(source_engine, {"3033"})
+    through = Cursor(datetime(2026, 10, 14, 9), 99)
+
+    assert adapter.bootstrap_cursor("feeds", through) == Cursor(
+        datetime(2026, 8, 13, 9), 0
+    )
+    assert adapter.bootstrap_cursor("feed_details", through) is None
 
 
 def test_market_insight_adapter_uses_stable_keyset_and_all_run_watermark(tmp_path, monkeypatch):

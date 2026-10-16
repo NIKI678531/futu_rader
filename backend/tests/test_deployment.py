@@ -341,7 +341,7 @@ def test_prd_shared_backend_image_keeps_explicit_worker_role(prd_resources):
     assert "COPY worker/ /app/worker/" in dockerfile
 
 
-def test_shared_ingress_radar_routes_keep_nginx_access_controls(prd_resources):
+def test_shared_ingress_radar_routes_proxy_data_management(prd_resources):
     ingress = prd_resources["Ingress", "hkg-csop-prd-lb16-ih"]
     service = prd_resources["Service", "ih-prd-remote-opinion-radar-webapp"]
     assert "status" not in ingress
@@ -355,8 +355,8 @@ def test_shared_ingress_radar_routes_keep_nginx_access_controls(prd_resources):
     assert routes["/"]["backend"]["service"]["name"] == "ih-prd-host-webapp"
     assert service["metadata"]["annotations"]["alb.ingress.kubernetes.io/healthcheck-path"] == "/healthz"
     nginx = (ROOT / "frontend/nginx/default.conf.template").read_text(encoding="utf-8")
-    assert "location ^~ /remote/opinion-radar/api/v1/admin { return 404; }" in nginx
-    assert "location = /remote/opinion-radar/admin { return 404; }" in nginx
+    assert "location ^~ /remote/opinion-radar/api/v1/admin { return 404; }" not in nginx
+    assert "location = /remote/opinion-radar/admin { return 404; }" not in nginx
     assert "location = /remote/opinion-radar/remoteEntry.js {" in nginx
     assert 'add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" always;' in nginx
     assert "proxy_pass http://${API_UPSTREAM}/api/;" in nginx
@@ -368,7 +368,9 @@ def test_shared_ingress_radar_routes_keep_nginx_access_controls(prd_resources):
     assert "basename={APP_BASE_PATH}" in main
     assert '<RemoteApp basePath="" />' in main
     assert "HOST_ROUTE = '/opinion-radar'" in remote
+    assert "allowAdmin = true" in remote
     assert "name: 'opinionRadar'" in webpack
     assert "filename: 'remoteEntry.js'" in webpack
     assert "'./App': './src/RemoteApp.jsx'" in webpack
     assert "test -f dist/remoteEntry.js" in dockerfile
+    assert "chmod 644 /etc/nginx/templates/default.conf.template" in dockerfile
