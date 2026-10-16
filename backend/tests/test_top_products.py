@@ -46,8 +46,8 @@ def test_top_comment_products_requires_the_corresponding_etf_cashtag():
     rows = top_comment_products(engine, "d1", anchor="2026-08-25", limit=2)
 
     assert rows == [
-        {"rank": 1, "code": "3033", "comments": 10},
-        {"rank": 2, "code": "3067", "comments": 5},
+        {"rank": 1, "code": "3033", "comments": 1},
+        {"rank": 2, "code": "3067", "comments": 1},
     ]
 
 
@@ -99,8 +99,8 @@ def test_analysis_products_defaults_to_every_product_own_first(monkeypatch):
 
     rows = analysis_products(_analysis_engine(monkeypatch), "d1")
 
-    assert [row["code"] for row in rows] == ["3067", "3033", "3037", "2828", "2800"]
-    assert [row["comments"] for row in rows] == [9, 4, 0, 2, 0]
+    assert [row["code"] for row in rows] == ["3033", "3067", "3037", "2828", "2800"]
+    assert [row["comments"] for row in rows] == [1, 1, 0, 1, 0]
 
 
 def test_analysis_products_limits_only_own_products(monkeypatch):
@@ -109,7 +109,7 @@ def test_analysis_products_limits_only_own_products(monkeypatch):
     rows = analysis_products(_analysis_engine(monkeypatch), "d1", own_limit=1)
 
     assert [(row["code"], row["ownership"]) for row in rows] == [
-        ("3067", "own"), ("2828", "peer"), ("2800", "peer"),
+        ("3033", "own"), ("2828", "peer"), ("2800", "peer"),
     ]
 
 
@@ -149,7 +149,7 @@ def test_d0_selection_uses_the_latest_observed_hkt_data_day(monkeypatch):
     assert analysis_range_anchor(engine, "d0") == datetime(2026, 8, 26).date()
     rows = analysis_products(engine, "d0")
     assert rows[0]["code"] == "3033"
-    assert rows[0]["comments"] == 6
+    assert rows[0]["comments"] == 1
 
 
 def test_d0_without_a_new_data_day_does_not_publish_fake_zero_counts(monkeypatch):

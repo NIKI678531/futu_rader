@@ -205,19 +205,21 @@ def extract_feed_mentions(
     becoming accidental filter evidence.
     """
 
-    # Match the MarketInsight parent-feed representation used by the
-    # reference project: title and content form one cashtag parsing stream.
-    # This matters when one field contains an unmatched ``$`` delimiter.
-    text = f"{title or ''} {content or ''}"
     raw_by_ticker: dict[str, str] = {}
     counts: Counter[str] = Counter()
-    for inner in _CASHTAG_CANDIDATE.findall(text):
-        raw_ticker = _ticker_from_cashtag_inner(inner)
-        ticker = normalize_source_ticker(raw_ticker)
-        if raw_ticker is None or ticker is None:
-            continue
-        raw_by_ticker.setdefault(ticker, raw_ticker)
-        counts[ticker] += 1
+    # Title and body are independent source fields.  Pairing dollar delimiters
+    # across their artificial join boundary lets a harmless amount such as a
+    # title ending in ``3.1$`` consume the opening delimiter of a real body
+    # cashtag (``$07226.HK$``).  Parse each field independently, then merge the
+    # normalized occurrences.
+    for text in (title or "", content or ""):
+        for inner in _CASHTAG_CANDIDATE.findall(text):
+            raw_ticker = _ticker_from_cashtag_inner(inner)
+            ticker = normalize_source_ticker(raw_ticker)
+            if raw_ticker is None or ticker is None:
+                continue
+            raw_by_ticker.setdefault(ticker, raw_ticker)
+            counts[ticker] += 1
     return tuple(
         CashtagMention(
             raw_ticker=raw_by_ticker[ticker],

@@ -56,6 +56,6 @@ def test_sql_scan_uses_hkt_midnight_and_hkt_hour_buckets():
     rng = build("d1", date(2026, 8, 25))
     observation = provider._scan(rng["from"], rng["to"], rng)["3033"]
 
-    assert observation["comments"] == 5
-    assert observation["buckets"][0]["comments"] == 2
-    assert observation["buckets"][23]["comments"] == 3
+    assert observation["comments"] == 2
+    assert observation["buckets"][0]["comments"] == 1
+    assert observation["buckets"][23]["comments"] == 1

@@ -57,11 +57,12 @@ def test_feed_mentions_preserve_first_raw_spelling_while_counting_case_insensiti
     assert qualifies_feed("NVDA.US", mentions, FilterPolicy("exact"))
 
 
-def test_title_and_content_are_one_reference_compatible_parsing_stream():
-    # opinion-radar concatenates the two parent fields before pairing dollar
-    # delimiters.  A dangling title delimiter therefore consumes the opening
-    # delimiter in content instead of exposing a false standalone cashtag.
-    assert extract_feed_mentions("headline $dangling", "$800000.HK$") == ()
+def test_title_and_content_are_independent_cashtag_fields():
+    # A dangling/amount delimiter in the title must not consume the opening
+    # delimiter of a valid body cashtag.
+    assert extract_feed_mentions("price 3.1$", "$07226.HK$") == (
+        CashtagMention("07226.HK", "HK", 1),
+    )
 
 
 def test_cashtag_mention_rejects_inconsistent_or_nonpositive_facts():
@@ -90,7 +91,7 @@ def test_normalize_source_ticker(raw, expected):
 def test_default_config_requires_an_exact_self_tag_for_every_product():
     config = load_comment_filter_config()
 
-    assert config.version == "parent-feed-v2"
+    assert config.version == "parent-feed-v3"
     assert len(config.digest) == 64
     assert config.policy_for("3033") == FilterPolicy("exact")
     assert config.policy_for("3037") == FilterPolicy("exact")

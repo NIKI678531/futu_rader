@@ -1,5 +1,5 @@
 {
-  "version": "parent-feed-v2",
+  "version": "parent-feed-v3",
   "default": {
     "mode": "exact",
     "exclude_tickers": []

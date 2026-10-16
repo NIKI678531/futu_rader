@@ -20,7 +20,7 @@ from .revisions import bump_revision, ensure_ai_revision, mark_synthesis
 from .schema import annotation_jobs, comment_product_routes, meta_kv, product_catalog_entries
 
 
-COMMENT_ROUTE_VERSION = "content-cashtag-v1"
+COMMENT_ROUTE_VERSION = "content-cashtag-v2"
 COMMENT_ROUTE_READY_META_KEY = "comment_route_ready"
 COMMENT_ROUTE_VERSION_META_KEY = "comment_route_version"
 COMMENT_ROUTE_POOL_DIGEST_META_KEY = "comment_route_pool_digest"

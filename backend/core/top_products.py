@@ -3,7 +3,7 @@
 The admin page and the worker must agree on which products a range analyzes.
 This module keeps that database decision in ``backend/core``: only parent feeds
 carrying the corresponding ETF's strict FUTU cashtag qualify, then products are
-ordered by the resulting platform comment count (ties by code).
+ordered by the resulting tagged-parent count (ties by code).
 
 ``analysis_products`` is the single selection used by every AI entry point
 (ADR-0031): every active product by default, or the own-product comment-volume
@@ -44,7 +44,7 @@ def _anchor_date(engine, anchor):
 def _comment_counts(engine, range_key, anchor_date, codes, config):
     window = build(range_key, anchor_date)
     lo, hi = hkt_range_utc_naive(window["from"], window["to"])
-    comment_total = func.coalesce(func.sum(feeds.c.comment_count), 0)
+    comment_total = func.count(feeds.c.feed_id)
     statement = (
         select(feeds.c.code, comment_total.label("comments"))
         .where(

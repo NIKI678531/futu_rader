@@ -332,9 +332,10 @@ cannot publish against a half-backfilled database.
 - A source page and its target checkpoint commit in one transaction.
 - Replaying a source or Dataset event is safe and does not duplicate facts.
 - Missing comments in a partial snapshot never delete previously observed rows.
-- `feeds.comment_count` remains the platform counter; product metrics sum it only
-  across qualified parent feeds. `comments` contains only the bodies actually
-  available to AI, and replies never create parent `feed_mentions`.
+- `feeds.comment_count` remains the platform reply counter for audit and coverage.
+  Product metrics count strict-tagged parent feeds once each. `comments` contains
+  only the bodies actually available to AI, and replies never create parent
+  `feed_mentions`.
 - Counter observations are append-only. Before a post is 24 hours old the latest
   value is provisional; afterwards the first observation is frozen. A historical
   correction requires an explicit `sync --mode repair` run.

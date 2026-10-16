@@ -152,7 +152,7 @@ def test_legacy_queue_resumes_only_eligible_unleased_jobs(tmp_path, filter_ready
     create_all(engine)
     if filter_ready:
         _mark_filter_ready(engine)
-    now = datetime.utcnow()
+    now = annotate.clock.now()
     with engine.begin() as conn:
         conn.execute(insert(feeds).values(
             feed_id=1, code="3033", source_ticker="03033.HK", posted_at=now,

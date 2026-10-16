@@ -43,7 +43,7 @@ def test_meta_exposes_comment_ai_routing_generation(client, sql_client):
     real = sql_client.get("/api/v1/meta").get_json()["data"]["aiCommentRouting"]
     for value in (demo, real):
         assert value["ready"] is False
-        assert value["ruleVersion"] == "content-cashtag-v1"
+        assert value["ruleVersion"] == "content-cashtag-v2"
         assert len(value["productPoolDigest"]) == 64
 
 

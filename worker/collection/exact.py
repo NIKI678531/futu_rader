@@ -24,7 +24,7 @@ from radar_db.comment_filter import (
 
 
 EXACT_RULE = "parent_feed_filter"
-EXACT_RULE_VERSION = "parent-feed-v2"
+EXACT_RULE_VERSION = "parent-feed-v3"
 
 
 class ExactProductMatcher:

@@ -6,6 +6,8 @@
 
 > **2026-09-29 修订**：[ADR-0029](0029-parent-feed-comment-qualification.md) 保留本文的在线对账与评论覆盖机制，但页面评论量改为合格父帖的 `comment_count` 之和；筛选前平台量只用于采集与漏斗审计。
 
+> **2026-10-17 修订**：[ADR-0035](0035-strict-tagged-parent-count.md) 将页面筛后评论量改为合格父帖数；`comment_count` 仅保留为平台回复覆盖审计。
+
 ## 背景
 
 历史导入把一份静态 `raw_json` 拆成 facts；在线同步则会反复看到同一帖子：正文可能被
@@ -53,9 +55,9 @@ complete | partial | retryable_incomplete | unknown
 - 外部 API 将 `retryable_incomplete` 合并展示为 `partial`，因此兼容字段保持
   `complete | partial | unknown`。
 
-页面把合格父帖的 `comment_count` 之和作为筛后评论量；`parsedCommentCount` 只表示合格
-父帖下 AI 实际可读的评论正文数，并明确披露“正文可能为部分覆盖”。筛选前平台总量单列
-为审计字段，不进入热度或排名。
+页面把合格父帖数作为筛后评论量，每篇只计 1；`comment_count` 与 `parsedCommentCount`
+分别表示平台回复计数及 AI 实际可读的回复正文数，并明确披露“正文可能为部分覆盖”。
+两者只用于审计，不进入热度或排名。
 
 ### 4. 计数以观察序列保留，并冻结约 24 小时值
 

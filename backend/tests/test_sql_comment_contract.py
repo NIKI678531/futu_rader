@@ -119,7 +119,7 @@ def test_product_comment_funnel_keeps_unprocessed_comments_pending_not_rule_elig
 
     product = next(row for row in provider.pool("d1")["list"] if row["code"] == OWN_CODE)
 
-    assert product["comments"] == 5
+    assert product["comments"] == 2
     assert product["commentFunnel"] == {
         "rawPlatformCount": 5,
         "platformCount": 5,
@@ -137,7 +137,7 @@ def test_product_comment_funnel_keeps_unprocessed_comments_pending_not_rule_elig
     }
     assert next(day for day in provider.daily_for(OWN_CODE) if day["iso"] == "2026-08-25")[
         "comments"
-    ] == 5
+    ] == 2
 
 
 def test_product_comment_funnel_separates_rule_exclusions_ai_results_and_pending():
@@ -524,7 +524,7 @@ def test_3037_exact_mode_drives_every_product_metric_from_the_same_parents():
     product = next(row for row in provider.pool("d1")["list"] if row["code"] == "3037")
 
     assert product["mentions"] == 1
-    assert product["comments"] == 10
+    assert product["comments"] == 1
     assert product["likes"] == 3
     assert product["shares"] == 1
     assert product["activeAccounts"] == 2
@@ -544,8 +544,10 @@ def test_3037_exact_mode_drives_every_product_metric_from_the_same_parents():
         "analysisCoverage": 0.0,
     }
     day = next(row for row in provider.daily_for("3037") if row["iso"] == "2026-08-25")
-    assert (day["comments"], day["active"]) == (10, 2)
-    assert provider.ranks("d1")["map"]["3037"] == 1
+    assert (day["comments"], day["active"]) == (1, 2)
+    # Three products have one qualifying tag post; stable code ordering puts
+    # 3037 third rather than letting its platform reply counter break the tie.
+    assert provider.ranks("d1")["map"]["3037"] == 3
     # The collection control plane remains an unfiltered source audit.
     assert provider.collection_metadata()["platformCommentCount"] == 132
     assert provider.collection_metadata()["parsedCommentCount"] == 6
@@ -595,7 +597,7 @@ def test_default_exact_mode_rejects_a_parent_without_its_own_cashtag():
     product = next(row for row in provider.pool("d1")["list"] if row["code"] == OWN_CODE)
 
     assert product["mentions"] == 2
-    assert product["comments"] == 5
+    assert product["comments"] == 2
     assert product["likes"] == 13
     assert product["commentFunnel"]["rawPlatformCount"] == 104
     assert product["commentFunnel"]["platformCount"] == 5

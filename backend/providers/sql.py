@@ -49,9 +49,9 @@ None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲�
    （`https://www.futunn.com/user/66362688`）在真实 `feeds.author_uid` 里**一个都不存在**
    ——那是设计源生成的演示 id。按全称匹配官号命中 15/20，按名字匹配 KOL 命中 18/32。
    没命中的账号返回的是空列表（确实没发过帖），不是 None。
-2. **评论量用帖子级 `comment_count`，态度用解析出的评论表**（ADR-0011）。近 30 天实测
-   两者差 11%（平台计数 109,870 / 解析到 97,730 ＝ 89.0% 覆盖），被上游截断的热帖占
-   1.9%。这个差是**可陈述的**，不是隐藏的近似。
+2. **筛后评论量按带自身严格 tag 的父帖一帖一条**（ADR-0035）；父帖的
+   `comment_count` 仍作为平台回复计数保留在审计漏斗，态度继续使用实际解析出的评论表。
+   三个数字单位不同，不能互相替代。
 3. **`share_count` 只在 raw_json 坏掉的 0.03% 行上是未知**，那些行让所在桶的转发数与
    热度变成 None。`like_count` 与 `comment_count` 是 dump 的列，永远有值。
 
@@ -359,9 +359,9 @@ class SqlProvider:
         一套交易日历。最近一个终态同步失败、没有成功同步，或完整日期落后于页面锚点时，
         分别返回 stale / unavailable / stale。
 
-        评论量有两套刻意不同的口径：平台计数来自 feeds.comment_count，AI 实际可读正文数
-        来自 comments 的行数。空库只有在成功的全量运行声明了 complete_through 后才是 0；
-        否则是未知（None），不能把「尚未采集」说成「确认没有」。
+        采集覆盖仍有两套刻意不同的回复口径：平台回复计数来自 feeds.comment_count，AI
+        实际可读回复正文数来自 comments 的行数。页面筛后评论量另按严格 tag 父帖一帖一条。
+        空库只有在成功的全量运行声明了 complete_through 后才是 0；否则是未知（None）。
         """
         unavailable = {
             "freshness": "unavailable",
@@ -2856,10 +2856,10 @@ class SqlProvider:
             source_statuses = list(feed_coverage_by_code[code].values())
             s["commentFunnel"] = _comment_funnel(
                 raw_platform_count=s["rawPlatformCount"],
-                platform_count=s["comments"],
+                platform_count=s["platformComments"],
                 qualifying_feed_count=s["mentions"],
                 filter_excluded_platform_count=max(
-                    0, s["rawPlatformCount"] - s["comments"]
+                    0, s["rawPlatformCount"] - s["platformComments"]
                 ),
                 parsed_count=parsed,
                 source_parsed_count=parsed,
@@ -2962,13 +2962,15 @@ class SqlProvider:
                     feeds.c.feed_id,
                     feeds.c.posted_at,
                     feeds.c.author_uid,
-                    feeds.c.comment_count,
                 )
                 .where(*window)
             )
-            for _feed_id, posted, author, n in conn.execute(q):
+            for _feed_id, posted, author in conn.execute(q):
                 cell = per.setdefault(utc_naive_to_hkt(posted).date(), [0, set()])
-                cell[0] += n or 0
+                # The visible product metric counts strict-tagged parent
+                # entries. ``comment_count`` remains a platform-reply audit
+                # fact and must not make one tagged entry count as many.
+                cell[0] += 1
                 if author:
                     cell[1].add(author)
 
@@ -3385,6 +3387,10 @@ def _blank(nb):
         # Raw source counter is retained for the public audit funnel only;
         # every visible metric below is derived from qualifying parents.
         "rawPlatformCount": 0,
+        # Sum of the source platform reply counters for qualifying parents.
+        # Kept only for the source/AI audit funnel; visible product comments
+        # count qualifying tagged parent entries instead.
+        "platformComments": 0,
         "mentions": 0,
         "comments": 0,
         "likes": 0,
@@ -3395,7 +3401,8 @@ def _blank(nb):
         "att": _zero_att(),
         "attSeen": False,
         "buckets": [
-            {"i": i, "mentions": 0, "comments": 0, "likes": 0, "shares": 0,
+            {"i": i, "platformComments": 0, "mentions": 0, "comments": 0,
+             "likes": 0, "shares": 0,
              "heatUnknownPosts": 0, "authors": set(), "att": _zero_att()}
             for i in range(nb)
         ],
@@ -3406,7 +3413,11 @@ def _bump(s, bi, mentions, n_comments, likes, shares, author, comment_authors):
     targets = [s] if bi is None or not s["buckets"] else [s, s["buckets"][bi]]
     for t in targets:
         t["mentions"] += mentions
-        t["comments"] += n_comments
+        # One strict-tagged parent is one filtered comment/post.  The source
+        # ``comment_count`` is the number of replies below that parent and is
+        # retained separately for coverage auditing.
+        t["comments"] += mentions
+        t["platformComments"] += n_comments
         t["likes"] += likes
         if shares is None:
             t["heatUnknownPosts"] += 1
@@ -3432,6 +3443,9 @@ def _finish(s):
         t["interactions"] = t["likes"] + shares
         t["active"] = len(t["authors"])
         t["heat"] = heat_of(t["comments"], t["likes"], shares, t["heatUnknownPosts"])
+        # Bucket-level platform reply totals are an internal aggregation aid;
+        # only the product-level audit funnel publishes this fact.
+        t.pop("platformComments", None)
         del t["authors"]
 
     for b in s["buckets"]:

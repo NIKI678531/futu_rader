@@ -102,13 +102,13 @@ class TestPool:
     def test_counts_are_real(self, provider):
         """自家 3033 在 08-25：手算一遍。
 
-        提及 = f1 + f2 = 2；评论量 = 4 + 1 = 5；
+        提及 = f1 + f2 = 2；筛后评论量按合格 tag 帖去重后也是 2；
         点赞 = f1 帖赞 10 ＋ f1 评论赞 (3+0) ＋ f2 帖赞 0 = 13（HEAT_NOTE：点赞含两者）；
         活跃账号 = 发帖人 u1、u2 ＋ 评论人 u9、u1 = 3 人。
         """
         item = next(x for x in provider.pool("d1")["list"] if x["code"] == OWN_CODE)
         assert item["mentions"] == 2
-        assert item["comments"] == 5
+        assert item["comments"] == 2
         assert item["likes"] == 13
         assert item["activeAccounts"] == 3
 
@@ -119,8 +119,8 @@ class TestPool:
         """
         peer = next(x for x in provider.pool("d1")["list"] if x["code"] == PEER_CODE)
         assert peer["mentions"] == 1
-        assert peer["comments"] == 2
-        assert peer["discussionHeat"] == 4
+        assert peer["comments"] == 1
+        assert peer["discussionHeat"] == 3
         assert peer["interactions"] == 6
 
     def test_out_of_pool_mentions_are_dropped(self, provider):
@@ -163,14 +163,14 @@ class TestUnknownSharesAreDisclosedAsLowerBound:
     def test_the_product_with_the_broken_row_discloses_known_sum(self, provider):
         item = next(x for x in provider.pool("d1")["list"] if x["code"] == OWN_CODE)
         assert item["shares"] == 2
-        assert item["discussionHeat"] == 11
+        assert item["discussionHeat"] == 8
         assert item["interactions"] == 15
         assert item["heatUnknownPosts"] == 1
-        assert item["comments"] == 5
+        assert item["comments"] == 2
 
     def test_the_company_wide_headline_discloses_the_gap(self, provider):
         own = provider.pool("d1")["own"]
-        assert own["heat"] == 11
+        assert own["heat"] == 8
         assert own["heatUnknownPosts"] == 1
         assert own["baseHeatUnknownPosts"] == 0
         assert own["dHeat"]["abs"] is not None
@@ -192,12 +192,12 @@ class TestUnknownSharesAreDisclosedAsLowerBound:
         """同一批数据，只把那一行的转发数补上 —— 对照组。"""
         p = make_sql_provider(broken_share=False)
         item = next(x for x in p.pool("d1")["list"] if x["code"] == OWN_CODE)
-        # 评论 5 + 0.3×13 + 转发 2 = 10.9 → 11
-        assert item["discussionHeat"] == 11
+        # 合格 tag 帖 2 + 0.3×13 + 转发 2 = 7.9 → 8
+        assert item["discussionHeat"] == 8
         assert item["shares"] == 2
         assert item["heatUnknownPosts"] == 0
-        # 其余自家产品热度都是 0（真的没人发），所以公司级合计就是这 11
-        assert p.pool("d1")["own"]["heat"] == 11
+        # 其余自家产品热度都是 0（真的没人发），所以公司级合计就是这 8
+        assert p.pool("d1")["own"]["heat"] == 8
 
 
 class TestRanks:
@@ -206,7 +206,7 @@ class TestRanks:
         r = provider.ranks("d1")
         assert r["total"] == len(MASTER["products"])
         assert sorted(r["map"].values()) == list(range(1, len(MASTER["products"]) + 1))
-        # 评论量：3033 有 5，3032 有 2，其余 0
+        # 合格 tag 帖数：3033 有 2，3032 有 1，其余 0
         assert r["map"][OWN_CODE] == 1
         assert r["map"][PEER_CODE] == 2
 
@@ -219,15 +219,15 @@ class TestRanks:
 
 class TestBenchmark:
     def test_compares_against_the_adjacent_equal_length_window(self, provider):
-        """d1 的基准是 08-24：f4 有 10 条评论。5 vs 10 → -5（-50.0%）。"""
+        """d1 的基准是 08-24：f4 是 1 篇合格 tag 帖。2 vs 1 → +1（+100.0%）。"""
         b = provider.benchmark(OWN_CODE, "d1")
-        assert b["comments"]["text"] == "-5（-50.0%）"
-        assert b["comments"]["dir"] == -1
-        assert b["base"]["comments"] == 10
+        assert b["comments"]["text"] == "+1（+100.0%）"
+        assert b["comments"]["dir"] == 1
+        assert b["base"]["comments"] == 1
 
     def test_unknown_shares_make_the_delta_a_disclosed_lower_bound_comparison(self, provider):
         benchmark = provider.benchmark(OWN_CODE, "d1")
-        assert benchmark["heat"]["abs"] == -30
+        assert benchmark["heat"]["abs"] == -24
         assert benchmark["heatUnknownPosts"] == {"current": 1, "base": 0}
 
     def test_attitude_deltas_are_unavailable_not_flat(self, provider):
@@ -273,8 +273,8 @@ class TestSeries:
         assert (nine["hour"], nine["day"]) == (9, ANCHOR)
         assert nine["tip"] == "08-25 09:00–10:00"
         assert nine["mentions"] == 2
-        assert nine["comments"] == 5
-        assert nine["heat"] == 11
+        assert nine["comments"] == 2
+        assert nine["heat"] == 8
         assert nine["heatUnknownPosts"] == 1
         assert s[0]["heat"] == 0 and s[0]["mentions"] == 0
         assert all(x["positive"] is None for x in s)
@@ -284,9 +284,9 @@ class TestSeries:
         d = provider.daily_for(OWN_CODE)
         assert len(d) == 42
         assert d[-1]["iso"] == ANCHOR
-        assert (d[-1]["comments"], d[-1]["active"]) == (5, 3)
+        assert (d[-1]["comments"], d[-1]["active"]) == (2, 3)
         assert d[-2]["iso"] == "2026-08-24"
-        assert (d[-2]["comments"], d[-2]["active"]) == (10, 1)  # f4
+        assert (d[-2]["comments"], d[-2]["active"]) == (1, 1)  # f4
         assert d[0]["comments"] == 0  # 窗口内确实没有 —— 0 是真的
         assert all(x["px"] is None and x["o"] is None for x in d)
 
@@ -1477,11 +1477,11 @@ def test_d0_uses_partial_data_cutoff_and_keeps_future_hours_unknown(provider):
     assert rng["benchTo"] == "2026-08-25"
     assert rng["dataThrough"] == "2026-08-26T03:15:00 HKT"
     observation = next(row for row in provider.pool("d0")["list"] if row["code"] == OWN_CODE)
-    assert observation["comments"] == 3
+    assert observation["comments"] == 1
     assert observation["commentFunnel"]["rawPlatformCount"] == 1002
     assert observation["commentFunnel"]["platformCount"] == 3
     assert observation["commentFunnel"]["filterExcludedPlatformCount"] == 999
-    assert observation["buckets"][3]["comments"] == 3
+    assert observation["buckets"][3]["comments"] == 1
     assert observation["buckets"][4]["comments"] is None
     assert observation["buckets"][-1]["active"] is None
     add_comments(provider, [{

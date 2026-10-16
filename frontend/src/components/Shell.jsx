@@ -39,7 +39,7 @@ function CollectionDisclosure({ data }) {
       style={s('padding:5px 24px;background:var(--canvas-alt);font:400 12px/1.5 var(--font-cjk);color:var(--ink-600)')}
     >
       <span style={{ color: fg, fontWeight: 600 }}>{status}{complete}</span>
-      <span> · {counts}。页面评论量采用平台总数；AI 仅基于已抓取的评论正文，{coverage}</span>
+      <span> · {counts}。页面筛后评论量按带对应 ETF tag 的帖子一帖一条；AI 仅基于已抓取的评论正文，{coverage}</span>
     </div>
   )
 }

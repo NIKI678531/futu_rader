@@ -129,7 +129,7 @@ async function checkDrawer(browser) {
     const collection = await page.locator('[data-collection-disclosure]').innerText()
     ok(
       collection.includes('平台评论量 109,870 条 · 已抓取正文 97,730 条')
-        && collection.includes('页面评论量采用平台总数；AI 仅基于已抓取的评论正文，正文为部分覆盖。'),
+        && collection.includes('页面筛后评论量按带对应 ETF tag 的帖子一帖一条；AI 仅基于已抓取的评论正文，正文为部分覆盖。'),
       '③ 采集声明区分平台评论量与 AI 实际读取的正文',
       collection,
     )

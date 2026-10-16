@@ -1,6 +1,6 @@
 # ADR-0029 — 父帖 cashtag 资格统一限定产品级指标与 AI 输入
 
-- **状态**：已接受
+- **状态**：产品主计数与跨字段解析部分被 [ADR-0035](0035-strict-tagged-parent-count.md) 取代
 - **日期**：2026-09-29
 - **相关**：[ADR-0011](0011-comment-volume-caliber.md)、[ADR-0025](0025-online-fact-reconciliation-and-comment-coverage.md)、[ADR-0028](0028-exact-comment-eligibility-and-official-attribution.md)
 
