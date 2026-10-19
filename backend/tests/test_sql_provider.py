@@ -409,6 +409,48 @@ class TestKolImpact:
 
         assert next(row for row in posts if row["id"] == "kol-99")["kol"] == "嘉哥爱投资"
 
+    def test_live_source_alias_is_published_under_the_roster_name(self, provider):
+        with provider._engine.begin() as conn:
+            conn.execute(insert(feeds).values(
+                feed_id=100, code=OWN_CODE, source_ticker=f"0{OWN_CODE}.HK",
+                posted_at=datetime(2026, 8, 25, 3), feed_type=1,
+                author_uid="xiaoyaoyou", author_name="逍遥游丶",
+                title=None, content=FEED_TEXT, like_count=1, comment_count=0,
+                image_count=0, share_count=0, browse_count=10, raw_json_broken=False,
+            ))
+            conn.execute(insert(mentions).values(
+                feed_id=100, code=OWN_CODE, source="anchor", in_pool=True,
+            ))
+            conn.execute(insert(feed_mentions).values(
+                feed_id=100, raw_ticker=f"0{OWN_CODE}.HK", market="HK", occurrences=1,
+            ))
+        provider._cache.clear()
+
+        posts = provider.kol_impact("d1")["posts"]
+
+        assert next(row for row in posts if row["id"] == "kol-100")["kol"] == "逍遥游"
+
+    def test_stable_uid_survives_an_unlisted_future_nickname(self, provider):
+        with provider._engine.begin() as conn:
+            conn.execute(insert(feeds).values(
+                feed_id=101, code=OWN_CODE, source_ticker=f"0{OWN_CODE}.HK",
+                posted_at=datetime(2026, 8, 25, 4), feed_type=1,
+                author_uid="30804906", author_name="逍遥游的新昵称",
+                title=None, content=FEED_TEXT, like_count=1, comment_count=0,
+                image_count=0, share_count=0, browse_count=10, raw_json_broken=False,
+            ))
+            conn.execute(insert(mentions).values(
+                feed_id=101, code=OWN_CODE, source="anchor", in_pool=True,
+            ))
+            conn.execute(insert(feed_mentions).values(
+                feed_id=101, raw_ticker=f"0{OWN_CODE}.HK", market="HK", occurrences=1,
+            ))
+        provider._cache.clear()
+
+        posts = provider.kol_impact("d1")["posts"]
+
+        assert next(row for row in posts if row["id"] == "kol-101")["kol"] == "逍遥游"
+
     def test_engagement_is_unknown_when_shares_are(self, provider):
         """互动数 = 赞 + 评 + 转。转发未知 ⇒ 互动未知，leaders 的合计也跟着未知。"""
         r = provider.kol_impact("d1")

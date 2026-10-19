@@ -122,7 +122,8 @@ def sync_step(today: date) -> dict:
     )
     return {"status": payload.get("status"), "mode": "production", "throughSourceRunId": through,
             "completeThrough": payload.get("complete_through"),
-            "inserted": payload.get("inserted"), "updated": payload.get("updated")}
+            "inserted": payload.get("inserted"), "updated": payload.get("updated"),
+            "automaticBackfill": payload.get("automatic_backfill")}
 
 
 def intraday_sync_step(at: datetime) -> dict:
@@ -150,6 +151,7 @@ def intraday_sync_step(at: datetime) -> dict:
         "inserted": payload.get("inserted"),
         "updated": payload.get("updated"),
         "rowsRead": payload.get("rows_read"),
+        "automaticBackfill": payload.get("automatic_backfill"),
     }
 
 

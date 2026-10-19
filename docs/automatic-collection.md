@@ -196,6 +196,13 @@ checkpoints or ingestion runs. Dataset-triggered production runs also pass the e
 source receipt id with `--through-source-run-id`; the Dataset event is only a wake-up
 signal and never replaces the database checkpoint.
 
+If a scheduled incremental run finds that its parser, comment-filter or active
+product-pool fingerprint differs from the live checkpoint, it automatically runs
+the same full reconciliation as `--mode backfill` and promotes that cursor to
+`live` before publishing. Explicit backfill/repair, targeted and dry-run commands
+still fail closed on a mismatched checkpoint so an operator cannot accidentally
+change their requested scope.
+
 After the third-party service and Airflow have refreshed specific source rows,
 repeatable `--feed-id` arguments may be used for a bounded re-read. This option
 only reads the matching rows from MarketInsight; Radar does not call Futu or any

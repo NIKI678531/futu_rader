@@ -30,6 +30,7 @@ for folder in (ROOT, ROOT / "worker", ROOT / "backend"):
 import clock
 from collection import (
     AiRequest,
+    CheckpointConfigurationChanged,
     FutuRefresh,
     MarketInsightMySqlAdapter,
     SyncRequest,
@@ -101,22 +102,47 @@ def latest_closing_run(source, hkt_day: date):
 
 def sync_once(*, mode="incremental", run_id=None, through_source_run_id=None, page_size=1000,
               dry_run=False, feed_ids=(), service=None):
-    """One MarketInsight → Radar sync, including catalog-driven route rebuilds."""
+    """One MarketInsight → Radar sync, including safe config-change recovery.
+
+    A live checkpoint is valid only for the parser/filter/product configuration
+    that created it. Scheduled incremental jobs transparently reconcile the
+    full source when that fingerprint changes, then promote the resulting
+    cursor back to ``live``. Explicit backfill/repair, targeted and dry-run
+    requests retain their fail-closed semantics.
+    """
     from radar_db.source_facts import fact_source
 
     if fact_source() == "market_insight":
         raise ValueError("Direct-read mode must not materialize source facts; use source_state preparation")
 
     service = service or _refresh(through_source_run_id=through_source_run_id)
-    result = service.sync(SyncRequest(
+    request = SyncRequest(
         mode=mode,
         run_id=run_id,
         through_source_run_id=through_source_run_id,
         page_size=page_size,
         dry_run=dry_run,
         feed_ids=tuple(feed_ids),
-    ))
+    )
+    automatic_backfill = None
+    try:
+        result = service.sync(request)
+    except CheckpointConfigurationChanged as exc:
+        if mode != "incremental" or dry_run or feed_ids:
+            raise
+        automatic_backfill = {
+            "reason": "checkpoint_configuration_changed",
+            "stream": exc.stream,
+        }
+        result = service.sync(SyncRequest(
+            mode="backfill",
+            run_id=run_id,
+            through_source_run_id=through_source_run_id,
+            page_size=page_size,
+        ))
     payload = result.as_dict()
+    if automatic_backfill:
+        payload["automatic_backfill"] = automatic_backfill
     activated = tuple(getattr(service, "activated_catalog_codes", ()))
     if activated and not dry_run:
         from jobs.backfill_comment_routes import run as rebuild_comment_routes

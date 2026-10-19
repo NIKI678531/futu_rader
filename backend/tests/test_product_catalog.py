@@ -3,8 +3,10 @@
 from datetime import date, datetime
 
 from radar_db.product_catalog import (
+    load_active_kol_source_names,
     load_accounts,
     load_kol_aliases,
+    load_kol_user_ids,
     load_pending_products,
     load_products,
 )
@@ -111,13 +113,33 @@ def test_latest_kol_roster_uses_current_names_and_keeps_source_aliases():
         "站在Ju人肩上", "陈达美股投资", "六爷漫谈", "中环杰哥投资探秘",
     }
     names = {row["name"] for row in load_accounts()["kols"]}
+    active = {row["name"] for row in load_accounts()["kols"] if row["active"]}
     aliases = load_kol_aliases()
 
     assert requested <= names
+    assert active == requested
     assert "嘉哥爱自由" not in names
     assert "不知名选手" not in names
     assert aliases["嘉哥爱投资"] == ("嘉哥爱投资", "嘉哥爱自由")
     assert aliases["海梦5/不知名选手"] == (
         "海梦5/不知名选手", "海梦5", "不知名选手",
     )
+    assert aliases["財媽價值輪回"] == ("財媽價值輪回", "财妈价值轮回记")
+    assert aliases["圣者为王"] == ("圣者为王", "o聖者為王o")
+    assert aliases["深夜学堂"] == ("深夜学堂", "MrKC深夜学堂")
+    assert aliases["杨杨得亿"] == ("杨杨得亿", "杨杨得億")
+    assert aliases["逍遥游"] == ("逍遥游", "逍遥游丶")
+    assert aliases["中环杰哥投资探秘"] == (
+        "中环杰哥投资探秘", "中环杰哥金融探秘",
+    )
+    source_names = set(load_active_kol_source_names())
+    assert "逍遥游丶" in source_names
+    assert "财妈价值轮回记" in source_names
+    assert "丹尼斯王子" in source_names
+    assert "财富种植园" not in source_names
+    assert "Henry 財自了" not in source_names
+    user_ids = load_kol_user_ids()
+    assert user_ids["逍遥游"] == ("30804906",)
+    assert user_ids["嘉哥爱投资"] == ("15813386",)
+    assert user_ids["股海中的G妹"] == ()
 

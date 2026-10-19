@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import create_engine
 
+from collection import CheckpointConfigurationChanged
 from jobs import refresh
 from radar_db import make_engine
 from radar_db.source_db import _parse_url, make_source_engine, require_separate_databases
@@ -254,3 +255,49 @@ def test_sync_cli_accepts_repeatable_feed_ids_for_targeted_database_reread(
     ]) == 0
     assert captured["request"].feed_ids == (117, 118)
     assert json.loads(capsys.readouterr().out) == {"status": "succeeded"}
+
+
+def test_incremental_sync_automatically_backfills_after_configuration_change():
+    requests = []
+
+    class FakeRefresh:
+        activated_catalog_codes = ()
+
+        def sync(self, request):
+            requests.append(request)
+            if request.mode == "incremental":
+                raise CheckpointConfigurationChanged("feeds")
+            return SimpleNamespace(
+                status="succeeded",
+                as_dict=lambda: {"status": "succeeded", "rows_read": 42},
+            )
+
+    payload = refresh.sync_once(
+        mode="incremental",
+        run_id="scheduled-slot",
+        service=FakeRefresh(),
+    )
+
+    assert [request.mode for request in requests] == ["incremental", "backfill"]
+    assert {request.run_id for request in requests} == {"scheduled-slot"}
+    assert payload["automatic_backfill"] == {
+        "reason": "checkpoint_configuration_changed",
+        "stream": "feeds",
+    }
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"mode": "backfill"},
+        {"mode": "incremental", "dry_run": True},
+        {"mode": "incremental", "feed_ids": (117,)},
+    ],
+)
+def test_non_scheduled_sync_keeps_configuration_change_fail_closed(kwargs):
+    class FakeRefresh:
+        def sync(self, _request):
+            raise CheckpointConfigurationChanged("feeds")
+
+    with pytest.raises(CheckpointConfigurationChanged):
+        refresh.sync_once(service=FakeRefresh(), **kwargs)

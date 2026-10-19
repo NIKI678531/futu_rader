@@ -247,6 +247,7 @@ def _comment_candidates(
     since=None,
     until=None,
     authors=None,
+    author_uids=None,
     page_size=1000,
     include_body_targets=False,
     include_empty=False,
@@ -339,8 +340,13 @@ def _comment_candidates(
                 codes=codes,
             )
         )
+    author_filters = []
     if authors:
-        q = q.where(comments.c.author_name.in_(list(authors)))
+        author_filters.append(comments.c.author_name.in_(list(authors)))
+    if author_uids:
+        author_filters.append(comments.c.author_uid.in_(list(author_uids)))
+    if author_filters:
+        q = q.where(or_(*author_filters))
     if since:
         q = q.where(feeds.c.posted_at >= since)
     if until:
@@ -461,7 +467,7 @@ def enqueue_comments(engine, cfg, *, codes=None, limit=None, since=None, until=N
 
 
 def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None,
-                  authors=None, priority=0, scope_id=None, priority_of=None,
+                  authors=None, author_uids=None, priority=0, scope_id=None, priority_of=None,
                   fill_missing=None):
     """把帖子排进待办（§11.2：类型／操作方向／摘要）。
 
@@ -497,8 +503,13 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None
             q = q.where(feeds.c.posted_at >= since)
         if until:
             q = q.where(feeds.c.posted_at < until)
+        author_filters = []
         if authors:
-            q = q.where(feeds.c.author_name.in_(list(authors)))
+            author_filters.append(feeds.c.author_name.in_(list(authors)))
+        if author_uids:
+            author_filters.append(feeds.c.author_uid.in_(list(author_uids)))
+        if author_filters:
+            q = q.where(or_(*author_filters))
         q = q.order_by(feeds.c.feed_id)
         if limit:
             q = q.limit(limit)
@@ -533,7 +544,8 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None
     ))
 
 
-def enqueue_kol_comments(engine, cfg, kol_names, *, codes=None, limit=None, since=None, until=None,
+def enqueue_kol_comments(engine, cfg, kol_names, *, kol_user_ids=None,
+                         codes=None, limit=None, since=None, until=None,
                          priority=0, scope_id=None, priority_of=None,
                          fill_missing=None, filter_config=None):
     """把合作 KOL 写的评论排进 `kol_comment_opinion`（PRD §4.4 M7）。
@@ -549,7 +561,8 @@ def enqueue_kol_comments(engine, cfg, kol_names, *, codes=None, limit=None, sinc
     with engine.connect() as conn:
         comment_routes = comment_routes_ready_on_connection(conn)
     for r in _comment_candidates(engine, codes=codes, limit=None, since=since, until=until,
-                                 authors=list(kol_names), comment_routes=comment_routes,
+                                 authors=list(kol_names), author_uids=list(kol_user_ids or ()),
+                                 comment_routes=comment_routes,
                                  parent_filter_config=None if comment_routes else filter_config):
         rows.append(job_row_for_comment(cfg, prompt, schema_version, r,
                         priority=priority_of(r.posted_at, r.code) if priority_of else priority,
@@ -1975,12 +1988,15 @@ def main(argv=None):
                                scope_id=args.scope,
                                fill_missing=args.fill_missing or cfg.fill_missing_only)
         elif args.task == "kol_comment_opinion":
-            from jobs.extract import master_accounts
-            n = enqueue_kol_comments(engine, cfg, authors or master_accounts()[0], codes=codes,
+            from jobs.extract import master_accounts, master_kol_user_ids
+            n = enqueue_kol_comments(
+                engine, cfg, authors or master_accounts()[0],
+                kol_user_ids=() if authors else master_kol_user_ids(), codes=codes,
                                      limit=args.limit, since=since, until=until,
                                      priority=args.priority, scope_id=args.scope,
                                      fill_missing=args.fill_missing or cfg.fill_missing_only,
-                                     filter_config=parent_filter_config)
+                                     filter_config=parent_filter_config,
+            )
         else:
             ap.error(f"--task {args.task} 没有对应的排队函数")
         log.info("已排队 %d 条（%s）", n, args.task)

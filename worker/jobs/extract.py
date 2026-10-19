@@ -63,7 +63,11 @@ from jobs.import_dump import pool_codes  # noqa: E402
 from core.calendar import PRESETS, build as build_range  # noqa: E402
 from core.data_clock import analysis_range_anchor  # noqa: E402
 from radar_db import make_engine  # noqa: E402
-from radar_db.product_catalog import load_accounts, load_kol_aliases  # noqa: E402
+from radar_db.product_catalog import (  # noqa: E402
+    load_accounts,
+    load_active_kol_source_names,
+    load_active_kol_user_ids,
+)
 from radar_db.comment_filter import (  # noqa: E402
     load_comment_filter_config,
     require_filter_ready,
@@ -99,14 +103,14 @@ def new_scope_id():
 def master_accounts(path=MASTER):
     """KOL 当前名及历史别名＋官号全称／简称；与 SQL provider 共用一份名单。"""
     m = load_accounts(base_path=path)
-    aliases = load_kol_aliases(base_path=path)
-    kols = list(dict.fromkeys(
-        source_name
-        for kol in m["kols"]
-        for source_name in aliases[kol["name"]]
-    ))
+    kols = load_active_kol_source_names(base_path=path)
     officials = [o["full"] for o in m["officials"]] + [o["short"] for o in m["officials"]]
     return kols, officials
+
+
+def master_kol_user_ids(path=MASTER):
+    """Stable Futu IDs for active KOLs; nickname matching remains a fallback."""
+    return load_active_kol_user_ids(base_path=path)
 
 
 def resolve_codes(args, ownership):
@@ -475,12 +479,14 @@ def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_
         )
         # 合作 KOL 的评论顺手排进 `kol_comment_opinion`（KOL 详情 M7 要它；量很小）。
         kols, _officials = master_accounts()
+        kol_user_ids = master_kol_user_ids()
         stats["kol_comments"] = 0
         if not dry_run:
             for name, since, until in windows:
                 lo, hi = _utc_bounds(since, until)
                 stats["kol_comments"] += annotate.enqueue_kol_comments(
                     engine, cfg, kols, codes=codes, since=lo, until=hi,
+                    kol_user_ids=kol_user_ids,
                     scope_id=scope_id, priority_of=priority_of(name),
                     filter_config=filter_config,
                 )
@@ -673,14 +679,19 @@ def _extract_comments(engine, cfg, prompt, schema_version, scope_id, codes, wind
 
 def _extract_posts(engine, cfg, scope_id, codes, windows, authors, *, dry_run, priority_of=None):
     kols, officials = master_accounts()
+    kol_user_ids = master_kol_user_ids()
     if authors is None or authors == "both":
         names = kols + officials
+        user_ids = kol_user_ids
     elif authors == "kol":
         names = kols
+        user_ids = kol_user_ids
     elif authors == "official":
         names = officials
+        user_ids = []
     else:
         names = list(authors)
+        user_ids = []
     out = {"authors": len(names), "queued_new": 0, "by_window": {}}
     for name, since, until in windows:
         lo, hi = _utc_bounds(since, until)
@@ -692,14 +703,17 @@ def _extract_posts(engine, cfg, scope_id, codes, windows, authors, *, dry_run, p
                 n = conn.execute(
                     select(func.count()).select_from(feeds).where(
                         feeds.c.code.in_(codes), feeds.c.posted_at >= lo, feeds.c.posted_at < hi,
-                        feeds.c.author_name.in_(names),
+                        or_(
+                            feeds.c.author_name.in_(names),
+                            feeds.c.author_uid.in_(user_ids),
+                        ),
                         or_(and_(feeds.c.content.isnot(None), feeds.c.content != ""),
                             and_(feeds.c.title.isnot(None), feeds.c.title != "")),
                     )
                 ).scalar_one()
         else:
             n = annotate.enqueue_posts(engine, cfg, codes=codes, since=lo, until=hi,
-                                       authors=names, scope_id=scope_id,
+                                       authors=names, author_uids=user_ids, scope_id=scope_id,
                                        priority=1 if name == "current" else 0,
                                        priority_of=priority_of(name) if priority_of else None)
         out["queued_new"] += n

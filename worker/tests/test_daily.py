@@ -366,6 +366,7 @@ def test_production_sync_goes_through_the_latest_closing_receipt(monkeypatch):
     assert synced["through_source_run_id"] == "comments_all:2026-10-06"
     assert synced["run_id"].startswith("daily-20261006-")
     assert result["status"] == "succeeded" and result["completeThrough"] == "2026-10-05"
+    assert result["automaticBackfill"] is None
 
 
 def test_latest_closing_run_falls_back_to_the_previous_day():

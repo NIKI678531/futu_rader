@@ -368,6 +368,23 @@ def load_accounts(base_path=DEMO_MASTER, updates_path=KOL_ROSTER_UPDATES):
     names = [row["name"] for row in kols]
     if len(names) != len(set(names)):
         raise ValueError("KOL roster update produced duplicate current names")
+    updates = _read_json(updates_path)
+    if "activeRoster" in updates:
+        raw_active = updates["activeRoster"]
+        if not isinstance(raw_active, list):
+            raise ValueError("KOL active roster must be a list")
+        active_names = [str(value).strip() for value in raw_active]
+        if any(not name for name in active_names):
+            raise ValueError("KOL active roster contains a blank name")
+        if len(active_names) != len(set(active_names)):
+            raise ValueError("KOL active roster contains duplicate names")
+        unknown = set(active_names) - set(names)
+        if unknown:
+            raise ValueError(
+                "KOL active roster contains unknown names: " + ", ".join(sorted(unknown))
+            )
+        active = set(active_names)
+        kols = [{**row, "active": row["name"] in active} for row in kols]
     return {"officials": master["officials"], "kols": kols}
 
 
@@ -379,6 +396,62 @@ def load_kol_aliases(base_path=DEMO_MASTER, updates_path=KOL_ROSTER_UPDATES):
         row["name"]: aliases_by_name.get(row["name"], (row["name"],))
         for row in accounts["kols"]
     }
+
+
+def load_active_kol_source_names(base_path=DEMO_MASTER, updates_path=KOL_ROSTER_UPDATES):
+    """Return every source author spelling belonging to the active KOL roster."""
+    accounts = load_accounts(base_path=base_path, updates_path=updates_path)
+    aliases = load_kol_aliases(base_path=base_path, updates_path=updates_path)
+    return list(dict.fromkeys(
+        source_name
+        for kol in accounts["kols"]
+        if kol.get("active")
+        for source_name in aliases[kol["name"]]
+    ))
+
+
+def load_kol_user_ids(base_path=DEMO_MASTER, updates_path=KOL_ROSTER_UPDATES):
+    """Return stable Futu user IDs by canonical KOL name.
+
+    Nicknames remain useful for historical rows whose source UID was absent,
+    while IDs keep future posts attached after another display-name change.
+    """
+    accounts = load_accounts(base_path=base_path, updates_path=updates_path)
+    known_names = {row["name"] for row in accounts["kols"]}
+    payload = _read_json(updates_path)
+    raw = payload.get("userIds", {})
+    if not isinstance(raw, dict):
+        raise ValueError("KOL userIds must be an object")
+    unknown = set(raw) - known_names
+    if unknown:
+        raise ValueError("KOL userIds contain unknown names: " + ", ".join(sorted(unknown)))
+    result = {}
+    owner_by_uid = {}
+    for name in known_names:
+        values = raw.get(name, [])
+        if not isinstance(values, list):
+            raise ValueError(f"KOL userIds for {name!r} must be a list")
+        ids = tuple(dict.fromkeys(str(value).strip() for value in values))
+        if any(not value or not value.isdigit() for value in ids):
+            raise ValueError(f"KOL userIds for {name!r} must contain numeric IDs")
+        for user_id in ids:
+            prior = owner_by_uid.setdefault(user_id, name)
+            if prior != name:
+                raise ValueError(f"KOL user ID {user_id!r} belongs to multiple names")
+        result[name] = ids
+    return result
+
+
+def load_active_kol_user_ids(base_path=DEMO_MASTER, updates_path=KOL_ROSTER_UPDATES):
+    """Return stable user IDs for only the active KOL roster."""
+    accounts = load_accounts(base_path=base_path, updates_path=updates_path)
+    user_ids = load_kol_user_ids(base_path=base_path, updates_path=updates_path)
+    return list(dict.fromkeys(
+        user_id
+        for kol in accounts["kols"]
+        if kol.get("active")
+        for user_id in user_ids[kol["name"]]
+    ))
 
 
 def load_pending_products(additions_path=ADDITIONS, *, as_of=None):

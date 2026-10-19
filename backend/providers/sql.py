@@ -107,7 +107,12 @@ from radar_db.comment_routes import (  # noqa: E402
     readiness_on_connection as comment_routes_ready_on_connection,
     route_exists_predicate,
 )
-from radar_db.product_catalog import load_accounts, load_kol_aliases, load_products  # noqa: E402
+from radar_db.product_catalog import (  # noqa: E402
+    load_accounts,
+    load_kol_aliases,
+    load_kol_user_ids,
+    load_products,
+)
 from radar_db.product_identity import maximal_name_codes  # noqa: E402
 from radar_db.revisions import ai_source_version, synthesis_generation_key  # noqa: E402
 from radar_db.schema import (  # noqa: E402
@@ -153,10 +158,27 @@ class SqlProvider:
         self._officials = accounts["officials"]
         self._kols = accounts["kols"]
         self._kol_aliases = load_kol_aliases()
+        self._kol_user_ids = load_kol_user_ids()
         self._kol_name_by_source = {
             source_name: current_name
             for current_name, source_names in self._kol_aliases.items()
             for source_name in source_names
+        }
+        self._kol_name_by_uid = {
+            user_id: current_name
+            for current_name, user_ids in self._kol_user_ids.items()
+            for user_id in user_ids
+        }
+        active_kol_names = {row["name"] for row in self._kols if row.get("active")}
+        self._active_kol_source_names = {
+            source_name
+            for source_name, current_name in self._kol_name_by_source.items()
+            if current_name in active_kol_names
+        }
+        self._active_kol_user_ids = {
+            user_id
+            for user_id, current_name in self._kol_name_by_uid.items()
+            if current_name in active_kol_names
         }
         # 证据卡上的作者身份靠名单认（模块头第 1 点：uid 对不上）。官号两个写法都收，
         # 因为帖子作者名在真实数据里用全称，而契约里的 `account` 是简称。
@@ -170,6 +192,12 @@ class SqlProvider:
         # fail at startup instead of silently widening the public data set.
         self._comment_filter_config = load_comment_filter_config()
         self._cache = {}
+
+    def _canonical_kol_name(self, author_name, author_uid=None):
+        """Resolve a KOL by stable UID first and historical nickname second."""
+        return (
+            self._kol_name_by_uid.get(str(author_uid)) if author_uid is not None else None
+        ) or self._kol_name_by_source.get(author_name)
 
     # ── 底层：库 ──────────────────────────────────────────────────────
 
@@ -1123,8 +1151,15 @@ class SqlProvider:
         }
         ai = self._post_ai(rng)
         posts, seen = [], set()
-        for row, codes in self._posts(rng, list(source_to_name)):
-            k = by_name[source_to_name[row.author_name]]
+        for row, codes in self._posts(
+            rng,
+            list(source_to_name),
+            author_uids=self._active_kol_user_ids,
+        ):
+            current_name = self._canonical_kol_name(row.author_name, row.author_uid)
+            if current_name not in by_name:
+                continue
+            k = by_name[current_name]
             seen.add(k["name"])
             posts.append(
                 {
@@ -1497,7 +1532,10 @@ class SqlProvider:
             .where(
                 comments.c.content.isnot(None),
                 comments.c.content != "",
-                comments.c.author_name.in_(self._kol_names),
+                or_(
+                    comments.c.author_name.in_(self._active_kol_source_names),
+                    comments.c.author_uid.in_(self._active_kol_user_ids),
+                ),
                 feeds.c.posted_at >= lo,
                 feeds.c.posted_at < hi,
             )
@@ -1512,7 +1550,10 @@ class SqlProvider:
         if code is not None:
             q = q.where(code_column == code)
         if kol is not None:
-            q = q.where(comments.c.author_name.in_(self._kol_aliases.get(kol, (kol,))))
+            q = q.where(or_(
+                comments.c.author_name.in_(self._kol_aliases.get(kol, (kol,))),
+                comments.c.author_uid.in_(self._kol_user_ids.get(kol, ())),
+            ))
         try:
             with self._engine.connect() as conn:
                 return {(r.comment_id, r.code) for r in conn.execute(q)}
@@ -2229,6 +2270,11 @@ class SqlProvider:
             for source_name, current_name in self._kol_name_by_source.items()
             if current_name in active_kols
         }
+        active_user_ids = {
+            user_id: current_name
+            for user_id, current_name in self._kol_name_by_uid.items()
+            if current_name in active_kols
+        }
         posts = [
             post for post in impact["posts"]
             if any(mentioned["code"] == code for mentioned in post["mentioned"])
@@ -2301,7 +2347,8 @@ class SqlProvider:
         for unit, summary in summaries.items():
             source = comment_sources.get(unit[0])
             current_name = (
-                active_source_names.get(source["authorName"])
+                active_user_ids.get(source.get("authorUid"))
+                or active_source_names.get(source["authorName"])
                 if source is not None else None
             )
             if (
@@ -2428,7 +2475,7 @@ class SqlProvider:
             p = self._by_code.get(code)
             if (
                 r is None or p is None
-                or self._kol_name_by_source.get(r["authorName"]) != kol
+                or self._canonical_kol_name(r["authorName"], r.get("authorUid")) != kol
             ):
                 continue
             action = (actions.get((cid, code)) or {}).get("value")
@@ -2988,14 +3035,18 @@ class SqlProvider:
         self._cache[key] = out
         return out
 
-    def _posts(self, rng, names):
+    def _posts(self, rng, names, *, author_uids=()):
         """区间内这批作者的帖子，附带该帖提及的产品池代码（锚点在前）。
 
         `names` 为空时直接返回空 —— 免得 `IN ()` 在两个方言下行为不同。
         """
-        if not names:
+        if not names and not author_uids:
             return []
         lo, hi = _window(rng)
+        author_condition = or_(
+            feeds.c.author_name.in_(names),
+            feeds.c.author_uid.in_(author_uids),
+        )
         with self._engine.connect() as conn:
             rows = list(
                 conn.execute(
@@ -3008,6 +3059,7 @@ class SqlProvider:
                         feeds.c.feed_id,
                         feeds.c.code,
                         feeds.c.posted_at,
+                        feeds.c.author_uid,
                         feeds.c.author_name,
                         feeds.c.title,
                         feeds.c.content,
@@ -3016,7 +3068,7 @@ class SqlProvider:
                         feeds.c.share_count,
                         feeds.c.browse_count,
                     ).where(
-                        feeds.c.author_name.in_(names),
+                        author_condition,
                         feeds.c.posted_at >= lo,
                         feeds.c.posted_at < hi,
                     )
@@ -3030,7 +3082,7 @@ class SqlProvider:
                 select(mentions.c.feed_id, mentions.c.code, mentions.c.source)
                 .select_from(mentions.join(feeds, feeds.c.feed_id == mentions.c.feed_id))
                 .where(
-                    feeds.c.author_name.in_(names),
+                    author_condition,
                     feeds.c.posted_at >= lo,
                     feeds.c.posted_at < hi,
                     mentions.c.in_pool.is_(True),
@@ -3194,6 +3246,7 @@ class SqlProvider:
                         select(
                             comments.c.comment_id,
                             comments.c.content,
+                            comments.c.author_uid,
                             comments.c.author_name,
                             comments.c.posted_at.label("own_posted"),
                             feeds.c.feed_id,
@@ -3210,6 +3263,7 @@ class SqlProvider:
                     for r in conn.execute(q):
                         out[r.comment_id] = {
                             "text": r.content,
+                            "authorUid": r.author_uid,
                             "authorName": r.author_name,
                             # 评论自己的时间在瘦库里大量为 NULL，退回所在帖子的发布
                             # 时间 —— 和 `_scan` 给评论归桶用的是同一个口径。
@@ -3223,6 +3277,7 @@ class SqlProvider:
                         feeds.c.feed_id,
                         feeds.c.title,
                         feeds.c.content,
+                        feeds.c.author_uid,
                         feeds.c.author_name,
                         feeds.c.posted_at,
                         feeds.c.comment_count,
@@ -3232,6 +3287,7 @@ class SqlProvider:
                     for r in conn.execute(q):
                         out[r.feed_id] = {
                             "text": "\n".join(x for x in (r.title, r.content) if x),
+                            "authorUid": r.author_uid,
                             "authorName": r.author_name,
                             "postedAt": utc_naive_to_hkt(r.posted_at),
                             "comments": r.comment_count,

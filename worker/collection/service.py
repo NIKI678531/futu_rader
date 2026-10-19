@@ -51,6 +51,16 @@ SEMANTIC_COMMENT_FIELDS = ("feed_id", "posted_at", "author_uid", "content", "rep
 COUNTER_FIELDS = ("like_count", "comment_count", "image_count", "share_count", "browse_count")
 
 
+class CheckpointConfigurationChanged(ValueError):
+    """The live cursor cannot be reused after parser or product-pool changes."""
+
+    def __init__(self, stream: str):
+        self.stream = stream
+        super().__init__(
+            f"Checkpoint configuration changed for {stream}; run an explicit backfill"
+        )
+
+
 def utc_naive(value: datetime | None) -> datetime | None:
     if value is None or value.tzinfo is None:
         return value
@@ -526,7 +536,7 @@ class FutuRefresh:
         if not row:
             return None
         if row["config_hash"] != self.config_hash:
-            raise ValueError(f"Checkpoint configuration changed for {stream}; run an explicit backfill")
+            raise CheckpointConfigurationChanged(stream)
         entity_id = row["cursor_id"]
         if stream != "users" and entity_id is not None:
             entity_id = int(entity_id)
