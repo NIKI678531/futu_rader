@@ -3,8 +3,7 @@
     python -m jobs.pipeline --scope <scope_id>                 # 评论 → KOL 评论 → 帖子 → Layer B → 报表
     python -m jobs.pipeline --scope <scope_id> --resume        # 中断后续跑：已 done 的任务不重发
     python -m jobs.pipeline --scope <scope_id> --dry-run       # 只打印每一步会做什么与用量估算
-    python -m jobs.pipeline --scope <scope_id> --budget-requests 500 --max-http-requests 500 \
-      --calibration-report <calibration.json> --quality-report <gold-eval.json>
+    python -m jobs.pipeline --scope <scope_id> --budget-requests 500
 
 ## 顺序为什么是这样
 
@@ -21,8 +20,7 @@
 ## 钱的开关
 
 `--budget-requests N` 是每个任务这一轮最多领取多少批（≈ 请求数）。价格未知时它是唯一能对着
-账单核的数字。到了上限就停，下次再跑接着领。所有非 dry-run 调用都要同时提供通过的批量校准
-报告与 v3 人工金标报告；低层入口不能绕过发布门禁。
+账单核的数字。到了上限就停，下次再跑接着领。
 """
 
 import argparse
@@ -43,19 +41,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from ai import config  # noqa: E402
-from ai.providers import build as build_provider, build_synthesis  # noqa: E402
+from ai.providers import build as build_provider  # noqa: E402
 from jobs import annotate, audit, synthesize  # noqa: E402
-from jobs.backfill_comment_filter import prepare_comment_task_execution  # noqa: E402
-from jobs.scope_policy import require_current_exact_scope  # noqa: E402
 from radar_db import make_engine  # noqa: E402
-from radar_db.comment_filter import load_comment_filter_config  # noqa: E402
-from radar_db.comment_routes import (  # noqa: E402
-    readiness_on_connection as comment_routes_ready_on_connection,
-    supersede_ineligible_jobs as supersede_ineligible_route_jobs,
-)
 from radar_db.schema import analysis_scopes, annotation_jobs, comments, feeds  # noqa: E402
 from radar_db.scope_jobs import scope_condition
-from radar_db.time_windows import utc_naive_to_hkt  # noqa: E402
 
 log = logging.getLogger("worker.pipeline")
 
@@ -71,12 +61,11 @@ def pending_days(engine, scope_id):
                          .outerjoin(comments, comments.c.comment_id == annotation_jobs.c.target_id)
                          .outerjoin(feeds, feeds.c.feed_id == comments.c.feed_id))
             .where(scope_condition(scope_id), annotation_jobs.c.task == "comment_product",
-                   annotation_jobs.c.target_type == "comment",
-                   annotation_jobs.c.status.notin_(("done", "superseded")))
+                   annotation_jobs.c.target_type == "comment", annotation_jobs.c.status != "done")
             .distinct()
         )
         for code, posted_at in rows:
-            days[code].add(utc_naive_to_hkt(posted_at).date() if posted_at is not None else None)
+            days[code].add(posted_at.date() if posted_at is not None else None)
     return days
 
 
@@ -96,49 +85,25 @@ def ready_pairs(engine, scope_id, codes, ranges, anchor, *, days=None):
 
 
 def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=None, max_items=None,
-        skip_synth=False, ranges=None, anchor_override=None, audit_report=True,
-        synth_workers=None, stage=None):
-    """Run one scope; ``stage`` limits only comment-product annotation work."""
+    skip_synth=False, ranges=None, anchor_override=None, audit_report=True):
     with engine.connect() as conn:
         scope = conn.execute(select(analysis_scopes).where(analysis_scopes.c.scope_id == scope_id)).mappings().first()
     if scope is None:
         raise SystemExit(f"没有这个 scope：{scope_id}。先跑 python -m jobs.extract")
-    if not dry_run:
-        require_current_exact_scope(scope)
-        with engine.connect() as conn:
-            route_active = comment_routes_ready_on_connection(conn)
-        if route_active:
-            parent_filter_config = None
-            with engine.begin() as conn:
-                supersede_ineligible_route_jobs(conn)
-        else:
-            parent_filter_config, _retired = prepare_comment_task_execution(
-                engine,
-                load_comment_filter_config(),
-            )
-    else:
-        parent_filter_config = None
     codes = json.loads(scope["codes_json"])
     summary = {"scope_id": scope_id, "codes": len(codes), "steps": []}
 
     provider = provider or (None if dry_run else build_provider(cfg))
     for task in TASK_ORDER:
-        task_stage = stage if task == "comment_product" else None
-        pending = annotate.pending_count(engine, task, scope_id, stage=task_stage)
+        pending = annotate.pending_count(engine, task, scope_id)
         if pending == 0:
             summary["steps"].append({"task": task, "skipped": "队列为空"})
             continue
         if dry_run:
-            summary["steps"].append({
-                "task": task,
-                "estimate": annotate.estimate(engine, cfg, task, scope_id, task_stage),
-            })
+            summary["steps"].append({"task": task, "estimate": annotate.estimate(engine, cfg, task, scope_id)})
             continue
         stats = annotate.run(engine, cfg, task=task, max_items=max_items or pending, provider=provider,
-                             scope_id=scope_id, budget_requests=budget_requests, stage=task_stage,
-                             parent_filter_config=(
-                                 parent_filter_config if task in annotate.COMMENT_TASKS else None
-                             ))
+                             scope_id=scope_id, budget_requests=budget_requests)
         summary["steps"].append({"task": task, **{k: stats[k] for k in ("run_id", "input", "success", "error",
                                                                           "requests", "tok_in", "tok_out", "aborted")}})
         if stats["aborted"]:
@@ -151,55 +116,25 @@ def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=
             unfinished = conn.execute(
                 select(annotation_jobs.c.job_id).where(
                     scope_condition(scope_id),
-                    annotation_jobs.c.status.notin_(("done", "superseded")),
+                    annotation_jobs.c.status != "done",
                 ).limit(1)
             ).first()
         summary["complete"] = unfinished is None
-    synth_cfg, synth_provider = cfg, provider
-    if not skip_synth and not dry_run:
-        synth_cfg, synth_provider = build_synthesis(cfg, primary=provider)
-    supports_generation = synth_provider is None or getattr(synth_provider, "supports_generation", True)
-    if not skip_synth and not supports_generation:
-        summary["steps"].append({
-            "task": "synthesize",
-            "skipped": "没有可生成文字的模型：请在 AI_SYNTH_* 配置生成模型",
-        })
-        if not dry_run:
-            summary["complete"] = False
-    elif not skip_synth:
+    if not skip_synth:
         ranges = list(ranges or synthesize.DEFAULT_RANGES)
-        anchor = synthesize.resolve_anchor(engine, ranges, anchor_override)
+        anchor = anchor_override or synthesize.read_anchor(engine)
         pairs = ready_pairs(engine, scope_id, codes, ranges, anchor) if anchor else []
         summary["synth_pairs"] = len(pairs)
         summary["synth_pairs_total"] = len(codes) * len(ranges)
-        if pairs:
-            kwargs = {"workers": synth_workers} if synth_workers else {}
-            st = synthesize.run(
-                engine,
-                synth_cfg,
-                pairs=pairs,
-                provider=synth_provider,
-                dry_run=dry_run,
-                scope_id=scope_id,
-                anchor_override=anchor_override,
-                **kwargs,
-            )
-            summary["steps"].append({
-                "task": "synthesize",
-                **{
-                    key: st[key]
-                    for key in (
-                        "run_id", "calls", "written", "skipped_same", "low_sample", "errors",
-                        "tok_in", "tok_out", "pairs", "pairs_clean",
-                    )
-                },
-            })
+        for code, range_key in pairs:
+            kwargs = {"anchor_override": anchor_override} if anchor_override is not None else {}
+            st = synthesize.run(engine, cfg, codes=[code], ranges=[range_key],
+                                provider=provider, dry_run=dry_run, **kwargs)
+            summary["steps"].append({"task": "synthesize", "code": code, "range": range_key,
+                                     **{key: st[key] for key in ("run_id", "calls", "written", "skipped_same",
+                                                                "low_sample", "errors", "tok_in", "tok_out")}})
             if not dry_run and st["errors"]:
                 summary["complete"] = False
-        elif anchor is None:
-            summary["steps"].append({"task": "synthesize", "skipped": "meta_kv 里没有 anchor"})
-        else:
-            summary["steps"].append({"task": "synthesize", "skipped": "没有就绪的 (code, range)"})
     if not dry_run and audit_report:
         rep = audit.report(engine, scope_id)
         summary["audit"] = {"queue": rep["queue"], "needs_review_rate": rep["annotations"]["needs_review_rate"],
@@ -218,7 +153,6 @@ def main(argv=None):
     ap.add_argument("--max-items", type=int)
     ap.add_argument("--skip-synth", action="store_true")
     ap.add_argument("--ranges", help="Layer B 只做这些区间，如 d7,d30")
-    ap.add_argument("--synth-workers", type=int, help="Layer B (code, range) 并行线程数，默认 8")
     args = ap.parse_args(argv)
     if not args.dry_run and (args.max_http_requests is None or args.max_http_requests < 1):
         ap.error("AI execution requires --max-http-requests")
@@ -235,8 +169,7 @@ def main(argv=None):
             out = run(engine, cfg, args.scope, dry_run=args.dry_run, budget_requests=args.budget_requests,
                       max_items=args.max_items, skip_synth=args.skip_synth,
                       provider=build_provider(cfg, control=control) if control else None,
-                      ranges=[r.strip() for r in args.ranges.split(",")] if args.ranges else None,
-                      synth_workers=args.synth_workers)
+                      ranges=[r.strip() for r in args.ranges.split(",")] if args.ranges else None)
         except RunStopped:
             out = {"complete": False, "status": control.reason}
     print(json.dumps(out, ensure_ascii=False, indent=1, default=str))

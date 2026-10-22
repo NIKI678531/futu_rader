@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, select
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -15,19 +15,9 @@ sys.path.insert(0, os.path.join(REPO, "backend"))
 
 from ai import config, neardup  # noqa: E402
 from ai.providers.base import Completion, Usage  # noqa: E402
-from jobs import audit, backfill_comment_routes, extract, pipeline  # noqa: E402
+from jobs import audit, extract, pipeline  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
-from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config  # noqa: E402
-from radar_db.schema import (  # noqa: E402
-    analysis_scopes,
-    annotations,
-    comments,
-    feed_mentions,
-    feeds,
-    mentions,
-    meta_kv,
-    synthesis_outputs,
-)
+from radar_db.schema import annotations, comments, feeds, meta_kv, synthesis_outputs  # noqa: E402
 
 CODE = "3033"
 KOL = "孫子的末代傳人"
@@ -39,21 +29,9 @@ def engine(tmp_path):
     create_all(eng)
     with eng.begin() as conn:
         conn.execute(insert(meta_kv).values(k="anchor", v="2026-08-25"))
-        conn.execute(insert(meta_kv), [
-            {"k": key, "v": value}
-            for key, value in filter_readiness_values(load_comment_filter_config()).items()
-        ])
-        conn.execute(insert(feeds).values(feed_id=1, code=CODE, source_ticker="03033.HK",
-                                          posted_at=datetime(2026, 8, 22, 10), feed_type=1,
-                                          title="恒科", content="$03033.HK$ 正文", author_name=KOL,
+        conn.execute(insert(feeds).values(feed_id=1, code=CODE, posted_at=datetime(2026, 8, 22, 10), feed_type=1,
+                                          title="恒科", content="正文", author_name=KOL,
                                           like_count=0, comment_count=0, image_count=0, raw_json_broken=False))
-        conn.execute(insert(mentions), [
-            {"feed_id": 1, "code": CODE, "source": source, "in_pool": True}
-            for source in ("anchor", "body")
-        ])
-        conn.execute(insert(feed_mentions).values(
-            feed_id=1, raw_ticker="03033.HK", market="HK", occurrences=1
-        ))
         rows = []
         for i in range(14):
             rows.append({"comment_id": 100 + i, "feed_id": 1,
@@ -65,8 +43,8 @@ def engine(tmp_path):
 
 @pytest.fixture()
 def cfg():
-    return config.load(model="m", prompt_version="comment-product-v3", schema_version="v2", taxonomy_version="v2",
-                       micro_batch_size=5, concurrency=2)
+    return config.load(model="m", prompt_version="comment-product-v2", schema_version="v2", taxonomy_version="v2",
+                       micro_batch_size=30, concurrency=2)
 
 
 class UniversalFake:
@@ -88,7 +66,6 @@ class UniversalFake:
                 data = {"points": [{"text": "多條評論認可費率", "evidence_ids": ids[:1]}], "needs_review": False}
             elif kind in ("theme_label", "neg_category"):
                 data = {"results": [{"key": b["key"], "title": "費率同類最低", "summary": "如此。",
-                                     "key_points": [{"text": "管理費低於同類產品", "evidence_ids": b["evidence_ids"][:1]}],
                                      "evidence_ids": b["evidence_ids"][:1]} for b in f["buckets"]]}
             elif kind == "stage_unit":
                 data = {"results": [{"key": u["key"], "category": "add_opportunity", "digest": "加倉為主",
@@ -96,19 +73,14 @@ class UniversalFake:
             elif kind == "stage_summary":
                 data = {"results": [{"key": s["key"], "summary": "連續看多", "evidence_ids": s["evidence_ids"][:1]} for s in f["stages"]]}
             elif kind == "topic_label":
-                data = {
-                    "title": "大市方向",
-                    "summary": "評論把恒指回落與風險偏好轉弱相聯繫。部分評論等待恒指成交量確認後再調整倉位。",
-                    "evidence_ids": ids[:1],
-                }
+                data = {"title": "大市方向", "summary": "看空為主", "evidence_ids": ids[:1]}
             else:
                 data = {"results": [{"code": c["code"], "like_reasons": [], "dislike_reasons": [], "evidence_ids": [],
                                      "needs_review": True} for c in f["competitors"]]}
         else:
             ids = [line.split('"')[3] for line in user.splitlines() if '"item_id"' in line]
             if schema_name == "kol_comment_opinion_batch":
-                data = {"results": [{"item_id": i, "summary": "費率低長期持有", "post_type": "market",
-                                     "action": "加仓", "evidence": "費率係同類最低",
+                data = {"results": [{"item_id": i, "summary": "費率低長期持有", "action": "加仓", "evidence": "費率係同類最低",
                                      "needs_review": False} for i in ids]}
             elif schema_name == "post_annotation_batch":
                 data = {"results": [{"item_id": i, "post_type": "market", "direction": None, "direction_pending": False,
@@ -161,7 +133,6 @@ def test_extract_then_pipeline_end_to_end(engine, cfg, tmp_path):
 
 def test_manual_batch_workflow_is_bounded_and_second_run_sends_nothing(engine, cfg):
     from dataclasses import replace
-    from ai import synth
     from ai.providers.base import RunControl
     from jobs import analyze, full_own
 
@@ -174,7 +145,6 @@ def test_manual_batch_workflow_is_bounded_and_second_run_sends_nothing(engine, c
             self.control.reserve()
             return super().complete_json(*args)
 
-    backfill_comment_routes.run(engine, activate_routes=True)
     cfg = replace(cfg, micro_batch_size=5, grouped_batches=True)
     plan = analyze.make_plan(engine, analyze.parser().parse_args(["plan", "--codes", CODE]))
     limited = BoundedFake(1)
@@ -185,21 +155,10 @@ def test_manual_batch_workflow_is_bounded_and_second_run_sends_nothing(engine, c
     worker = BoundedFake(100)
     finished = full_own.run_manual(engine, cfg, plan, worker)
     assert finished["status"] == "complete"
-    assert finished["synthVersion"] == synth.VERSION
     assert finished["products"][CODE]["complete"]
     repeated = BoundedFake(100)
-    repeated_progress = full_own.run_manual(engine, cfg, plan, repeated)
-    assert repeated_progress["status"] == "complete"
+    assert full_own.run_manual(engine, cfg, plan, repeated)["status"] == "complete"
     assert repeated.calls == []
-    assert repeated_progress["work"]["annotationsReused"] > 0
-    with engine.connect() as conn:
-        per_range = {
-            key: conn.execute(
-                select(meta_kv.c.v).where(meta_kv.c.k == f"own_analysis_progress_{key}")
-            ).scalar_one()
-            for key in ("d1", "d2")
-        }
-    assert all(json.loads(value)["status"] == "complete" for value in per_range.values())
 
 
 def test_manual_workflow_refuses_stale_plan_before_preparing(engine, cfg):
@@ -219,44 +178,9 @@ def test_pipeline_dry_run_estimates_only(engine, cfg, tmp_path):
                       ownership={CODE: "own"}, report_dir=tmp_path)
     out = pipeline.run(engine, cfg, ext["scope_id"], dry_run=True, ranges=["d7"])
     est = out["steps"][0]["estimate"]
-    assert est["pending_items"] == 13 and est["requests"] == 3
+    assert est["pending_items"] == 13 and est["requests"] == 1
     with engine.connect() as conn:
         assert conn.execute(select(annotations).where(annotations.c.kind == "attitude")).first() is None
-
-
-@pytest.mark.parametrize(
-    "scope_stats",
-    [None, "{}", json.dumps({"exactRuleVersion": "exact-v0"})],
-    ids=("legacy-null", "missing-version", "stale-version"),
-)
-def test_pipeline_paid_run_rejects_scope_without_current_exact_provenance(
-        engine, cfg, tmp_path, scope_stats):
-    ext = extract.run(
-        engine,
-        cfg,
-        codes=[CODE],
-        date_from=datetime(2026, 8, 19),
-        date_to=datetime(2026, 8, 25),
-        ownership={CODE: "own"},
-        report_dir=tmp_path,
-    )
-    with engine.begin() as conn:
-        conn.execute(
-            update(analysis_scopes)
-            .where(analysis_scopes.c.scope_id == ext["scope_id"])
-            .values(stats_json=scope_stats)
-        )
-
-    provider = UniversalFake()
-    with pytest.raises(ValueError, match="exactRuleVersion"):
-        pipeline.run(
-            engine,
-            cfg,
-            ext["scope_id"],
-            provider=provider,
-            skip_synth=True,
-        )
-    assert provider.calls == []
 
 
 def test_incomplete_pipeline_does_not_synthesize(engine, cfg, tmp_path):
@@ -292,17 +216,9 @@ def test_ready_range_synthesizes_while_older_comments_remain(engine, cfg, tmp_pa
                       date_to=datetime(2026, 8, 25), ownership={CODE: "own"}, report_dir=tmp_path)
     pipeline.run(engine, cfg, ext["scope_id"], provider=UniversalFake(), skip_synth=True)
     with engine.begin() as conn:
-        conn.execute(insert(feeds).values(feed_id=2, code=CODE, source_ticker="03033.HK",
-                                         posted_at=datetime(2026, 7, 20), feed_type=1, title="ETF",
-                                         content="$03033.HK$ ETF", raw_json_broken=False,
+        conn.execute(insert(feeds).values(feed_id=2, code=CODE, posted_at=datetime(2026, 7, 20),
+                                         feed_type=1, title="ETF", content="ETF", raw_json_broken=False,
                                          like_count=0, comment_count=1, image_count=0))
-        conn.execute(insert(mentions), [
-            {"feed_id": 2, "code": CODE, "source": source, "in_pool": True}
-            for source in ("anchor", "body")
-        ])
-        conn.execute(insert(feed_mentions).values(
-            feed_id=2, raw_ticker="03033.HK", market="HK", occurrences=1
-        ))
         conn.execute(insert(comments).values(comment_id=999, feed_id=2, content="ETF fee too high",
                                             author_name="reader", author_uid="old-reader"))
     extended = extract.run(engine, cfg, codes=[CODE], date_from=datetime(2026, 6, 27),
@@ -331,63 +247,3 @@ def test_llm_annotations_reach_folded_comments(engine, cfg, tmp_path):
     assert labels["relevance"] == "relevant"
     assert labels["attitude"] == "positive"
     assert labels["aspect"] == ["fee"]
-
-
-class ClassificationOnlyFake(UniversalFake):
-    """Layer A 能判、写不出文字：TypeSafe System One 的形状。"""
-
-    supports_generation = False
-
-    def complete_json(self, system, user, schema, schema_name):
-        assert not schema_name.startswith("synth_"), "分类型 provider 不该收到 Layer B 请求"
-        return super().complete_json(system, user, schema, schema_name)
-
-
-def test_layer_b_uses_dedicated_generation_model(engine, cfg, tmp_path, monkeypatch):
-    from dataclasses import replace
-    from ai import providers
-
-    generator = UniversalFake()
-    monkeypatch.setitem(providers._PROVIDERS, "fake_generation", lambda _cfg, **_kw: generator)
-    cfg = replace(cfg, synth_provider="fake_generation", synth_base_url="https://gen.invalid/v1",
-                  synth_api_key="k", synth_model="gen-model")
-    ext = extract.run(engine, cfg, codes=[CODE], date_from=datetime(2026, 8, 19), date_to=datetime(2026, 8, 25),
-                      task="both", ownership={CODE: "own"}, report_dir=tmp_path)
-    classifier = ClassificationOnlyFake()
-
-    out = pipeline.run(engine, cfg, ext["scope_id"], provider=classifier, ranges=["d7"])
-
-    steps = {s["task"]: s for s in out["steps"]}
-    assert steps["comment_product"]["success"] == 13
-    assert steps["synthesize"]["errors"] == 0 and steps["synthesize"]["written"] >= 4
-    assert any(call.startswith("synth_") for call in generator.calls)
-    assert not any(call.startswith("synth_") for call in classifier.calls)
-    from radar_db.schema import annotation_runs
-
-    with engine.connect() as conn:
-        synth_runs = conn.execute(select(annotation_runs.c.provider).where(
-            annotation_runs.c.task == "synthesize"
-        )).scalars().all()
-    assert synth_runs and set(synth_runs) == {"fake_generation"}
-
-
-def test_classification_only_without_generation_model_is_incomplete(engine, cfg, tmp_path):
-    ext = extract.run(engine, cfg, codes=[CODE], date_from=datetime(2026, 8, 19), date_to=datetime(2026, 8, 25),
-                      ownership={CODE: "own"}, report_dir=tmp_path)
-    out = pipeline.run(engine, cfg, ext["scope_id"], provider=ClassificationOnlyFake(), ranges=["d7"])
-    synth = next(s for s in out["steps"] if s["task"] == "synthesize")
-    assert "AI_SYNTH_" in synth["skipped"]
-    assert out["complete"] is False
-
-
-def test_synthesis_config_requires_complete_generation_settings():
-    from dataclasses import replace
-
-    base = config.load(model="m")
-    assert config.synthesis(base) is base
-    with pytest.raises(config.ConfigError):
-        config.synthesis(replace(base, synth_model="gen-model"))
-    synth = config.synthesis(replace(base, synth_base_url="https://gen.invalid/v1", synth_api_key="k",
-                                     synth_model="gen-model"))
-    assert (synth.provider, synth.model, synth.prompt_version) == ("openai_compatible", "gen-model",
-                                                                   base.prompt_version)

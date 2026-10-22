@@ -9,94 +9,36 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from apscheduler.schedulers.blocking import BlockingScheduler
-from sqlalchemy import func, insert, or_, select, update
+from sqlalchemy import func, insert, select, update
 
 ROOT = Path(__file__).resolve().parents[2]
 for folder in (ROOT, ROOT / "worker", ROOT / "backend"):
     sys.path.insert(0, str(folder))
 
-from ai import config, synth
-import clock
+from ai import config
 from core.calendar import PRESETS, build
-from core.data_clock import analysis_range_anchor
 from jobs import annotate, extract, pipeline
-from jobs.backfill_comment_filter import prepare_comment_task_execution
 from radar_db import make_engine
-from radar_db.comment_filter import load_comment_filter_config
-from radar_db.comment_routes import (
-    readiness_on_connection as comment_routes_ready_on_connection,
-    supersede_ineligible_jobs as supersede_ineligible_route_jobs,
-)
 from radar_db.events import emit
 from radar_db.leases import WorkerLease
-from radar_db.product_catalog import load_products
-from radar_db.revisions import ai_source_version
-from radar_db.schema import (
-    analysis_scope_jobs,
-    analysis_scopes,
-    annotation_jobs,
-    comments,
-    feeds,
-    meta_kv,
-)
+from radar_db.schema import analysis_scopes, annotation_jobs, comments, feeds, meta_kv
 from radar_db.scope_jobs import scope_condition
-from radar_db.time_windows import utc_naive_to_hkt
-
-log = logging.getLogger("worker.full_own")
-COMPLETE_RANGES = tuple(key for key in PRESETS if key != "d0")
-
-
-def product_code_sets(products, *, include_all_analysis):
-    """Keep analysis scope configurable while prices always cover the pool."""
-    price_codes = [row["code"] for row in products]
-    analysis_codes = [
-        row["code"]
-        for row in products
-        if include_all_analysis or row["ownership"] == "own"
-    ]
-    return analysis_codes, price_codes
-
-
-def _prepare_comment_execution(engine, *, supersede=False):
-    with engine.connect() as conn:
-        route_active = comment_routes_ready_on_connection(conn)
-    if not route_active:
-        return prepare_comment_task_execution(
-            engine,
-            load_comment_filter_config(),
-            supersede=supersede,
-        )
-    retired = 0
-    if supersede:
-        with engine.begin() as conn:
-            retired = supersede_ineligible_route_jobs(conn)
-    return None, retired
 
 
 def save_progress(engine, progress):
     value = json.dumps(progress, ensure_ascii=False, default=str)
-    keys = ["own_analysis_progress"]
-    keys.extend(
-        f"own_analysis_progress_{range_key}"
-        for range_key in progress.get("ranges", ())
-    )
     with engine.begin() as conn:
-        for key in dict.fromkeys(keys):
-            if not conn.execute(
-                update(meta_kv).where(meta_kv.c.k == key).values(v=value)
-            ).rowcount:
-                conn.execute(insert(meta_kv).values(k=key, v=value))
+        if not conn.execute(update(meta_kv).where(meta_kv.c.k == "own_analysis_progress").values(v=value)).rowcount:
+            conn.execute(insert(meta_kv).values(k="own_analysis_progress", v=value))
 
 
-def prepare(engine, cfg, anchor, codes, *, ranges=None, optimized=False, page_size=1000,
-            include_baseline=True):
+def prepare(engine, cfg, anchor, codes, *, ranges=None, optimized=False, page_size=1000):
     with engine.connect() as conn:
-        source_version = ai_source_version(dict(conn.execute(
-            select(meta_kv.c.k, meta_kv.c.v)
-        ).all()))
-    windows = [build(key, anchor) for key in (ranges or COMPLETE_RANGES)]
-    start = min(date.fromisoformat(window["benchFrom"] if include_baseline else window["from"])
-                for window in windows)
+        source_version = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
+            meta_kv.c.k.in_(("data_revision", "etl_generation")),
+        )).all())
+    windows = [build(key, anchor) for key in (ranges or PRESETS)]
+    start = min(date.fromisoformat(window["benchFrom"]) for window in windows)
     end = datetime.combine(anchor, time.min)
     first = datetime.combine(start, time.min)
     scopes = {}
@@ -111,10 +53,8 @@ def prepare(engine, cfg, anchor, codes, *, ranges=None, optimized=False, page_si
                 analysis_scopes.c.taxonomy_version == cfg.taxonomy_version,
             ).order_by(analysis_scopes.c.created_at.desc())).mappings().first()
         old_stats = json.loads(existing["stats_json"] or "{}") if existing else {}
-        if (existing and existing["stats_json"]
-            and old_stats.get("sourceVersion", {}) == source_version
-            and old_stats.get("model", cfg.model) == cfg.model
-            and old_stats.get("exactRuleVersion") == extract.EXACT_RULE_VERSION):
+        if (existing and existing["stats_json"] and old_stats.get("sourceVersion", {}) == source_version
+            and old_stats.get("model", cfg.model) == cfg.model):
             scopes[code] = existing["scope_id"]
             continue
         missing.append(code)
@@ -155,8 +95,7 @@ def prioritize_scope(engine, scope_id, anchor, *, own, daily=False):
             for job_id, priority, posted_at in rows:
                 updated = annotate.job_priority(posted_at, anchor, own=own, current=True)
                 if daily and posted_at is not None:
-                    posted_day = utc_naive_to_hkt(posted_at).date()
-                    updated = 100000 - (anchor - posted_day).days * 100 + (2 if own else 0)
+                    updated = 100000 - (anchor - posted_at.date()).days * 100 + (2 if own else 0)
                 if priority != updated:
                     changes[updated].append(job_id)
     with engine.begin() as conn:
@@ -169,26 +108,20 @@ def prioritize_scope(engine, scope_id, anchor, *, own, daily=False):
 
 def source_state(engine):
     with engine.connect() as conn:
-        values = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v)).all())
-    return {
-        **({"anchor": values["anchor"]} if values.get("anchor") else {}),
-        **ai_source_version(values),
-    }
+        return dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
+            meta_kv.c.k.in_(("anchor", "data_revision", "etl_generation")),
+        )).all())
 
 
 def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
     from ai.providers.base import RunStopped
 
-    parent_filter_config, _retired = _prepare_comment_execution(
-        engine, supersede=True,
-    )
     control = provider.control
     state = source_state(engine)
     if state != plan["sourceState"]:
         raise ValueError("Source changed after planning; create a new plan")
     anchor = date.fromisoformat(plan["anchor"])
     codes = plan["codes"]
-    all_codes = {product["code"] for product in load_products(engine=engine)}
     with WorkerLease(engine, "own-analysis") as lease:
         def check_source():
             if lease.lost:
@@ -197,35 +130,13 @@ def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
                 control.stop("source_changed")
         control.before_request = check_source
         progress = {"anchor": plan["anchor"], "baselineFrom": plan["from"],
-                    "scope": "all" if set(codes) == all_codes else "selection", "ranges": plan["ranges"],
+                    "scope": "all" if len(codes) == 120 else "selection", "ranges": plan["ranges"],
                     "sourceVersion": {key: value for key, value in state.items() if key != "anchor"},
-                    "model": cfg.model, "synthVersion": synth.VERSION,
-                    "batchSize": cfg.micro_batch_size, "status": "running", "products": {}}
-        progress["work"] = {
-            "annotationsWritten": 0,
-            "annotationsReused": 0,
-            "synthesisWritten": 0,
-            "synthesisReused": 0,
-            "errors": 0,
-        }
+                    "model": cfg.model, "batchSize": cfg.micro_batch_size, "status": "running", "products": {}}
         try:
             if scopes is None:
                 scopes, _start = prepare(engine, cfg, anchor, codes, ranges=plan["ranges"],
-                                          optimized=True, page_size=page_size,
-                                          include_baseline=not plan.get("currentWindowOnly", False))
-            scope_ids = tuple(scopes.values())
-            if scope_ids:
-                linked_to_scope = select(analysis_scope_jobs.c.job_id).where(
-                    analysis_scope_jobs.c.scope_id.in_(scope_ids),
-                    analysis_scope_jobs.c.job_id == annotation_jobs.c.job_id,
-                ).exists()
-                with engine.connect() as conn:
-                    progress["work"]["annotationsReused"] = int(conn.execute(
-                        select(func.count(func.distinct(annotation_jobs.c.job_id))).where(
-                            annotation_jobs.c.status == "done",
-                            or_(annotation_jobs.c.scope_id.in_(scope_ids), linked_to_scope),
-                        )
-                    ).scalar_one())
+                                          optimized=True, page_size=page_size)
             for code, scope in scopes.items():
                 prioritize_scope(engine, scope, anchor, own=plan["ownership"][code] == "own", daily=True)
                 progress["products"][code] = {"scope": scope, "queue": queue_status(engine, scope), "complete": False}
@@ -247,22 +158,9 @@ def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
                 order.remove(code)
                 order.append(code)
                 before = queue_status(engine, scopes[code])
-                annotate.route_legacy_jobs_to_llm(
-                    engine, scopes[code],
-                    parent_filter_config=parent_filter_config,
-                )
                 result = pipeline.run(engine, cfg, scopes[code], provider=provider,
                                       max_items=cfg.micro_batch_size * cfg.concurrency,
-                                      ranges=plan["ranges"], anchor_override=anchor, audit_report=False,
-                                      synth_workers=cfg.concurrency, stage=annotate.STAGE_LLM)
-                for step in result.get("steps", ()):
-                    if step.get("task") == "synthesize":
-                        progress["work"]["synthesisWritten"] += int(step.get("written", 0))
-                        progress["work"]["synthesisReused"] += int(step.get("skipped_same", 0))
-                        progress["work"]["errors"] += int(step.get("errors", 0))
-                    else:
-                        progress["work"]["annotationsWritten"] += int(step.get("success", 0))
-                        progress["work"]["errors"] += int(step.get("error", 0))
+                                      ranges=plan["ranges"], anchor_override=anchor, audit_report=False)
                 after = queue_status(engine, scopes[code])
                 priorities[code] = priority_for(code)
                 row = progress["products"][code]
@@ -287,26 +185,19 @@ def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
             progress["batchRun"] = control.snapshot()
             save_progress(engine, progress)
             control.before_request = None
-    if (progress.get("status") == "complete" and progress.get("scope") == "all"
-            and "d30" in progress.get("ranges", ())
-            and cfg.prompt_version == "comment-product-v4"):
-        with engine.begin() as conn:
-            value = "product-feedback-v4"
-            if not conn.execute(update(meta_kv).where(meta_kv.c.k == "product_feedback_taxonomy").values(v=value)).rowcount:
-                conn.execute(insert(meta_kv).values(k="product_feedback_taxonomy", v=value))
     return progress
 
 
-def main(argv=None):
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--anchor")
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--max-items", type=int, default=300)
     parser.add_argument("--all", action="store_true")
-    parser.add_argument("--ranges", default=",".join(COMPLETE_RANGES))
+    parser.add_argument("--ranges", default=",".join(PRESETS))
     parser.add_argument("--max-http-requests", type=int, required=True)
     parser.add_argument("--sync-prices", action="store_true")
-    args = parser.parse_args(argv)
+    args = parser.parse_args()
     if args.max_http_requests < 1:
         parser.error("--max-http-requests must be positive")
     ranges = list(dict.fromkeys(key.strip() for key in args.ranges.split(",") if key.strip()))
@@ -319,48 +210,32 @@ def main(argv=None):
     control = RunControl(args.max_http_requests)
     provider = build_provider(cfg, control=control)
     engine = make_engine()
-    try:
-        parent_filter_config, _retired = _prepare_comment_execution(
-            engine, supersede=True,
-        )
-    except RuntimeError as exc:
-        parser.error(str(exc))
     with engine.connect() as conn:
         measured = date.fromisoformat(conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar_one())
-    complete_anchor = measured
-    if ranges == ["d0"]:
-        if args.anchor:
-            raise SystemExit("d0 always follows the latest observed data day; do not pass --anchor")
-        anchor = analysis_range_anchor(engine, "d0", complete_anchor)
-        if anchor is None:
-            raise SystemExit("当天数据尚未同步，d0 暂无可分析数据")
-    else:
-        if "d0" in ranges:
-            raise SystemExit("d0 must be analyzed as a single range")
-        anchor = date.fromisoformat(args.anchor) if args.anchor else measured
-        if anchor != measured:
-            raise SystemExit("Anchor must match the complete source day; no synthetic month end")
-    products = load_products(engine=engine)
-    codes, price_codes = product_code_sets(products, include_all_analysis=args.all)
-    ownership = {row["code"]: row["ownership"] for row in products}
+    anchor = date.fromisoformat(args.anchor) if args.anchor else measured
+    if anchor != measured:
+        raise SystemExit("Anchor must match the complete source day; no synthetic month end")
+    master = json.loads((ROOT / "backend/fixtures/demo/master.json").read_text(encoding="utf-8"))
+    codes = [row["code"] for row in master["products"] if args.all or row["ownership"] == "own"]
+    ownership = {row["code"]: row["ownership"] for row in master["products"]}
+    if len(codes) != (120 if args.all else 61):
+        raise SystemExit("Product master must contain 61 own and 59 peer products")
     with WorkerLease(engine, "own-analysis") as lease, control.interruptible():
         emit(engine, "orchestrator", f"Starting LLM analysis for {len(codes)} products: {','.join(ranges)}")
         scopes, start = prepare(engine, cfg, anchor, codes, ranges=ranges)
         for code, scope_id in scopes.items():
             prioritize_scope(engine, scope_id, anchor, own=ownership[code] == "own")
         with engine.connect() as conn:
-            source_version = ai_source_version(dict(conn.execute(
-                select(meta_kv.c.k, meta_kv.c.v)
-            ).all()))
+            source_version = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
+                meta_kv.c.k.in_(("data_revision", "etl_generation")),
+            )).all())
             saved = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "own_analysis_progress")).scalar()
         prior = json.loads(saved) if saved else {}
         reusable = (prior.get("anchor") == anchor.isoformat() and prior.get("model") == cfg.model
-                    and prior.get("sourceVersion", {}) == source_version
-                    and prior.get("synthVersion") == synth.VERSION)
+                    and prior.get("sourceVersion", {}) == source_version)
         progress = {"anchor": anchor.isoformat(), "baselineFrom": start.isoformat(), "products": {},
                     "status": "running", "model": cfg.model, "batchSize": cfg.micro_batch_size,
-                    "sourceVersion": source_version, "scope": "all" if args.all else "own", "ranges": ranges,
-                    "synthVersion": synth.VERSION}
+                    "sourceVersion": source_version, "scope": "all" if args.all else "own", "ranges": ranges}
         for code, scope_id in scopes.items():
             previous = prior.get("products", {}).get(code, {})
             status = queue_status(engine, scope_id)
@@ -371,7 +246,7 @@ def main(argv=None):
         order = sorted(codes, key=lambda code: sum(count for state, count in progress["products"][code]["queue"].items() if state != "done"))
 
         def tick():
-            nonlocal scopes, start, anchor, complete_anchor, source_version, order
+            nonlocal scopes, start, anchor, source_version, order
             if control.stop_event.is_set():
                 progress["status"] = control.reason
                 progress["batchRun"] = control.snapshot()
@@ -387,23 +262,12 @@ def main(argv=None):
                 return
             with engine.connect() as conn:
                 current_anchor = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar_one()
-                current_source = ai_source_version(dict(conn.execute(
-                    select(meta_kv.c.k, meta_kv.c.v)
-                ).all()))
-            if current_source != source_version or (
-                not args.anchor and current_anchor != complete_anchor.isoformat()
-            ):
-                complete_anchor = date.fromisoformat(current_anchor)
+                current_source = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
+                    meta_kv.c.k.in_(("data_revision", "etl_generation")),
+                )).all())
+            if current_source != source_version or (not args.anchor and current_anchor != anchor.isoformat()):
                 if not args.anchor:
-                    anchor = analysis_range_anchor(
-                        engine,
-                        "d0" if ranges == ["d0"] else ranges[0],
-                        complete_anchor,
-                    )
-                    if anchor is None:
-                        progress["status"] = "today_data_unavailable"
-                        save_progress(engine, progress)
-                        return
+                    anchor = date.fromisoformat(current_anchor)
                 scopes, start = prepare(engine, cfg, anchor, codes, ranges=ranges)
                 source_version = current_source
                 progress.update(status="running", anchor=anchor.isoformat(), baselineFrom=start.isoformat())
@@ -412,7 +276,7 @@ def main(argv=None):
                     prioritize_scope(engine, scope_id, anchor, own=ownership[product_code] == "own")
                     progress["products"][product_code] = {"scope": scope_id, "queue": queue_status(engine, scope_id), "complete": False}
                 save_progress(engine, progress)
-            if current_anchor != complete_anchor.isoformat():
+            if current_anchor != anchor.isoformat():
                 progress["status"] = "source_changed"
                 save_progress(engine, progress)
                 return
@@ -427,21 +291,9 @@ def main(argv=None):
             status = queue_status(engine, scopes[code])
             if status.get("dead") or status.get("failed"):
                 progress["products"][code]["blocked"] = "failed_jobs"
-            annotate.route_legacy_jobs_to_llm(
-                engine, scopes[code], parent_filter_config=parent_filter_config,
-            )
             emit(engine, "L2", f"Processing {code}", code=code, scope_id=scopes[code], data=status)
             try:
-                result = pipeline.run(
-                    engine,
-                    cfg,
-                    scopes[code],
-                    max_items=args.max_items,
-                    ranges=ranges,
-                    provider=provider,
-                    synth_workers=cfg.concurrency,
-                    stage=annotate.STAGE_LLM,
-                )
+                result = pipeline.run(engine, cfg, scopes[code], max_items=args.max_items, ranges=ranges, provider=provider)
             except RunStopped:
                 result = {"complete": False, "aborted": control.reason}
             progress["products"][code].update(queue=queue_status(engine, scopes[code]),
@@ -465,19 +317,10 @@ def main(argv=None):
             if args.sync_prices and os.getenv("FMP_API_KEY"):
                 from jobs.sync_prices import sync
                 from market_data.fmp import FmpClient
-                from market_data.yahoo import YahooFinanceClient
-                scheduler.add_job(lambda: sync(
-                    engine,
-                    FmpClient(),
-                    price_codes,
-                    start,
-                    anchor,
-                    force=True,
-                    fallback_client=YahooFinanceClient(),
-                ),
+                scheduler.add_job(lambda: sync(engine, FmpClient(), codes, start, anchor, force=True),
                                   "interval", hours=1, max_instances=1, coalesce=True)
             scheduler.add_job(tick, "interval", seconds=5, max_instances=1, coalesce=True,
-                              next_run_time=clock.now())
+                              next_run_time=datetime.now())
             try:
                 scheduler.start()
             except (KeyboardInterrupt, SystemExit):
