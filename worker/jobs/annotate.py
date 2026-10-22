@@ -39,10 +39,9 @@ import sys
 import threading
 import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime, timedelta, time
 
-from sqlalchemy import and_, func, insert, or_, select, update, tuple_, union
+from sqlalchemy import and_, func, insert, or_, select, update, tuple_
 from sqlalchemy.exc import IntegrityError
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -53,31 +52,12 @@ if os.path.isdir(os.path.join(REPO_ROOT, "radar_db")) and REPO_ROOT not in sys.p
 
 import clock  # noqa: E402
 from ai import config, evidence as ev, neardup, redact, schemas  # noqa: E402
-from ai.batching import BatchPolicy, measure, pack_items
+from ai.batching import BatchPolicy, pack_items
 from ai.providers.base import TruncatedOutput
 from ai.lexicon import product_aliases  # noqa: E402
-from ai.prompts import (  # noqa: E402
-    SCHEMA_OF,
-    get as get_prompt,
-    requires_full_reannotation,
-)
+from ai.prompts import SCHEMA_OF, get as get_prompt  # noqa: E402
 from ai.providers import PermanentError, TransientError, build as build_provider  # noqa: E402
-from collection.exact import EXACT_RULE_VERSION  # noqa: E402
-from jobs.scope_policy import load_current_exact_scope  # noqa: E402
 from radar_db import make_engine  # noqa: E402
-from radar_db.comment_filter import (  # noqa: E402
-    load_comment_filter_config,
-    qualifying_feed_scope_predicate,
-    require_filter_ready,
-    require_filter_ready_on_connection,
-)
-from radar_db.comment_routes import (  # noqa: E402
-    COMMENT_ROUTE_VERSION,
-    readiness_on_connection as comment_routes_ready_on_connection,
-    route_exists_predicate,
-    supersede_ineligible_jobs as supersede_ineligible_route_jobs,
-)
-from radar_db.events import emit  # noqa: E402
 from radar_db.schema import (  # noqa: E402
     NO_SUBJECT,
     annotation_evidence,
@@ -85,11 +65,8 @@ from radar_db.schema import (  # noqa: E402
     annotation_runs,
     annotations,
     comments,
-    comment_product_routes,
     feeds,
-    mentions,
 )
-from radar_db.time_windows import hkt_range_utc_naive, utc_naive_to_hkt  # noqa: E402
 
 log = logging.getLogger("worker.annotate")
 
@@ -97,61 +74,6 @@ log = logging.getLogger("worker.annotate")
 _HUMAN_SETTLED = ("approved", "corrected")
 
 LEASE_MINUTES = 15
-FILL_MISSING_STAGE = "llm_fill"  # annotation_jobs.stage is VARCHAR(10)
-STAGE_LLM = "llm"
-
-
-def default_stage(task):
-    """Return the first processing stage for a newly queued task."""
-    return STAGE_LLM
-
-
-def route_legacy_jobs_to_llm(engine, scope_id, parent_filter_config=None):
-    """Resume unfinished legacy local-model jobs through the remote provider."""
-    from radar_db.comment_routes import readiness_on_connection
-    from radar_db.scope_jobs import scope_condition
-
-    now = clock.now()
-    source = (
-        annotation_jobs
-        .join(comments, comments.c.comment_id == annotation_jobs.c.target_id)
-        .join(feeds, feeds.c.feed_id == comments.c.feed_id)
-    )
-    query = select(annotation_jobs.c.job_id).select_from(source).where(
-        annotation_jobs.c.task == "comment_product",
-        annotation_jobs.c.stage == "student",
-        annotation_jobs.c.target_type == "comment",
-        scope_condition(scope_id),
-        or_(
-            annotation_jobs.c.status == "pending",
-            and_(
-                annotation_jobs.c.status == "claimed",
-                or_(annotation_jobs.c.lease_until.is_(None), annotation_jobs.c.lease_until < now),
-            ),
-        ),
-    )
-    with engine.begin() as conn:
-        if readiness_on_connection(conn, lock=True):
-            query = query.where(route_exists_predicate(
-                annotation_jobs.c.target_id, annotation_jobs.c.subject_code,
-            ))
-        else:
-            parent_filter_config = require_comment_task_filter_on_connection(
-                conn, "comment_product", parent_filter_config,
-            )
-            query = query.where(
-                annotation_jobs.c.subject_code == feeds.c.code,
-                qualifying_feed_scope_predicate(feeds, parent_filter_config),
-            )
-        job_ids = list(conn.execute(query).scalars())
-        for offset in range(0, len(job_ids), 500):
-            conn.execute(update(annotation_jobs).where(
-                annotation_jobs.c.job_id.in_(job_ids[offset:offset + 500]),
-            ).values(
-                stage=STAGE_LLM, status="pending", lease_until=None, updated_at=now,
-                last_error=None,
-            ))
-    return len(job_ids)
 
 # 帖子正文作为评论上下文时只带开头这么多字。一批 30 条常来自同一篇帖子，正文按 feed_id
 # 只放一次（见 `_user_message_with_context`），但仍要有上限 —— 长文会把系统提示挤出缓存窗口。
@@ -167,7 +89,7 @@ _LEXICON = None
 
 
 def _lexicon():
-    global _LEXICON  # noqa: PLW0603  进程内单例，生产词表构造一次即可
+    global _LEXICON  # noqa: PLW0603  进程内单例，词表 120 只，构造一次即可
     if _LEXICON is None:
         _LEXICON = product_aliases.ProductLexicon()
     return _LEXICON
@@ -188,18 +110,18 @@ class _Abort(Exception):
 def resolve(task, cfg):
     """取该任务要用的 Prompt 模块与 schema 版本。
 
-    一个全局 `AI_PROMPT_VERSION` 会被多个任务共享：当它属于别的任务时，按 schema 选择
-    本任务的配对 Prompt；当它明确属于本任务却与 schema 不匹配时直接报配置错误。
-    绝不让 v2 Prompt 套 v1 strict schema 后悄悄丢字段。
+    Prompt 由 `cfg.prompt_version` 选（不认识的版本会报错，见 `ai.prompts.get`）；
+    schema 版本以 `cfg.schema_version` 为准，但与该 Prompt 配对的版本不一致时出声 ——
+    v2 Prompt 要求七个字段，用 v1 schema 校验会整批失败，而错误信息看起来像模型的问题。
     """
-    prompt = get_prompt(task, cfg.prompt_version, schema_version=cfg.schema_version)
+    prompt = get_prompt(task, cfg.prompt_version)
     paired = SCHEMA_OF.get(prompt.VERSION)
-    if prompt.VERSION == cfg.prompt_version and paired != cfg.schema_version:
-        raise config.ConfigError(
-            f"Prompt {prompt.VERSION} 配对 schema {paired}，"
-            f"但 AI_SCHEMA_VERSION={cfg.schema_version}；请使用匹配版本"
+    if paired and paired != cfg.schema_version:
+        log.warning(
+            "Prompt %s 配对的 schema 是 %s，但 AI_SCHEMA_VERSION=%s；以配置为准",
+            prompt.VERSION, paired, cfg.schema_version,
         )
-    return prompt, paired
+    return prompt, cfg.schema_version
 
 
 def prompt_version(prompt, cfg):
@@ -224,7 +146,7 @@ def new_run_id():
 def recency_tier(posted_at, anchor):
     if posted_at is None or anchor is None:
         return 0
-    day = utc_naive_to_hkt(posted_at).date() if isinstance(posted_at, datetime) else posted_at
+    day = posted_at.date() if isinstance(posted_at, datetime) else posted_at
     anchor_day = anchor.date() if isinstance(anchor, datetime) else anchor
     age = max(0, (anchor_day - day).days)
     for max_days, bonus in ((7, 30), (14, 20), (30, 10)):
@@ -239,153 +161,51 @@ def job_priority(posted_at, anchor, *, own, current):
     return recency_tier(posted_at, anchor) + (2 if own else 0) + (1 if current else 0)
 
 
-def _comment_candidates(
-    engine,
-    *,
-    codes=None,
-    limit=None,
-    since=None,
-    until=None,
-    authors=None,
-    author_uids=None,
-    page_size=1000,
-    include_body_targets=False,
-    include_empty=False,
-    parent_filter_config=None,
-    comment_routes=False,
-):
-    """Read comment/product candidates with a half-open ``until`` bound.
-
-    ``comment_routes=True`` is the active production path and emits one row per
-    persisted content-tag route. The default, parent-filter and
-    ``include_body_targets`` paths remain only for migration/audit compatibility.
-    """
+def _comment_candidates(engine, *, codes=None, limit=None, since=None, until=None, authors=None, page_size=1000):
+    """评论×挂载产品的候选行。`until` 为半开上界（`posted_at < until`）；`authors` 限定评论作者名。"""
     parent = comments.alias("parent")
-    grandparent = comments.alias("grandparent")
-    great_grandparent = comments.alias("great_grandparent")
-    source = (
-        comments
-        .join(feeds, feeds.c.feed_id == comments.c.feed_id)
-        # 父评论是可选的，外连接 —— 内连接会把所有非回复的评论排除在队列外。
-        .outerjoin(parent, parent.c.comment_id == comments.c.reply_to_comment_id)
-        .outerjoin(grandparent, grandparent.c.comment_id == parent.c.reply_to_comment_id)
-        .outerjoin(
-            great_grandparent,
-            great_grandparent.c.comment_id == grandparent.c.reply_to_comment_id,
-        )
-    )
-    code_column = feeds.c.code
-    extra_columns = []
-    route_ordered = False
-    if comment_routes:
-        source = source.join(
-            comment_product_routes,
-            and_(
-                comment_product_routes.c.comment_id == comments.c.comment_id,
-                comment_product_routes.c.rule_version == COMMENT_ROUTE_VERSION,
-            ),
-        )
-        code_column = comment_product_routes.c.subject_code
-        extra_columns = [feeds.c.code.label("anchor_code")]
-        route_ordered = True
-    elif include_body_targets:
-        targets = union(
-            select(
-                feeds.c.feed_id.label("feed_id"),
-                feeds.c.code.label("target_code"),
-            ),
-            select(
-                mentions.c.feed_id.label("feed_id"),
-                mentions.c.code.label("target_code"),
-            ).where(
-                mentions.c.source == "body",
-                mentions.c.in_pool.is_(True),
-            ),
-        ).subquery("comment_product_targets")
-        source = source.join(targets, targets.c.feed_id == feeds.c.feed_id)
-        code_column = targets.c.target_code
-        extra_columns = [feeds.c.code.label("anchor_code")]
     q = (
         select(
             comments.c.comment_id,
             comments.c.content,
             comments.c.author_uid,
             comments.c.feed_id,
-            code_column.label("code"),
-            *extra_columns,
+            feeds.c.code,
             feeds.c.posted_at,
             feeds.c.title,
             feeds.c.content.label("post_content"),
             parent.c.content.label("parent_content"),
-            grandparent.c.content.label("grandparent_content"),
-            great_grandparent.c.content.label("great_grandparent_content"),
         )
-        .select_from(source)
+        .select_from(
+            comments
+            .join(feeds, feeds.c.feed_id == comments.c.feed_id)
+            # 父评论是可选的，外连接 —— 内连接会把所有非回复的评论排除在队列外。
+            .outerjoin(parent, parent.c.comment_id == comments.c.reply_to_comment_id)
+        )
+        .where(comments.c.content.isnot(None), comments.c.content != "")
     )
-    # The legacy direct-enqueue path cannot classify empty text and therefore
-    # keeps its historical guard.  Exact extraction opts in so every stored
-    # platform comment reaches the deterministic audit chain, where ``empty``
-    # becomes an explicit rule exclusion instead of an eternal funnel pending.
-    if not include_empty:
-        q = q.where(comments.c.content.isnot(None), comments.c.content != "")
     if codes:
-        q = q.where(code_column.in_(list(codes)))
-    if parent_filter_config is not None and not comment_routes:
-        if include_body_targets:
-            raise ValueError("parent-feed filtering cannot use legacy body targets")
-        q = q.where(
-            qualifying_feed_scope_predicate(
-                feeds,
-                parent_filter_config,
-                codes=codes,
-            )
-        )
-    author_filters = []
+        q = q.where(feeds.c.code.in_(list(codes)))
     if authors:
-        author_filters.append(comments.c.author_name.in_(list(authors)))
-    if author_uids:
-        author_filters.append(comments.c.author_uid.in_(list(author_uids)))
-    if author_filters:
-        q = q.where(or_(*author_filters))
+        q = q.where(comments.c.author_name.in_(list(authors)))
     if since:
         q = q.where(feeds.c.posted_at >= since)
     if until:
         q = q.where(feeds.c.posted_at < until)
-    # 稳定顺序：同样的参数每次取到同一批，重跑可复现。Exact 模式下一条评论
-    # 可能对应多个 body 产品，游标必须包含 code，否则页边界会漏掉同 comment_id
-    # 的第二个产品。
-    q = q.order_by(comments.c.comment_id, code_column) if (include_body_targets or route_ordered) else q.order_by(
-        comments.c.comment_id
-    )
+    # 稳定顺序：同样的参数每次取到同一批，重跑可复现。
+    q = q.order_by(comments.c.comment_id)
     if page_size < 1:
         raise ValueError("page_size must be positive")
     cursor, remaining = None, limit
     while remaining is None or remaining > 0:
-        if cursor is None:
-            page = q
-        elif include_body_targets or route_ordered:
-            page = q.where(
-                or_(
-                    comments.c.comment_id > cursor[0],
-                    and_(
-                        comments.c.comment_id == cursor[0],
-                        code_column > cursor[1],
-                    ),
-                )
-            )
-        else:
-            page = q.where(comments.c.comment_id > cursor)
+        page = q if cursor is None else q.where(comments.c.comment_id > cursor)
         count = page_size if remaining is None else min(page_size, remaining)
         with engine.connect() as conn:
             records = conn.execute(page.limit(count)).all()
         if not records:
             break
         yield from records
-        cursor = (
-            (records[-1].comment_id, records[-1].code)
-            if include_body_targets or route_ordered
-            else records[-1].comment_id
-        )
+        cursor = records[-1].comment_id
         if remaining is not None:
             remaining -= len(records)
         if len(records) < count:
@@ -396,18 +216,10 @@ def job_row_for_comment(cfg, prompt, schema_version, row, *, priority=0, scope_i
                         task="comment_product"):
     """一行候选 → 一条待办。指纹用的是**将来真正会发出去的那个 payload**。"""
     now = now or clock.now()
-    parents = [
-        value for value in (
-            getattr(row, "parent_content", None),
-            getattr(row, "grandparent_content", None),
-            getattr(row, "great_grandparent_content", None),
-        ) if value
-    ]
     payload = _build_payload(
         task,
         {"target_id": row.comment_id, "subject_code": row.code},
-        {"text": row.content, "title": row.title,
-         "parent": parents[0] if parents else None, "parents": parents,
+        {"text": row.content, "title": row.title, "parent": row.parent_content,
          "post_content": getattr(row, "post_content", None)},
     )
     return {
@@ -426,49 +238,38 @@ def job_row_for_comment(cfg, prompt, schema_version, row, *, priority=0, scope_i
         "priority": priority,
         "attempts": 0,
         "scope_id": scope_id,
-        "stage": default_stage(task),
+        "stage": "llm",
         "created_at": now,
         "updated_at": now,
     }
 
 
 def enqueue_comments(engine, cfg, *, codes=None, limit=None, since=None, until=None,
-                     priority=0, scope_id=None, fill_missing=None):
+                     priority=0, scope_id=None):
     """把「评论 × 产品」组合排进待办。
 
     判定单元是 `(comment_id, subject_code)`（§10.1），所以同一条评论评价两只 ETF
     会排成**两条**待办 —— 它们可以得出相反的态度，这正是单表方案做不到的事。
 
-    路由表激活后，产品来自父帖标题／正文与该评论正文中的严格 cashtag 并集；迁移前数据库
-    才保留挂载标的兼容行为。
+    产品用帖子的**挂载标的**（`mentions.source='anchor'`）。正文提及（`body`）先不排：
+    一篇提到八只 ETF 的帖子，它下面的每条评论都排八条待办，成本是八倍，而其中大多数
+    评论并没有在评价那八只。这条口径写在这里是有意的 —— 扩大范围是一个要单独决策的事。
 
-    **不做规则预过滤。** 按 ETF × 时间段抽取并过滤的生产入口是 `jobs/extract.py`；
-    这里只保留为测试／迁移兼容函数，CLI 禁止用它创建 `comment_product` 任务。
+    **不做规则预过滤。** 按 ETF × 时间段抽取并过滤的入口是 `jobs/extract.py`；
+    这里保留为「把范围内一切非空评论排进队」的原始入口，给测试与影子运行用。
     """
     prompt, schema_version = resolve("comment_product", cfg)
     now = clock.now()
-    with engine.connect() as conn:
-        route_active = comment_routes_ready_on_connection(conn)
     rows = [
         job_row_for_comment(cfg, prompt, schema_version, r, priority=priority,
                             scope_id=scope_id, now=now)
-        for r in _comment_candidates(
-            engine,
-            codes=codes,
-            limit=limit,
-            since=since,
-            until=until,
-            comment_routes=route_active,
-        )
+        for r in _comment_candidates(engine, codes=codes, limit=limit, since=since, until=until)
     ]
-    return _insert_jobs(engine, _prepare_fill_missing(
-        engine, rows, "comment_product", schema_version, cfg, fill_missing
-    ))
+    return _insert_jobs(engine, rows)
 
 
 def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None,
-                  authors=None, author_uids=None, priority=0, scope_id=None, priority_of=None,
-                  fill_missing=None):
+                  authors=None, priority=0, scope_id=None, priority_of=None):
     """把帖子排进待办（§11.2：类型／操作方向／摘要）。
 
     与评论任务有三处结构性不同，不是参数差异：
@@ -503,13 +304,8 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None
             q = q.where(feeds.c.posted_at >= since)
         if until:
             q = q.where(feeds.c.posted_at < until)
-        author_filters = []
         if authors:
-            author_filters.append(feeds.c.author_name.in_(list(authors)))
-        if author_uids:
-            author_filters.append(feeds.c.author_uid.in_(list(author_uids)))
-        if author_filters:
-            q = q.where(or_(*author_filters))
+            q = q.where(feeds.c.author_name.in_(list(authors)))
         q = q.order_by(feeds.c.feed_id)
         if limit:
             q = q.limit(limit)
@@ -534,124 +330,33 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None
                     "priority": priority_of(posted_at, code) if priority_of else priority,
                     "attempts": 0,
                     "scope_id": scope_id,
-                    "stage": default_stage(task),
+                    "stage": "llm",
                     "created_at": now,
                     "updated_at": now,
                 }
             )
-    return _insert_jobs(engine, _prepare_fill_missing(
-        engine, rows, task, schema_version, cfg, fill_missing
-    ))
+    return _insert_jobs(engine, rows)
 
 
-def enqueue_kol_comments(engine, cfg, kol_names, *, kol_user_ids=None,
-                         codes=None, limit=None, since=None, until=None,
-                         priority=0, scope_id=None, priority_of=None,
-                         fill_missing=None, filter_config=None):
+def enqueue_kol_comments(engine, cfg, kol_names, *, codes=None, limit=None, since=None, until=None,
+                         priority=0, scope_id=None, priority_of=None):
     """把合作 KOL 写的评论排进 `kol_comment_opinion`（PRD §4.4 M7）。
 
     判定单元、payload、指纹都与 comment_product 同构 —— 只是作者被限定在 KOL 名单内，
     任务名不同。32 位 KOL 的评论量很小，这是全套里最便宜的一个任务。
     """
     task = "kol_comment_opinion"
-    filter_config = filter_config or load_comment_filter_config()
     prompt, schema_version = resolve(task, cfg)
     now = clock.now()
     rows = []
-    with engine.connect() as conn:
-        comment_routes = comment_routes_ready_on_connection(conn)
     for r in _comment_candidates(engine, codes=codes, limit=None, since=since, until=until,
-                                 authors=list(kol_names), author_uids=list(kol_user_ids or ()),
-                                 comment_routes=comment_routes,
-                                 parent_filter_config=None if comment_routes else filter_config):
+                                 authors=list(kol_names)):
         rows.append(job_row_for_comment(cfg, prompt, schema_version, r,
                         priority=priority_of(r.posted_at, r.code) if priority_of else priority,
                                         scope_id=scope_id, now=now, task=task))
         if limit and len(rows) >= limit:
             break
-    return _insert_jobs(engine, _prepare_fill_missing(
-        engine, rows, task, schema_version, cfg, fill_missing
-    ))
-
-
-def _prepare_fill_missing(engine, rows, task, schema_version, cfg, requested):
-    """Keep only incomplete annotation units and persist the no-overwrite mode.
-
-    The flag is stored in ``annotation_jobs.stage`` because enqueue and run are
-    deliberately separate commands.  The write path checks it again inside the
-    transaction, so a concurrent worker cannot turn a gap-fill into a replace.
-    """
-    enabled = getattr(cfg, "fill_missing_only", False) if requested is None else bool(requested)
-    # v3 修的是“已有结论可能完整但语义错误”，不是缺字段；如果仍按补洞模式运行，
-    # 历史误判会全部被跳过。策略跟 Prompt 版本放在注册表中，方便以后发布同类修订。
-    if requires_full_reannotation(
-        task,
-        getattr(cfg, "prompt_version", None),
-        schema_version=schema_version,
-    ):
-        enabled = False
-    if not enabled or not rows:
-        return rows
-
-    keys = {
-        (row["target_type"], row["target_id"], row["subject_code"] or NO_SUBJECT)
-        for row in rows
-    }
-    existing = {key: {} for key in keys}
-    key_list = list(keys)
-    # SQLite 的 bind 参数有上限；全量补洞可能包含几十万个判定单元，分块查询。
-    with engine.connect() as conn:
-        for offset in range(0, len(key_list), 200):
-            found = conn.execute(
-                select(
-                    annotations.c.target_type,
-                    annotations.c.target_id,
-                    annotations.c.subject_code,
-                    annotations.c.kind,
-                    annotations.c.value_json,
-                    annotations.c.annotation_id,
-                )
-                .where(tuple_(
-                    annotations.c.target_type,
-                    annotations.c.target_id,
-                    annotations.c.subject_code,
-                ).in_(key_list[offset:offset + 200]))
-                .order_by(annotations.c.annotation_id)
-            ).all()
-            for target_type, target_id, subject_code, kind, value_json, _annotation_id in found:
-                existing[(target_type, target_id, subject_code)][kind] = value_json
-
-    selected = []
-    for row in rows:
-        key = (row["target_type"], row["target_id"], row["subject_code"] or NO_SUBJECT)
-        values = existing.get(key, {})
-        required = _required_kinds(task, schema_version, values)
-        if required.issubset(values):
-            continue
-        row = dict(row)
-        row["stage"] = FILL_MISSING_STAGE
-        selected.append(row)
-    return selected
-
-
-def _required_kinds(task, schema_version, values):
-    if task == "post_annotation":
-        return {"post_type", "summary", "direction"}
-    if task == "kol_comment_opinion":
-        required = {"kol_summary", "kol_action"}
-        if schema_version != "v1":
-            required.add("post_type")
-        return required
-    required = {"relevance"}
-    if schema_version != "v1":
-        required.add("compliance")
-    try:
-        relevance = json.loads(values.get("relevance", "null"))
-    except (TypeError, ValueError):
-        relevance = None
-    if relevance == "relevant":
-        required.add("attitude")
-    return required
+    return _insert_jobs(engine, rows)
 
 
 def _insert_jobs(engine, rows):
@@ -664,35 +369,8 @@ def _insert_jobs(engine, rows):
         unique = {tuple(row[key] for key in keys): row for row in chunk}
         with engine.begin() as conn:
             query = select(annotation_jobs).where(tuple_(*[annotation_jobs.c[key] for key in keys]).in_(list(unique)))
-            existing_rows = {
-                tuple(row[key] for key in keys): row
-                for row in conn.execute(query).mappings()
-            }
-            existing = {key: row["job_id"] for key, row in existing_rows.items()}
-            # Exact eligibility can legitimately flip after a parent edit.  If
-            # the identical source payload becomes eligible again, the unique
-            # job row already exists in terminal ``superseded`` state; revive
-            # it instead of silently leaving the unit unprocessable.
-            for key, row in unique.items():
-                previous = existing_rows.get(key)
-                if previous is None or previous["status"] != "superseded":
-                    continue
-                conn.execute(
-                    update(annotation_jobs)
-                    .where(annotation_jobs.c.job_id == previous["job_id"])
-                    .values(
-                        status="pending",
-                        priority=row["priority"],
-                        attempts=0,
-                        claimed_at=None,
-                        lease_until=None,
-                        last_error=None,
-                        scope_id=row.get("scope_id"),
-                        stage=row["stage"],
-                        updated_at=row["updated_at"],
-                    )
-                )
-                added += 1
+            existing = {tuple(row[key] for key in keys): row["job_id"]
+                        for row in conn.execute(query).mappings()}
             new = [row for key, row in unique.items() if key not in existing]
             if new:
                 try:
@@ -739,18 +417,7 @@ def _insert_jobs(engine, rows):
 # ── 领取 ───────────────────────────────────────────────────────────────
 
 
-def claim(
-    engine,
-    task,
-    n,
-    *,
-    now=None,
-    scope_id=None,
-    grouped=False,
-    stage=None,
-    parent_filter_config=None,
-    comment_routes=None,
-):
+def claim(engine, task, n, *, now=None, scope_id=None, grouped=False):
     """领取至多 n 条待办，打上租约。
 
     可领取 = `pending`，或 `claimed` 但租约已过期。后者是 worker 崩溃后的回收路径 ——
@@ -758,27 +425,11 @@ def claim(
 
     `scope_id` 给了就只领这个抽取范围的任务（ADR-0020）：跑「3033 近 7 天」时，
     队列里别的产品、别的日期的待办一条都不该被带走。
-
-    `stage` 给了就只领这一段的任务（ADR-0021）；不给则保持旧调用方的不分段行为。
     """
-    parent_filter_config = comment_task_filter_config(task, parent_filter_config)
     now = now or clock.now()
     lease_until = now + timedelta(minutes=LEASE_MINUTES)
     claimed = []
     with _CLAIM_LOCK, engine.begin() as conn:
-        route_active = (
-            comment_routes_ready_on_connection(conn, lock=True)
-            if task in COMMENT_TASKS and comment_routes is not False
-            else False
-        )
-        if comment_routes is True and not route_active:
-            raise RuntimeError("comment AI routes are not ready")
-        if parent_filter_config is not None and not route_active:
-            require_filter_ready_on_connection(
-                conn,
-                parent_filter_config,
-                lock=True,
-            )
         q = (
             select(annotation_jobs)
             .where(
@@ -790,45 +441,13 @@ def claim(
                 ),
             )
         )
-        filtered_source = None
-        if route_active:
-            filtered_source = (
-                annotation_jobs
-                .join(comments, comments.c.comment_id == annotation_jobs.c.target_id)
-                .join(feeds, feeds.c.feed_id == comments.c.feed_id)
-            )
-            q = q.select_from(filtered_source)
-            q = q.where(
-                annotation_jobs.c.target_type == "comment",
-                route_exists_predicate(
-                    annotation_jobs.c.target_id,
-                    annotation_jobs.c.subject_code,
-                ),
-            )
-        elif parent_filter_config is not None:
-            filtered_source = (
-                annotation_jobs
-                .join(comments, comments.c.comment_id == annotation_jobs.c.target_id)
-                .join(feeds, feeds.c.feed_id == comments.c.feed_id)
-            )
-            q = q.select_from(filtered_source).where(
-                annotation_jobs.c.target_type == "comment",
-                annotation_jobs.c.subject_code == feeds.c.code,
-                qualifying_feed_scope_predicate(feeds, parent_filter_config),
-            )
-        if stage is not None:
-            q = q.where(annotation_jobs.c.stage == stage)
         if scope_id is not None:
             from radar_db.scope_jobs import scope_condition
             q = q.where(scope_condition(scope_id))
         if grouped:
-            source = filtered_source if filtered_source is not None else annotation_jobs.outerjoin(
-                comments,
-                and_(
-                    annotation_jobs.c.target_type == "comment",
-                    comments.c.comment_id == annotation_jobs.c.target_id,
-                ),
-            ).outerjoin(feeds, or_(
+            source = annotation_jobs.outerjoin(comments, and_(
+                annotation_jobs.c.target_type == "comment", comments.c.comment_id == annotation_jobs.c.target_id,
+            )).outerjoin(feeds, or_(
                 and_(annotation_jobs.c.target_type == "comment", feeds.c.feed_id == comments.c.feed_id),
                 and_(annotation_jobs.c.target_type == "feed", feeds.c.feed_id == annotation_jobs.c.target_id),
             ))
@@ -838,13 +457,11 @@ def claim(
                                  .limit(1)).mappings().first()
             if first is None:
                 return []
-            q = q.where(annotation_jobs.c.subject_code == first["subject_code"])
-            if not route_active:
-                q = q.where(feeds.c.code == first["feed_code"])
+            q = q.where(annotation_jobs.c.subject_code == first["subject_code"],
+                        feeds.c.code == first["feed_code"])
             if first["posted_at"] is not None:
-                day = utc_naive_to_hkt(first["posted_at"]).date()
-                lo, hi = hkt_range_utc_naive(day, day)
-                q = q.where(feeds.c.posted_at >= lo, feeds.c.posted_at < hi)
+                day = datetime.combine(first["posted_at"].date(), time.min)
+                q = q.where(feeds.c.posted_at >= day, feeds.c.posted_at < day + timedelta(days=1))
             else:
                 q = q.where(annotation_jobs.c.job_id == first["job_id"])
         q = (
@@ -896,37 +513,21 @@ def _merge(stats, local):
 
 
 def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=None,
-        scope_id=None, budget_requests=None, stage=None, parent_filter_config=None,
-        comment_routes=None):
+        scope_id=None, budget_requests=None):
     """跑一轮标注。返回 run 统计。
 
     `budget_requests`：本轮最多**领取**多少批（≈ 请求数，不含重试与二分）。
     价格未知时这是唯一能卡住花费的旋钮 —— 条数×批大小算出来的请求数是可以对着账单核的。
-
-    `stage` 只领取指定漏斗段；不给则兼容直接调用时处理所有阶段。
     """
     cfg = cfg or config.load()
-    parent_filter_config = comment_task_filter_config(task, parent_filter_config)
-    with engine.connect() as conn:
-        route_active = (
-            comment_routes_ready_on_connection(conn)
-            if task in COMMENT_TASKS and comment_routes is not False
-            else False
-        )
-    if comment_routes is True and not route_active:
-        raise RuntimeError("comment AI routes are not ready")
-    if parent_filter_config is not None and not route_active:
-        require_filter_ready(engine, parent_filter_config)
     provider = provider or build_provider(cfg)
     prompt, schema_version = resolve(task, cfg)
 
-    provider_limit = getattr(provider, "max_batch_size", None)
-    batch_size = min(cfg.micro_batch_size, provider_limit) if provider_limit else cfg.micro_batch_size
+    batch_size = cfg.micro_batch_size
     budget = max_items if max_items is not None else batch_size
     run_id = new_run_id()
     started = clock.now()
     stats = _fresh_stats(cfg, run_id, task)
-    stats["stage"] = stage
     workers = max(1, int(cfg.concurrency or 1))
 
     with engine.begin() as conn:
@@ -957,9 +558,7 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
                 and (budget_requests is None or batches_started < budget_requests)
             ):
                 jobs = claim(engine, task, min(batch_size, budget), scope_id=scope_id,
-                             grouped=cfg.grouped_batches, stage=stage,
-                             parent_filter_config=parent_filter_config,
-                             comment_routes=route_active)
+                             grouped=cfg.grouped_batches)
                 if not jobs:
                     break
                 if stop_event.is_set():
@@ -974,16 +573,14 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
                     jobs, _local_stats(),
                     stop_event=stop_event,
                 )
-                inflight[fut] = (len(jobs), jobs[0]["subject_code"] or None)
+                inflight[fut] = len(jobs)
             if not inflight:
                 break
             done, _ = wait(list(inflight), return_when=FIRST_COMPLETED)
             for fut in done:
-                n_jobs, batch_code = inflight.pop(fut)
+                inflight.pop(fut)
                 try:
-                    local = fut.result()
-                    _merge(stats, local)
-                    _emit_batch(engine, task, run_id, scope_id, batch_code, n_jobs, local)
+                    _merge(stats, fut.result())
                 except _Abort as exc:
                     # 别的线程可能同时撞上同一个永久错误；记第一条即可。
                     if stats["aborted"] is None:
@@ -996,97 +593,17 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
         pool.shutdown(wait=True)
         if control is not None and control.stop_event.is_set():
             stats["aborted"] = control.reason
-        _close_run(
-            engine,
-            run_id,
-            stats,
-            mark_synthesis_dirty=task == "comment_product",
-        )
-        if stats["aborted"]:
-            emit(
-                engine,
-                _STAGE_OF.get(task, "L2"),
-                f"{task} 中止：{stats['aborted'][:160]}",
-                level="error",
-                scope_id=scope_id,
-                run_id=run_id,
-            )
+        _close_run(engine, run_id, stats)
 
     return stats
 
 
-_STAGE_OF = {"comment_product": "L2", "kol_comment_opinion": "L2", "post_annotation": "L2"}
-_TASK_LABEL = {"comment_product": "评论", "kol_comment_opinion": "KOL 评论", "post_annotation": "帖子"}
-
-
-def _emit_batch(engine, task, run_id, scope_id, code, n_jobs, local):
-    """Record one concise event after a Luna batch finishes."""
-    label = _TASK_LABEL.get(task, task)
-    message = f"{code or '—'} Luna {label}批 {n_jobs} → 写入 {local['success']}"
-    if local["error"]:
-        message += f" / 失败 {local['error']}"
-    if local["requests"] > 1:
-        message += f"（{local['requests']} 次请求）"
-    emit(
-        engine,
-        _STAGE_OF.get(task, "L2"),
-        message,
-        level="warn" if local["error"] else "info",
-        code=code,
-        scope_id=scope_id,
-        run_id=run_id,
-        data={
-            "task": task,
-            "n": n_jobs,
-            "success": local["success"],
-            "error": local["error"],
-            "requests": local["requests"],
-        },
-    )
-
-
-def _mark_touched_ranges(conn, run_id, mark_synthesis, ranges_touching):
-    """Mark only synthesis windows intersecting comments changed by this run."""
-    from datetime import date
-
-    from radar_db.schema import meta_kv
-
-    anchor_s = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar()
-    anchor = date.fromisoformat(anchor_s[:10]) if anchor_s else None
-    spans = conn.execute(
-        select(annotations.c.subject_code, func.min(feeds.c.posted_at), func.max(feeds.c.posted_at))
-        .select_from(
-            annotations
-            .join(
-                comments,
-                and_(annotations.c.target_type == "comment", comments.c.comment_id == annotations.c.target_id),
-            )
-            .join(feeds, feeds.c.feed_id == comments.c.feed_id)
-        )
-        .where(annotations.c.run_id == run_id)
-        .group_by(annotations.c.subject_code)
-    ).all()
-    for code, lo, hi in spans:
-        if not code:
-            continue
-        if anchor is None or lo is None or hi is None:
-            mark_synthesis(conn, [code], True)
-            continue
-        touched = ranges_touching(
-            anchor,
-            utc_naive_to_hkt(lo).date(),
-            utc_naive_to_hkt(hi).date(),
-        )
-        if touched:
-            mark_synthesis(conn, [code], True, touched)
-
-
-def _close_run(engine, run_id, stats, *, mark_synthesis_dirty=True):
-    from radar_db.revisions import bump_revision, mark_synthesis, ranges_touching
+def _close_run(engine, run_id, stats):
+    from radar_db.revisions import bump_revision, mark_synthesis
     with engine.begin() as conn:
         bump_revision(conn, "annotation")
-        if mark_synthesis_dirty:
-            _mark_touched_ranges(conn, run_id, mark_synthesis, ranges_touching)
+        changed_codes = conn.execute(select(annotations.c.subject_code).where(annotations.c.run_id == run_id).distinct()).scalars()
+        mark_synthesis(conn, list(changed_codes), True)
         conn.execute(
             update(annotation_runs)
             .where(annotation_runs.c.run_id == run_id)
@@ -1113,47 +630,10 @@ def _close_run(engine, run_id, stats, *, mark_synthesis_dirty=True):
         )
 
 
-def _compact_oversized_post(payload, prompt, schema_version, policy):
-    """Keep a deterministic head/tail excerpt when one post exceeds the gateway limit.
-
-    The job fingerprint still covers the full source text.  Evidence returned
-    from the excerpt is located against the original post before publication.
-    """
-
-    if not payload.get("content"):
-        return payload
-    schema = schemas.batch_json_schema("post_annotation", schema_version)
-
-    def fits(candidate):
-        usage = measure([candidate], prompt.SYSTEM, prompt.user_message, schema)
-        return (
-            usage["inputTokensEstimate"] <= policy.max_input_tokens
-            and usage["payloadBytes"] <= policy.max_payload_bytes
-        )
-
-    if fits(payload):
-        return payload
-    original = payload["content"]
-    marker = "\n……[正文过长，中间内容已省略]……\n"
-    low, high, best = 0, len(original), None
-    while low <= high:
-        keep = (low + high) // 2
-        head = (keep + 1) // 2
-        tail = keep // 2
-        excerpt = original[:head] + marker + (original[-tail:] if tail else "")
-        candidate = {**payload, "content": excerpt, "content_truncated": True}
-        if fits(candidate):
-            best = candidate
-            low = keep + 1
-        else:
-            high = keep - 1
-    return best or payload
-
-
 def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, local, depth=0, stop_event=None):
     """处理一批。失败时按 §11.3 二分，而不是整批判死。返回本批的局部统计。"""
     sources = _load_sources(engine, task, jobs)
-    payloads, usable, truncated_item_ids = [], [], set()
+    payloads, usable = [], []
     for job in jobs:
         src = sources.get((job["target_type"], job["target_id"]))
         has_text = src is not None and (
@@ -1176,15 +656,6 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
                              .values(status="superseded", lease_until=None, last_error="Source input changed"))
             local["error"] += 1
             continue
-        if task == "post_annotation" and cfg.grouped_batches:
-            payload = _compact_oversized_post(
-                payload,
-                prompt,
-                schema_version,
-                BatchPolicy(1, cfg.max_input_tokens, cfg.max_payload_bytes),
-            )
-            if payload.get("content_truncated"):
-                truncated_item_ids.add(payload["item_id"])
         payloads.append(payload)
         usable.append((job, src))
 
@@ -1196,8 +667,7 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
         packed, oversized = pack_items(
             list(zip(usable, payloads)), key_of=lambda entry: (
                 entry[0][0]["subject_code"], entry[0][1].get("code"),
-                utc_naive_to_hkt(entry[0][1].get("posted_at")).date()
-                if entry[0][1].get("posted_at") else None),
+                entry[0][1].get("posted_at").date() if entry[0][1].get("posted_at") else None),
             payload_of=lambda entry: entry[1], system=prompt.SYSTEM, render=prompt.user_message,
             schema=schemas.batch_json_schema(task, schema_version), policy=policy,
         )
@@ -1218,16 +688,12 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
         if stop_event is not None and stop_event.is_set():
             raise PermanentError(getattr(stop_event, "reason", "cancelled"))
         local["requests"] += 1
-        complete_annotations = getattr(provider, "complete_annotations", None)
-        if complete_annotations is not None:
-            comp = complete_annotations(task, payloads, schema_version)
-        else:
-            comp = provider.complete_json(
-                prompt.SYSTEM,
-                prompt.user_message(payloads),
-                schemas.batch_json_schema(task, schema_version),
-                f"{task}_batch",
-            )
+        comp = provider.complete_json(
+            prompt.SYSTEM,
+            prompt.user_message(payloads),
+            schemas.batch_json_schema(task, schema_version),
+            f"{task}_batch",
+        )
     except PermanentError as exc:
         if stop_event is not None:
             stop_event.reason = str(exc)
@@ -1295,13 +761,10 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
         return local
 
     latest_sources = _load_sources(engine, task, [job for job, _ in usable])
-    to_write = []
     for job, src in usable:
         if _item_id(task, job) in invalid:
             continue
         item = by_id[_item_id(task, job)]
-        if _item_id(task, job) in truncated_item_ids and hasattr(item, "needs_review"):
-            item = item.model_copy(update={"needs_review": True})
         latest = latest_sources.get((job["target_type"], job["target_id"]))
         if latest != src:
             with engine.begin() as conn:
@@ -1309,10 +772,13 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
                              .values(status="superseded", lease_until=None, last_error="Source changed during inference"))
             local["error"] += 1
             continue
-        to_write.append((job, src, item))
-    ok, bad = _write_batch(engine, task, to_write, run_id, schema_version)
-    local["success"] += ok
-    local["error"] += bad
+        try:
+            _write(engine, task, job, src, item, run_id, schema_version)
+            local["success"] += 1
+        except Exception as exc:  # noqa: BLE001
+            log.exception("写库失败 job=%s", job["job_id"])
+            _fail(engine, job, f"写库失败：{exc}")
+            local["error"] += 1
     if invalid:
         rejected = [(job, src) for job, src in usable if _item_id(task, job) in invalid]
         if by_id and depth < 6:
@@ -1330,44 +796,6 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
         else:
             _retry_or_dead(engine, cfg, rejected, local, "Invalid or missing batch items")
     return local
-
-
-def _write_batch(engine, task, items, run_id, schema_version="v1"):
-    """Write a batch atomically, then isolate individual bad rows on failure."""
-    if not items:
-        return 0, 0
-    try:
-        written = 0
-        with engine.begin() as conn:
-            for job, src, item in items:
-                # Exact extraction can supersede an old claimed job while its
-                # provider request is in flight.  Re-check inside the write
-                # transaction so that stale model output cannot reverse the
-                # newer deterministic exclusion.
-                if job.get("job_id") is not None:
-                    status = conn.execute(
-                        select(annotation_jobs.c.status).where(
-                            annotation_jobs.c.job_id == job["job_id"]
-                        )
-                    ).scalar()
-                    if status == "superseded":
-                        continue
-                _write(engine, task, job, src, item, run_id, schema_version, conn)
-                written += 1
-        return written, 0
-    except Exception as exc:  # noqa: BLE001
-        if len(items) == 1:
-            job = items[0][0]
-            log.exception("写库失败 job=%s", job["job_id"])
-            _fail(engine, job, f"写库失败：{exc}")
-            return 0, 1
-        log.warning("整批写库失败（%s），退化为逐条写", str(exc)[:120])
-        ok = bad = 0
-        for item in items:
-            item_ok, item_bad = _write_batch(engine, task, [item], run_id, schema_version)
-            ok += item_ok
-            bad += item_bad
-        return ok, bad
 
 
 def _record_usage(comp, stats):
@@ -1400,8 +828,6 @@ def _load_sources(engine, task, jobs):
     with engine.connect() as conn:
         if task in COMMENT_TASKS:
             parent = comments.alias("parent")
-            grandparent = comments.alias("grandparent")
-            great_grandparent = comments.alias("great_grandparent")
             q = (
                 select(
                     comments.c.comment_id,
@@ -1409,8 +835,6 @@ def _load_sources(engine, task, jobs):
                     feeds.c.title,
                     feeds.c.content.label("post_content"),
                     parent.c.content.label("parent_content"),
-                    grandparent.c.content.label("grandparent_content"),
-                    great_grandparent.c.content.label("great_grandparent_content"),
                     feeds.c.posted_at,
                     feeds.c.code,
                 )
@@ -1419,28 +843,14 @@ def _load_sources(engine, task, jobs):
                     # 外连接：取不到帖子或父评论时，这条评论**仍然要出现**在结果里。
                     .outerjoin(feeds, feeds.c.feed_id == comments.c.feed_id)
                     .outerjoin(parent, parent.c.comment_id == comments.c.reply_to_comment_id)
-                    .outerjoin(grandparent, grandparent.c.comment_id == parent.c.reply_to_comment_id)
-                    .outerjoin(
-                        great_grandparent,
-                        great_grandparent.c.comment_id == grandparent.c.reply_to_comment_id,
-                    )
                 )
                 .where(comments.c.comment_id.in_(ids))
             )
-            for (cid, content, title, post_content, parent_content, grandparent_content,
-                 great_grandparent_content, posted_at, code) in conn.execute(q):
-                parents = [
-                    value for value in (
-                        parent_content,
-                        grandparent_content,
-                        great_grandparent_content,
-                    ) if value
-                ]
+            for cid, content, title, post_content, parent_content, posted_at, code in conn.execute(q):
                 out[("comment", cid)] = {
                     "text": content,
                     "title": title,
-                    "parent": parents[0] if parents else None,
-                    "parents": parents,
+                    "parent": parent_content,
                     "post_content": post_content,
                     "posted_at": posted_at, "code": code,
                 }
@@ -1455,34 +865,6 @@ def _load_sources(engine, task, jobs):
 
 # 以评论 × 产品为判定单元的任务；帖子任务是另一种形状。
 COMMENT_TASKS = ("comment_product", "kol_comment_opinion")
-
-
-def comment_task_filter_config(task, parent_filter_config=None):
-    """Resolve the mandatory parent-filter generation for a queue task.
-
-    Non-comment tasks deliberately return ``None``.  Every comment-shaped task
-    loads the versioned repository config when a caller omits it and refuses to
-    run a config whose semantics do not match this worker's exact rule.
-    """
-
-    if task not in COMMENT_TASKS:
-        return None
-    selected = parent_filter_config or load_comment_filter_config()
-    if selected.version != EXACT_RULE_VERSION:
-        raise RuntimeError(
-            f"worker exact rule version {EXACT_RULE_VERSION!r} does not match "
-            f"comment filter config {selected.version!r}"
-        )
-    return selected
-
-
-def require_comment_task_filter_on_connection(conn, task, parent_filter_config=None):
-    """Resolve and lock the active filter generation in ``conn``'s transaction."""
-
-    selected = comment_task_filter_config(task, parent_filter_config)
-    if selected is not None:
-        require_filter_ready_on_connection(conn, selected, lock=True)
-    return selected
 
 
 def _item_id(task, job):
@@ -1510,7 +892,6 @@ def _build_payload(task, job, src):
             src["text"],
             post_title=src.get("title"),
             parent_comment=src.get("parent"),
-            parent_comments=src.get("parents"),
             post_context=post_context,
         )
     return redact.post_payload(
@@ -1550,13 +931,10 @@ def _kinds_for(task, item, src, schema_version):
     if task == "kol_comment_opinion":
         spans = [item.evidence] if item.evidence else []
         # `summary=null`＝「这条评论没有对该产品表达观点」，是结论，落 false 占位（同帖子 summary）。
-        kinds = [
+        return [
             ("kol_summary", item.summary if item.summary is not None else False, spans, item.summary is not None),
             ("kol_action", item.action, [], False),
         ]
-        if schema_version != "v1":
-            kinds.append(("post_type", item.post_type, [], False))
-        return kinds
 
     spans = [item.evidence] if item.evidence else []
     # 相关但没给出可定位证据 ⇒ 存疑。无关/需上下文本来就没有证据可给，不算问题。
@@ -1574,24 +952,11 @@ def _kinds_for(task, item, src, schema_version):
             [item.compliance_evidence] if item.compliance_evidence else [],
             bool(item.compliance_tags),
         ))
-    if schema_version == "v3":
-        feedback_aspects = set(item.aspects).intersection(schemas.PRODUCT_FEEDBACK_ASPECTS)
-        kinds.append(("feedback_eligible", item.relevance == "relevant" and bool(feedback_aspects), [], False))
-        issuer_spans = [item.issuer_evidence] if item.issuer_evidence else []
-        issuer_expect = item.issuer_relevance == "relevant"
-        kinds.extend([
-            ("issuer_relevance", item.issuer_relevance, issuer_spans, issuer_expect),
-            ("issuer_attitude", item.issuer_attitude, [], False),
-        ])
-        if item.issuer_aspects:
-            kinds.append(("issuer_aspect", item.issuer_aspects, [], False))
     return kinds
 
 
-def _write(engine, task, job, src, item, run_id, schema_version="v1", conn=None):
-    """把一条标注写进库，连同通过校验的证据；可复用调用方事务。"""
-    from contextlib import nullcontext
-
+def _write(engine, task, job, src, item, run_id, schema_version="v1"):
+    """把一条标注写进库，连同通过校验的证据。"""
     now = clock.now()
     source_text = src["text"] or ""
     if task == "post_annotation":
@@ -1611,22 +976,11 @@ def _write(engine, task, job, src, item, run_id, schema_version="v1", conn=None)
         if (spans and not verified) or (expect and not spans):
             needs_review = True
 
-    with (nullcontext(conn) if conn is not None else engine.begin()) as conn:
+    with engine.begin() as conn:
         written_rows = []
         for kind, value, _spans, _expect in kinds:
             if value is None:
                 continue
-            if job.get("stage") == FILL_MISSING_STAGE:
-                already_present = conn.execute(
-                    select(annotations.c.annotation_id).where(
-                        annotations.c.target_type == job["target_type"],
-                        annotations.c.target_id == job["target_id"],
-                        annotations.c.subject_code == (job["subject_code"] or NO_SUBJECT),
-                        annotations.c.kind == kind,
-                    ).limit(1)
-                ).first()
-                if already_present is not None:
-                    continue
             prev = conn.execute(
                 select(annotations.c.annotation_id, annotations.c.review_state)
                 .where(
@@ -1695,10 +1049,8 @@ def _write(engine, task, job, src, item, run_id, schema_version="v1", conn=None)
 # ── 任务状态流转 ───────────────────────────────────────────────────────
 
 
-def _done(engine, job, conn=None):
-    from contextlib import nullcontext
-
-    with (nullcontext(conn) if conn is not None else engine.begin()) as conn:
+def _done(engine, job):
+    with engine.begin() as conn:
         conn.execute(
             update(annotation_jobs)
             .where(annotation_jobs.c.job_id == job["job_id"])
@@ -1764,7 +1116,7 @@ def _retry_or_dead(engine, cfg, usable, stats, err):
     log.warning("批失败（%s），%d 条已按重试策略处理", err, len(usable))
 
 
-def pending_count(engine, task, scope_id=None, stage=None):
+def pending_count(engine, task, scope_id=None):
     with engine.connect() as conn:
         q = (
             select(func.count())
@@ -1772,98 +1124,15 @@ def pending_count(engine, task, scope_id=None, stage=None):
             .where(annotation_jobs.c.task == task,
                    annotation_jobs.c.status.in_(("pending", "claimed")))
         )
-        if stage is not None:
-            q = q.where(annotation_jobs.c.stage == stage)
         if scope_id is not None:
             from radar_db.scope_jobs import scope_condition
             q = q.where(scope_condition(scope_id))
         return conn.execute(q).scalar_one()
 
 
-def reprioritize(engine, *, anchor=None, ownership=None, dry_run=False):
-    """Recompute priorities for live jobs using the current anchor and scope windows."""
-    from datetime import date
-
-    from radar_db.schema import analysis_scopes, meta_kv
-
-    with engine.connect() as conn:
-        if anchor is None:
-            anchor_s = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar()
-            anchor = date.fromisoformat(anchor_s[:10]) if anchor_s else None
-        elif isinstance(anchor, datetime):
-            anchor = anchor.date()
-        scopes = {row.scope_id: row for row in conn.execute(select(analysis_scopes))}
-    if ownership is None:
-        from jobs.import_dump import pool_codes
-
-        ownership = pool_codes(engine=engine)
-
-    def as_date(value):
-        return value.date() if isinstance(value, datetime) else value
-
-    def current_from(scope_id):
-        scope = scopes.get(scope_id)
-        if scope is None or not scope.with_baseline:
-            return None
-        date_from = as_date(scope.date_from)
-        date_to = as_date(scope.date_to)
-        total_days = (date_to - date_from).days + 1
-        return date_from + timedelta(days=total_days // 2)
-
-    live = annotation_jobs.c.status.in_(("pending", "claimed"))
-    comment_q = (
-        select(
-            annotation_jobs.c.job_id,
-            annotation_jobs.c.priority,
-            annotation_jobs.c.scope_id,
-            feeds.c.code,
-            feeds.c.posted_at,
-        )
-        .select_from(
-            annotation_jobs
-            .join(comments, comments.c.comment_id == annotation_jobs.c.target_id)
-            .join(feeds, feeds.c.feed_id == comments.c.feed_id)
-        )
-        .where(live, annotation_jobs.c.target_type == "comment")
-    )
-    feed_q = (
-        select(
-            annotation_jobs.c.job_id,
-            annotation_jobs.c.priority,
-            annotation_jobs.c.scope_id,
-            feeds.c.code,
-            feeds.c.posted_at,
-        )
-        .select_from(annotation_jobs.join(feeds, feeds.c.feed_id == annotation_jobs.c.target_id))
-        .where(live, annotation_jobs.c.target_type == "feed")
-    )
-    changes = []
-    with engine.connect() as conn:
-        for query in (comment_q, feed_q):
-            for job_id, old, scope_id, code, posted_at in conn.execute(query):
-                boundary = current_from(scope_id)
-                posted_day = utc_naive_to_hkt(posted_at).date() if posted_at is not None else None
-                current = boundary is None or (posted_day is not None and posted_day >= boundary)
-                new = job_priority(posted_at, anchor, own=ownership.get(code) == "own", current=current)
-                if new != old:
-                    changes.append((job_id, new))
-    if not dry_run and changes:
-        now = clock.now()
-        with engine.begin() as conn:
-            for offset in range(0, len(changes), 500):
-                for job_id, new in changes[offset:offset + 500]:
-                    conn.execute(
-                        update(annotation_jobs)
-                        .where(annotation_jobs.c.job_id == job_id)
-                        .values(priority=new, updated_at=now)
-                    )
-    log.info("重排优先级：%d 条改动%s", len(changes), "（dry-run 未写）" if dry_run else "")
-    return len(changes)
-
-
-def estimate(engine, cfg, task, scope_id=None, stage=None):
+def estimate(engine, cfg, task, scope_id=None):
     """`--dry-run` 的用量估算。**不是报价**：网关没有给价格，这里只给条数、请求数与 token 区间。"""
-    n = pending_count(engine, task, scope_id, stage=stage)
+    n = pending_count(engine, task, scope_id)
     prompt, _sv = resolve(task, cfg)
     batch = max(1, cfg.micro_batch_size)
     requests = math.ceil(n / batch) if n else 0
@@ -1871,7 +1140,7 @@ def estimate(engine, cfg, task, scope_id=None, stage=None):
     sys_chars = len(prompt.SYSTEM)
     sys_tok_lo, sys_tok_hi = sys_chars / 1.6, sys_chars / 1.0
     return {
-        "task": task, "scope_id": scope_id, "stage": stage, "pending_items": n, "batch_size": batch,
+        "task": task, "scope_id": scope_id, "pending_items": n, "batch_size": batch,
         "requests": requests,
         "tokens_in_low": int(n * EST_IN_PER_ITEM + requests * sys_tok_lo),
         "tokens_in_high": int(n * EST_IN_PER_ITEM * 1.3 + requests * sys_tok_hi),
@@ -1887,8 +1156,8 @@ def estimate(engine, cfg, task, scope_id=None, stage=None):
 def main(argv=None):
     """影子运行入口。
 
-        python -m jobs.extract --codes 3033,2822 --from 2026-09-01 --to 2026-09-07
-        python -m jobs.annotate --run --scope <scope_id> --max-items 100 --max-http-requests 100
+        python -m jobs.annotate --enqueue --codes 3033,2822 --limit 100
+        python -m jobs.annotate --run --max-items 100
         python -m jobs.annotate --run --scope <scope_id> --dry-run
 
     `--enqueue` 与 `--run` **分开两步**，不是一个命令里顺次做完：排队不花钱，跑标注花钱。
@@ -1901,7 +1170,6 @@ def main(argv=None):
     ap.add_argument("--enqueue", action="store_true", help="排进待办；排哪种由 --task 决定")
     ap.add_argument("--run", action="store_true", help="领取待办并调模型")
     ap.add_argument("--status", action="store_true", help="只看队列状态")
-    ap.add_argument("--reprioritize", action="store_true", help="按当前锚点重算存量任务优先级")
     ap.add_argument("--dry-run", action="store_true", help="只估算待办的请求数与 token，不调模型")
     ap.add_argument("--task", default="comment_product")
     ap.add_argument("--codes", help="逗号分隔的产品代码，留空＝全部")
@@ -1913,20 +1181,10 @@ def main(argv=None):
     ap.add_argument("--budget-requests", type=int, help="本轮最多领取多少批（≈请求数）")
     ap.add_argument("--max-http-requests", type=int, help="Required for --run; includes retries")
     ap.add_argument("--scope", help="只处理这个抽取范围（analysis_scopes.scope_id）")
-    ap.add_argument("--stage", choices=(STAGE_LLM, FILL_MISSING_STAGE),
-                    help="只处理指定漏斗段；默认不分段")
     ap.add_argument("--priority", type=int, default=0)
-    ap.add_argument(
-        "--fill-missing", action="store_true",
-        help="只排缺失 kind，写入时也不替换任何已有标注",
-    )
     args = ap.parse_args(argv)
     if args.run and not args.dry_run and (args.max_http_requests is None or args.max_http_requests < 1):
         ap.error("--run requires --max-http-requests")
-    if args.enqueue and args.task == "comment_product":
-        ap.error("comment_product 必须先用 python -m jobs.extract 做 exact 筛选，禁止原始排队")
-    if args.run and not args.dry_run and args.task == "comment_product" and not args.scope:
-        ap.error("comment_product 只允许按 jobs.extract 生成的 --scope 运行")
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s %(message)s"
@@ -1937,41 +1195,6 @@ def main(argv=None):
     # 又不会把它写进任何一份可能被贴出去的日志（runbook §0）。
     log.info("配置：%s", json.dumps(cfg.redacted(), ensure_ascii=False))
 
-    if args.run and not args.dry_run and args.task == "comment_product":
-        try:
-            load_current_exact_scope(
-                engine,
-                args.scope,
-                require_comment_product=True,
-            )
-        except (ValueError, RuntimeError) as exc:
-            ap.error(str(exc))
-
-    parent_filter_config = None
-    if args.task in COMMENT_TASKS and (
-        args.enqueue or (args.run and not args.dry_run)
-    ):
-        try:
-            with engine.connect() as conn:
-                route_active = comment_routes_ready_on_connection(conn)
-            if route_active:
-                with engine.begin() as conn:
-                    supersede_ineligible_route_jobs(conn)
-            else:
-                from jobs.backfill_comment_filter import prepare_comment_task_execution
-
-                parent_filter_config, _retired = prepare_comment_task_execution(
-                    engine,
-                    supersede=True,
-                    tasks=(args.task,),
-                )
-        except RuntimeError as exc:
-            ap.error(str(exc))
-
-    if args.reprioritize:
-        print(json.dumps({"reprioritized": reprioritize(engine, dry_run=args.dry_run)}, ensure_ascii=False))
-        return 0
-
     since = _parse_day(args.since)
     until = _parse_day(args.until, end=True)
 
@@ -1980,29 +1203,22 @@ def main(argv=None):
         authors = [a.strip() for a in args.authors.split(",")] if args.authors else None
         if args.task == "comment_product":
             n = enqueue_comments(engine, cfg, codes=codes, limit=args.limit, since=since,
-                                 until=until, priority=args.priority, scope_id=args.scope,
-                                 fill_missing=args.fill_missing or cfg.fill_missing_only)
+                                 until=until, priority=args.priority, scope_id=args.scope)
         elif args.task == "post_annotation":
             n = enqueue_posts(engine, cfg, codes=codes, limit=args.limit, since=since,
-                               until=until, authors=authors, priority=args.priority,
-                               scope_id=args.scope,
-                               fill_missing=args.fill_missing or cfg.fill_missing_only)
+                              until=until, authors=authors, priority=args.priority,
+                              scope_id=args.scope)
         elif args.task == "kol_comment_opinion":
-            from jobs.extract import master_accounts, master_kol_user_ids
-            n = enqueue_kol_comments(
-                engine, cfg, authors or master_accounts()[0],
-                kol_user_ids=() if authors else master_kol_user_ids(), codes=codes,
+            from jobs.extract import master_accounts
+            n = enqueue_kol_comments(engine, cfg, authors or master_accounts()[0], codes=codes,
                                      limit=args.limit, since=since, until=until,
-                                     priority=args.priority, scope_id=args.scope,
-                                     fill_missing=args.fill_missing or cfg.fill_missing_only,
-                                     filter_config=parent_filter_config,
-            )
+                                     priority=args.priority, scope_id=args.scope)
         else:
             ap.error(f"--task {args.task} 没有对应的排队函数")
         log.info("已排队 %d 条（%s）", n, args.task)
 
     if args.dry_run:
-        print(json.dumps(estimate(engine, cfg, args.task, args.scope, args.stage), ensure_ascii=False, indent=1))
+        print(json.dumps(estimate(engine, cfg, args.task, args.scope), ensure_ascii=False, indent=1))
         return 0
 
     if args.run:
@@ -2011,9 +1227,7 @@ def main(argv=None):
         control = RunControl(args.max_http_requests)
         with WorkerLease(engine, "own-analysis"), control.interruptible():
             stats = run(engine, cfg, task=args.task, max_items=args.max_items, scope_id=args.scope,
-                        budget_requests=args.budget_requests, stage=args.stage,
-                        provider=build_provider(cfg, control=control),
-                        parent_filter_config=parent_filter_config)
+                        budget_requests=args.budget_requests, provider=build_provider(cfg, control=control))
         log.info("本轮：%s", json.dumps(stats, ensure_ascii=False))
         return 2 if stats["aborted"] or stats["error"] else 0
 
@@ -2023,10 +1237,12 @@ def main(argv=None):
 
 
 def _parse_day(s, end=False):
+    from datetime import datetime
+
     if not s:
         return None
-    lo, hi = hkt_range_utc_naive(s, s)
-    return hi if end else lo
+    d = datetime.strptime(s, "%Y-%m-%d")
+    return d + timedelta(days=1) if end else d
 
 
 def _print_status(engine, task):
