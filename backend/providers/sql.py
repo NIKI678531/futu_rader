@@ -3036,7 +3036,12 @@ class SqlProvider:
         return out
 
     def _posts(self, rng, names, *, author_uids=()):
-        """区间内这批作者的帖子，附带该帖提及的产品池代码（锚点在前）。
+        """区间内这批作者的帖子，附带正文明确提及的产品池代码。
+
+        ``mentions.source='anchor'`` 只是帖子被采集时所在的讨论区。它说明来源，
+        不说明作者在正文中谈到了该产品，因此不能进入 KOL 页的 ``code`` /
+        ``mentioned`` / ``camp``，更不能继续传播到产品页的「相关 KOL」。挂载事实仍
+        保留在 ``feeds.code`` / ``feeds.source_ticker`` 中供审计。
 
         `names` 为空时直接返回空 —— 免得 `IN ()` 在两个方言下行为不同。
         """
@@ -3079,23 +3084,24 @@ class SqlProvider:
             # 提及同样在 SQL 里 join 回来，不拿 feed_id 列表当绑定变量（SQLite 上限 999）。
             by_feed = defaultdict(list)
             q = (
-                select(mentions.c.feed_id, mentions.c.code, mentions.c.source)
+                select(mentions.c.feed_id, mentions.c.code)
                 .select_from(mentions.join(feeds, feeds.c.feed_id == mentions.c.feed_id))
                 .where(
                     author_condition,
                     feeds.c.posted_at >= lo,
                     feeds.c.posted_at < hi,
+                    mentions.c.source == "body",
                     mentions.c.in_pool.is_(True),
                 )
             )
-            for feed_id, code, source in conn.execute(q):
-                # 挂载标的（anchor）排前面：它是这篇帖子的主产品，`code` 字段取它。
-                by_feed[feed_id].append((0 if source == "anchor" else 1, code))
+            for feed_id, code in conn.execute(q):
+                by_feed[feed_id].append(code)
         out = []
         for r in rows:
-            # 同一代码可同时有 anchor/body 两行。保留 anchor 的排序优先级，但产品列表
-            # 本身按帖子去重，否则下游会把一篇帖子当成两次提及。
-            codes = list(dict.fromkeys(c for _, c in sorted(by_feed.get(r.feed_id, []))))
+            # mentions 主键已经按 feed/code/source 去重；这里再防御性去重，并用代码排序
+            # 保证 MySQL / SQLite 返回同一个主 ETF。正文没有池内产品时保留帖子本身，
+            # 但 code=None、mentioned=[]、camp=none，如实表达「发了帖但没提池内 ETF」。
+            codes = list(dict.fromkeys(sorted(by_feed.get(r.feed_id, []))))
             out.append((r, codes))
         return out
 

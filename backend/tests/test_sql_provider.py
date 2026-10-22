@@ -388,6 +388,55 @@ class TestKolImpact:
         assert r["posts"][0]["kol"] == KOL_NAME
         assert r["posts"][0]["views"] == 888  # browse_count 是真的
 
+    def test_anchor_without_body_mention_is_not_published_as_an_etf_mention(self, provider):
+        """讨论区是采集来源，不是作者在正文提到该 ETF 的证据。"""
+        with provider._engine.begin() as conn:
+            conn.execute(insert(feeds).values(
+                feed_id=98, code=OWN_CODE, source_ticker=f"0{OWN_CODE}.HK",
+                posted_at=datetime(2026, 8, 25, 3), feed_type=1,
+                author_uid="anchor-only-kol", author_name=KOL_NAME,
+                title="只谈个股", content="这里只提到腾讯和阿里巴巴。",
+                like_count=1, comment_count=0, image_count=0,
+                share_count=0, browse_count=10, raw_json_broken=False,
+            ))
+            conn.execute(insert(mentions).values(
+                feed_id=98, code=OWN_CODE, source="anchor", in_pool=True,
+            ))
+        provider._cache.clear()
+
+        post = next(row for row in provider.kol_impact("d1")["posts"] if row["id"] == "kol-98")
+
+        assert post["code"] is None
+        assert post["name"] is None
+        assert post["mentioned"] == []
+        assert post["camp"] == post["campPrimary"] == "none"
+
+        related = provider.kol_mentions_for(OWN_CODE, "d1")
+        assert all(evidence["id"] != f"{OWN_CODE}-kp-{KOL_NAME}-98"
+                   for row in related["list"] for evidence in row["evidence"])
+
+    def test_body_product_is_primary_even_when_the_post_was_collected_under_another_anchor(self, provider):
+        with provider._engine.begin() as conn:
+            conn.execute(insert(feeds).values(
+                feed_id=97, code=OWN_CODE, source_ticker=f"0{OWN_CODE}.HK",
+                posted_at=datetime(2026, 8, 25, 4), feed_type=1,
+                author_uid="body-peer-kol", author_name=KOL_NAME,
+                title="正文谈竞品", content="正文明确提到竞品 ETF。",
+                like_count=1, comment_count=0, image_count=0,
+                share_count=0, browse_count=10, raw_json_broken=False,
+            ))
+            conn.execute(insert(mentions), [
+                {"feed_id": 97, "code": OWN_CODE, "source": "anchor", "in_pool": True},
+                {"feed_id": 97, "code": PEER_CODE, "source": "body", "in_pool": True},
+            ])
+        provider._cache.clear()
+
+        post = next(row for row in provider.kol_impact("d1")["posts"] if row["id"] == "kol-97")
+
+        assert post["code"] == PEER_CODE
+        assert [item["code"] for item in post["mentioned"]] == [PEER_CODE]
+        assert post["camp"] == post["campPrimary"] == "competitor"
+
     def test_legacy_source_alias_is_published_under_the_current_kol_name(self, provider):
         with provider._engine.begin() as conn:
             conn.execute(insert(feeds).values(

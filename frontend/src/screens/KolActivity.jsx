@@ -22,7 +22,6 @@ class KolActivity extends React.Component {
     typeScheme: '双标签',
     lowConfidence: 0.7,
     summaryLines: 2,
-    campRule: '挂载标的 ∪ 正文提及',
   }
 
   constructor(props) {
@@ -50,9 +49,8 @@ class KolActivity extends React.Component {
     if (Object.keys(p).length) this.setState(p);
   }
   data() { return R.kolImpact(this.state.rangeKey); }
-  primaryOnly() { return this.props.campRule === '仅挂载标的'; }
-  camp(p) { return this.primaryOnly() ? p.campPrimary : p.camp; }
-  codesOf(p) { return this.primaryOnly() ? [p.code] : p.mentioned.map(function (m) { return m.code; }); }
+  camp(p) { return p.camp; }
+  codesOf(p) { return p.mentioned.map(function (m) { return m.code; }); }
   /* 「这条标签模型自己举手了吗」有**三**个答案：举了（true）、没举（false）、
      不知道（null）。判据是 `reviewState`，不是置信度（ADR-0019 §2：校准概率存在
      之前 lowConfidence 不生效，而 `calibrated_confidence` 整列是 NULL）。
@@ -75,7 +73,7 @@ class KolActivity extends React.Component {
   exportCsv(list, summary, filename) {
     var self = this;
     var esc = function (v) { v = v == null ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.split('"').join('""') + '"' : v; };
-    var ownershipLabel = function (p) { return p.ownership === 'own' ? '自家' : (p.ownership === 'peer' ? '其他公司' : '数据暂不可用'); };
+    var ownershipLabel = function (p) { return !p.code ? '未提及' : (p.ownership === 'own' ? '自家' : (p.ownership === 'peer' ? '其他公司' : '数据暂不可用')); };
     var head = ['重点KOL', 'KOL标签', '发帖时间', 'ETF代码', 'ETF名称', '发行商', '内容形式', '操作方向', '类型置信度', '是否待确认', 'AI摘要', 'ETF归属', '提及产品(全部代码)', '赞', '评论数', '转发', '浏览量', '原帖链接'];
     /* 导出的缺失格写「数据暂不可用」，不写空。CSV 里的空单元格在 Excel 里与
        「这里确实没有」长得一模一样，而这份文件会被拿去做判断、甚至再统计一遍。
@@ -84,11 +82,12 @@ class KolActivity extends React.Component {
     var cell = function (v) { return v == null ? na : v; };
     var lines = [esc('# ' + summary), head.map(esc).join(',')].concat(list.map(function (p) {
       var ann = self.annNa(p), pd = self.pending(p);
-      return [p.kol, p.tags.split(',').join(' / '), p.day + ' ' + p.time.slice(6), p.code + '.HK', p.name, p.issuer,
+      var mentioned = p.mentioned.map(function (m) { return m.code + '.HK'; }).join(' ') || '未提及';
+      return [p.kol, p.tags.split(',').join(' / '), p.day + ' ' + p.time.slice(6), p.code ? p.code + '.HK' : '未提及', p.name || '未提及', p.issuer || '未提及',
         cell(p.typeLabel), ann ? na : (p.directionPending ? '待确认' : (p.dir ? p.dir.label : '')),
         conf2(p.confidence), pd == null ? na : (pd ? '是' : '否'),
         ann ? na : (p.hasSummary ? p.summary : '（图片帖，无摘要）'), ownershipLabel(p),
-        p.mentioned.map(function (m) { return m.code + '.HK'; }).join(' '),
+        mentioned,
         cell(p.likes), cell(p.comments), cell(p.shares), cell(p.views), p.url].map(esc).join(',');
     }));
     var blob = new Blob(['﻿' + lines.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' });
@@ -120,7 +119,7 @@ class KolActivity extends React.Component {
   renderVals() {
     var s = this.state, self = this;
     var norm = function (x) { return String(x == null ? '' : x).toLowerCase().trim(); };
-    var campOk = function (c, want) { return want === 'ALL' || (want === 'own' ? (c === 'own' || c === 'both') : want === 'competitor' ? (c === 'competitor' || c === 'both') : c === 'both'); };
+    var campOk = function (c, want) { return want === 'ALL' || (want === 'own' ? (c === 'own' || c === 'both') : want === 'competitor' ? (c === 'competitor' || c === 'both') : c === want); };
     var CAMPS = [['ALL', '全部'], ['own', '提自家'], ['competitor', '提竞品'], ['both', '双方都提']];
     var seg = function (cur, key) {
       return CAMPS.map(function (x) {
@@ -140,6 +139,7 @@ class KolActivity extends React.Component {
     var secOf = function (k) { return R.SECTORS.filter(function (x) { return x.k === k; })[0] || R.SECTORS[0]; };
     /* 这枚标签描述左侧主 ETF，不描述整篇正文还提过什么产品。 */
     var ownershipOf = function (p) {
+      if (!p.code) return { k: 'none', label: '未提及', bg: 'var(--ink-100)', fg: 'var(--ink-500)' };
       if (p.ownership === 'own') return CAMP.own;
       if (p.ownership === 'peer') return Object.assign({}, CAMP.competitor, { label: '其他公司' });
       return { k: 'unknown', label: '暂不可用', bg: 'var(--ink-100)', fg: 'var(--ink-500)' };
@@ -375,8 +375,8 @@ class KolActivity extends React.Component {
       var sec = secOf(p.sector), st = typeStyle(p.postType), dirOn = !!p.hasDir;
       return {
         key: p.id,
-        kol: p.kol, tags: p.tags.split(',').join(' · '), time: p.time, code: p.code, issuer: issuerShort(p.issuer),
-        pbg: rgba(sec.hue, 0.12), pfg: sec.hue,
+        kol: p.kol, tags: p.tags.split(',').join(' · '), time: p.time, code: p.code || '—', issuer: p.code ? issuerShort(p.issuer) : '正文未提及',
+        pbg: p.code ? rgba(sec.hue, 0.12) : 'var(--ink-100)', pfg: p.code ? sec.hue : 'var(--ink-500)',
         /* 双标签：形式在上、方向在下；合并单标签（Tweaks）：「加仓 · 晒单」一枚 */
         type: dual ? st.label : ((dirOn ? p.dir.label + ' · ' : '') + st.label), tbg: st.bg, tfg: st.fg,
         hasDir: dual && dirOn, dir: dirOn ? p.dir.label : '', dbg: dirOn ? p.dir.bg : 'transparent', dfg: dirOn ? p.dir.fg : 'transparent',
@@ -484,8 +484,8 @@ class KolActivity extends React.Component {
       var sec0 = secOf(p0.sector), st0 = typeStyle(p0.postType), ann0 = self.annNa(p0);
       var sameKol = etfPosts.filter(function (q) { return q.kol === p0.kol; }).sort(function (a, b) { return b.t - a.t; });
       out.sel = {
-        kol: p0.kol, kolTags: p0.tags.split(',').join(' · '), time: p0.time, code: p0.code, name: p0.name, url: p0.url,
-        pbg: rgba(sec0.hue, 0.12), pfg: sec0.hue,
+        kol: p0.kol, kolTags: p0.tags.split(',').join(' · '), time: p0.time, code: p0.code || '—', name: p0.name || '正文未提及产品池内 ETF', url: p0.url,
+        pbg: p0.code ? rgba(sec0.hue, 0.12) : 'var(--ink-100)', pfg: p0.code ? sec0.hue : 'var(--ink-500)',
         type: dual ? st0.label : ((p0.hasDir ? p0.dir.label + ' · ' : '') + st0.label), tbg: st0.bg, tfg: st0.fg, pending: self.pending(p0), confidence: conf2(p0.confidence), review: self.review(p0),
         hasDir: dual && !!p0.hasDir, dir: p0.hasDir ? p0.dir.label : '', dbg: p0.hasDir ? p0.dir.bg : 'transparent', dfg: p0.hasDir ? p0.dir.fg : 'transparent',
         /* `evidenceIdx >= 0` 不能单独判 null：JS 的关系比较会把 null 当 0，`null >= 0`
@@ -494,13 +494,13 @@ class KolActivity extends React.Component {
         evidenceNote: p0.evidenceIdx == null ? '判定依据尚未生成'
           : (p0.evidenceIdx >= 0 ? '判定依据的原句已在下方原文中标出' : '本篇无可标注的判定依据句'),
         camps: mentionBadgesOf(p0),
-        campNote: self.primaryOnly() ? '产品提及按挂载标的判定（当前口径）' : '产品提及按挂载标的 ∪ 正文提及判定',
+        campNote: '仅按正文明确提及判定；挂载讨论区不作为产品证据',
         hasSwitch: sameKol.length > 1, switchN: String(sameKol.length),
         switch: sameKol.map(function (q) {
           var on = q.id === p0.id;
           return {
             key: q.id,
-            time: q.time, code: q.code, type: typeStyle(q.postType).label,
+            time: q.time, code: q.code || '—', type: typeStyle(q.postType).label,
             fw: on ? 600 : 500,
             fg: on ? 'var(--csop-blue-700)' : 'var(--ink-700)',
             bg: on ? 'var(--csop-blue-50)' : '#fff',
@@ -527,6 +527,7 @@ class KolActivity extends React.Component {
             tbg: own ? 'var(--csop-blue-600)' : 'var(--csop-silver-200)', tfg: own ? '#fff' : 'var(--ink-700)'
           };
         }),
+        hasMentioned: p0.mentioned.length > 0,
         counts: [
           { label: '点赞', value: num(p0.likes) },
           { label: '评论数', value: num(p0.comments) },
@@ -938,6 +939,9 @@ class KolActivity extends React.Component {
                   <div style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>{v.sel.campNote}</div>
                 </div>
                 <div style={s('border:1px solid var(--border-1);border-radius:var(--radius-card);overflow:hidden')}>
+                  {!v.sel.hasMentioned && (
+                    <div style={s('padding:12px 14px;background:var(--canvas);font:400 13px/1.5 var(--font-cjk);color:var(--ink-500)')}>正文未提及当前产品池内的 ETF</div>
+                  )}
                   {v.sel.mentioned.map((m) => (
                     <div key={m.code} style={s('display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--ink-100);background:#fff')}>
                       <span style={s('flex:none;font:600 14px/1.4 var(--font-mono);color:var(--ink-900)')}>{m.code}</span>

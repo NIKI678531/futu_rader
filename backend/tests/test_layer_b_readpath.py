@@ -886,8 +886,9 @@ class TestCompetitorsAndKol:
                 for i, name in enumerate(names[:2])
             ])
             conn.execute(insert(mentions), [
-                {"feed_id": 20 + i, "code": OWN_CODE, "source": "anchor", "in_pool": True}
+                {"feed_id": 20 + i, "code": OWN_CODE, "source": source, "in_pool": True}
                 for i in range(2)
+                for source in ("anchor", "body")
             ])
 
         # 旧原帖 KOL 的评论更新且数量更多，也不得越过 15:00 的新原帖。

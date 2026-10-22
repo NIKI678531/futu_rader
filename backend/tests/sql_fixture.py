@@ -121,6 +121,9 @@ def make_sql_provider(broken_share=True, anchor=ANCHOR):
         # 池外标的：读路径必须滤掉，否则 KeyError 或凭空多出一只产品
         {"feed_id": 1, "code": "0700", "source": "body", "in_pool": False},
         {"feed_id": 2, "code": OWN_CODE, "source": "anchor", "in_pool": True},
+        # KOL 样本正文确实在谈这只 ETF；anchor 只记录采集讨论区，产品归属必须由
+        # 独立的 body 事实支撑。
+        {"feed_id": 2, "code": OWN_CODE, "source": "body", "in_pool": True},
         {"feed_id": 3, "code": PEER_CODE, "source": "anchor", "in_pool": True},
         {"feed_id": 4, "code": OWN_CODE, "source": "anchor", "in_pool": True},
     ]

@@ -37,14 +37,19 @@ function percent(n, total) {
 }
 
 /*
- * 饼图按每篇帖子的主 ETF（code / ownership）统计，因此一篇只会进入一个扇区。
- * 其他公司明细也使用同一主 ETF 口径，避免把正文里的次要提及混进来后与饼图对不上。
+ * 饼图按每篇帖子的正文主 ETF（code / ownership）统计，因此一篇只会进入一个扇区。
+ * 正文未提及池内 ETF 是已知空态，和主数据缺失的 unknown 分开；其他公司明细也使用
+ * 同一主 ETF 口径，避免把正文里的次要提及混进来后与饼图对不上。
  */
 export function kolProductComposition(posts) {
-  var own = 0, other = 0, unknown = 0;
+  var own = 0, other = 0, unmentioned = 0, unknown = 0;
   var companies = new Map();
 
   posts.forEach(function (post) {
+    if (!post.code && Array.isArray(post.mentioned) && post.mentioned.length === 0) {
+      unmentioned++;
+      return;
+    }
     if (post.ownership === 'own') {
       own++;
       return;
@@ -92,9 +97,11 @@ export function kolProductComposition(posts) {
     total: total,
     own: own,
     other: other,
+    unmentioned: unmentioned,
     unknown: unknown,
     ownPct: percent(own, total),
     otherPct: percent(other, total),
+    unmentionedPct: percent(unmentioned, total),
     unknownPct: percent(unknown, total),
     companies: companyRows
   };

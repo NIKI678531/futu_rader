@@ -18,10 +18,6 @@ import withTransition from '../components/withTransition'
 import DcLink from '../components/DcLink'
 
 class KolDetail extends React.Component {
-  static defaultProps = {
-    campRule: '挂载标的 ∪ 正文提及',
-  }
-
   constructor(props) {
     super(props);
     var q = {};
@@ -37,8 +33,7 @@ class KolDetail extends React.Component {
     prefetchScreen('kolDetail', { rangeKey: this.state.rangeKey, kol: this.state.kol });
   }
   data() { return R.kolImpact(this.state.rangeKey); }
-  primaryOnly() { return this.props.campRule === '仅挂载标的'; }
-  camp(p) { return this.primaryOnly() ? p.campPrimary : p.camp; }
+  camp(p) { return p.camp; }
   /* 三态，不是两态：举了手（true）、没举（false）、不知道（null）。判据是
      `reviewState` 而不是置信度 —— ADR-0019 §2：`calibrated_confidence` 整列为
      NULL，`lowConfidence` 在校准概率存在之前不生效；而 `null < 0.7` 在 JS 里是
@@ -86,6 +81,7 @@ class KolDetail extends React.Component {
     var prof = kolProfile(kol, ps, function (p) { return self.camp(p); });
     var secOf = function (k) { return R.SECTORS.filter(function (x) { return x.k === k; })[0] || R.SECTORS[0]; };
     var ownershipOf = function (p) {
+      if (!p.code) return { k: 'none', label: '未提及', bg: 'var(--ink-100)', fg: 'var(--ink-500)' };
       if (p.ownership === 'own') return CAMP.own;
       if (p.ownership === 'peer') return Object.assign({}, CAMP.competitor, { label: '其他公司' });
       return { k: 'unknown', label: '暂不可用', bg: 'var(--ink-100)', fg: 'var(--ink-500)' };
@@ -147,8 +143,8 @@ class KolDetail extends React.Component {
       var sec = secOf(p.sector), st = typeStyle(p.postType), on = !!(p0 && p.id === p0.id);
       return {
         key: p.id,
-        time: p.time, code: p.code,
-        pbg: rgba(sec.hue, 0.12), pfg: sec.hue,
+        time: p.time, code: p.code || '—',
+        pbg: p.code ? rgba(sec.hue, 0.12) : 'var(--ink-100)', pfg: p.code ? sec.hue : 'var(--ink-500)',
         type: st.label, tbg: st.bg, tfg: st.fg, pending: self.pending(p), conf: conf2(p.confidence),
         confidenceText: p.confidence == null
           ? (p.postType == null ? '类型尚未生成' : '类型已生成')
@@ -218,15 +214,14 @@ class KolDetail extends React.Component {
         });
       })(i);
     }
-    out.chartNote = p0 ? '高亮 ' + p0.dateText + '（' + typeStyle(p0.postType).label + ' · ' + p0.code + '）' : '这段时间没有发帖';
+    out.chartNote = p0 ? '高亮 ' + p0.dateText + '（' + typeStyle(p0.postType).label + ' · ' + (p0.code || '未提及池内ETF') + '）' : '这段时间没有发帖';
     out.campCells = [
       { label: '只提自家', value: String(prof.own), fg: '#2361AD' },
       { label: '双方都提', value: String(prof.both), fg: '#3674C2' },
       { label: '只提其他公司', value: String(prof.peer), fg: 'var(--ink-600)' }
     ];
-    /* 跟随当前高亮帖子展示竞品主数据；柱图改用「仅挂载标的」口径时，
-       详情也只看第一个（挂载）产品，避免图与说明两套口径。 */
-    var chartMentions = p0 ? (this.primaryOnly() ? p0.mentioned.slice(0, 1) : p0.mentioned) : [];
+    /* 跟随当前高亮帖子展示正文实际提及的竞品；挂载讨论区不进入产品归属。 */
+    var chartMentions = p0 ? p0.mentioned : [];
     var seenPeers = {};
     out.chartCompetitors = chartMentions.filter(function (m) {
       if (m.ownership === 'own' || seenPeers[m.code]) return false;
@@ -240,16 +235,20 @@ class KolDetail extends React.Component {
     var composition = kolProductComposition(ps);
     var ownEnd = composition.total ? composition.own / composition.total * 100 : 0;
     var otherEnd = composition.total ? (composition.own + composition.other) / composition.total * 100 : 0;
+    var unmentionedEnd = composition.total ? (composition.own + composition.other + composition.unmentioned) / composition.total * 100 : 0;
     out.productPie = composition.total
-      ? 'conic-gradient(#2361AD 0 ' + ownEnd + '%, #9AA7B8 ' + ownEnd + '% ' + otherEnd + '%, #DDE3EB ' + otherEnd + '% 100%)'
+      ? 'conic-gradient(#2361AD 0 ' + ownEnd + '%, #9AA7B8 ' + ownEnd + '% ' + otherEnd + '%, #DDE3EB ' + otherEnd + '% ' + unmentionedEnd + '%, #F2C98A ' + unmentionedEnd + '% 100%)'
       : 'var(--ink-100)';
     out.productTotal = String(composition.total);
     out.ownershipRows = [
       { key: 'own', label: '南方东英产品', n: String(composition.own), pct: composition.ownPct == null ? '—' : composition.ownPct + '%', color: '#2361AD' },
       { key: 'other', label: '其他公司产品', n: String(composition.other), pct: composition.otherPct == null ? '—' : composition.otherPct + '%', color: '#9AA7B8' }
     ];
+    if (composition.unmentioned) {
+      out.ownershipRows.push({ key: 'unmentioned', label: '正文未提及池内 ETF', n: String(composition.unmentioned), pct: composition.unmentionedPct + '%', color: '#DDE3EB' });
+    }
     if (composition.unknown) {
-      out.ownershipRows.push({ key: 'unknown', label: '归属暂不可用', n: String(composition.unknown), pct: composition.unknownPct + '%', color: '#DDE3EB' });
+      out.ownershipRows.push({ key: 'unknown', label: '归属暂不可用', n: String(composition.unknown), pct: composition.unknownPct + '%', color: '#F2C98A' });
     }
     out.otherCompanies = composition.companies.map(function (company) {
       return {

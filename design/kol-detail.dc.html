@@ -342,8 +342,7 @@ class Component extends DCLogic {
     }
   }
   data() { return window.RADAR.kolImpact(this.state.rangeKey); }
-  primaryOnly() { return this.props.campRule === '仅挂载标的'; }
-  camp(p) { return this.primaryOnly() ? p.campPrimary : p.camp; }
+  camp(p) { return p.camp; }
   pending(p) { return p.confidence < this.LC; }
 
   /* 当前 KOL：URL 未指定时取排名第一位 */

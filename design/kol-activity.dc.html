@@ -526,9 +526,8 @@ class Component extends DCLogic {
     }
   }
   data() { return window.RADAR.kolImpact(this.state.rangeKey); }
-  primaryOnly() { return this.props.campRule === '仅挂载标的'; }
-  camp(p) { return this.primaryOnly() ? p.campPrimary : p.camp; }
-  codesOf(p) { return this.primaryOnly() ? [p.code] : p.mentioned.map(function (m) { return m.code; }); }
+  camp(p) { return p.camp; }
+  codesOf(p) { return p.mentioned.map(function (m) { return m.code; }); }
   pending(p) { return p.confidence < this.LC; }
   typeOk(p) {
     var t = this.state.types, d = this.state.dirs;
@@ -907,7 +906,7 @@ class Component extends DCLogic {
         hasDir: dual && !!p0.hasDir, dir: p0.hasDir ? p0.dir.label : '', dbg: p0.hasDir ? p0.dir.bg : 'transparent', dfg: p0.hasDir ? p0.dir.fg : 'transparent',
         evidenceNote: p0.evidenceIdx >= 0 ? '判定依据的原句已在下方原文中标出' : '本篇无可标注的判定依据句',
         camps: campsOf(p0),
-        campNote: self.primaryOnly() ? '阵营按挂载标的判定（当前口径）' : '阵营按挂载标的 ∪ 正文提及判定',
+        campNote: '仅按正文明确提及判定；挂载讨论区不作为产品证据',
         hasSwitch: sameKol.length > 1, switchN: String(sameKol.length),
         switch: sameKol.map(function (q) {
           var on = q.id === p0.id;
