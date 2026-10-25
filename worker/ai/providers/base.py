@@ -48,9 +48,11 @@ class RunStopped(PermanentError):
 
 
 class RunControl:
-    def __init__(self, max_http_requests):
+    def __init__(self, max_http_requests, *, deadline_seconds=None):
         if max_http_requests < 1:
             raise ValueError("max_http_requests must be positive")
+        if deadline_seconds is not None and deadline_seconds <= 0:
+            raise ValueError("deadline_seconds must be positive")
         self.limit = max_http_requests
         self.stop_event = threading.Event()
         self.reason = None
@@ -64,6 +66,9 @@ class RunControl:
         self._cooldown_until = 0.0
         self._lock = threading.RLock()
         self.before_request = None
+        # Optional orchestration guard (for example queue-priority preemption).
+        # Provider-specific source guards remain in ``before_request``.
+        self.run_guard = None
         # Optional persistent admission hook. It is called for every real HTTP
         # attempt (including transport retries) after the local cap check but
         # before the in-memory counter advances. A database-backed hook lets
@@ -73,6 +78,10 @@ class RunControl:
         self.recent_batches = deque(maxlen=20)
         self.latencies = deque(maxlen=1000)
         self.started = time.monotonic()
+        self.deadline_seconds = deadline_seconds
+        self.deadline = (
+            self.started + deadline_seconds if deadline_seconds is not None else None
+        )
 
     def stop(self, reason="cancelled"):
         with self._lock:
@@ -81,6 +90,8 @@ class RunControl:
             self.stop_event.set()
 
     def check(self):
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            self.stop("deadline_exceeded")
         if self.stop_event.is_set():
             raise RunStopped(self.reason or "cancelled")
 
@@ -116,6 +127,8 @@ class RunControl:
                     self.attempts += 1
                     self.retries += int(retry)
                     return
+                if self.deadline is not None:
+                    delay = min(delay, max(0.0, self.deadline - time.monotonic()))
             self.stop_event.wait(delay)
 
     def cooldown(self, seconds, rate_limited=False):
@@ -148,6 +161,7 @@ class RunControl:
         with self._lock:
             latencies = sorted(self.latencies)
             return {"maxHttpRequests": self.limit, "httpAttempts": self.attempts,
+                    "deadlineSeconds": self.deadline_seconds,
                     "httpRetries": self.retries, "rateLimits": self.rate_limits,
                     "responses": self.completed, "stopReason": self.reason,
                     "inputTokens": self.input_tokens if self.usage_known else None,

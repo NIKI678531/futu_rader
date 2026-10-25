@@ -238,7 +238,7 @@ def test_intraday_without_an_observed_data_day_skips_prices_and_analysis():
     assert report["analysis"]["status"] == "unavailable"
 
 
-def test_intraday_sync_uses_a_stable_hourly_id_and_incremental_keyset_path(monkeypatch):
+def test_intraday_sync_uses_a_stable_half_hour_id_and_incremental_keyset_path(monkeypatch):
     monkeypatch.setenv("MARKET_INSIGHT_DATABASE_URL", "mysql+pymysql://source/market_insight")
     captured = {}
     service = type("Service", (), {"source": object()})()
@@ -261,11 +261,56 @@ def test_intraday_sync_uses_a_stable_hourly_id_and_incremental_keyset_path(monke
 
     assert captured == {
         "mode": "incremental",
-        "run_id": "intraday-20261008-13",
+        "run_id": "intraday-20261008-1300",
         "service": service,
     }
     assert result["mode"] == "incremental"
     assert result["rowsRead"] == 3
+
+
+def test_half_hour_sync_does_not_enqueue_ai_until_hourly_analysis():
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k="data_max_ts", v="2026-10-08 15:35:00"))
+    hkt = ZoneInfo("Asia/Hong_Kong")
+    sync_report = daily.run_intraday_sync(
+        engine,
+        scheduled_at=datetime(2026, 10, 8, 15, 35, tzinfo=hkt),
+        sync=lambda _at: {"status": "succeeded", "mode": "incremental"},
+    )
+
+    assert sync_report["slot"] == "2026-10-08T15:35"
+    assert list_requests(engine) == []
+
+    analysis = daily.run_intraday_analysis(
+        engine,
+        scheduled_at=datetime(2026, 10, 8, 15, 40, tzinfo=hkt),
+        prices=lambda _engine, _day: {"status": "ok"},
+        sync_report=sync_report,
+    )
+
+    assert analysis["analysis"]["status"] == "queued"
+    assert analysis["syncSlot"] == "2026-10-08T15:35"
+    assert [row["range"] for row in list_requests(engine)] == ["d0"]
+
+
+def test_hourly_analysis_does_not_publish_after_a_failed_current_sync():
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k="data_max_ts", v="2026-10-08 15:35:00"))
+
+    report = daily.run_intraday_analysis(
+        engine,
+        scheduled_at=datetime(2026, 10, 8, 15, 40, tzinfo=ZoneInfo("Asia/Hong_Kong")),
+        prices=lambda _engine, _day: {"status": "ok"},
+        sync_report={
+            "slot": "2026-10-08T15:35",
+            "sync": {"status": "failed"},
+        },
+    )
+
+    assert report["analysis"]["status"] == "unavailable"
+    assert list_requests(engine) == []
 
 
 def test_dump_mode_skips_sync_without_a_source_url(monkeypatch):

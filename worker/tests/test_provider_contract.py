@@ -116,6 +116,20 @@ def test_cancelled_run_never_sends(cfg):
     assert session.calls == []
 
 
+def test_elapsed_deadline_never_sends_and_is_reported(cfg):
+    session = FakeSession()
+    control = RunControl(10, deadline_seconds=1200)
+    control.deadline = 0
+
+    with pytest.raises(RunStopped, match="deadline_exceeded"):
+        build(cfg, session=session, control=control).complete_json(
+            "sys", "usr", SCHEMA, "t"
+        )
+
+    assert session.calls == []
+    assert control.snapshot()["deadlineSeconds"] == 1200
+
+
 def test_interrupt_during_control_snapshot_can_acquire_stop_lock():
     control = RunControl(5)
     with control._lock:

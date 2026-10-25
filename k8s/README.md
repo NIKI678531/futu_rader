@@ -61,7 +61,8 @@ MySQL 连接串；当前源库使用 `mysql+mysqldb`，而项目只安装 PyMySQ
 `last-applied-configuration` 注解里。更新后必须手动重启 Pod。
 
 当前 AI 配置为 TypeSafe `jev-latest` + 独立生成模型 `gpt-5.6-luna`，并发 `8`、
-micro batch `1`。沿用代码默认：香港时间 08:00 全量刷新，13:00、15:00 日内刷新，
+micro batch `1`。香港时间 08:00 执行完整日链路；日内在每小时 `05/35` 分同步源库、
+每小时 `40` 分提交一次 d0，并以 20 分钟作为停止新 AI 请求的软截止，
 `AI_OWN_TOP_LIMIT=0` 表示全部活跃产品，每日 HTTP 上限 `100000`。
 `AI_DATA_GOVERNANCE_APPROVED=false` 才关闭 AI。上述值不是建议预算，请上线前确认。
 未加入一次性迁移、dump、已移除本地模型或前端机密变量。

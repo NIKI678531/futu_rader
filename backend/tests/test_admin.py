@@ -642,7 +642,9 @@ def test_checks_explain_what_blocks_page_data(monkeypatch):
                 generationError="Layer B 需要能生成文字的模型",
                 dataMode="dump",
                 dailyCron="0 8 * * *",
-                intradayCron="0 13,15 * * *",
+                intradaySyncCron="5,35 * * * *",
+                intradayCron="40 * * * *",
+                intradayDeadlineSeconds=1200,
             ),
         )
 
@@ -663,7 +665,9 @@ def test_checks_explain_what_blocks_page_data(monkeypatch):
     assert "本地 dump" in checks["mode"]["detail"]
     assert "0 8 * * *" in checks["daily"]["detail"] and "尚未运行过" in checks["daily"]["detail"]
     assert checks["intraday"]["status"] == "info"
-    assert "0 13,15 * * *" in checks["intraday"]["detail"]
+    assert "5,35 * * * *" in checks["intraday"]["detail"]
+    assert "40 * * * *" in checks["intraday"]["detail"]
+    assert "1200 秒" in checks["intraday"]["detail"]
     assert "2026-10-06" in checks["intraday"]["detail"]
     assert result["intraday"]["sync"]["status"] == "succeeded"
 

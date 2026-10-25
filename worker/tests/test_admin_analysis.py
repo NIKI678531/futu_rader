@@ -2,7 +2,8 @@ import os
 import sys
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine
+import pytest
+from sqlalchemy import create_engine, select
 from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -12,7 +13,7 @@ from ai import config  # noqa: E402
 from jobs import admin_analysis  # noqa: E402
 from jobs.admin_analysis import process_next  # noqa: E402
 from radar_db.analysis_requests import enqueue, list_requests  # noqa: E402
-from radar_db.schema import metadata  # noqa: E402
+from radar_db.schema import meta_kv, metadata  # noqa: E402
 
 
 def _engine():
@@ -99,6 +100,43 @@ def test_worker_persists_partial_and_failed_results():
     assert stored["summary"]["aiRequests"] is None
 
 
+def test_only_complete_analysis_advances_the_public_page_revision():
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(meta_kv.insert(), [
+            {"k": "ai_intraday_last_enqueued_slot", "v": "2026-10-08T15"},
+            {"k": "data_max_ts", "v": "2026-10-08 15:35:00"},
+        ])
+    enqueue(engine, "d0", requested_by="schedule")
+
+    result = process_next(
+        engine=engine,
+        owner="worker-publication",
+        runner=lambda _range: {"status": "complete", "anchor": "2026-10-08"},
+    )
+
+    assert result["status"] == "succeeded"
+    with engine.connect() as conn:
+        values = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v)).all())
+    assert values["ai_public_revision"]
+    assert values["ai_intraday_published_slot"] == "2026-10-08T15"
+    assert values["ai_intraday_published_through"] == "2026-10-08 15:35:00"
+
+    previous = values["ai_public_revision"]
+    enqueue(engine, "d0", requested_by="schedule")
+    partial = process_next(
+        engine=engine,
+        owner="worker-partial",
+        runner=lambda _range: {"status": "deadline_exceeded"},
+    )
+    assert partial["status"] == "partial"
+    with engine.connect() as conn:
+        current = conn.execute(select(meta_kv.c.v).where(
+            meta_kv.c.k == "ai_public_revision"
+        )).scalar_one()
+    assert current == previous
+
+
 def test_global_analysis_lease_contention_requeues_the_request():
     engine = _engine()
     queued, _ = enqueue(engine, "d30")
@@ -111,6 +149,35 @@ def test_global_analysis_lease_contention_requeues_the_request():
     assert result["id"] == queued["id"]
     assert result["status"] == "queued"
     assert list_requests(engine)[0]["status"] == "queued"
+
+
+def test_preempted_historical_request_is_requeued_for_d0_to_run_next():
+    engine = _engine()
+    historical, _ = enqueue(engine, "d7", requested_by="schedule")
+
+    result = process_next(
+        engine=engine,
+        owner="worker-historical",
+        runner=lambda _range: {"status": "preempted", "errors": 0},
+    )
+
+    assert result["id"] == historical["id"]
+    assert result["status"] == "queued"
+    assert list_requests(engine)[0]["status"] == "queued"
+
+
+def test_source_changed_d0_is_terminal_so_it_cannot_run_more_than_hourly():
+    engine = _engine()
+    enqueue(engine, "d0", requested_by="schedule")
+
+    result = process_next(
+        engine=engine,
+        owner="worker-d0",
+        runner=lambda _range: {"status": "source_changed", "errors": 0},
+    )
+
+    assert result["status"] == "partial"
+    assert list_requests(engine)[0]["status"] == "partial"
 
 
 def test_run_uses_the_shared_product_selection_and_can_make_zero_calls(monkeypatch):
@@ -203,6 +270,16 @@ def test_readiness_needs_no_release_reports(monkeypatch):
     readiness = admin_analysis.runtime_readiness()
     assert readiness["ready"] is False
     assert "AI_DATA_GOVERNANCE_APPROVED=false" in readiness["error"]
+
+
+def test_intraday_deadline_reserves_time_for_http_timeout(monkeypatch):
+    cfg = config.load(model="test-model", timeout_seconds=120)
+    monkeypatch.setenv("AI_INTRADAY_DEADLINE_SECONDS", "1200")
+    assert admin_analysis.intraday_deadline_seconds(cfg) == 1200
+
+    monkeypatch.setenv("AI_INTRADAY_DEADLINE_SECONDS", "1700")
+    with pytest.raises(ValueError, match="保留"):
+        admin_analysis.intraday_deadline_seconds(cfg)
 
 
 def test_failed_layer_a_jobs_get_one_more_round():

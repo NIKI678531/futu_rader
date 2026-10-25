@@ -633,12 +633,16 @@ class AdminOperations:
             {
                 "id": "intraday",
                 "label": "当天定时分析",
-                "status": "info" if readiness.get("intradayCron") else "fail",
+                "status": "info" if (
+                    readiness.get("intradayCron") and readiness.get("intradaySyncCron")
+                ) else "fail",
                 "detail": (
                     (
-                        f"{readiness['intradayCron']}（香港时间）"
-                        if readiness.get("intradayCron")
-                        else "已关闭（AI_INTRADAY_CRON=off）"
+                        f"同步 {readiness['intradaySyncCron']}；"
+                        f"分析 {readiness['intradayCron']}（香港时间，"
+                        f"软截止 {readiness.get('intradayDeadlineSeconds')} 秒）"
+                        if readiness.get("intradayCron") and readiness.get("intradaySyncCron")
+                        else "已关闭（RADAR_INTRADAY_SYNC_CRON/AI_INTRADAY_CRON=off）"
                     )
                     + (
                         f" · 上次 {intraday.get('startedAt')}"

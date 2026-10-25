@@ -98,8 +98,18 @@ def version_payload():
         (product["code"], product["ownership"], product.get("listingDate"), product.get("isNew"))
         for product in provider._products
     ]
+    # Operational metadata changes every few seconds while the worker runs.
+    # Business pages must refresh only after a complete analysis publishes a
+    # new revision; otherwise a half-hour source sync exposes mixed raw/AI
+    # generations. Catalog changes remain immediately visible.
     revision = hashlib.sha256(
-        json.dumps({"meta": source, "catalog": catalog_state}, sort_keys=True).encode()
+        json.dumps(
+            {
+                "publicRevision": source.get("ai_public_revision") or "pre-publication",
+                "catalog": catalog_state,
+            },
+            sort_keys=True,
+        ).encode()
     ).hexdigest()
     progress = json.loads(source.get("own_analysis_progress", "null"))
     summary = None

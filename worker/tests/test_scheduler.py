@@ -25,10 +25,11 @@ def _engine():
 def test_heartbeat_queue_and_daily_jobs_are_registered(monkeypatch):
     monkeypatch.delenv("AI_DAILY_CRON", raising=False)
     monkeypatch.delenv("AI_INTRADAY_CRON", raising=False)
+    monkeypatch.delenv("RADAR_INTRADAY_SYNC_CRON", raising=False)
     jobs = build_scheduler(interval_seconds=30).get_jobs()
     assert [j.id for j in jobs] == [
         "heartbeat", "admin-ai-requests", "startup-price-recovery",
-        "daily-refresh", "intraday-refresh",
+        "daily-refresh", "intraday-sync", "intraday-refresh",
     ]
 
 
@@ -63,6 +64,7 @@ def test_startup_price_recovery_tolerates_initialization_delay():
 def test_daily_refresh_runs_at_eight_hong_kong_time_and_can_be_switched_off(monkeypatch):
     monkeypatch.delenv("AI_DAILY_CRON", raising=False)
     monkeypatch.delenv("AI_INTRADAY_CRON", raising=False)
+    monkeypatch.delenv("RADAR_INTRADAY_SYNC_CRON", raising=False)
     monkeypatch.setenv("TZ", "Asia/Hong_Kong")
     jobs = {job.id: job for job in build_scheduler(interval_seconds=30).get_jobs()}
     trigger = jobs["daily-refresh"].trigger
@@ -72,24 +74,32 @@ def test_daily_refresh_runs_at_eight_hong_kong_time_and_can_be_switched_off(monk
 
     off = build_scheduler(interval_seconds=30, cron="off").get_jobs()
     assert [j.id for j in off] == [
-        "heartbeat", "admin-ai-requests", "startup-price-recovery", "intraday-refresh",
+        "heartbeat", "admin-ai-requests", "startup-price-recovery",
+        "intraday-sync", "intraday-refresh",
     ]
 
 
-def test_intraday_refresh_runs_at_thirteen_and_fifteen_hong_kong_time(monkeypatch):
+def test_intraday_sync_is_half_hourly_and_analysis_is_hourly_in_hong_kong(monkeypatch):
     monkeypatch.delenv("AI_INTRADAY_CRON", raising=False)
+    monkeypatch.delenv("RADAR_INTRADAY_SYNC_CRON", raising=False)
     monkeypatch.setenv("TZ", "Asia/Hong_Kong")
     jobs = {job.id: job for job in build_scheduler(interval_seconds=30).get_jobs()}
-    trigger = jobs["intraday-refresh"].trigger
-    fields = {field.name: str(field) for field in trigger.fields}
+    analysis_fields = {
+        field.name: str(field) for field in jobs["intraday-refresh"].trigger.fields
+    }
+    sync_fields = {
+        field.name: str(field) for field in jobs["intraday-sync"].trigger.fields
+    }
 
-    assert (fields["hour"], fields["minute"]) == ("13,15", "0")
-    assert str(trigger.timezone) == "Asia/Hong_Kong"
+    assert (sync_fields["hour"], sync_fields["minute"]) == ("*", "5,35")
+    assert (analysis_fields["hour"], analysis_fields["minute"]) == ("*", "40")
+    assert str(jobs["intraday-refresh"].trigger.timezone) == "Asia/Hong_Kong"
 
     off = build_scheduler(
         interval_seconds=30,
         cron="off",
         intraday_expression="off",
+        intraday_sync_expression="off",
     ).get_jobs()
     assert [job.id for job in off] == [
         "heartbeat", "admin-ai-requests", "startup-price-recovery",

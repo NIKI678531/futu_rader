@@ -25,6 +25,7 @@ from radar_db.analysis_requests import (
     RANGE_PRIORITY,
     claim_next,
     finish,
+    list_active_requests,
     promote_followups,
     renew,
     requeue,
@@ -35,6 +36,12 @@ import clock
 
 
 LEASE_SECONDS = 300
+INTRADAY_DEADLINE_DEFAULT_SECONDS = 1200
+INTRADAY_DEADLINE_HARD_SECONDS = 1800
+PUBLIC_REVISION_KEY = "ai_public_revision"
+PUBLIC_UPDATED_AT_KEY = "ai_public_updated_at"
+INTRADAY_PUBLISHED_SLOT_KEY = "ai_intraday_published_slot"
+INTRADAY_PUBLISHED_THROUGH_KEY = "ai_intraday_published_through"
 
 
 class RequestLease:
@@ -100,12 +107,34 @@ def own_top_limit() -> int | None:
     return parse_own_limit(os.getenv("AI_OWN_TOP_LIMIT"))
 
 
+def intraday_deadline_seconds(cfg) -> int:
+    """Soft stop that leaves one request timeout plus cleanup inside 30 minutes."""
+
+    raw = os.getenv(
+        "AI_INTRADAY_DEADLINE_SECONDS",
+        str(INTRADAY_DEADLINE_DEFAULT_SECONDS),
+    )
+    try:
+        seconds = int(raw)
+    except ValueError:
+        raise ValueError("AI_INTRADAY_DEADLINE_SECONDS 必须是整数秒") from None
+    reserve = int(cfg.timeout_seconds) + 30
+    maximum = INTRADAY_DEADLINE_HARD_SECONDS - reserve
+    if not 60 <= seconds <= maximum:
+        raise ValueError(
+            "AI_INTRADAY_DEADLINE_SECONDS 必须在 60 到 "
+            f"{maximum} 之间（为单请求超时和收尾保留 {reserve} 秒）"
+        )
+    return seconds
+
+
 def runtime_readiness() -> dict:
     """Return a safe status payload for the worker heartbeat."""
 
     try:
         cfg = validated_runtime_config()
         limit = own_top_limit()
+        deadline = intraday_deadline_seconds(cfg)
     except (OSError, RuntimeError, ValueError) as exc:
         return {
             "ready": False,
@@ -124,8 +153,10 @@ def runtime_readiness() -> dict:
         "schemaVersion": cfg.schema_version,
         "taxonomyVersion": cfg.taxonomy_version,
         "ownTopLimit": limit,
+        "intradayDeadlineSeconds": deadline,
         "dataMode": "production" if refresh.source_configured() else "dump",
         "dailyCron": daily.daily_cron(),
+        "intradaySyncCron": daily.intraday_sync_cron(),
         "intradayCron": daily.intraday_cron(),
     }
 
@@ -226,7 +257,18 @@ def run_analysis(range_key: str, *, engine=None) -> dict:
         max_attempts,
         now=lambda: clock.now(timezone.utc),
     )
-    control = RunControl(max_attempts)
+    deadline = intraday_deadline_seconds(cfg) if range_key == "d0" else None
+    control = RunControl(max_attempts, deadline_seconds=deadline)
+    if range_key != "d0":
+        def yield_to_higher_priority():
+            if any(
+                row["status"] == "queued"
+                and row["priority"] > RANGE_PRIORITY[range_key]
+                for row in list_active_requests(engine)
+            ):
+                control.stop("preempted")
+
+        control.run_guard = yield_to_higher_priority
     control.reserve_hook = budget.reserve
     provider = build_provider(cfg, control=control)
     progress = full_own.run_manual(engine, cfg, plan, provider)
@@ -271,7 +313,32 @@ def run_analysis(range_key: str, *, engine=None) -> dict:
         "status": status,
         "ownTopLimit": limit,
         "selectedCodes": selected_codes,
+        "deadlineSeconds": deadline,
     }
+
+
+def _publication_metadata(engine, request, summary) -> dict[str, str]:
+    """Advance the business-page revision only for a complete analysis."""
+
+    now = clock.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    values = {
+        PUBLIC_REVISION_KEY: uuid.uuid4().hex,
+        PUBLIC_UPDATED_AT_KEY: now,
+    }
+    if request["range"] != "d0":
+        return values
+    with engine.connect() as conn:
+        meta = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
+            meta_kv.c.k.in_((
+                daily.INTRADAY_LAST_SLOT_KEY,
+                "data_max_ts",
+            ))
+        )).all())
+    values[INTRADAY_PUBLISHED_SLOT_KEY] = meta.get(
+        daily.INTRADAY_LAST_SLOT_KEY
+    ) or str(summary.get("anchor") or "")
+    values[INTRADAY_PUBLISHED_THROUGH_KEY] = meta.get("data_max_ts") or ""
+    return values
 
 
 def process_next(*, engine=None, runner=None, owner: str | None = None) -> dict | None:
@@ -313,8 +380,31 @@ def process_next(*, engine=None, runner=None, owner: str | None = None) -> dict 
     try:
         with RequestLease(engine, request["id"], owner):
             summary = runner(request["range"])
+        retry = summary.get("status") == "preempted" or (
+            summary.get("status") == "source_changed" and request["range"] != "d0"
+        )
+        if retry:
+            requeue(
+                engine,
+                request["id"],
+                owner,
+                error="有更新或更高优先级的当天分析，已保存进度并等待续跑",
+            )
+            return {**request, "status": "queued", "summary": summary}
         terminal = "succeeded" if summary.get("status") == "complete" else "partial"
-        finish(engine, request["id"], owner, terminal, summary=summary)
+        publication = (
+            _publication_metadata(engine, request, summary)
+            if terminal == "succeeded"
+            else None
+        )
+        finish(
+            engine,
+            request["id"],
+            owner,
+            terminal,
+            summary=summary,
+            metadata=publication,
+        )
         return {**request, "status": terminal, "summary": summary}
     except RuntimeError as exc:
         if "already holds the lease" in str(exc):

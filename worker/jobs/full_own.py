@@ -124,6 +124,8 @@ def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
     codes = plan["codes"]
     with WorkerLease(engine, "own-analysis") as lease:
         def check_source():
+            if control.run_guard is not None:
+                control.run_guard()
             if lease.lost:
                 control.stop("lease_lost")
             elif source_state(engine) != state:

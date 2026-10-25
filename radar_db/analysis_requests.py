@@ -370,6 +370,7 @@ def finish(
     *,
     summary: Mapping[str, Any] | None = None,
     error: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
     now: datetime | None = None,
 ) -> bool:
     if status not in TERMINAL_STATUSES:
@@ -394,6 +395,16 @@ def finish(
                 error_summary=(" ".join(str(error).split())[:500] if error else None),
             )
         )
+        if result.rowcount and metadata:
+            for key, value in metadata.items():
+                text = value if isinstance(value, str) else json.dumps(
+                    value, ensure_ascii=False, default=str
+                )
+                updated = conn.execute(
+                    update(meta_kv).where(meta_kv.c.k == key).values(v=text)
+                )
+                if not updated.rowcount:
+                    conn.execute(insert(meta_kv).values(k=key, v=text))
     return bool(result.rowcount)
 
 

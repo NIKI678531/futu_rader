@@ -230,6 +230,31 @@ def test_sql_data_version_changes_without_restart(sql_provider):
     assert before != sql_provider._meta
 
 
+def test_public_data_version_ignores_sync_progress_until_analysis_publishes(
+    sql_provider, monkeypatch
+):
+    from core import meta as meta_core
+    from sqlalchemy import insert
+    from radar_db.schema import meta_kv
+
+    monkeypatch.setattr(meta_core, "get_provider", lambda: sql_provider)
+    before = meta_core.version_payload()["dataRevision"]
+    with sql_provider._engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(
+            k="ai_intraday_last_sync",
+            v='{"slot":"2026-10-08T15:35","sync":{"status":"succeeded"}}',
+        ))
+    sql_provider.refresh()
+    during = meta_core.version_payload()["dataRevision"]
+    assert during == before
+
+    with sql_provider._engine.begin() as conn:
+        conn.execute(insert(meta_kv).values(k="ai_public_revision", v="published-v1"))
+    sql_provider.refresh()
+    published = meta_core.version_payload()["dataRevision"]
+    assert published != before
+
+
 def test_progress_alone_does_not_invalidate_expensive_data(sql_provider):
     from sqlalchemy import insert
     from radar_db.schema import meta_kv

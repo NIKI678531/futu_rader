@@ -4,7 +4,8 @@ One entry point serves the worker's 08:00 cron, a manual ``--now`` run and the
 Airflow pod::
 
     python -X utf8 -m jobs.daily --now            # 08:00 completion ranges
-    python -X utf8 -m jobs.daily --intraday       # 13:00 / 15:00 d0 refresh
+    python -X utf8 -m jobs.daily --intraday-sync  # half-hour source sync
+    python -X utf8 -m jobs.daily --intraday       # hourly d0 analysis
     python -X utf8 -m jobs.daily --now --drain    # also execute here until the queue is empty
 
 Steps, each recorded in ``meta_kv['ai_daily_last_run']``:
@@ -62,6 +63,7 @@ DAILY_RANGES = ("d7", "d1", "d2")
 RECOVERY_RANGES = ("d0", *DAILY_RANGES)
 LAST_RUN_KEY = "ai_daily_last_run"
 INTRADAY_LAST_RUN_KEY = "ai_intraday_last_run"
+INTRADAY_LAST_SYNC_KEY = "ai_intraday_last_sync"
 INTRADAY_LAST_SLOT_KEY = "ai_intraday_last_enqueued_slot"
 PRICE_LOOKBACK_DAYS = 59
 
@@ -74,8 +76,15 @@ def daily_cron(value=None) -> str | None:
 
 
 def intraday_cron(value=None) -> str | None:
-    """Twice-daily partial-day refresh in Hong Kong time."""
-    raw = os.getenv("AI_INTRADAY_CRON", "0 13,15 * * *") if value is None else value
+    """Hourly current-day analysis after the latest half-hour source sync."""
+    raw = os.getenv("AI_INTRADAY_CRON", "40 * * * *") if value is None else value
+    raw = raw.strip()
+    return None if raw.lower() in ("", "off", "false", "none") else raw
+
+
+def intraday_sync_cron(value=None) -> str | None:
+    """Read the half-hourly source shortly after its expected commit boundary."""
+    raw = os.getenv("RADAR_INTRADAY_SYNC_CRON", "5,35 * * * *") if value is None else value
     raw = raw.strip()
     return None if raw.lower() in ("", "off", "false", "none") else raw
 
@@ -141,7 +150,7 @@ def intraday_sync_step(at: datetime) -> dict:
     service = refresh._refresh()
     payload = refresh.sync_once(
         mode="incremental",
-        run_id=f"intraday-{slot:%Y%m%d-%H}",
+        run_id=f"intraday-{slot:%Y%m%d-%H%M}",
         service=service,
     )
     return {
@@ -351,14 +360,40 @@ def run_daily(engine=None, *, ranges=DAILY_RANGES, sync=sync_step, prices=price_
     return report
 
 
-def run_intraday(
+def run_intraday_sync(
     engine=None,
     *,
     scheduled_at: datetime | None = None,
     sync=intraday_sync_step,
-    prices=intraday_price_step,
 ) -> dict:
-    """Refresh current-day facts/prices and enqueue exactly one d0 analysis."""
+    """Import the latest source facts without starting AI or price work."""
+    engine = engine or make_engine()
+    started = scheduled_at or clock.now(HKT)
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=HKT)
+    else:
+        started = started.astimezone(HKT)
+    slot = started.strftime("%Y-%m-%dT%H:%M")
+    report = {"startedAt": started.isoformat(timespec="seconds"), "slot": slot}
+    try:
+        report["sync"] = sync(started)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("日内增量同步失败")
+        report["sync"] = {"status": "failed", "error": _error(exc)}
+    report["finishedAt"] = clock.now(HKT).isoformat(timespec="seconds")
+    _put_meta(engine, INTRADAY_LAST_SYNC_KEY, json.dumps(report, ensure_ascii=False, default=str))
+    log.info("日内同步 %s：%s", slot, report["sync"]["status"])
+    return report
+
+
+def run_intraday_analysis(
+    engine=None,
+    *,
+    scheduled_at: datetime | None = None,
+    prices=intraday_price_step,
+    sync_report: dict | None = None,
+) -> dict:
+    """Enqueue at most one d0 analysis for an HKT hour, then refresh prices."""
     engine = engine or make_engine()
     started = scheduled_at or clock.now(HKT)
     if started.tzinfo is None:
@@ -366,12 +401,25 @@ def run_intraday(
     else:
         started = started.astimezone(HKT)
     slot = started.strftime("%Y-%m-%dT%H")
-    report = {"startedAt": started.isoformat(timespec="seconds"), "slot": slot, "ranges": ["d0"]}
-    try:
-        report["sync"] = sync(started)
-    except Exception as exc:  # noqa: BLE001
-        log.exception("日内增量同步失败，尝试使用已有当天数据")
-        report["sync"] = {"status": "failed", "error": _error(exc)}
+    if sync_report is None:
+        with engine.connect() as conn:
+            raw_sync = conn.execute(select(meta_kv.c.v).where(
+                meta_kv.c.k == INTRADAY_LAST_SYNC_KEY
+            )).scalar_one_or_none()
+        try:
+            sync_report = json.loads(raw_sync) if raw_sync else None
+        except (TypeError, ValueError):
+            sync_report = None
+    report = {
+        "startedAt": started.isoformat(timespec="seconds"),
+        "slot": slot,
+        "ranges": ["d0"],
+        "sync": (sync_report or {}).get("sync") or {"status": "unavailable"},
+        "syncSlot": (sync_report or {}).get("slot"),
+    }
+    sync_status = report["sync"].get("status")
+    sync_current = str(report["syncSlot"] or "").startswith(slot + ":")
+    sync_ready = sync_current and sync_status in ("succeeded", "noop", "skipped")
     complete_anchor = _anchor(engine)
     data_date = analysis_range_anchor(engine, "d0", complete_anchor)
     report["dataDate"] = data_date.isoformat() if data_date else None
@@ -380,17 +428,17 @@ def run_intraday(
             "status": "skipped",
             "reason": "当天社区数据尚未同步，无法确定 d0 数据日",
         }
-    else:
-        try:
-            report["prices"] = prices(engine, data_date)
-        except Exception as exc:  # noqa: BLE001
-            log.exception("当天行情同步失败，继续处理社区数据")
-            report["prices"] = {"status": "failed", "error": _error(exc)}
     with engine.connect() as conn:
         last_slot = conn.execute(select(meta_kv.c.v).where(
             meta_kv.c.k == INTRADAY_LAST_SLOT_KEY
         )).scalar_one_or_none()
-    if data_date is None:
+    if not sync_ready:
+        report["analysis"] = {
+            "status": "unavailable",
+            "reason": "本小时半小时同步尚未成功，未创建 d0 分析任务",
+        }
+        report["queued"] = []
+    elif data_date is None:
         report["analysis"] = {
             "status": "unavailable",
             "reason": "当天数据尚未同步，未创建 d0 分析任务",
@@ -412,13 +460,42 @@ def run_intraday(
         }
         report["queued"] = [{"range": "d0", "id": request["id"], "created": created}]
 
+    if data_date is not None:
+        try:
+            report["prices"] = prices(engine, data_date)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("当天行情同步失败，AI 队列继续处理社区数据")
+            report["prices"] = {"status": "failed", "error": _error(exc)}
+
     report["anchor"] = complete_anchor.isoformat() if complete_anchor else None
     report["finishedAt"] = clock.now(HKT).isoformat(timespec="seconds")
     _put_meta(engine, INTRADAY_LAST_RUN_KEY, json.dumps(report, ensure_ascii=False, default=str))
-    log.info("日内任务 %s：同步 %s，行情 %s，分析 %s",
+    log.info("日内分析 %s：同步 %s，行情 %s，分析 %s",
              slot, report["sync"]["status"], report["prices"]["status"],
              report["analysis"]["status"])
     return report
+
+
+def run_intraday(
+    engine=None,
+    *,
+    scheduled_at: datetime | None = None,
+    sync=intraday_sync_step,
+    prices=intraday_price_step,
+) -> dict:
+    """Compatibility entry point: sync once, then enqueue the hourly d0 run."""
+    engine = engine or make_engine()
+    sync_report = run_intraday_sync(
+        engine,
+        scheduled_at=scheduled_at,
+        sync=sync,
+    )
+    return run_intraday_analysis(
+        engine,
+        scheduled_at=scheduled_at,
+        prices=prices,
+        sync_report=sync_report,
+    )
 
 
 def drain(engine, *, process=None, sleep=time.sleep) -> list[dict]:
@@ -442,15 +519,19 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="每日全量更新：同步、行情、D7/D1/D2 AI")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--now", action="store_true", help="立即执行一次 08:00 完整日链路")
-    mode.add_argument("--intraday", action="store_true", help="立即执行一次当天增量链路")
+    mode.add_argument("--intraday-sync", action="store_true", help="立即执行一次当天增量同步")
+    mode.add_argument("--intraday", action="store_true", help="立即同步并提交一次当天分析")
     parser.add_argument("--drain", action="store_true", help="在本进程内把队列跑完（Airflow pod 用）")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    if not args.now and not args.intraday:
+    if not args.now and not args.intraday and not args.intraday_sync:
         parser.print_help()
         return 0
     engine = make_engine()
-    report = run_intraday(engine) if args.intraday else run_daily(engine)
+    if args.intraday_sync:
+        report = run_intraday_sync(engine)
+    else:
+        report = run_intraday(engine) if args.intraday else run_daily(engine)
     if args.drain:
         report["results"] = [
             {"id": row["id"], "range": row["range"], "status": row["status"]}

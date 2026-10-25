@@ -77,9 +77,15 @@ def daily_refresh(*, engine=None):
 
 
 def intraday_refresh(*, engine=None):
-    from jobs.daily import run_intraday
+    from jobs.daily import run_intraday_analysis
 
-    run_intraday(engine=engine)
+    run_intraday_analysis(engine=engine)
+
+
+def intraday_sync(*, engine=None):
+    from jobs.daily import run_intraday_sync
+
+    run_intraday_sync(engine=engine)
 
 
 def recover_analysis_requests(*, engine=None):
@@ -144,6 +150,7 @@ def build_scheduler(
     engine=None,
     cron=None,
     intraday_expression=None,
+    intraday_sync_expression=None,
 ):
     """Build the persistent worker scheduler without starting it."""
     engine = engine or make_engine()
@@ -175,7 +182,7 @@ def build_scheduler(
         misfire_grace_time=300,
         kwargs={"engine": engine},
     )
-    from jobs.daily import daily_cron, intraday_cron
+    from jobs.daily import daily_cron, intraday_cron, intraday_sync_cron
 
     expression = daily_cron(cron)
     if expression:
@@ -186,6 +193,17 @@ def build_scheduler(
             max_instances=1,
             coalesce=True,
             misfire_grace_time=6 * 3600,
+            kwargs={"engine": engine},
+        )
+    sync_expression = intraday_sync_cron(intraday_sync_expression)
+    if sync_expression:
+        scheduler.add_job(
+            intraday_sync,
+            CronTrigger.from_crontab(sync_expression, timezone=timezone),
+            id="intraday-sync",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=30 * 60,
             kwargs={"engine": engine},
         )
     intraday = intraday_cron(intraday_expression)
