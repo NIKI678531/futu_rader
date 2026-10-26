@@ -28,10 +28,9 @@ For every run:
 
 The collector's configured list must come from Radar's desired catalog
 manifest (`python -m jobs.hkex_catalog manifest`). The manifest includes active
-products plus approved/exact candidates waiting for source data and returns the
-same count/fingerprint format used by the receipt. Keep collecting the previous
-manifest until the next manifest is accepted; never infer removals from a
-temporary HKEX omission.
+products from the latest complete HKEX snapshot and returns the same count/
+fingerprint format used by the receipt. Keep collecting the previous accepted
+manifest until the next manifest is accepted.
 
 Partial and `comments_important` runs may have receipts, but must leave
 `complete_through` null. Radar independently verifies every completion-proof

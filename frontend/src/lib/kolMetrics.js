@@ -40,16 +40,35 @@ function percent(n, total) {
 
 /*
  * 饼图按每篇帖子的正文主 ETF（code / ownership）统计，因此一篇只会进入一个扇区。
- * 没有池内主 ETF、但正文确认了池外 ETF 的帖子单列 outside；完全没识别到 ETF 才是
- * unmentioned。其他公司明细仍使用同一主 ETF 口径，避免次要提及和饼图重复计数。
+ * 没有目录内主 ETF、但正文确认了其他 ETF 的帖子也归入 other；完全没识别到 ETF
+ * 才是 unmentioned。其他公司明细仍使用同一主 ETF 口径，避免次要提及重复计数。
  */
 export function kolProductComposition(posts) {
-  var own = 0, other = 0, outside = 0, unmentioned = 0, unknown = 0;
+  var own = 0, other = 0, unmentioned = 0, unknown = 0;
   var companies = new Map();
 
+  var addOther = function (issuer, code, name) {
+    issuer = issuer || '其他公司';
+    var company = companies.get(issuer);
+    if (!company) {
+      company = { issuer: issuer, n: 0, products: new Map() };
+      companies.set(issuer, company);
+    }
+    company.n++;
+    code = code || '—';
+    var product = company.products.get(code);
+    if (!product) {
+      product = { code: code, name: name || '产品名称暂不可用', n: 0 };
+      company.products.set(code, product);
+    }
+    product.n++;
+  };
+
   posts.forEach(function (post) {
-    if (!post.code && mentionedEtfsOf(post).length > 0) {
-      outside++;
+    var displayed = mentionedEtfsOf(post);
+    if (!post.code && displayed.length > 0) {
+      other++;
+      addOther(displayed[0].issuer, displayed[0].code, displayed[0].name);
       return;
     }
     if (!post.code && Array.isArray(post.mentioned) && post.mentioned.length === 0) {
@@ -66,21 +85,7 @@ export function kolProductComposition(posts) {
     }
 
     other++;
-    var issuer = post.issuer || '发行商暂不可用';
-    var company = companies.get(issuer);
-    if (!company) {
-      company = { issuer: issuer, n: 0, products: new Map() };
-      companies.set(issuer, company);
-    }
-    company.n++;
-
-    var code = post.code || '—';
-    var product = company.products.get(code);
-    if (!product) {
-      product = { code: code, name: post.name || '产品名称暂不可用', n: 0 };
-      company.products.set(code, product);
-    }
-    product.n++;
+    addOther(post.issuer, post.code, post.name);
   });
 
   var total = posts.length;
@@ -103,12 +108,10 @@ export function kolProductComposition(posts) {
     total: total,
     own: own,
     other: other,
-    outside: outside,
     unmentioned: unmentioned,
     unknown: unknown,
     ownPct: percent(own, total),
     otherPct: percent(other, total),
-    outsidePct: percent(outside, total),
     unmentionedPct: percent(unmentioned, total),
     unknownPct: percent(unknown, total),
     companies: companyRows

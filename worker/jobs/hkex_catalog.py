@@ -1,9 +1,9 @@
-"""Fetch, normalize and stage the official HKEX ETP catalog.
+"""Fetch and publish the current official HKEX ETP catalog.
 
-The public HKEX JSONP export is treated as an observed source, not an
-authoritative delete feed: an outage or missing row never removes an active
-product.  New CSOP products and exact benchmark+strategy peers wait for a
-MarketInsight full-pool receipt before activation; fuzzy peers wait for review.
+A complete successful daily snapshot is the membership authority for the
+monitoring pool: every listed ETP is active and products absent from the latest
+complete snapshot become inactive.  Completeness guards reject short or
+malformed responses before membership can change.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ from sqlalchemy import insert, select, update
 import clock
 from radar_db.product_catalog import (
     ACTIVE_STATUS,
+    CATALOG_POLICY_VERSION,
+    INACTIVE_STATUS,
     PENDING_REVIEW_STATUS,
     PENDING_SOURCE_STATUS,
     _entry_values,
@@ -34,6 +36,17 @@ from radar_db.schema import product_catalog_entries, product_catalog_snapshots
 HKEX_PAGE = "https://www.hkex.com.hk/Market-Data/Securities-Prices/Exchange-Traded-Products?sc_lang=en"
 HKEX_EXPORT = "https://www1.hkex.com.hk/hkexwidget/data/getetpexportdata"
 USER_AGENT = "Mozilla/5.0 (compatible; futu-radar-hkex-catalog/1.0)"
+LIVE_MINIMUM_ROWS = 100
+LIVE_MINIMUM_PREVIOUS_RATIO = 0.8
+
+
+def catalog_cron(value=None):
+    """Daily HKEX membership refresh; ``off`` disables the worker-owned job."""
+    import os
+
+    raw = os.getenv("HKEX_CATALOG_CRON", "0 7 * * *") if value is None else value
+    raw = raw.strip()
+    return None if raw.lower() in ("", "off", "false", "none") else raw
 
 
 def _get(url, *, timeout=45, referer=None):
@@ -215,6 +228,11 @@ def _struct(product):
 
 
 def classify_candidates(hkex_products, active_products):
+    """Classify every HKEX-listed ETP as active.
+
+    Benchmark matching remains useful optional metadata for peer-to-own
+    comparisons, but it no longer gates monitoring-pool membership.
+    """
     active_by_code = {product["code"]: product for product in active_products}
     hkex_by_code = {product["code"]: product for product in hkex_products}
     own = []
@@ -233,31 +251,28 @@ def classify_candidates(hkex_products, active_products):
         if product["code"] in active_by_code:
             classified.append((product, ACTIVE_STATUS, active_by_code[product["code"]].get("ownCode"), "existing_active"))
             continue
-        # Currency counters for one security should agree on all identity and
-        # strategy fields.  A conflict is never safe to auto-activate, even for
-        # a CSOP row or an otherwise exact peer match.
-        if product.get("sourceConflicts"):
-            classified.append((product, PENDING_REVIEW_STATUS, None, "source_field_conflict"))
-            continue
         issuer = _norm(product.get("issuer"))
         name = _norm(product.get("name"))
         if "csop" in issuer or "南方东英" in name or "南方東英" in name:
-            classified.append((product, PENDING_SOURCE_STATUS, None, "hkex_csop_issuer"))
+            classified.append((product, ACTIVE_STATUS, None, "hkex_active_csop_etp"))
             continue
         benchmark = _norm(product.get("benchmark"))
         matches = exact.get((benchmark, _strategy(product)), []) if benchmark else []
+        own_code = matches[0] if len(matches) == 1 else None
         if len(matches) == 1:
-            classified.append((product, PENDING_SOURCE_STATUS, matches[0], "exact_benchmark_and_strategy"))
+            reason = "hkex_active_exact_peer"
         elif benchmark and any(key[0] == benchmark for key in exact):
-            # Keep the possible reviewed mappings with the snapshot so an
-            # administrator can explicitly choose the CSOP product.  A fuzzy
-            # benchmark match must never be approved as an unbound peer.
             product.setdefault("source", {})["catalogMatchCandidates"] = sorted({
                 code for (known_benchmark, _), codes in exact.items()
                 if known_benchmark == benchmark
                 for code in codes
             })
-            classified.append((product, PENDING_REVIEW_STATUS, None, "benchmark_match_strategy_ambiguous"))
+            reason = "hkex_active_peer_mapping_ambiguous"
+        elif product.get("sourceConflicts"):
+            reason = "hkex_active_etp_source_conflict"
+        else:
+            reason = "hkex_active_etp"
+        classified.append((product, ACTIVE_STATUS, own_code, reason))
     return classified
 
 
@@ -284,7 +299,35 @@ def fetch_snapshot(*, as_of=None, timeout=45):
     return raw, normalize_hkex_rows(_jsonp(raw))
 
 
-def sync(engine, *, raw=None, payload=None, now=None, as_of=None):
+def _require_complete_live_snapshot(engine, products):
+    count = len(products)
+    if count < LIVE_MINIMUM_ROWS:
+        raise ValueError(
+            f"HKEX active ETP snapshot is unexpectedly short: {count} < {LIVE_MINIMUM_ROWS}"
+        )
+    with engine.connect() as conn:
+        previous = conn.execute(
+            select(product_catalog_snapshots.c.row_count)
+            .where(product_catalog_snapshots.c.status == "succeeded")
+            .order_by(product_catalog_snapshots.c.fetched_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+    if previous and count < int(previous * LIVE_MINIMUM_PREVIOUS_RATIO):
+        raise ValueError(
+            "HKEX active ETP snapshot shrank below the completeness threshold: "
+            f"{count} < {int(previous * LIVE_MINIMUM_PREVIOUS_RATIO)}"
+        )
+
+
+def sync(
+    engine,
+    *,
+    raw=None,
+    payload=None,
+    now=None,
+    as_of=None,
+    enforce_completeness=None,
+):
     now = now or clock.now()
     seed_catalog(engine, now=now)
     snapshot_id = "hkex-" + now.strftime("%Y%m%dT%H%M%S%f")
@@ -295,8 +338,15 @@ def sync(engine, *, raw=None, payload=None, now=None, as_of=None):
             raw = raw or json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
             products = normalize_hkex_rows(payload)
         digest = hashlib.sha256(raw).hexdigest()
+        if enforce_completeness is None:
+            enforce_completeness = payload is None
+        if enforce_completeness:
+            _require_complete_live_snapshot(engine, products)
         current = load_products(engine=engine)
         classified = classify_candidates(products, current)
+        seen_codes = {product["code"] for product in products}
+        activated = 0
+        reactivated = 0
         with engine.begin() as conn:
             conn.execute(insert(product_catalog_snapshots).values(
                 snapshot_id=snapshot_id, fetched_at=now, source_url=HKEX_EXPORT,
@@ -316,8 +366,8 @@ def sync(engine, *, raw=None, payload=None, now=None, as_of=None):
                            }[_sector(product)], "struct": _struct(product)}
                 values = _entry_values(product, now, status=status, snapshot_id=snapshot_id, match_reason=reason)
                 if existing:
-                    # Preserve active/rejected/reviewed state and curated public name.
-                    keep_status = existing["status"] if existing["status"] in {ACTIVE_STATUS, "rejected"} else status
+                    if existing["status"] != ACTIVE_STATUS:
+                        reactivated += 1
                     conflict_fields = set(product.get("sourceConflicts") or ())
 
                     def observed(column, source_field=None):
@@ -337,25 +387,47 @@ def sync(engine, *, raw=None, payload=None, now=None, as_of=None):
                         management_fee=observed("management_fee"),
                         asset_class=observed("asset_class"), geographic_focus=observed("geographic_focus"),
                         currencies_json=observed("currencies_json"), aliases_json=observed("aliases_json"),
+                        ownership=values["ownership"],
+                        own_code=values["own_code"] or existing["own_code"],
+                        sector=observed("sector"), sector_name=observed("sector_name"),
+                        struct=observed("struct"), listing_date=observed("listing_date"),
                         # False is a valid HKEX value; a wholly missing field is
                         # distinguishable from it in the source payload.
                         southbound=(values["southbound"] if any(
                             key.lower() in {str(k).lower() for k in product.get("source", {})}
                             for key in ("southbound", "southbound_eligible")
                         ) else existing["southbound"]),
-                        status=keep_status,
+                        status=ACTIVE_STATUS, match_reason=reason,
                         source_snapshot_id=snapshot_id, source_json=values["source_json"], last_seen_at=now,
                     ))
                 else:
                     conn.execute(insert(product_catalog_entries).values(**values))
+                    activated += 1
+            deactivated = conn.execute(update(product_catalog_entries).where(
+                product_catalog_entries.c.code.not_in(seen_codes),
+                product_catalog_entries.c.status.in_((
+                    ACTIVE_STATUS, PENDING_SOURCE_STATUS, PENDING_REVIEW_STATUS,
+                )),
+            ).values(
+                status=INACTIVE_STATUS,
+                match_reason="absent_from_latest_hkex_snapshot",
+            )).rowcount
             _put_meta(conn, "product_catalog_last_sync_at", now.isoformat())
             _put_meta(conn, "product_catalog_last_sync_status", "succeeded")
+            _put_meta(conn, "product_catalog_policy_version", CATALOG_POLICY_VERSION)
             active_rows = conn.execute(select(product_catalog_entries).where(
                 product_catalog_entries.c.status == ACTIVE_STATUS
             )).mappings().all()
             _put_meta(conn, "product_catalog_revision", catalog_digest(active_rows))
-        return {"snapshotId": snapshot_id, "rows": len(products),
-                "candidates": sum(status != ACTIVE_STATUS for _, status, _, _ in classified)}
+        return {
+            "snapshotId": snapshot_id,
+            "rows": len(products),
+            "active": len(products),
+            "activated": activated,
+            "reactivated": reactivated,
+            "deactivated": deactivated,
+            "candidates": 0,
+        }
     except Exception as exc:
         digest = hashlib.sha256(raw or b"").hexdigest()
         with engine.begin() as conn:

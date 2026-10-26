@@ -399,7 +399,7 @@ class OfficialActivity extends React.Component {
         mentioned: mentionedEtfsOf(p).map(function (m) {
           var own = m.ownership === 'own', outside = m.inPool === false;
           return {
-            code: m.ticker, short: outside ? '池外 ETF' : (own ? '自家' : m.issuer), title: (m.name || 'ETF 名称暂不可用') + '（' + m.ticker + '）· ' + (outside ? '产品池外' : (own ? '南方东英' : '竞品 · ' + m.issuer)),
+            code: m.ticker, short: outside ? '其他公司产品' : (own ? '自家' : m.issuer), title: (m.name || 'ETF 名称暂不可用') + '（' + m.ticker + '）· ' + (outside ? '其他公司产品' : (own ? '南方东英' : '竞品 · ' + m.issuer)),
             bg: own ? 'var(--csop-blue-600)' : (outside ? 'var(--warning-100)' : 'var(--csop-silver-200)'), fg: own ? '#fff' : (outside ? 'var(--warning-700)' : 'var(--ink-700)')
           };
         }),
@@ -712,7 +712,7 @@ class OfficialActivity extends React.Component {
                     {c.mentioned.map((m) => (
                       <span key={m.code} title={m.title} style={s(`display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:var(--radius-pill);background:${m.bg};font:600 12px/1.5 var(--font-mono);color:${m.fg};white-space:nowrap`)}>{m.code}<span style={s('font:400 11px/1.4 var(--font-cjk);opacity:0.85')}>{m.short}</span></span>
                     ))}
-                    {c.attributionEmpty && <span title={c.attributionTitle} style={s('display:inline-flex;align-items:center;padding:2px 9px;border-radius:var(--radius-pill);background:var(--ink-100);font:500 12px/1.5 var(--font-cjk);color:var(--ink-500)')}>{c.mentioned.length ? '未归属产品池' : '未归属产品'}</span>}
+                    {c.attributionEmpty && <span title={c.attributionTitle} style={s('display:inline-flex;align-items:center;padding:2px 9px;border-radius:var(--radius-pill);background:var(--ink-100);font:500 12px/1.5 var(--font-cjk);color:var(--ink-500)')}>{c.mentioned.length ? '其他公司产品' : '未归属产品'}</span>}
                   </div>
                   <div style={s('display:flex;align-items:center;gap:10px;margin:12px 0 0;padding:10px 14px 12px;border-top:1px solid var(--ink-100)')}>
                     <span style={s('font:500 13px/1.4 var(--font-mono);color:var(--ink-600);white-space:nowrap')}>赞 {c.likes} · 评 {c.comments} · 转 {c.shares}</span>

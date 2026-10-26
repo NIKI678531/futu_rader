@@ -8,7 +8,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from radar_db.schema import meta_kv, metadata  # noqa: E402
-from scheduler import build_scheduler, heartbeat, recover_analysis_requests, recover_prices  # noqa: E402
+from scheduler import (  # noqa: E402
+    build_scheduler,
+    heartbeat,
+    hkex_catalog_refresh,
+    recover_analysis_requests,
+    recover_prices,
+)
 
 
 def _engine():
@@ -29,8 +35,19 @@ def test_heartbeat_queue_and_daily_jobs_are_registered(monkeypatch):
     jobs = build_scheduler(interval_seconds=30).get_jobs()
     assert [j.id for j in jobs] == [
         "heartbeat", "admin-ai-requests", "startup-price-recovery",
-        "daily-refresh", "intraday-sync", "intraday-refresh",
+        "hkex-catalog-refresh", "daily-refresh", "intraday-sync", "intraday-refresh",
     ]
+
+
+def test_hkex_catalog_refresh_delegates_to_the_official_catalog_sync(monkeypatch):
+    engine = _engine()
+    expected = {"active": 250, "activated": 2, "reactivated": 1, "deactivated": 3}
+    monkeypatch.setattr(
+        "jobs.hkex_catalog.sync",
+        lambda supplied: expected if supplied is engine else None,
+    )
+
+    assert hkex_catalog_refresh(engine=engine) == expected
 
 
 def test_startup_recovery_delegates_to_missing_analysis_check(monkeypatch):
@@ -75,8 +92,24 @@ def test_daily_refresh_runs_at_eight_hong_kong_time_and_can_be_switched_off(monk
     off = build_scheduler(interval_seconds=30, cron="off").get_jobs()
     assert [j.id for j in off] == [
         "heartbeat", "admin-ai-requests", "startup-price-recovery",
-        "intraday-sync", "intraday-refresh",
+        "hkex-catalog-refresh", "intraday-sync", "intraday-refresh",
     ]
+
+
+def test_hkex_catalog_refresh_runs_daily_at_seven_hong_kong_time(monkeypatch):
+    monkeypatch.delenv("HKEX_CATALOG_CRON", raising=False)
+    monkeypatch.setenv("TZ", "Asia/Hong_Kong")
+    jobs = {job.id: job for job in build_scheduler(interval_seconds=30).get_jobs()}
+    trigger = jobs["hkex-catalog-refresh"].trigger
+    fields = {field.name: str(field) for field in trigger.fields}
+    assert (fields["hour"], fields["minute"]) == ("7", "0")
+    assert str(trigger.timezone) == "Asia/Hong_Kong"
+
+    job_ids = [job.id for job in build_scheduler(
+        interval_seconds=30,
+        catalog_expression="off",
+    ).get_jobs()]
+    assert "hkex-catalog-refresh" not in job_ids
 
 
 def test_intraday_sync_is_half_hourly_and_analysis_is_hourly_in_hong_kong(monkeypatch):
@@ -98,6 +131,7 @@ def test_intraday_sync_is_half_hourly_and_analysis_is_hourly_in_hong_kong(monkey
     off = build_scheduler(
         interval_seconds=30,
         cron="off",
+        catalog_expression="off",
         intraday_expression="off",
         intraday_sync_expression="off",
     ).get_jobs()

@@ -60,7 +60,8 @@ MySQL 连接串；当前源库使用 `mysql+mysqldb`，而项目只安装 PyMySQ
 脚本使用权限受限的临时文件和 server-side apply，不把机密放在命令行参数或
 `last-applied-configuration` 注解里。更新后必须手动重启 Pod。
 
-当前 AI 配置为 TypeSafe `jev-latest` + 独立生成模型 `gpt-5.6-luna`，并发 `8`、
+worker 每日香港时间 07:00 先同步 HKEX 官方活跃 ETP 产品目录，完整性校验失败时保留
+上一版；08:00 再执行完整日链路。当前 AI 配置为 TypeSafe `jev-latest` + 独立生成模型 `gpt-5.6-luna`，并发 `8`、
 micro batch `1`。香港时间 08:00 执行完整日链路；日内在每小时 `05/35` 分同步源库、
 每小时 `40` 分提交一次 d0，并以 20 分钟作为停止新 AI 请求的软截止，
 `AI_OWN_TOP_LIMIT=0` 表示全部活跃产品，每日 HTTP 上限 `100000`。

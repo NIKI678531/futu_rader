@@ -56,16 +56,17 @@ test('product composition uses one primary ETF per post and groups other compani
   assert.equal(result.companies[0].products[0].pct, 33)
 })
 
-test('off-pool ETF mentions are separate from unmentioned and pool ownership', () => {
+test('off-catalog ETF mentions are counted as other-company products', () => {
   const result = kolProductComposition([
     { code: null, mentioned: [], mentionedEtfs: [{ code: 'us:QQQ', ticker: 'QQQ.US', inPool: false }] },
     { code: null, mentioned: [], mentionedEtfs: [] },
   ])
 
   assert.deepEqual(
-    { outside: result.outside, outsidePct: result.outsidePct, unmentioned: result.unmentioned },
-    { outside: 1, outsidePct: 50, unmentioned: 1 },
+    { other: result.other, otherPct: result.otherPct, unmentioned: result.unmentioned },
+    { other: 1, otherPct: 50, unmentioned: 1 },
   )
+  assert.equal(result.companies[0].issuer, '其他公司')
 })
 
 test('KOL screens expose the new ownership and reach UI without the removed opinions block', () => {
@@ -95,7 +96,8 @@ test('KOL screens expose the new ownership and reach UI without the removed opin
   assert.match(detail, /rankedProfiles\(\)[\s\S]*?\.sort\(compareKolReach\)/)
   assert.match(detail, /conic-gradient/)
   assert.match(detail, /正文未提及 ETF/)
-  assert.match(detail, /只提池外 ETF/)
+  assert.doesNotMatch(activity, /池外 ETF|池外产品|产品池外/)
+  assert.doesNotMatch(detail, /池外 ETF|池外产品|产品池外/)
   assert.doesNotMatch(detail, /primaryOnly|挂载标的 ∪ 正文提及/)
   assert.match(detail, />其他公司及产品</)
   assert.doesNotMatch(detail, /帖子类型构成|其他产品观点及操作|R\.kolOpinions/)

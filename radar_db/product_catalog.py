@@ -1,7 +1,7 @@
 """生产产品目录。
 
-演示 fixture 继续保持设计验收时的 120 只产品；生产目录在其上合并经人工核验的
-Excel 增量。代码为空或尚未分配的产品只进入 pending_products，绝不会进入抓取池。
+演示 fixture 保留冻结样本；生产数据库每天以 HKEX 官方完整 ETP 快照更新活跃成员。
+代码为空或尚未分配的候选只进入 pending_products，不进入抓取池。
 """
 
 import json
@@ -29,8 +29,9 @@ ADDITIONS = FIXTURES_ROOT / "product_catalog_additions.json"
 KOL_ROSTER_UPDATES = FIXTURES_ROOT / "kol_roster_updates.json"
 _CODE_RE = re.compile(r"^[1-9][0-9]{3}$")
 _NEW_LISTING_DAYS = 30
-CATALOG_POLICY_VERSION = "hkex-etp-catalog-v1"
+CATALOG_POLICY_VERSION = "hkex-active-etp-catalog-v2"
 ACTIVE_STATUS = "active"
+INACTIVE_STATUS = "inactive"
 PENDING_SOURCE_STATUS = "pending_source"
 PENDING_REVIEW_STATUS = "pending_review"
 _SECTOR_NAMES = {
@@ -196,7 +197,7 @@ def _entry_values(product, now, *, status=ACTIVE_STATUS, snapshot_id=None, match
 
 
 def seed_catalog(engine, *, now=None):
-    """Seed the reviewed 135-product baseline once; never overwrite review state."""
+    """Seed the frozen baseline once; the next complete HKEX sync owns membership."""
     now = now or clock_now()
     with engine.begin() as conn:
         existing = conn.execute(select(func.count()).select_from(product_catalog_entries)).scalar_one()
@@ -293,7 +294,8 @@ def catalog_status(engine):
             own_codes if row.get("ownership") == "peer" and row.get("status") == PENDING_REVIEW_STATUS else []
         )
     counts = {key: grouped.get(key, 0) for key in (
-        ACTIVE_STATUS, PENDING_SOURCE_STATUS, PENDING_REVIEW_STATUS, "failed", "rejected"
+        ACTIVE_STATUS, INACTIVE_STATUS, PENDING_SOURCE_STATUS,
+        PENDING_REVIEW_STATUS, "failed", "rejected"
     )}
     if latest and latest["status"] == "failed":
         counts["failed"] = max(1, counts["failed"])

@@ -213,7 +213,7 @@ mentions = Table(
     # 'anchor' = 挂载标的（帖子所属讨论区）；'body' = 正文提及（raw_json 的 rich_text）。
     # 两者语义不同，市场域与账号域的提及口径也不同（CONTEXT.md「提及」），不能合并成一列。
     Column("source", String(10), primary_key=True),
-    Column("in_pool", Boolean, nullable=False),  # 是否属于 120 只产品池
+    Column("in_pool", Boolean, nullable=False),  # 是否属于当日 HKEX 活跃 ETP 产品池
     # 正文结构化 stock 片段附带的产品身份。池外代码不能只靠 ticker 猜产品类型；
     # 这里保留上游明确给出的类型；证券目录或富途严格 cashtag 明确确认 ETF 时也规范为 4。
     # 裸 ticker 与 anchor 没有产品类型事实，因此均允许 NULL，绝不按代码外形推断 ETF。
@@ -633,9 +633,9 @@ meta_kv = Table(
     Column("v", Text),
 )
 
-# Versioned HKEX-backed product catalog.  Active rows are the public product
-# pool; pending_source rows are deterministic additions waiting for a complete
-# MarketInsight receipt; pending_review rows require an explicit admin choice.
+# Versioned HKEX-backed product catalog. Active rows are exactly the latest
+# complete official HKEX ETP snapshot; inactive rows were present previously.
+# Legacy pending states remain readable for upgrades from the former policy.
 product_catalog_snapshots = Table(
     "product_catalog_snapshots", metadata,
     Column("snapshot_id", String(64), primary_key=True),

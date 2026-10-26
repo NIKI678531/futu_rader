@@ -76,6 +76,20 @@ def daily_refresh(*, engine=None):
     run_daily(engine=engine)
 
 
+def hkex_catalog_refresh(*, engine=None):
+    from jobs.hkex_catalog import sync
+
+    result = sync(engine or make_engine())
+    log.info(
+        "HKEX 产品目录：活跃 %s，只新增 %s，只恢复 %s，只下线 %s",
+        result.get("active"),
+        result.get("activated"),
+        result.get("reactivated"),
+        result.get("deactivated"),
+    )
+    return result
+
+
 def intraday_refresh(*, engine=None):
     from jobs.daily import run_intraday_analysis
 
@@ -149,6 +163,7 @@ def build_scheduler(
     *,
     engine=None,
     cron=None,
+    catalog_expression=None,
     intraday_expression=None,
     intraday_sync_expression=None,
 ):
@@ -183,6 +198,19 @@ def build_scheduler(
         kwargs={"engine": engine},
     )
     from jobs.daily import daily_cron, intraday_cron, intraday_sync_cron
+    from jobs.hkex_catalog import catalog_cron
+
+    catalog = catalog_cron(catalog_expression)
+    if catalog:
+        scheduler.add_job(
+            hkex_catalog_refresh,
+            CronTrigger.from_crontab(catalog, timezone=timezone),
+            id="hkex-catalog-refresh",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=6 * 3600,
+            kwargs={"engine": engine},
+        )
 
     expression = daily_cron(cron)
     if expression:

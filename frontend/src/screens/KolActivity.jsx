@@ -74,7 +74,7 @@ class KolActivity extends React.Component {
   exportCsv(list, summary, filename) {
     var self = this;
     var esc = function (v) { v = v == null ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.split('"').join('""') + '"' : v; };
-    var ownershipLabel = function (p) { return !p.code ? (mentionedEtfsOf(p).length ? '池外 ETF' : '未提及') : (p.ownership === 'own' ? '自家' : (p.ownership === 'peer' ? '其他公司' : '数据暂不可用')); };
+    var ownershipLabel = function (p) { return !p.code ? (mentionedEtfsOf(p).length ? '其他公司产品' : '未提及') : (p.ownership === 'own' ? '自家' : (p.ownership === 'peer' ? '其他公司产品' : '数据暂不可用')); };
     var head = ['重点KOL', 'KOL标签', '发帖时间', 'ETF代码', 'ETF名称', '发行商', '内容形式', '操作方向', '类型置信度', '是否待确认', 'AI摘要', 'ETF归属', '正文提及ETF(全部ticker)', '赞', '评论数', '转发', '浏览量', '原帖链接'];
     /* 导出的缺失格写「数据暂不可用」，不写空。CSV 里的空单元格在 Excel 里与
        「这里确实没有」长得一模一样，而这份文件会被拿去做判断、甚至再统计一遍。
@@ -85,7 +85,7 @@ class KolActivity extends React.Component {
       var ann = self.annNa(p), pd = self.pending(p);
       var etfs = mentionedEtfsOf(p), primary = primaryDisplayedEtf(p);
       var mentioned = etfs.map(function (m) { return m.ticker; }).join(' ') || '未提及';
-      return [p.kol, p.tags.split(',').join(' / '), p.day + ' ' + p.time.slice(6), primary ? primary.ticker : '未提及', primary ? (primary.name || na) : '未提及', primary ? (primary.issuer || (primary.inPool ? na : '池外 ETF')) : '未提及',
+      return [p.kol, p.tags.split(',').join(' / '), p.day + ' ' + p.time.slice(6), primary ? primary.ticker : '未提及', primary ? (primary.name || na) : '未提及', primary ? (primary.issuer || (primary.inPool ? na : '其他公司产品')) : '未提及',
         cell(p.typeLabel), ann ? na : (p.directionPending ? '待确认' : (p.dir ? p.dir.label : '')),
         conf2(p.confidence), pd == null ? na : (pd ? '是' : '否'),
         ann ? na : (p.hasSummary ? p.summary : '（图片帖，无摘要）'), ownershipLabel(p),
@@ -121,7 +121,7 @@ class KolActivity extends React.Component {
   renderVals() {
     var s = this.state, self = this;
     var norm = function (x) { return String(x == null ? '' : x).toLowerCase().trim(); };
-    var campOk = function (c, want) { return want === 'ALL' || (want === 'own' ? (c === 'own' || c === 'both') : want === 'competitor' ? (c === 'competitor' || c === 'both') : c === want); };
+    var campOk = function (p, want) { var c = self.camp(p); return want === 'ALL' || (want === 'own' ? (c === 'own' || c === 'both') : want === 'competitor' ? (c === 'competitor' || c === 'both' || (c === 'none' && mentionedEtfsOf(p).length > 0)) : c === want); };
     var CAMPS = [['ALL', '全部'], ['own', '提自家'], ['competitor', '提竞品'], ['both', '双方都提']];
     var seg = function (cur, key) {
       return CAMPS.map(function (x) {
@@ -141,7 +141,7 @@ class KolActivity extends React.Component {
     var secOf = function (k) { return R.SECTORS.filter(function (x) { return x.k === k; })[0] || R.SECTORS[0]; };
     /* 这枚标签描述左侧主 ETF，不描述整篇正文还提过什么产品。 */
     var ownershipOf = function (p) {
-      if (!p.code && mentionedEtfsOf(p).length) return { k: 'outside', label: '池外 ETF', bg: 'var(--warning-100)', fg: 'var(--warning-700)' };
+      if (!p.code && mentionedEtfsOf(p).length) return { k: 'outside', label: '其他公司产品', bg: 'var(--csop-silver-200)', fg: 'var(--ink-700)' };
       if (!p.code) return { k: 'none', label: '未提及', bg: 'var(--ink-100)', fg: 'var(--ink-500)' };
       if (p.ownership === 'own') return CAMP.own;
       if (p.ownership === 'peer') return Object.assign({}, CAMP.competitor, { label: '其他公司' });
@@ -149,7 +149,7 @@ class KolActivity extends React.Component {
     };
     var mentionBadgesOf = function (p) {
       var c = self.camp(p);
-      if (c === 'none' && mentionedEtfsOf(p).length) return [{ k: 'outside', label: '池外 ETF', bg: 'var(--warning-100)', fg: 'var(--warning-700)' }];
+      if (c === 'none' && mentionedEtfsOf(p).length) return [{ k: 'outside', label: '其他公司产品', bg: 'var(--csop-silver-200)', fg: 'var(--ink-700)' }];
       return c === 'both' ? [CAMP.own, CAMP.competitor] : [CAMP[c] || CAMP.none];
     };
     var issuerShort = function (x) { return x === 'CSOP 南方东英' ? '南方东英' : x; };
@@ -170,8 +170,8 @@ class KolActivity extends React.Component {
       Object.keys(byCode).sort(function (a, b) { return byCode[b] - byCode[a] || (a < b ? -1 : 1); }).map(function (c) {
         var m = R.MASTER[c] || etfMeta[c], own = m && m.ownership === 'own', outside = m && m.inPool === false;
         return {
-          k: c, code: (m && m.ticker) || c, name: m ? (outside ? (m.name || '池外 ETF') : (own ? m.name : m.issuer + ' · ' + m.name)) : c, n: byCode[c],
-          own: outside ? '池外 ETF' : (own ? '自家' : '竞品'), obg: own ? 'var(--csop-blue-600)' : (outside ? 'var(--warning-100)' : 'var(--csop-silver-200)'), ofg: own ? '#fff' : (outside ? 'var(--warning-700)' : 'var(--ink-700)')
+          k: c, code: (m && m.ticker) || c, name: m ? (outside ? (m.name || '其他公司产品') : (own ? m.name : m.issuer + ' · ' + m.name)) : c, n: byCode[c],
+          own: outside ? '其他公司产品' : (own ? '自家' : '竞品'), obg: own ? 'var(--csop-blue-600)' : 'var(--csop-silver-200)', ofg: own ? '#fff' : 'var(--ink-700)'
         };
       })).map(function (o) {
         var on = o.k === s.etf;
@@ -300,7 +300,7 @@ class KolActivity extends React.Component {
       return norm([p.kol, p.tags, p.code, p.name, p.issuer, p.summary]
         .concat(mentionedEtfsOf(p).map(function (m) { return m.code + ' ' + m.ticker + ' ' + m.name + ' ' + (m.issuer || ''); }), p.fullText || []).join(' '));
     };
-    var tbl = sp.filter(function (p) { return (!qq || hay(p).indexOf(qq) >= 0) && campOk(self.camp(p), s.camp) && (!s.onlyPending || self.pending(p)); });
+    var tbl = sp.filter(function (p) { return (!qq || hay(p).indexOf(qq) >= 0) && campOk(p, s.camp) && (!s.onlyPending || self.pending(p)); });
     out.postCount = String(tbl.length);
     out.q = s.q; out.qBc = qq ? 'var(--csop-blue-600)' : 'var(--border-2)';
     out.setQ = function (e) { self.setState({ q: e.target.value }); };
@@ -387,7 +387,7 @@ class KolActivity extends React.Component {
           fg: m.inPool === false ? 'var(--warning-700)' : sec.hue
         }; }),
         issuer: displayedEtfs.length > 1 ? displayedEtfs.length + ' 只 ETF'
-          : (p.code ? issuerShort(p.issuer) : (displayedEtfs.length ? '池外 ETF' : '正文未提及 ETF')),
+          : (p.code ? issuerShort(p.issuer) : (displayedEtfs.length ? '其他公司产品' : '正文未提及 ETF')),
         pbg: p.code ? rgba(sec.hue, 0.12) : 'var(--ink-100)', pfg: p.code ? sec.hue : 'var(--ink-500)',
         /* 双标签：形式在上、方向在下；合并单标签（Tweaks）：「加仓 · 晒单」一枚 */
         type: dual ? st.label : ((dirOn ? p.dir.label + ' · ' : '') + st.label), tbg: st.bg, tfg: st.fg,
@@ -536,7 +536,7 @@ class KolActivity extends React.Component {
         mentioned: etfs0.map(function (m) {
           var own = m.ownership === 'own', outside = m.inPool === false;
           return {
-            code: m.ticker, name: m.name || 'ETF 名称暂不可用', issuer: m.issuer ? issuerShort(m.issuer) : '产品池外', tag: outside ? '池外 ETF' : (own ? '自家' : '竞品'),
+            code: m.ticker, name: m.name || 'ETF 名称暂不可用', issuer: m.issuer ? issuerShort(m.issuer) : '其他公司', tag: outside ? '其他公司产品' : (own ? '自家' : '竞品'),
             tbg: own ? 'var(--csop-blue-600)' : (outside ? 'var(--warning-100)' : 'var(--csop-silver-200)'), tfg: own ? '#fff' : (outside ? 'var(--warning-700)' : 'var(--ink-700)')
           };
         }),

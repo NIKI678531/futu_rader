@@ -14,11 +14,10 @@ from jobs import hkex_catalog  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
 from radar_db.product_catalog import (  # noqa: E402
     ACTIVE_STATUS,
-    PENDING_REVIEW_STATUS,
+    INACTIVE_STATUS,
     PENDING_SOURCE_STATUS,
     catalog_status,
     load_products,
-    review_candidate,
 )
 from radar_db.schema import product_catalog_entries  # noqa: E402
 
@@ -64,7 +63,7 @@ def test_normalization_merges_currency_counters_and_detects_conflicts():
     assert "productSubcategory" in products[0]["sourceConflicts"]
 
 
-def test_candidate_policy_auto_stages_only_csop_or_exact_strategy_peers():
+def test_candidate_policy_activates_every_current_hkex_etp():
     active = [{
         "code": "3033", "name": "南方恒生科技", "issuer": "CSOP 南方东英",
         "ownership": "own", "benchmark": "恒生科技指数",
@@ -80,35 +79,27 @@ def test_candidate_policy_auto_stages_only_csop_or_exact_strategy_peers():
 
     classified = {item[0]["code"]: item[1:] for item in hkex_catalog.classify_candidates(candidates, active)}
 
-    assert classified["3456"][0] == PENDING_SOURCE_STATUS
-    assert classified["3457"][:2] == (PENDING_SOURCE_STATUS, "3033")
-    assert classified["3458"][0] == PENDING_REVIEW_STATUS
-    assert classified["3458"][2] == "benchmark_match_strategy_ambiguous"
+    assert classified["3456"] == (ACTIVE_STATUS, None, "hkex_active_csop_etp")
+    assert classified["3457"][:2] == (ACTIVE_STATUS, "3033")
+    assert classified["3458"][0] == ACTIVE_STATUS
+    assert classified["3458"][2] == "hkex_active_peer_mapping_ambiguous"
     assert candidates[2]["source"]["catalogMatchCandidates"] == ["3033"]
-    assert classified["3459"] == (PENDING_REVIEW_STATUS, None, "source_field_conflict")
+    assert classified["3459"] == (ACTIVE_STATUS, None, "hkex_active_csop_etp")
 
 
-def test_peer_review_requires_an_explicit_active_csop_mapping(tmp_path):
-    engine = make_engine("sqlite:///" + (tmp_path / "review.db").as_posix())
+def test_every_listed_etp_enters_the_active_pool_without_manual_mapping(tmp_path):
+    engine = make_engine("sqlite:///" + (tmp_path / "all-active.db").as_posix())
     create_all(engine)
-    hkex_catalog.sync(engine, payload={"data": [
+    result = hkex_catalog.sync(engine, payload={"data": [
         row("03033", "CSOP Hang Seng TECH ETF", issuer="CSOP Asset Management"),
         row("03458", "Peer Leveraged", issuer="Peer", subtype="Leveraged"),
     ]}, now=datetime(2026, 10, 5, 7))
 
-    status = catalog_status(engine)
-    candidate = next(item for item in status["candidates"] if item["code"] == "3458")
-    assert candidate["suggestedOwnCodes"] == ["3033"]
-
-    try:
-        review_candidate(engine, "3458", "approve")
-    except ValueError as exc:
-        assert "ownCode" in str(exc)
-    else:
-        raise AssertionError("a fuzzy peer cannot be approved without a reviewed mapping")
-
-    result = review_candidate(engine, "3458", "approve", own_code="3033")
-    assert result == {"code": "3458", "status": PENDING_SOURCE_STATUS, "ownCode": "3033"}
+    products = {product["code"]: product for product in load_products(engine=engine)}
+    assert result["active"] == 2
+    assert set(products) == {"3033", "3458"}
+    assert products["3033"]["ownership"] == "own"
+    assert products["3458"]["ownership"] == "peer"
 
 
 def test_sync_is_idempotent_and_source_failure_preserves_active_catalog(tmp_path):
@@ -119,13 +110,15 @@ def test_sync_is_idempotent_and_source_failure_preserves_active_catalog(tmp_path
     first = hkex_catalog.sync(engine, payload=payload, now=datetime(2026, 10, 5, 7))
     second = hkex_catalog.sync(engine, payload=payload, now=datetime(2026, 10, 6, 7))
 
-    assert first["candidates"] == second["candidates"] == 1
-    assert len(load_products(engine=engine)) == 135
+    assert first["candidates"] == second["candidates"] == 0
+    assert first["activated"] == 1
+    assert second["activated"] == second["deactivated"] == 0
+    assert [product["code"] for product in load_products(engine=engine)] == ["3456"]
     with engine.connect() as conn:
         staged = conn.execute(select(product_catalog_entries).where(
             product_catalog_entries.c.code == "3456"
         )).mappings().one()
-    assert staged["status"] == PENDING_SOURCE_STATUS
+    assert staged["status"] == ACTIVE_STATUS
 
     try:
         hkex_catalog.sync(engine, payload={"unexpected": []}, now=datetime(2026, 10, 7, 7))
@@ -134,10 +127,56 @@ def test_sync_is_idempotent_and_source_failure_preserves_active_catalog(tmp_path
     else:
         raise AssertionError("malformed HKEX payload must fail closed")
 
-    assert len(load_products(engine=engine)) == 135
+    assert [product["code"] for product in load_products(engine=engine)] == ["3456"]
     status = catalog_status(engine)
     assert status["latestStatus"] == "failed"
     assert status["counts"]["failed"] == 1
+
+
+def test_complete_snapshot_deactivates_missing_products_and_reactivates_returns(tmp_path):
+    engine = make_engine("sqlite:///" + (tmp_path / "membership.db").as_posix())
+    create_all(engine)
+    hkex_catalog.sync(engine, payload={"data": [
+        row("03456", "First ETF", issuer="Peer"),
+        row("03457", "Second ETF", issuer="Peer"),
+    ]}, now=datetime(2026, 10, 5, 7))
+
+    second = hkex_catalog.sync(engine, payload={"data": [
+        row("03457", "Second ETF", issuer="Peer"),
+    ]}, now=datetime(2026, 10, 6, 7))
+    assert second["deactivated"] == 1
+    assert [product["code"] for product in load_products(engine=engine)] == ["3457"]
+    with engine.connect() as conn:
+        assert conn.execute(select(product_catalog_entries.c.status).where(
+            product_catalog_entries.c.code == "3456"
+        )).scalar_one() == INACTIVE_STATUS
+
+    third = hkex_catalog.sync(engine, payload={"data": [
+        row("03456", "First ETF", issuer="Peer"),
+        row("03457", "Second ETF", issuer="Peer"),
+    ]}, now=datetime(2026, 10, 7, 7))
+    assert third["reactivated"] == 1
+    assert {product["code"] for product in load_products(engine=engine)} == {"3456", "3457"}
+
+
+def test_live_completeness_guard_preserves_current_membership(tmp_path):
+    engine = make_engine("sqlite:///" + (tmp_path / "short-live.db").as_posix())
+    create_all(engine)
+
+    try:
+        hkex_catalog.sync(
+            engine,
+            payload={"data": [row("03456", "Only ETF", issuer="Peer")]},
+            now=datetime(2026, 10, 5, 7),
+            enforce_completeness=True,
+        )
+    except ValueError as exc:
+        assert "unexpectedly short" in str(exc)
+    else:
+        raise AssertionError("short live snapshot must fail closed")
+
+    assert len(load_products(engine=engine)) == 135
+    assert catalog_status(engine)["latestStatus"] == "failed"
 
 
 def test_pending_catalog_activates_only_after_exact_full_receipt(tmp_path, monkeypatch):
@@ -148,6 +187,12 @@ def test_pending_catalog_activates_only_after_exact_full_receipt(tmp_path, monke
         payload={"data": [row("03456", "CSOP NEW ETF", issuer="CSOP Asset Management")]},
         now=datetime(2026, 10, 5, 7),
     )
+    with engine.begin() as conn:
+        conn.execute(
+            product_catalog_entries.update()
+            .where(product_catalog_entries.c.code == "3456")
+            .values(status=PENDING_SOURCE_STATUS)
+        )
     captured = {}
 
     class NoReceipt:

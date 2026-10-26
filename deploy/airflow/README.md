@@ -3,10 +3,12 @@
 ## HKEX product catalog
 
 `futu_radar_hkex_catalog` runs daily at 07:00 Asia/Hong_Kong. It reads the
-official HKEX ETP export and stages CSOP/exact-peer additions. New symbols are
-not active until a later `comments_all` receipt proves the complete desired
-symbol-set fingerprint; ambiguous matches stay in the admin review queue.
-Source failures retain the previous active catalog and never delete products.
+official HKEX ETP export. Every product in a complete snapshot becomes active;
+products absent from that complete snapshot become inactive. Short, malformed,
+or sharply reduced responses fail closed and retain the previous catalog.
+
+Production Kubernetes already runs the same 07:00 job in its worker scheduler.
+Keep this Airflow DAG paused there; enable only one scheduler owner.
 
 ## Fact synchronization
 
