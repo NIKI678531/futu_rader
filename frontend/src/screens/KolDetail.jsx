@@ -10,6 +10,7 @@ import R, { prefetchScreen } from '../data/radar'
 import { num, conf2, typeStyle, md, shell, rgba, CAMP, reviewBadge, needsReview, kolDisplayLabel } from '../lib/view'
 import { kolProfile } from '../lib/profile'
 import { compareKolReach, kolProductComposition } from '../lib/kolMetrics'
+import { mentionedEtfsOf, primaryDisplayedEtf } from '../lib/kolEtfs'
 import { dataSourceBadge } from '../lib/dataSource'
 import { s, hover } from '../lib/dc'
 import Shell from '../components/Shell'
@@ -81,6 +82,7 @@ class KolDetail extends React.Component {
     var prof = kolProfile(kol, ps, function (p) { return self.camp(p); });
     var secOf = function (k) { return R.SECTORS.filter(function (x) { return x.k === k; })[0] || R.SECTORS[0]; };
     var ownershipOf = function (p) {
+      if (!p.code && mentionedEtfsOf(p).length) return { k: 'outside', label: '池外 ETF', bg: 'var(--warning-100)', fg: 'var(--warning-700)' };
       if (!p.code) return { k: 'none', label: '未提及', bg: 'var(--ink-100)', fg: 'var(--ink-500)' };
       if (p.ownership === 'own') return CAMP.own;
       if (p.ownership === 'peer') return Object.assign({}, CAMP.competitor, { label: '其他公司' });
@@ -120,7 +122,7 @@ class KolDetail extends React.Component {
     out.prevGo = function () { if (prev) self.setState({ kol: prev, sel: null }); };
     out.nextGo = function () { if (next) self.setState({ kol: next, sel: null }); };
 
-    var codes = {}; ps.forEach(function (p) { p.mentioned.forEach(function (m) { codes[m.code] = 1; }); });
+    var codes = {}; ps.forEach(function (p) { mentionedEtfsOf(p).forEach(function (m) { codes[m.code] = 1; }); });
     var pendingN = ps.filter(function (p) { return self.pending(p); }).length;
     var annNaN = ps.filter(function (p) { return self.annNa(p); }).length;
     /* 有一篇不知道，合计就是不知道。设计源这里写的是 `likes += p.likes`，而 JS 里
@@ -132,7 +134,7 @@ class KolDetail extends React.Component {
       likes = add(likes, p.likes); comments = add(comments, p.comments); shares = add(shares, p.shares);
     });
     out.stats = [
-      { label: '发帖数', value: String(ps.length), unit: '篇', pct: '', pfg: 'transparent', sub: '提及 ' + Object.keys(codes).length + ' 只产品 · ' + (annNaN === ps.length && ps.length ? '类型标注尚未生成' : pendingN + ' 篇类型待确认' + (annNaN ? ' · 另有 ' + annNaN + ' 篇尚未标注' : '')), fg: 'var(--ink-900)' },
+      { label: '发帖数', value: String(ps.length), unit: '篇', pct: '', pfg: 'transparent', sub: '正文提及 ' + Object.keys(codes).length + ' 只 ETF · ' + (annNaN === ps.length && ps.length ? '类型标注尚未生成' : pendingN + ' 篇类型待确认' + (annNaN ? ' · 另有 ' + annNaN + ' 篇尚未标注' : '')), fg: 'var(--ink-900)' },
       { label: '提及自家产品', value: String(prof.ownAny), unit: '篇', pct: pct(prof.ownAny, ps.length), pfg: 'var(--csop-blue-700)', sub: '其中 ' + prof.both + ' 篇同时提及竞品', fg: 'var(--csop-blue-700)' },
       { label: '提及竞品', value: String(prof.peerAny), unit: '篇', pct: pct(prof.peerAny, ps.length), pfg: 'var(--ink-600)', sub: '仅提竞品的有 ' + prof.peer + ' 篇', fg: 'var(--ink-800)' },
       { label: '互动合计', value: num(prof.engagement), unit: '', pct: '', pfg: 'transparent', sub: '赞 ' + num(likes) + ' · 评 ' + num(comments) + ' · 转 ' + num(shares) + '（发布后约 24h）', fg: 'var(--ink-900)' }
@@ -140,10 +142,16 @@ class KolDetail extends React.Component {
 
     /* 左表：点行 = 选中该帖（右侧高亮那天）+ 展开原文 */
     out.posts = ps.map(function (p, i) {
-      var sec = secOf(p.sector), st = typeStyle(p.postType), on = !!(p0 && p.id === p0.id);
+      var sec = secOf(p.sector), st = typeStyle(p.postType), on = !!(p0 && p.id === p0.id), displayedEtfs = mentionedEtfsOf(p);
       return {
         key: p.id,
-        time: p.time, code: p.code || '—',
+        time: p.time,
+        etfs: displayedEtfs.map(function (m) { return {
+          ticker: m.ticker,
+          name: m.name,
+          bg: m.inPool === false ? 'var(--warning-100)' : rgba(sec.hue, 0.12),
+          fg: m.inPool === false ? 'var(--warning-700)' : sec.hue
+        }; }),
         pbg: p.code ? rgba(sec.hue, 0.12) : 'var(--ink-100)', pfg: p.code ? sec.hue : 'var(--ink-500)',
         type: st.label, tbg: st.bg, tfg: st.fg, pending: self.pending(p), conf: conf2(p.confidence),
         confidenceText: p.confidence == null
@@ -187,12 +195,13 @@ class KolDetail extends React.Component {
     var DAYS = RANGE.days;
     var perDay = {};
     ps.forEach(function (p) {
-      var e = perDay[p.day] = perDay[p.day] || { own: 0, both: 0, peer: 0 };
+      var e = perDay[p.day] = perDay[p.day] || { own: 0, both: 0, peer: 0, outside: 0 };
       var c = self.camp(p);
       if (c === 'own') e.own++; else if (c === 'both') e.both++; else if (c === 'competitor') e.peer++;
+      else if (mentionedEtfsOf(p).length) e.outside++;
     });
     var mx = 1;
-    Object.keys(perDay).forEach(function (d) { var e = perDay[d], t = e.own + e.both + e.peer; if (t > mx) mx = t; });
+    Object.keys(perDay).forEach(function (d) { var e = perDay[d], t = e.own + e.both + e.peer + e.outside; if (t > mx) mx = t; });
     var unit = Math.min(40, Math.floor(160 / mx));
     var step = DAYS > 14 ? 5 : (DAYS > 7 ? 2 : 1);
     var selDay = p0 ? p0.day : null;
@@ -201,24 +210,26 @@ class KolDetail extends React.Component {
     out.days = [];
     for (var i = 0; i < DAYS; i++) {
       (function (i) {
-        var d = RANGE.dates[i], e = perDay[d] || { own: 0, both: 0, peer: 0 }, on = d === selDay;
+        var d = RANGE.dates[i], e = perDay[d] || { own: 0, both: 0, peer: 0, outside: 0 }, on = d === selDay;
         out.days.push({
           key: d,
-          ownH: String(e.own * unit), bothH: String(e.both * unit), peerH: String(e.peer * unit),
-          peerGap: e.peer && (e.both || e.own) ? '1' : '0', bothGap: e.both && e.own ? '1' : '0',
+          ownH: String(e.own * unit), bothH: String(e.both * unit), peerH: String(e.peer * unit), outsideH: String(e.outside * unit),
+          outsideGap: e.outside && (e.peer || e.both || e.own) ? '1' : '0', peerGap: e.peer && (e.both || e.own) ? '1' : '0', bothGap: e.both && e.own ? '1' : '0',
           bg: on ? 'var(--csop-blue-50)' : 'transparent',
           label: (i % step === 0 || on || DAYS <= 7) ? md(d) : '',
           lfg: on ? 'var(--csop-blue-700)' : 'var(--ink-400)', lfw: on ? '600' : '500',
-          title: md(d) + ' · 只提自家 ' + e.own + ' · 双方 ' + e.both + ' · 只提其他公司 ' + e.peer,
+          title: md(d) + ' · 只提自家 ' + e.own + ' · 双方 ' + e.both + ' · 只提其他公司 ' + e.peer + ' · 只提池外 ETF ' + e.outside,
           go: function () { var q = ps.filter(function (p) { return p.day === d; }).sort(function (a, b) { return a.t - b.t; })[0]; if (q) self.setState({ sel: q.id }); }
         });
       })(i);
     }
-    out.chartNote = p0 ? '高亮 ' + p0.dateText + '（' + typeStyle(p0.postType).label + ' · ' + (p0.code || '未提及池内ETF') + '）' : '这段时间没有发帖';
+    var chartPrimary = p0 ? primaryDisplayedEtf(p0) : null;
+    out.chartNote = p0 ? '高亮 ' + p0.dateText + '（' + typeStyle(p0.postType).label + ' · ' + (chartPrimary ? chartPrimary.ticker : '未提及 ETF') + '）' : '这段时间没有发帖';
     out.campCells = [
       { label: '只提自家', value: String(prof.own), fg: '#2361AD' },
       { label: '双方都提', value: String(prof.both), fg: '#3674C2' },
-      { label: '只提其他公司', value: String(prof.peer), fg: 'var(--ink-600)' }
+      { label: '只提其他公司', value: String(prof.peer), fg: 'var(--ink-600)' },
+      { label: '只提池外 ETF', value: String(ps.filter(function (p) { return p.camp === 'none' && mentionedEtfsOf(p).length; }).length), fg: '#A66A12' }
     ];
     /* 跟随当前高亮帖子展示正文实际提及的竞品；挂载讨论区不进入产品归属。 */
     var chartMentions = p0 ? p0.mentioned : [];
@@ -235,17 +246,19 @@ class KolDetail extends React.Component {
     var composition = kolProductComposition(ps);
     var ownEnd = composition.total ? composition.own / composition.total * 100 : 0;
     var otherEnd = composition.total ? (composition.own + composition.other) / composition.total * 100 : 0;
-    var unmentionedEnd = composition.total ? (composition.own + composition.other + composition.unmentioned) / composition.total * 100 : 0;
+    var outsideEnd = composition.total ? (composition.own + composition.other + composition.outside) / composition.total * 100 : 0;
+    var unmentionedEnd = composition.total ? (composition.own + composition.other + composition.outside + composition.unmentioned) / composition.total * 100 : 0;
     out.productPie = composition.total
-      ? 'conic-gradient(#2361AD 0 ' + ownEnd + '%, #9AA7B8 ' + ownEnd + '% ' + otherEnd + '%, #DDE3EB ' + otherEnd + '% ' + unmentionedEnd + '%, #F2C98A ' + unmentionedEnd + '% 100%)'
+      ? 'conic-gradient(#2361AD 0 ' + ownEnd + '%, #9AA7B8 ' + ownEnd + '% ' + otherEnd + '%, #D9B46C ' + otherEnd + '% ' + outsideEnd + '%, #DDE3EB ' + outsideEnd + '% ' + unmentionedEnd + '%, #F2C98A ' + unmentionedEnd + '% 100%)'
       : 'var(--ink-100)';
     out.productTotal = String(composition.total);
     out.ownershipRows = [
       { key: 'own', label: '南方东英产品', n: String(composition.own), pct: composition.ownPct == null ? '—' : composition.ownPct + '%', color: '#2361AD' },
-      { key: 'other', label: '其他公司产品', n: String(composition.other), pct: composition.otherPct == null ? '—' : composition.otherPct + '%', color: '#9AA7B8' }
+      { key: 'other', label: '其他公司产品', n: String(composition.other), pct: composition.otherPct == null ? '—' : composition.otherPct + '%', color: '#9AA7B8' },
+      { key: 'outside', label: '仅提池外 ETF', n: String(composition.outside), pct: composition.outsidePct == null ? '—' : composition.outsidePct + '%', color: '#D9B46C' }
     ];
     if (composition.unmentioned) {
-      out.ownershipRows.push({ key: 'unmentioned', label: '正文未提及池内 ETF', n: String(composition.unmentioned), pct: composition.unmentionedPct + '%', color: '#DDE3EB' });
+      out.ownershipRows.push({ key: 'unmentioned', label: '正文未提及 ETF', n: String(composition.unmentioned), pct: composition.unmentionedPct + '%', color: '#DDE3EB' });
     }
     if (composition.unknown) {
       out.ownershipRows.push({ key: 'unknown', label: '归属暂不可用', n: String(composition.unknown), pct: composition.unknownPct + '%', color: '#F2C98A' });
@@ -346,7 +359,11 @@ class KolDetail extends React.Component {
                       <tr key={p.key} onClick={p.go} style={s(`background:${p.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
                         <td style={s('padding:11px 14px;vertical-align:top;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
                           <div style={s('font:500 13px/1.5 var(--font-mono);color:var(--ink-800)')}>{p.time}</div>
-                          <span style={s(`display:inline-block;margin-top:5px;padding:1px 7px;border-radius:var(--radius-pill);background:${p.pbg};font:600 12px/1.5 var(--font-mono);color:${p.pfg}`)}>{p.code}</span>
+                          <div style={s('display:flex;flex-direction:column;align-items:flex-start;gap:4px;margin-top:5px')}>
+                            {p.etfs.length ? p.etfs.map((etf) => (
+                              <span key={etf.ticker} title={etf.name || etf.ticker} style={s(`display:inline-block;padding:1px 7px;border-radius:var(--radius-pill);background:${etf.bg};font:600 12px/1.5 var(--font-mono);color:${etf.fg}`)}>{etf.ticker}</span>
+                            )) : <span style={s('display:inline-block;padding:1px 7px;border-radius:var(--radius-pill);background:var(--ink-100);font:600 12px/1.5 var(--font-mono);color:var(--ink-500)')}>—</span>}
+                          </div>
                         </td>
                         <td style={s('padding:11px 6px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
                           <div style={s('display:flex;flex-direction:column;align-items:flex-start;gap:4px')}>
@@ -407,11 +424,13 @@ class KolDetail extends React.Component {
                     <div style={s('display:flex;align-items:center;gap:6px')}><span style={s('width:12px;height:12px;border-radius:2px;background:#2361AD')}></span><span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-600)')}>只提自家</span></div>
                     <div style={s('display:flex;align-items:center;gap:6px')}><span style={s('width:12px;height:12px;border-radius:2px;background:#7DA5DC')}></span><span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-600)')}>双方都提</span></div>
                     <div style={s('display:flex;align-items:center;gap:6px')}><span style={s('width:12px;height:12px;border-radius:2px;background:#B7BFC9')}></span><span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-600)')}>只提其他公司</span></div>
+                    <div style={s('display:flex;align-items:center;gap:6px')}><span style={s('width:12px;height:12px;border-radius:2px;background:#D9B46C')}></span><span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-600)')}>只提池外 ETF</span></div>
                   </div>
                   <div style={s(`display:flex;align-items:flex-end;gap:${v.colGap}px;height:172px;border-bottom:1px solid var(--border-2)`)}>
                     {v.days.map((d) => (
                       <div key={d.key} onClick={d.go} title={d.title} style={s(`flex:1;min-width:0;height:172px;box-sizing:border-box;display:flex;flex-direction:column;justify-content:flex-end;padding:0 ${v.colPad}px 0;background:${d.bg};border-radius:4px 4px 0 0;cursor:pointer`)}>
-                        <div style={s(`height:${d.peerH}px;background:#B7BFC9;border-radius:2px 2px 0 0;margin-bottom:${d.peerGap}px`)}></div>
+                        <div style={s(`height:${d.outsideH}px;background:#D9B46C;border-radius:2px 2px 0 0;margin-bottom:${d.outsideGap}px`)}></div>
+                        <div style={s(`height:${d.peerH}px;background:#B7BFC9;margin-bottom:${d.peerGap}px`)}></div>
                         <div style={s(`height:${d.bothH}px;background:#7DA5DC;margin-bottom:${d.bothGap}px`)}></div>
                         <div style={s(`height:${d.ownH}px;background:#2361AD`)}></div>
                       </div>
@@ -422,7 +441,7 @@ class KolDetail extends React.Component {
                       <div key={d.key} style={s(`flex:1;min-width:0;text-align:center;font:${d.lfw} 10px/1.4 var(--font-mono);color:${d.lfg};white-space:nowrap;overflow:hidden`)}>{d.label}</div>
                     ))}
                   </div>
-                  <div style={s('margin-top:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border-1);border:1px solid var(--border-1);border-radius:var(--radius-control);overflow:hidden')}>
+                  <div style={s('margin-top:12px;display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border-1);border:1px solid var(--border-1);border-radius:var(--radius-control);overflow:hidden')}>
                     {v.campCells.map((c) => (
                       <div key={c.label} style={s('background:#fff;padding:10px 12px')}>
                         <div style={s('font:500 12px/1.4 var(--font-cjk);color:var(--ink-500);margin-bottom:6px')}>{c.label}</div>

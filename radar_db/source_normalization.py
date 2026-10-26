@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -162,11 +164,89 @@ def normalize_comment(item: dict, feed_id: int) -> dict | None:
 
 
 def mention_code(stock):
+    # display_symbol/symbol 已经是完整市场 ticker（例如 QQQ.US）；优先使用它，
+    # 避免 stock_code 本身带后缀时再次拼接成 QQQ.US.US。
+    symbol = first_not_none(stock.get("display_symbol"), stock.get("symbol"))
+    if symbol:
+        normalized = normalize_futu_ticker(symbol)
+        if normalized:
+            return normalized
     code = stock.get("stock_code")
     if not code:
         return None
     market = stock.get("market_type_label")
     return normalize_futu_ticker(f"{code}.{market}") if market else str(code).strip()
+
+
+def _mention_metadata(stock):
+    symbol = first_not_none(stock.get("display_symbol"), stock.get("symbol"))
+    if symbol:
+        symbol = normalize_source_ticker(symbol)
+    if not symbol:
+        raw_code = stock.get("stock_code")
+        market = stock.get("market_type_label")
+        symbol = normalize_source_ticker(f"{raw_code}.{market}") if raw_code and market else None
+    return {
+        "display_symbol": symbol,
+        "display_name": first_not_none(
+            stock.get("stock_name"), stock.get("display_name"), stock.get("name")
+        ),
+        "instrument_type_v2": optional_integer(stock.get("instrument_type_v2")),
+        "sub_instrument_type_v2": optional_integer(stock.get("sub_instrument_type_v2")),
+    }
+
+
+def _empty_mention_metadata():
+    return {
+        "display_symbol": None,
+        "display_name": None,
+        "instrument_type_v2": None,
+        "sub_instrument_type_v2": None,
+    }
+
+
+def _merge_mention_metadata(primary, fallback):
+    """Fill missing mention facts without replacing stronger source facts."""
+    return {
+        field: primary.get(field) if primary.get(field) is not None else fallback.get(field)
+        for field in _empty_mention_metadata()
+    }
+
+
+_ETF_DISPLAY_NAME = re.compile(
+    r"(?:ETF|交易所(?:買賣|买卖)基金)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _cashtag_mention_metadata(mention, instrument_catalog):
+    """Build identity facts for one strict Futu cashtag in the full body.
+
+    Full feed details contain the entire article in ``content_text`` while
+    ``summary.rich_text`` is commonly only an abbreviated prefix.  The strict
+    ``$Product name (01234.HK)$`` token is a platform-rendered source fact, so
+    its name can confirm an explicitly labelled ETF when the source security
+    directory has not discovered that newly listed ticker yet.  A catalog
+    classification, when present, always wins over the label.
+    """
+    code = normalize_futu_ticker(mention.raw_ticker)
+    catalog = (instrument_catalog or {}).get(code, {}) if code else {}
+    catalog_is_etf = catalog.get("is_etf")
+    display_name = catalog.get("display_name") or mention.display_name
+    instrument_type = None
+    if catalog_is_etf is True:
+        instrument_type = 4
+    elif catalog_is_etf is None and display_name and _ETF_DISPLAY_NAME.search(display_name):
+        instrument_type = 4
+    return {
+        "display_symbol": (
+            normalize_source_ticker(catalog.get("display_symbol"))
+            or normalize_source_ticker(mention.raw_ticker)
+        ),
+        "display_name": display_name,
+        "instrument_type_v2": instrument_type,
+        "sub_instrument_type_v2": None,
+    }
 
 
 def _raw_json(value):
@@ -185,6 +265,7 @@ def normalize_feed(
     observed_at: datetime,
     *,
     source_ticker: str | None = None,
+    instrument_catalog: Mapping[str, Mapping] | None = None,
 ) -> FeedObservation:
     """Turn one MarketInsight feed row into target facts without calculating metrics."""
 
@@ -209,20 +290,45 @@ def normalize_feed(
         seen.add(comment_id)
         normalized_comments.append(normalized)
 
-    mentions = [{"feed_id": int(row["feed_id"]), "code": code, "source": "anchor", "in_pool": True}]
-    body_codes = set()
+    raw_mentions = extract_feed_mentions(row.get("feed_title"), row.get("content_text"))
+    mentions = [{
+        "feed_id": int(row["feed_id"]),
+        "code": code,
+        "source": "anchor",
+        "in_pool": True,
+        **_empty_mention_metadata(),
+    }]
+    body_mentions = {}
     for segment in ((payload or {}).get("summary") or {}).get("rich_text") or []:
         stock = segment.get("stock")
         if stock:
             value = mention_code(stock)
             if value:
-                body_codes.add(value)
-    body_codes.update(
-        extract_futu_cashtags(f"{row.get('feed_title') or ''} {row.get('content_text') or ''}")
-    )
+                metadata = _mention_metadata(stock)
+                prior = body_mentions.get(value)
+                body_mentions[value] = (
+                    metadata if prior is None
+                    else _merge_mention_metadata(metadata, prior)
+                )
+    for mention in raw_mentions:
+        value = normalize_futu_ticker(mention.raw_ticker)
+        if value is None:
+            continue
+        metadata = _cashtag_mention_metadata(mention, instrument_catalog)
+        prior = body_mentions.get(value)
+        body_mentions[value] = (
+            metadata if prior is None
+            else _merge_mention_metadata(prior, metadata)
+        )
     mentions.extend(
-        {"feed_id": int(row["feed_id"]), "code": value, "source": "body", "in_pool": False}
-        for value in sorted(body_codes)
+        {
+            "feed_id": int(row["feed_id"]),
+            "code": value,
+            "source": "body",
+            "in_pool": False,
+            **body_mentions[value],
+        }
+        for value in sorted(body_mentions)
     )
 
     platform_count = optional_integer(row.get("comment_count"))
@@ -276,7 +382,6 @@ def normalize_feed(
         "source_observed_at": timestamp_from_source(observed_at),
         "comment_coverage_status": coverage,
     }
-    raw_mentions = extract_feed_mentions(feed.get("title"), feed.get("content"))
     feed_mentions = tuple(
         {
             "feed_id": feed["feed_id"],

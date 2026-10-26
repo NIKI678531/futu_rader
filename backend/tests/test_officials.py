@@ -30,7 +30,7 @@ def test_posts_default_range_is_d7(client):
     ["id", "account", "accountFull", "accountType", "isIssuer", "t", "day", "time",
      "code", "name", "sector", "ownership", "issuer", "likes", "comments", "shares",
      "engagement", "url", "postType", "typeLabel", "confidence", "hasSummary",
-     "summary", "fullText", "evidenceIdx", "mentioned", "camp", "campPrimary",
+     "summary", "fullText", "evidenceIdx", "mentioned", "mentionedEtfs", "camp", "campPrimary",
      "sourceAnchorCode", "attributedProducts", "attributionStatus", "attributedCamp"],
 )
 def test_post_carries_every_field_the_feed_card_needs(client, field):

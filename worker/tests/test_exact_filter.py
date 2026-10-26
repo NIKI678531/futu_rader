@@ -21,7 +21,7 @@ from collection.exact import (  # noqa: E402
     route_parent_feed,
 )
 from collection.normalization import normalize_feed  # noqa: E402
-from radar_db.comment_filter import FilterPolicy  # noqa: E402
+from radar_db.comment_filter import FilterPolicy, extract_feed_mentions  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -41,6 +41,18 @@ def test_normalize_futu_ticker_uses_project_code_format(raw, expected):
 def test_extract_futu_cashtags_accepts_strict_futu_forms_in_order():
     text = "$03037.HK$ / $产品名 (03037.HK)$ / $產品名（07226.HK）$ / $NVDA.US$"
     assert extract_futu_cashtags(text) == ("3037", "3037", "7226", "us:NVDA")
+
+
+def test_strict_cashtag_keeps_the_platform_display_name():
+    mentions = extract_feed_mentions(
+        None,
+        "$易方達亞太高股息ETF (03483.HK)$ / $03456.HK$",
+    )
+
+    assert [(item.raw_ticker, item.display_name) for item in mentions] == [
+        ("03483.HK", "易方達亞太高股息ETF"),
+        ("03456.HK", None),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -95,6 +107,100 @@ def test_normalize_feed_builds_filter_mentions_only_from_parent_title_and_conten
 
     unresolved = normalize_feed(row, "3037", datetime(2026, 9, 20, 3, 0))
     assert unresolved.feed["source_ticker"] is None
+
+
+def test_normalize_feed_retains_instrument_type_for_strict_etf_display():
+    row = {
+        "feed_id": 2,
+        "feed_type": 1,
+        "posted_at": datetime(2026, 10, 21, 15, 26),
+        "feed_title": None,
+        "content_text": None,
+        "like_count": 0,
+        "comment_count": 0,
+        "image_count": 0,
+        "raw_json": {
+            "comment": {"comment_items": [], "has_more": False},
+            "summary": {"rich_text": [
+                {"stock": {"stock_code": "QQQ", "market_type_label": "US",
+                           "display_symbol": "QQQ.US", "stock_name": "Invesco QQQ Trust",
+                           "instrument_type_v2": 4, "sub_instrument_type_v2": 4001}},
+                {"stock": {"stock_code": "800000", "market_type_label": "HK",
+                           "display_symbol": "800000.HK", "stock_name": "恒生指数",
+                           "instrument_type_v2": 6, "sub_instrument_type_v2": 6001}},
+                {"stock": {"stock_code": "68882", "market_type_label": "HK",
+                           "display_symbol": "68882.HK", "stock_name": "恒指瑞银九三熊N.P",
+                           "instrument_type_v2": 5, "sub_instrument_type_v2": 5003}},
+            ]},
+        },
+    }
+
+    observation = normalize_feed(row, "3037", datetime(2026, 10, 21, 16, 0))
+    body = {m["code"]: m for m in observation.mentions if m["source"] == "body"}
+
+    assert body["us:QQQ"]["display_symbol"] == "QQQ.US"
+    assert body["us:QQQ"]["instrument_type_v2"] == 4
+    assert body["800000"]["instrument_type_v2"] == 6
+    assert body["68882"]["instrument_type_v2"] == 5
+
+
+def test_full_article_etfs_are_identified_beyond_the_abbreviated_summary():
+    row = {
+        "feed_id": 117479595180036,
+        "feed_type": 1,
+        "posted_at": datetime(2026, 10, 21, 15, 26),
+        "feed_title": "AI是否已經走到了盡頭？- 10月12至20日覆盤",
+        "content_text": (
+            "$恒生指數 (800000.HK)$ $恒指瑞銀九三熊N.P (68882.HK)$ "
+            "$騰訊控股 (00700.HK)$ "
+            "$易方達亞太高股息ETF (03483.HK)$ "
+            "$易方達港交所科技100 ETF (03456.HK)$"
+        ),
+        "like_count": 0,
+        "comment_count": 0,
+        "image_count": 0,
+        "raw_json": {
+            "comment": {"comment_items": [], "has_more": False},
+            # The real source row marks this abbreviated prefix incomplete and
+            # carries structured identity only for these first two products.
+            "summary": {"is_complete": False, "rich_text": [
+                {"stock": {"stock_code": "800000", "market_type_label": "HK",
+                           "display_symbol": "800000.HK", "stock_name": "恒生指数",
+                           "instrument_type_v2": 6, "sub_instrument_type_v2": 6001}},
+                {"stock": {"stock_code": "68882", "market_type_label": "HK",
+                           "display_symbol": "68882.HK", "stock_name": "恒指瑞银九三熊N.P",
+                           "instrument_type_v2": 5, "sub_instrument_type_v2": 5003}},
+            ]},
+        },
+    }
+    catalog = {
+        "3483": {
+            "display_symbol": "03483.HK",
+            "display_name": "易方達亞太高股息ETF",
+            "is_etf": True,
+        },
+        "700": {
+            "display_symbol": "00700.HK",
+            "display_name": "騰訊控股",
+            "is_etf": False,
+        },
+    }
+
+    observation = normalize_feed(
+        row,
+        "3037",
+        datetime(2026, 10, 22, 10, 30),
+        instrument_catalog=catalog,
+    )
+    body = {m["code"]: m for m in observation.mentions if m["source"] == "body"}
+
+    assert body["3483"]["instrument_type_v2"] == 4
+    assert body["3483"]["display_name"] == "易方達亞太高股息ETF"
+    assert body["3456"]["instrument_type_v2"] == 4
+    assert body["3456"]["display_name"] == "易方達港交所科技100 ETF"
+    assert body["800000"]["instrument_type_v2"] == 6
+    assert body["68882"]["instrument_type_v2"] == 5
+    assert body["700"]["instrument_type_v2"] is None
 
 
 def test_exact_parent_qualifies_and_all_replies_inherit_anchor():

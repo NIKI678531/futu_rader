@@ -56,6 +56,18 @@ test('product composition uses one primary ETF per post and groups other compani
   assert.equal(result.companies[0].products[0].pct, 33)
 })
 
+test('off-pool ETF mentions are separate from unmentioned and pool ownership', () => {
+  const result = kolProductComposition([
+    { code: null, mentioned: [], mentionedEtfs: [{ code: 'us:QQQ', ticker: 'QQQ.US', inPool: false }] },
+    { code: null, mentioned: [], mentionedEtfs: [] },
+  ])
+
+  assert.deepEqual(
+    { outside: result.outside, outsidePct: result.outsidePct, unmentioned: result.unmentioned },
+    { outside: 1, outsidePct: 50, unmentioned: 1 },
+  )
+})
+
 test('KOL screens expose the new ownership and reach UI without the removed opinions block', () => {
   const activity = source('screens/KolActivity.jsx')
   const detail = source('screens/KolDetail.jsx')
@@ -70,7 +82,8 @@ test('KOL screens expose the new ownership and reach UI without the removed opin
   assert.match(activity, /'转发', '浏览量', '原帖链接'/)
   assert.match(activity, />ETF 归属</)
   assert.match(activity, /ownership: ownershipOf\(p\)/)
-  assert.match(activity, /正文未提及当前产品池内的 ETF/)
+  assert.match(activity, /正文未识别到 ETF/)
+  assert.match(activity, /指数、股票及其他产品不计入/)
   assert.match(activity, /挂载讨论区不作为产品证据/)
   assert.doesNotMatch(activity, /primaryOnly|挂载标的 ∪ 正文提及/)
   assert.doesNotMatch(activity, /r\.campBadges\.map/)
@@ -81,7 +94,8 @@ test('KOL screens expose the new ownership and reach UI without the removed opin
   assert.match(detail, /ownership: ownershipOf\(p\)/)
   assert.match(detail, /rankedProfiles\(\)[\s\S]*?\.sort\(compareKolReach\)/)
   assert.match(detail, /conic-gradient/)
-  assert.match(detail, /正文未提及池内 ETF/)
+  assert.match(detail, /正文未提及 ETF/)
+  assert.match(detail, /只提池外 ETF/)
   assert.doesNotMatch(detail, /primaryOnly|挂载标的 ∪ 正文提及/)
   assert.match(detail, />其他公司及产品</)
   assert.doesNotMatch(detail, /帖子类型构成|其他产品观点及操作|R\.kolOpinions/)

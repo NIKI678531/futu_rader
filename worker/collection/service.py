@@ -43,12 +43,19 @@ from .models import AiRequest, AiResult, Cursor, FeedObservation, SyncRequest, S
 from .source import STREAMS, SourceAdapter
 
 
-NORMALIZER_VERSION = "market-insight-v4-comment-routes"
+NORMALIZER_VERSION = "market-insight-v6-full-article-etf-identities"
 SEMANTIC_FEED_FIELDS = (
     "code", "source_ticker", "posted_at", "feed_type", "title", "content"
 )
 SEMANTIC_COMMENT_FIELDS = ("feed_id", "posted_at", "author_uid", "content", "reply_to_comment_id")
 COUNTER_FIELDS = ("like_count", "comment_count", "image_count", "share_count", "browse_count")
+MENTION_VALUE_FIELDS = (
+    "in_pool",
+    "display_symbol",
+    "display_name",
+    "instrument_type_v2",
+    "sub_instrument_type_v2",
+)
 
 
 class CheckpointConfigurationChanged(ValueError):
@@ -1042,6 +1049,10 @@ class FutuRefresh:
                 "code": values["code"],
                 "source": "anchor",
                 "in_pool": True,
+                "display_symbol": None,
+                "display_name": None,
+                "instrument_type_v2": None,
+                "sub_instrument_type_v2": None,
             })
             desired_mentions = {
                 (mention["code"], mention["source"]): {
@@ -1070,14 +1081,22 @@ class FutuRefresh:
                         conn.execute(insert(mentions).values(**mention_values))
                     semantic = True
                     comments_fact_changed = True
-                elif prior_mention["in_pool"] != mention_values["in_pool"]:
+                elif any(
+                    prior_mention.get(field) != mention_values.get(field)
+                    for field in MENTION_VALUE_FIELDS
+                ):
                     if prior_mention["in_pool"] or mention_values["in_pool"]:
                         semantic_affected.add(mention_values["code"])
                     if not dry_run:
-                        conn.execute(update(mentions).where(match).values(
-                            in_pool=mention_values["in_pool"]
-                        ))
-                    semantic = True
+                        conn.execute(update(mentions).where(match).values(**{
+                            field: mention_values.get(field)
+                            for field in MENTION_VALUE_FIELDS
+                        }))
+                    # Metadata makes an off-pool ETF visible but does not alter
+                    # any pool-product AI input or attribution.
+                    semantic = semantic or bool(
+                        prior_mention["in_pool"] or mention_values["in_pool"]
+                    )
                     comments_fact_changed = True
 
             # A valid source payload is an authoritative mention snapshot. A
@@ -1246,7 +1265,10 @@ class FutuRefresh:
                 if not dry_run:
                     conn.execute(insert(mentions).values(**values))
                 item_changed = True
-            elif prior["in_pool"] != values["in_pool"]:
+            elif any(
+                prior.get(field) != values.get(field)
+                for field in MENTION_VALUE_FIELDS
+            ):
                 if not dry_run:
                     conn.execute(
                         update(mentions)
@@ -1255,7 +1277,10 @@ class FutuRefresh:
                             mentions.c.code == code,
                             mentions.c.source == "body",
                         )
-                        .values(in_pool=values["in_pool"])
+                        .values(**{
+                            field: values.get(field)
+                            for field in MENTION_VALUE_FIELDS
+                        })
                     )
                 item_changed = True
             changed = changed or item_changed

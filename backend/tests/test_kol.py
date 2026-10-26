@@ -45,7 +45,7 @@ def test_impact_top_level_shape(client):
      "sector", "ownership", "issuer", "likes", "comments", "shares", "views",
      "engagement", "url", "postType", "typeLabel", "confidence", "direction",
      "directionLabel", "directionPending", "hasDir", "dir", "hasSummary", "summary",
-     "fullText", "evidenceIdx", "typeEvidence", "mentioned", "camp", "campPrimary"],
+     "fullText", "evidenceIdx", "typeEvidence", "mentioned", "mentionedEtfs", "camp", "campPrimary"],
 )
 def test_post_carries_every_field_the_table_needs(client, field):
     assert field in client.get("/api/v1/kol/impact?range=d7").get_json()["data"]["posts"][0]
@@ -56,6 +56,15 @@ def test_mentioned_products_carry_the_company_details_needed_by_the_timeline(cli
     mentions = [m for p in posts for m in p["mentioned"]]
     assert mentions, "演示数据应至少有一条产品提及，否则这条契约断言没有覆盖对象"
     assert all(set(m) >= {"code", "name", "issuer", "ownership"} for m in mentions)
+
+
+def test_display_etfs_have_ticker_and_pool_identity(client):
+    posts = client.get("/api/v1/kol/impact?range=d30").get_json()["data"]["posts"]
+    etfs = [item for post in posts for item in post["mentionedEtfs"]]
+    assert etfs
+    assert all(set(item) >= {
+        "code", "ticker", "name", "issuer", "ownership", "inPool"
+    } for item in etfs)
 
 
 def test_dual_label_direction_is_optional_but_form_is_not(client):

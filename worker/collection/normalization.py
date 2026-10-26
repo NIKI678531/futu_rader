@@ -6,6 +6,7 @@ from radar_db.source_normalization import (
     mention_code,
     normalize_comment,
     normalize_feed,
+    normalize_futu_ticker,
     optional_integer,
     rich_text,
     timestamp_from_epoch,

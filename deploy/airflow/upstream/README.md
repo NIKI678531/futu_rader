@@ -7,6 +7,11 @@ MarketInsight repository only when exact bounded replay and verified
 `sourceCompleteThrough` are required, then add receipt writes to the existing
 `comments_all` DAG.
 
+Full KOL/official article bodies additionally require
+`futu_comments_full_article_indexes.mysql`. Without the
+`(detail_updated_at, feed_id)` cursor, Radar now fails source preflight instead
+of silently serving the abbreviated first feed snapshot.
+
 For every run:
 
 1. Insert a unique `run_id` with `status=running` before collection.

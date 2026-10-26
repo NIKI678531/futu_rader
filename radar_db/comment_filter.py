@@ -57,6 +57,12 @@ class CashtagMention:
     raw_ticker: str
     market: str
     occurrences: int
+    # Futu's rendered ``$Product name (01234.HK)$`` form carries the display
+    # name as part of the same strict cashtag.  It is not persisted in
+    # ``feed_mentions`` (that table is the comment-routing contract), but the
+    # source normalizer uses it to classify off-pool ETF mentions that occur
+    # beyond the abbreviated ``summary.rich_text`` payload.
+    display_name: str | None = None
 
     def __post_init__(self) -> None:
         raw_ticker = str(self.raw_ticker).strip()
@@ -72,10 +78,15 @@ class CashtagMention:
             raise TypeError("cashtag occurrences must be an integer")
         if self.occurrences < 1:
             raise ValueError("cashtag occurrences must be positive")
+        display_name = (
+            str(self.display_name).strip()
+            if self.display_name is not None else None
+        )
         # ``raw_ticker`` is an audit fact copied from the parent text.  Keep its
         # original spelling; normalization belongs to comparisons, not storage.
         object.__setattr__(self, "raw_ticker", raw_ticker)
         object.__setattr__(self, "market", market)
+        object.__setattr__(self, "display_name", display_name or None)
 
     def as_row(self, feed_id: int) -> dict[str, int | str]:
         return {
@@ -185,12 +196,19 @@ def source_ticker_valid_predicate(feed) -> ColumnElement[bool]:
     )
 
 
-def _ticker_from_cashtag_inner(inner: str) -> str | None:
+def _parts_from_cashtag_inner(inner: str) -> tuple[str | None, str | None]:
     value = inner.strip()
     if _TICKER.fullmatch(value):
-        return value
+        return value, None
     match = _TRAILING_TICKER.search(value)
-    return match.group("ticker") if match else None
+    if match is None:
+        return None, None
+    display_name = value[:match.start()].strip()
+    return match.group("ticker"), display_name or None
+
+
+def _ticker_from_cashtag_inner(inner: str) -> str | None:
+    return _parts_from_cashtag_inner(inner)[0]
 
 
 def extract_feed_mentions(
@@ -206,6 +224,7 @@ def extract_feed_mentions(
     """
 
     raw_by_ticker: dict[str, str] = {}
+    name_by_ticker: dict[str, str] = {}
     counts: Counter[str] = Counter()
     # Title and body are independent source fields.  Pairing dollar delimiters
     # across their artificial join boundary lets a harmless amount such as a
@@ -214,17 +233,20 @@ def extract_feed_mentions(
     # normalized occurrences.
     for text in (title or "", content or ""):
         for inner in _CASHTAG_CANDIDATE.findall(text):
-            raw_ticker = _ticker_from_cashtag_inner(inner)
+            raw_ticker, display_name = _parts_from_cashtag_inner(inner)
             ticker = normalize_source_ticker(raw_ticker)
             if raw_ticker is None or ticker is None:
                 continue
             raw_by_ticker.setdefault(ticker, raw_ticker)
+            if display_name:
+                name_by_ticker.setdefault(ticker, display_name)
             counts[ticker] += 1
     return tuple(
         CashtagMention(
             raw_ticker=raw_by_ticker[ticker],
             market=ticker.rsplit(".", 1)[1],
             occurrences=occurrences,
+            display_name=name_by_ticker.get(ticker),
         )
         for ticker, occurrences in counts.items()
     )

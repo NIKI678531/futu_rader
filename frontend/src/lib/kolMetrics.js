@@ -1,5 +1,7 @@
 /* KOL 页面里只依赖已下发帖子事实的轻量聚合。 */
 
+import { mentionedEtfsOf } from './kolEtfs.js'
+
 export function sumPostViews(posts) {
   var total = 0;
   for (var i = 0; i < posts.length; i++) {
@@ -38,14 +40,18 @@ function percent(n, total) {
 
 /*
  * 饼图按每篇帖子的正文主 ETF（code / ownership）统计，因此一篇只会进入一个扇区。
- * 正文未提及池内 ETF 是已知空态，和主数据缺失的 unknown 分开；其他公司明细也使用
- * 同一主 ETF 口径，避免把正文里的次要提及混进来后与饼图对不上。
+ * 没有池内主 ETF、但正文确认了池外 ETF 的帖子单列 outside；完全没识别到 ETF 才是
+ * unmentioned。其他公司明细仍使用同一主 ETF 口径，避免次要提及和饼图重复计数。
  */
 export function kolProductComposition(posts) {
-  var own = 0, other = 0, unmentioned = 0, unknown = 0;
+  var own = 0, other = 0, outside = 0, unmentioned = 0, unknown = 0;
   var companies = new Map();
 
   posts.forEach(function (post) {
+    if (!post.code && mentionedEtfsOf(post).length > 0) {
+      outside++;
+      return;
+    }
     if (!post.code && Array.isArray(post.mentioned) && post.mentioned.length === 0) {
       unmentioned++;
       return;
@@ -97,10 +103,12 @@ export function kolProductComposition(posts) {
     total: total,
     own: own,
     other: other,
+    outside: outside,
     unmentioned: unmentioned,
     unknown: unknown,
     ownPct: percent(own, total),
     otherPct: percent(other, total),
+    outsidePct: percent(outside, total),
     unmentionedPct: percent(unmentioned, total),
     unknownPct: percent(unknown, total),
     companies: companyRows

@@ -22,9 +22,10 @@ duplicate DAG IDs.
 
 ## Required database changes
 
-Apply `../futu_comments_collection_runs.mysql` to the MarketInsight database by
-its normal migration process. Add these two source indexes during an approved
-maintenance window:
+Apply `../futu_comments_collection_runs.mysql` and
+`../futu_comments_full_article_indexes.mysql` to the MarketInsight database by
+its normal migration process during an approved maintenance window. The second
+migration contains these required indexes:
 
 ```sql
 ALTER TABLE futu_comments_feeds

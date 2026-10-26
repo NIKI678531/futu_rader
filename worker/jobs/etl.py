@@ -37,7 +37,7 @@ sys.path.insert(0, str(REPO_ROOT / "worker"))
 
 from sqlalchemy import delete, insert, select  # noqa: E402
 
-from collection.normalization import normalize_feed  # noqa: E402
+from collection.normalization import normalize_feed, normalize_futu_ticker  # noqa: E402
 from jobs.backfill_comment_filter import (  # noqa: E402
     STATUS_KEY as COMMENT_FILTER_STATUS_META_KEY,
     finalize_parent_filter,
@@ -92,9 +92,28 @@ def run(engine, batch_size=BATCH):
     content_hasher = hashlib.sha256()
 
     with engine.connect() as conn:
+        stock_rows = conn.execute(select(
+            src_stocks.c.stock_id,
+            src_stocks.c.ticker,
+            src_stocks.c.instrument_type,
+            src_stocks.c.name_zh,
+            src_stocks.c.name_en,
+        )).mappings().all()
         stock_facts = {
-            sid: (ticker_to_code(ticker), normalize_source_ticker(ticker))
-            for sid, ticker in conn.execute(select(src_stocks.c.stock_id, src_stocks.c.ticker))
+            row["stock_id"]: (
+                ticker_to_code(row["ticker"]),
+                normalize_source_ticker(row["ticker"]),
+            )
+            for row in stock_rows
+        }
+        instrument_catalog = {
+            mention_code: {
+                "display_symbol": normalize_source_ticker(row["ticker"]),
+                "display_name": row["name_zh"] or row["name_en"],
+                "is_etf": str(row["instrument_type"]).strip().lower() == "etf",
+            }
+            for row in stock_rows
+            if (mention_code := normalize_futu_ticker(row["ticker"]))
         }
         for row in conn.execute(select(
             src_users.c.user_id,
@@ -149,6 +168,7 @@ def run(engine, batch_size=BATCH):
                 code,
                 row.scraped_at,
                 source_ticker=source_ticker,
+                instrument_catalog=instrument_catalog,
             )
             feed_fact = dict(observation.feed)
             fbuf.append(feed_fact)

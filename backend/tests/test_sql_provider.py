@@ -409,6 +409,7 @@ class TestKolImpact:
         assert post["code"] is None
         assert post["name"] is None
         assert post["mentioned"] == []
+        assert post["mentionedEtfs"] == []
         assert post["camp"] == post["campPrimary"] == "none"
 
         related = provider.kol_mentions_for(OWN_CODE, "d1")
@@ -435,7 +436,73 @@ class TestKolImpact:
 
         assert post["code"] == PEER_CODE
         assert [item["code"] for item in post["mentioned"]] == [PEER_CODE]
+        assert post["mentionedEtfs"] == [{
+            "code": PEER_CODE,
+            "ticker": f"{PEER_CODE.zfill(5)}.HK",
+            "name": post["name"],
+            "issuer": post["issuer"],
+            "ownership": "peer",
+            "inPool": True,
+        }]
         assert post["camp"] == post["campPrimary"] == "competitor"
+
+    def test_only_confirmed_etfs_are_shown_for_off_pool_body_mentions(self, provider):
+        """池外 ETF 可展示；同帖中的指数与牛熊证不能混进 ETF 列。"""
+        with provider._engine.begin() as conn:
+            conn.execute(insert(feeds).values(
+                feed_id=96, code=OWN_CODE, source_ticker=f"0{OWN_CODE}.HK",
+                posted_at=datetime(2026, 8, 25, 5), feed_type=1,
+                author_uid="off-pool-etf-kol", author_name=KOL_NAME,
+                title="正文含多类产品", content="QQQ、恒指与牛熊证。",
+                like_count=1, comment_count=0, image_count=0,
+                share_count=0, browse_count=10, raw_json_broken=False,
+            ))
+            conn.execute(insert(mentions), [
+                {"feed_id": 96, "code": OWN_CODE, "source": "anchor", "in_pool": True,
+                 "display_symbol": None, "display_name": None,
+                 "instrument_type_v2": None, "sub_instrument_type_v2": None},
+                {"feed_id": 96, "code": "us:QQQ", "source": "body", "in_pool": False,
+                 "display_symbol": "QQQ.US", "display_name": "Invesco QQQ Trust",
+                 "instrument_type_v2": 4, "sub_instrument_type_v2": 4001},
+                {"feed_id": 96, "code": "800000", "source": "body", "in_pool": False,
+                 "display_symbol": "800000.HK", "display_name": "恒生指数",
+                 "instrument_type_v2": 6, "sub_instrument_type_v2": 6001},
+                {"feed_id": 96, "code": "68882", "source": "body", "in_pool": False,
+                 "display_symbol": "68882.HK", "display_name": "恒指瑞银九三熊N.P",
+                 "instrument_type_v2": 5, "sub_instrument_type_v2": 5003},
+                {"feed_id": 96, "code": "3483", "source": "body", "in_pool": False,
+                 "display_symbol": "03483.HK", "display_name": "易方達亞太高股息ETF",
+                 "instrument_type_v2": 4, "sub_instrument_type_v2": None},
+                {"feed_id": 96, "code": "3456", "source": "body", "in_pool": False,
+                 "display_symbol": "03456.HK", "display_name": "易方達港交所科技100 ETF",
+                 "instrument_type_v2": 4, "sub_instrument_type_v2": None},
+                {"feed_id": 96, "code": "700", "source": "body", "in_pool": False,
+                 "display_symbol": "00700.HK", "display_name": "腾讯控股",
+                 "instrument_type_v2": None, "sub_instrument_type_v2": None},
+            ])
+        provider._cache.clear()
+
+        post = next(row for row in provider.kol_impact("d1")["posts"] if row["id"] == "kol-96")
+
+        assert post["code"] is None
+        assert post["mentioned"] == []
+        assert post["camp"] == "none"
+        assert post["mentionedEtfs"] == [
+            {
+                "code": "3456", "ticker": "03456.HK",
+                "name": "易方達港交所科技100 ETF",
+                "issuer": None, "ownership": None, "inPool": False,
+            },
+            {
+                "code": "3483", "ticker": "03483.HK",
+                "name": "易方達亞太高股息ETF",
+                "issuer": None, "ownership": None, "inPool": False,
+            },
+            {
+                "code": "us:QQQ", "ticker": "QQQ.US", "name": "Invesco QQQ Trust",
+                "issuer": None, "ownership": None, "inPool": False,
+            },
+        ]
 
     def test_legacy_source_alias_is_published_under_the_current_kol_name(self, provider):
         with provider._engine.begin() as conn:

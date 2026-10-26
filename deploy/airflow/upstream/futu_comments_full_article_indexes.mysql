@@ -1,0 +1,14 @@
+-- MarketInsight-owned keyset indexes required by Radar's full-article and
+-- user-profile incremental streams. Apply once through the source database's
+-- normal migration mechanism during an approved maintenance window.
+ALTER TABLE futu_comments_feeds
+  ADD INDEX ix_futu_comments_feeds_detail_updated_feed
+  (detail_updated_at, feed_id),
+  ALGORITHM=INPLACE,
+  LOCK=NONE;
+
+ALTER TABLE futu_comments_users
+  ADD INDEX ix_futu_comments_users_scraped_user
+  (scraped_at, user_id),
+  ALGORITHM=INPLACE,
+  LOCK=NONE;

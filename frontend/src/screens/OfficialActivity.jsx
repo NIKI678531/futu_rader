@@ -12,6 +12,7 @@ import R, { prefetchScreen } from '../data/radar'
 import { num, conf2, sumN, descN, typeStyle, shell, rgba, CAMP, POST_TYPES, TYPE_BY_KEY, reviewBadge, needsReview } from '../lib/view'
 import { attributedCampOf, attributedCodesOf } from '../lib/officialAttribution'
 import { dataSourceBadge } from '../lib/dataSource'
+import { mentionedEtfsOf } from '../lib/kolEtfs'
 import { s, hover, focus } from '../lib/dc'
 import Shell from '../components/Shell'
 import DatePresetTabs from '../components/DatePresetTabs'
@@ -340,7 +341,7 @@ class OfficialActivity extends React.Component {
     var fqq = norm(s.fq);
     var fhay = function (p) {
       return norm([p.account, p.accountFull, p.summary]
-        .concat((p.attributedProducts || []).map(function (m) { return m.code + ' ' + m.name + ' ' + m.issuer; }), p.fullText || []).join(' '));
+        .concat(mentionedEtfsOf(p).map(function (m) { return m.code + ' ' + m.ticker + ' ' + m.name + ' ' + (m.issuer || ''); }), p.fullText || []).join(' '));
     };
     var feed = prodPosts.filter(function (p) {
       return (!s.types.length || s.types.indexOf(p.postType) >= 0) && campOk(self.camp(p), s.camp) && (!fqq || fhay(p).indexOf(fqq) >= 0);
@@ -395,11 +396,11 @@ class OfficialActivity extends React.Component {
           var hit = i === p.evidenceIdx;
           return { text: t, bg: hit ? 'var(--warning-100)' : 'transparent', sh: hit ? 'inset 0 -2px 0 var(--warning-600)' : 'none' };
         }) : [],
-        mentioned: (p.attributedProducts || []).map(function (m) {
-          var own = m.ownership === 'own';
+        mentioned: mentionedEtfsOf(p).map(function (m) {
+          var own = m.ownership === 'own', outside = m.inPool === false;
           return {
-            code: m.code, short: own ? '自家' : m.issuer, title: m.name + '（' + m.code + '.HK）· ' + (own ? '南方东英' : '竞品 · ' + m.issuer),
-            bg: own ? 'var(--csop-blue-600)' : 'var(--csop-silver-200)', fg: own ? '#fff' : 'var(--ink-700)'
+            code: m.ticker, short: outside ? '池外 ETF' : (own ? '自家' : m.issuer), title: (m.name || 'ETF 名称暂不可用') + '（' + m.ticker + '）· ' + (outside ? '产品池外' : (own ? '南方东英' : '竞品 · ' + m.issuer)),
+            bg: own ? 'var(--csop-blue-600)' : (outside ? 'var(--warning-100)' : 'var(--csop-silver-200)'), fg: own ? '#fff' : (outside ? 'var(--warning-700)' : 'var(--ink-700)')
           };
         }),
         attributionEmpty: self.codesOf(p).length === 0,
@@ -711,7 +712,7 @@ class OfficialActivity extends React.Component {
                     {c.mentioned.map((m) => (
                       <span key={m.code} title={m.title} style={s(`display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:var(--radius-pill);background:${m.bg};font:600 12px/1.5 var(--font-mono);color:${m.fg};white-space:nowrap`)}>{m.code}<span style={s('font:400 11px/1.4 var(--font-cjk);opacity:0.85')}>{m.short}</span></span>
                     ))}
-                    {c.attributionEmpty && <span title={c.attributionTitle} style={s('display:inline-flex;align-items:center;padding:2px 9px;border-radius:var(--radius-pill);background:var(--ink-100);font:500 12px/1.5 var(--font-cjk);color:var(--ink-500)')}>未归属产品</span>}
+                    {c.attributionEmpty && <span title={c.attributionTitle} style={s('display:inline-flex;align-items:center;padding:2px 9px;border-radius:var(--radius-pill);background:var(--ink-100);font:500 12px/1.5 var(--font-cjk);color:var(--ink-500)')}>{c.mentioned.length ? '未归属产品池' : '未归属产品'}</span>}
                   </div>
                   <div style={s('display:flex;align-items:center;gap:10px;margin:12px 0 0;padding:10px 14px 12px;border-top:1px solid var(--ink-100)')}>
                     <span style={s('font:500 13px/1.4 var(--font-mono);color:var(--ink-600);white-space:nowrap')}>赞 {c.likes} · 评 {c.comments} · 转 {c.shares}</span>

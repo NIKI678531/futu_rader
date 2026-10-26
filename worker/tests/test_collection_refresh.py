@@ -54,7 +54,7 @@ def engine(tmp_path):
 
 
 def feed_observation(feed_id, observed_at, *, content="正文", comments_=None,
-                     comment_count=None, body_codes=None, raw_json_broken=False,
+                     comment_count=None, body_codes=None, body_stocks=None, raw_json_broken=False,
                      code="3033", source_ticker="03033.HK"):
     comments_ = comments_ or []
     row = {
@@ -73,8 +73,11 @@ def feed_observation(feed_id, observed_at, *, content="正文", comments_=None,
             "common": {"share_count": 1},
             "comment": {"comment_items": comments_, "has_more": (comment_count or 0) > len(comments_)},
             "summary": {"rich_text": [
-                {"stock": {"stock_code": code, "market_type_label": "HK"}}
-                for code in (body_codes or [])
+                {"stock": stock}
+                for stock in (body_stocks or [
+                    {"stock_code": code, "market_type_label": "HK"}
+                    for code in (body_codes or [])
+                ])
             ]},
         }),
     }
@@ -639,6 +642,112 @@ def test_detail_refresh_rebuilds_body_mentions_even_when_content_is_unchanged(tm
         ).all()
     assert result.updated == 1
     assert stored == [("3033", "anchor"), ("3033", "body")]
+
+
+def test_detail_refresh_backfills_structured_etf_identity(tmp_path):
+    target = engine(tmp_path)
+    started = datetime(2026, 9, 21, 3, 0)
+    content = "正文提到 QQQ"
+    FutuRefresh(target, MemorySourceAdapter({
+        "feeds": [feed_observation(1, started, content=content)]
+    })).sync(SyncRequest(run_id="before-etf-metadata"))
+
+    result = FutuRefresh(target, MemorySourceAdapter({
+        "feed_details": [feed_observation(
+            1,
+            started + timedelta(hours=1),
+            content=content,
+            body_stocks=[{
+                "stock_code": "QQQ",
+                "market_type_label": "US",
+                "display_symbol": "QQQ.US",
+                "stock_name": "Invesco QQQ Trust",
+                "instrument_type_v2": 4,
+                "sub_instrument_type_v2": 4001,
+            }],
+        )]
+    })).sync(SyncRequest(run_id="after-etf-metadata"))
+
+    with target.connect() as conn:
+        stored = conn.execute(select(
+            mentions.c.code,
+            mentions.c.display_symbol,
+            mentions.c.display_name,
+            mentions.c.instrument_type_v2,
+        ).where(mentions.c.source == "body")).one()
+    assert result.updated == 1
+    assert stored == ("us:QQQ", "QQQ.US", "Invesco QQQ Trust", 4)
+
+
+def test_detail_refresh_extracts_etfs_from_the_complete_article(tmp_path):
+    """Regression: the 10-21 KOL post's ETFs occur after its short preview."""
+    target = engine(tmp_path)
+    started = datetime(2026, 10, 22, 0, 30)
+    FutuRefresh(target, MemorySourceAdapter({
+        "feeds": [feed_observation(
+            117479595180036,
+            started,
+            content="$恒生指數 (800000.HK)$ ...",
+            body_stocks=[{
+                "stock_code": "800000",
+                "market_type_label": "HK",
+                "display_symbol": "800000.HK",
+                "stock_name": "恒生指数",
+                "instrument_type_v2": 6,
+                "sub_instrument_type_v2": 6001,
+            }],
+        )]
+    })).sync(SyncRequest(run_id="kol-preview"))
+
+    full_article = (
+        "$恒生指數 (800000.HK)$ "
+        "$恒指瑞銀九三熊N.P (68882.HK)$ "
+        "$騰訊控股 (00700.HK)$ "
+        "$易方達亞太高股息ETF (03483.HK)$ "
+        "$易方達港交所科技100 ETF (03456.HK)$"
+    )
+    result = FutuRefresh(target, MemorySourceAdapter({
+        "feed_details": [feed_observation(
+            117479595180036,
+            started + timedelta(hours=10),
+            content=full_article,
+            body_stocks=[
+                {
+                    "stock_code": "800000",
+                    "market_type_label": "HK",
+                    "display_symbol": "800000.HK",
+                    "stock_name": "恒生指数",
+                    "instrument_type_v2": 6,
+                    "sub_instrument_type_v2": 6001,
+                },
+                {
+                    "stock_code": "68882",
+                    "market_type_label": "HK",
+                    "display_symbol": "68882.HK",
+                    "stock_name": "恒指瑞银九三熊N.P",
+                    "instrument_type_v2": 5,
+                    "sub_instrument_type_v2": 5003,
+                },
+            ],
+        )]
+    })).sync(SyncRequest(run_id="kol-full-detail"))
+
+    with target.connect() as conn:
+        stored_content = conn.execute(select(feeds.c.content)).scalar_one()
+        body = {
+            row.code: row.instrument_type_v2
+            for row in conn.execute(select(
+                mentions.c.code,
+                mentions.c.instrument_type_v2,
+            ).where(mentions.c.source == "body"))
+        }
+    assert result.updated == 1
+    assert stored_content == full_article
+    assert body["3483"] == 4
+    assert body["3456"] == 4
+    assert body["800000"] == 6
+    assert body["68882"] == 5
+    assert body["700"] is None
 
 
 def test_main_feed_accepts_author_edit_to_shorter_body_and_invalidates_ai(tmp_path):
@@ -1461,7 +1570,15 @@ def test_run_control_counts_persistent_reservations_including_retries(tmp_path):
     assert control.reason == "budget_exhausted"
 
 
-def receipt_source_engine(tmp_path, run, *, with_completion_proof=True, ticker="03033.HK"):
+def receipt_source_engine(
+    tmp_path,
+    run,
+    *,
+    with_completion_proof=True,
+    ticker="03033.HK",
+    instrument_type="etf",
+    name_zh="测试ETF",
+):
     source_engine = make_engine(
         "sqlite:///" + (tmp_path / "source-receipts.sqlite").as_posix()
     )
@@ -1470,6 +1587,9 @@ def receipt_source_engine(tmp_path, run, *, with_completion_proof=True, ticker="
         "futu_comments_stocks", metadata,
         Column("stock_id", Integer, primary_key=True),
         Column("ticker", String(20), nullable=False),
+        Column("instrument_type", String(20)),
+        Column("name_zh", String(200)),
+        Column("name_en", String(200)),
     )
     Table(
         "futu_comments_feeds", metadata,
@@ -1516,7 +1636,12 @@ def receipt_source_engine(tmp_path, run, *, with_completion_proof=True, ticker="
     source_runs = Table("futu_comments_collection_runs", metadata, *run_columns)
     metadata.create_all(source_engine)
     with source_engine.begin() as conn:
-        conn.execute(insert(stocks).values(stock_id=1, ticker=ticker))
+        conn.execute(insert(stocks).values(
+            stock_id=1,
+            ticker=ticker,
+            instrument_type=instrument_type,
+            name_zh=name_zh,
+        ))
         conn.execute(insert(source_runs).values(**run))
     return source_engine
 
@@ -1563,6 +1688,24 @@ def test_market_insight_adapter_accepts_nonempty_product_intersection(tmp_path):
     assert adapter.available_pool_codes == frozenset({"3033"})
     assert adapter.missing_pool_codes == ("3408",)
     assert adapter.pool_stock_ids == (1,)
+
+
+def test_market_insight_adapter_exposes_security_identity_for_body_mentions(tmp_path):
+    source_engine = receipt_source_engine(
+        tmp_path,
+        full_run_receipt(pool_codes=("3483",)),
+        ticker="03483.HK",
+        instrument_type="etf",
+        name_zh="易方達亞太高股息ETF",
+    )
+
+    adapter = MarketInsightMySqlAdapter(source_engine, {"3483"})
+
+    assert adapter.instrument_catalog["3483"] == {
+        "display_symbol": "03483.HK",
+        "display_name": "易方達亞太高股息ETF",
+        "is_etf": True,
+    }
 
 
 def test_market_insight_without_receipt_table_bootstraps_available_intersection(tmp_path):
@@ -1745,7 +1888,7 @@ def test_intraday_source_preflight_requires_composite_keyset_indexes(tmp_path):
         adapter.require_incremental_indexes()
 
 
-def test_live_source_uses_only_indexed_streams_and_requires_primary_feed_index(
+def test_live_source_requires_full_article_indexes_and_may_skip_profiles(
     tmp_path, monkeypatch
 ):
     source_engine = receipt_source_engine(tmp_path, full_run_receipt())
@@ -1760,14 +1903,22 @@ def test_live_source_uses_only_indexed_streams_and_requires_primary_feed_index(
         ],
     )
 
-    assert adapter.available_incremental_streams() == ("feeds",)
+    with pytest.raises(SourceSchemaError, match="full-article keyset indexes"):
+        adapter.available_incremental_streams()
+
+    monkeypatch.setattr(
+        adapter,
+        "incremental_index_gaps",
+        lambda: ["futu_comments_users(scraped_at,user_id)"],
+    )
+    assert adapter.available_incremental_streams() == ("feeds", "feed_details")
 
     monkeypatch.setattr(
         adapter,
         "incremental_index_gaps",
         lambda: ["futu_comments_feeds(scraped_at,feed_id)"],
     )
-    with pytest.raises(SourceSchemaError, match="required primary keyset index"):
+    with pytest.raises(SourceSchemaError, match="full-article keyset indexes"):
         adapter.available_incremental_streams()
 
 

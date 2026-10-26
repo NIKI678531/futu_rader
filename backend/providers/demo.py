@@ -26,6 +26,7 @@
 import json
 import os
 import re
+from copy import deepcopy
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -82,6 +83,45 @@ def _official_camp(products):
         for product in products
     }
     return "both" if len(camps) > 1 else next(iter(camps)) if camps else "none"
+
+
+def _fixture_mentioned_etfs(products):
+    """Project legacy demo pool mentions onto the new display-only contract."""
+    out = []
+    for product in products or []:
+        if not isinstance(product, dict) or not product.get("code"):
+            continue
+        code = str(product["code"])
+        ticker = product.get("ticker")
+        if not ticker:
+            ticker = f"{code.zfill(5)}.HK" if code.isdigit() else code
+        out.append({
+            "code": code,
+            "ticker": ticker,
+            "name": product.get("name"),
+            "issuer": product.get("issuer"),
+            "ownership": product.get("ownership"),
+            "inPool": product.get("inPool", True),
+        })
+    return out
+
+
+def _attach_fixture_mentioned_etfs(value):
+    """Copy nested KOL fixture data and add mentionedEtfs to every post shape."""
+    value = deepcopy(value)
+
+    def walk(node):
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+        elif isinstance(node, dict):
+            if "mentioned" in node and "camp" in node and "mentionedEtfs" not in node:
+                node["mentionedEtfs"] = _fixture_mentioned_etfs(node.get("mentioned"))
+            for child in node.values():
+                walk(child)
+
+    walk(value)
+    return value
 
 
 def _normalise_hk_code(raw):
@@ -587,7 +627,10 @@ class DemoProvider:
         return self._lookup("daily", code)
 
     def kol_impact(self, range_key):
-        return self._range_lookup("kol_impact", range_key)
+        value = self._range_lookup("kol_impact", range_key)
+        if value is None or value is MISSING:
+            return value
+        return _attach_fixture_mentioned_etfs(value)
 
     def kol_opinions(self, kol, range_key):
         if not any(item.get("name") == kol for item in self.master().get("kols", [])):
@@ -645,6 +688,9 @@ class DemoProvider:
                 "ownership": primary_details.get("ownership"),
                 "issuer": primary_details.get("issuer"),
                 "mentioned": attributed,
+                "mentionedEtfs": _fixture_mentioned_etfs(
+                    post.get("mentionedEtfs", attributed)
+                ),
                 "camp": attributed_camp,
                 "campPrimary": _official_camp(attributed[:1]),
             })

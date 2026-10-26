@@ -39,8 +39,8 @@ def test_extracts_only_strict_parent_cashtags_and_counts_occurrences():
     )
 
     assert mentions == (
-        CashtagMention("03037.HK", "HK", 2),
-        CashtagMention("07226.HK", "HK", 1),
+        CashtagMention("03037.HK", "HK", 2, "产品名"),
+        CashtagMention("07226.HK", "HK", 1, "產品"),
         CashtagMention("NVDA.US", "US", 1),
         CashtagMention("BRK.B.US", "US", 1),
         CashtagMention(".IXIC.US", "US", 1),
@@ -53,7 +53,7 @@ def test_feed_mentions_preserve_first_raw_spelling_while_counting_case_insensiti
         None,
     )
 
-    assert mentions == (CashtagMention("nvda.us", "US", 2),)
+    assert mentions == (CashtagMention("nvda.us", "US", 2, "名称"),)
     assert qualifies_feed("NVDA.US", mentions, FilterPolicy("exact"))
 
 

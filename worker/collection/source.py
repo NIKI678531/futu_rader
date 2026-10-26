@@ -16,7 +16,7 @@ from sqlalchemy.exc import NoSuchTableError
 from radar_db.comment_filter import normalize_source_ticker, source_ticker_to_code
 
 from .models import Cursor, FeedObservation, SourcePage, UserObservation
-from .normalization import normalize_feed
+from .normalization import normalize_feed, normalize_futu_ticker
 
 
 STREAMS = ("feeds", "feed_details", "users")
@@ -113,6 +113,7 @@ def inspect_source(engine, codes, *, sample_size=25):
                         continue
                     observation = normalize_feed(
                         row, code, observed_at, source_ticker=adapter.stock_tickers[row["stock_id"]],
+                        instrument_catalog=adapter.instrument_catalog,
                     )
                 except (TypeError, ValueError, KeyError, AttributeError, OverflowError):
                     errors["normalization_failed"] += 1
@@ -224,13 +225,34 @@ class MarketInsightMySqlAdapter:
                 raise SourceSchemaError(f"{table.name} is missing required columns: {sorted(missing)}")
         if "detail_updated_at" not in self.feeds.c:
             raise SourceSchemaError("futu_comments_feeds is missing required column detail_updated_at")
+        stock_columns = [self.stocks.c.stock_id, self.stocks.c.ticker]
+        for optional in ("instrument_type", "name_zh", "name_en"):
+            if optional in self.stocks.c:
+                stock_columns.append(self.stocks.c[optional])
         with engine.connect() as conn:
-            stock_rows = conn.execute(select(self.stocks.c.stock_id, self.stocks.c.ticker)).all()
-        self.stock_codes = {row.stock_id: _code_from_ticker(row.ticker) for row in stock_rows}
-        self.stock_tickers = {
-            row.stock_id: normalize_source_ticker(row.ticker)
+            stock_rows = conn.execute(select(*stock_columns)).mappings().all()
+        self.stock_codes = {
+            row["stock_id"]: _code_from_ticker(row["ticker"])
             for row in stock_rows
         }
+        self.stock_tickers = {
+            row["stock_id"]: normalize_source_ticker(row["ticker"])
+            for row in stock_rows
+        }
+        self.instrument_catalog = {}
+        for row in stock_rows:
+            mention_code = normalize_futu_ticker(row["ticker"])
+            if not mention_code:
+                continue
+            instrument_type = str(row.get("instrument_type") or "").strip().lower()
+            is_etf = True if instrument_type == "etf" else (
+                False if instrument_type else None
+            )
+            self.instrument_catalog[mention_code] = {
+                "display_symbol": normalize_source_ticker(row["ticker"]),
+                "display_name": row.get("name_zh") or row.get("name_en"),
+                "is_etf": is_etf,
+            }
         self.pool_codes = set(pool_codes)
         self.pool_symbols_fingerprint = configured_symbols_fingerprint(self.pool_codes)
         self.pool_stock_ids = tuple(
@@ -304,8 +326,10 @@ class MarketInsightMySqlAdapter:
         snapshots unchanged: this guard is for the live MySQL seam, whose
         source account is deliberately read-only and cannot create indexes.
 
-        The primary feeds stream is not optional.  Without its composite index
-        there are no facts from which a truthful data clock can be published.
+        The primary and feed-detail streams are not optional.  Without the
+        detail cursor, long articles remain stuck at their abbreviated first
+        snapshot and later ETF cashtags silently disappear from account pages.
+        The user-profile stream may still be omitted while its index rolls out.
         """
         streams = tuple(requested)
         if self.engine.dialect.name != "mysql":
@@ -317,11 +341,15 @@ class MarketInsightMySqlAdapter:
             "feed_details": f"{self.feeds.name}(detail_updated_at,feed_id)",
             "users": f"{self.users.name}(scraped_at,user_id)",
         }
-        primary_gap = requirements["feeds"]
-        if "feeds" in streams and primary_gap in gaps:
+        required_gaps = [
+            requirements[stream]
+            for stream in ("feeds", "feed_details")
+            if stream in streams and requirements[stream] in gaps
+        ]
+        if required_gaps:
             raise SourceSchemaError(
-                "MarketInsight is missing the required primary keyset index: "
-                + primary_gap
+                "MarketInsight is missing required full-article keyset indexes: "
+                + ", ".join(required_gaps)
             )
         return tuple(
             stream for stream in streams if requirements.get(stream) not in gaps
@@ -391,6 +419,7 @@ class MarketInsightMySqlAdapter:
                     code,
                     observed_at,
                     source_ticker=self.stock_tickers[row["stock_id"]],
+                    instrument_catalog=self.instrument_catalog,
                 )
                 if stream == "feed_details":
                     # Detail runs authoritatively refresh parent text and its
@@ -426,7 +455,11 @@ class MarketInsightMySqlAdapter:
             code = self.stock_codes[row["stock_id"]]
             if code not in self.pool_codes:
                 continue
-            observed_at = row.get("scraped_at") or row.get("detail_updated_at")
+            observed_candidates = [
+                value for value in (row.get("scraped_at"), row.get("detail_updated_at"))
+                if value is not None
+            ]
+            observed_at = max(observed_candidates) if observed_candidates else None
             if observed_at is None:
                 continue
             items.append(normalize_feed(
@@ -434,6 +467,7 @@ class MarketInsightMySqlAdapter:
                 code,
                 observed_at,
                 source_ticker=self.stock_tickers[row["stock_id"]],
+                instrument_catalog=self.instrument_catalog,
             ))
             accepted.add(int(row["feed_id"]))
         return SourcePage(

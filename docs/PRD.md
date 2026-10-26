@@ -215,6 +215,7 @@ Yahoo Finance 单根 K 线若仅因舍入导致高／低价轻微越过开／收
 > 「KOL 产品提及口径：只认帖子正文中明确出现的结构化产品代码／Cashtag／唯一产品名称，对照当前产品池匹配，**不经模型判断**。帖子挂载的讨论区仅作采集来源审计，不参与产品提及、主 ETF 或阵营判定。」
 
 - 枚举：own 自家 / competitor 竞品 / both 双方 / none 未提及。正文没有命中池内产品时保留帖子，主 ETF 为空并归入 none，不得用挂载标的补位。
+- 帖子展示另下发 `mentionedEtfs`：产品池内正文提及直接纳入；池外 ticker 只有经上游结构化 `instrument_type_v2=4`、证券目录 `instrument_type=etf`，或完整正文中富途严格 cashtag 的平台展示名明确标为 ETF／交易所买卖基金时才纳入。裸 ticker、普通名称和 AI 推断不确认产品类型。指数、股票、牛熊证、窝轮、期货、加密货币等其他产品一律不进入 ETF 列。池外 ETF 只作中性展示，不改变 `code`、`mentioned`、`camp`、自家/竞品 KPI 或产品页相关 KOL。长文必须消费 `feed_details` 完整正文，不得停留在首屏预览。
 
 **ETF 归属（KOL 发帖表）**：只读取该行主 ETF 的产品池归属 `ownership`，一行只显示一枚「自家／其他公司／数据暂不可用」标签。它不等于上面的多产品提及范围；正文同时提到另一方产品不会让此列变成双标签。
 
@@ -268,9 +269,9 @@ Yahoo Finance 单根 K 线若仅因舍入导致高／低价轻微越过开／收
 
 ### 4.3 KOL 影响力（6 个模块）
 
-- **M1 四级级联筛选**：①ETF（发帖提及的产品，自家＋竞品）→ ②KOL（只列所选 ETF 下发过帖的）→ ③帖子（须先选 KOL 且 >1 篇）→ ④类型（内容形式 8 类 × 操作方向 5+待确认，跨组交集）；上级变化清下级；「恢复全部 ✕」。
+- **M1 四级级联筛选**：①ETF（正文确认的 ETF，含中性标记的池外 ETF）→ ②KOL（只列所选 ETF 下发过帖的）→ ③帖子（须先选 KOL 且 >1 篇）→ ④类型（内容形式 8 类 × 操作方向 5+待确认，跨组交集）；上级变化清下级；「恢复全部 ✕」。
 - **M3 KPI 四卡**：发帖数／提及自家产品（含 both 计数）／提及竞品／类型已识别（副行「操作类 N 篇 · 加仓 a · 减仓 b · 方向待确认 c」）。
-- **M4 发帖记录表**：列＝合作 KOL｜发帖时间｜ETF｜类型（双标签叠放）｜AI 摘要｜ETF 归属｜赞/评/转｜原帖；「ETF 归属」只按该行主 ETF 的产品归属显示一枚「自家／其他公司／数据暂不可用」标签，不使用整篇帖子的多产品提及范围；表内筛选（关键词/类型/提及范围/仅看待确认）；排序按互动（默认）/按时间；**CSV 导出**：17 列逐字表头、UTF-8 BOM＋CRLF、首行筛选摘要、文件名 `KOL发帖记录_{from}_{to}[_筛选].csv`、0 条禁用；页脚口径逐字（产品提及规则/类型置信度/24h 计数）。
+- **M4 发帖记录表**：列＝合作 KOL｜发帖时间｜ETF｜类型（双标签叠放）｜AI 摘要｜ETF 归属｜赞/评/转｜原帖；ETF 列列出正文确认的全部 ETF ticker，池外 ETF 使用中性标签；指数、股票与其他产品不显示。「ETF 归属」只按该行主 ETF 的产品池归属显示一枚「自家／其他公司／池外 ETF／未提及」标签，不使用整篇帖子的多产品提及范围；表内筛选（关键词/类型/提及范围/仅看待确认）；排序按互动（默认）/按时间；**CSV 导出**：17 列逐字表头、UTF-8 BOM＋CRLF、首行筛选摘要、文件名 `KOL发帖记录_{from}_{to}[_筛选].csv`、0 条禁用；页脚口径逐字（产品提及规则/类型置信度/24h 计数）。
 - **M5 KOL 声量排名**：随 ETF 与类型筛选变化、不随 KOL 筛选变化；默认按每位 KOL 在当前可见帖子子集中的全部帖子浏览量合计降序，另可按篇数或评论量排序；双栏；列出浏览量；三段堆叠条（深蓝只提自家/浅蓝双方/灰只提竞品，两数之和可大于篇数）；「详情 →」跳 KOL 详情页。
 - **M6 帖子内容卡抽屉（640px）**：AI 摘要＋原文分句（判定依据句黄底高亮）＋提及产品＋互动计数四格（含浏览）＋同 KOL 切换器；图片帖「暂无摘要：该帖仅含图片或截图，第一期不覆盖图片内容。」
 
@@ -317,7 +318,7 @@ Yahoo Finance 单根 K 线若仅因舍入导致高／低价轻微越过开／收
 | `candlesFor(code, range)` | — | `{status, granularity, currency, source, adjustment, list, missing, reason}` OHLC（来源为 FMP／Yahoo Finance；无行情桶 null＋note） | 监控 |
 | `stagesFor(code, range)` | — | `{status, granularity, series, stages[], rule, threshold}` 阶段观点 | 监控 |
 | `heatSeriesFor(code, range)` | — | 热度序列（30 天按日重算＋系数校准） | 监控 |
-| `kolImpact(range)` | — | `{posts[], leaders[], kolActive, range}` 全部 KOL 帖（含 AI 标注全集） | KOL 两页 |
+| `kolImpact(range)` | — | `{posts[], leaders[], kolActive, range}` 全部 KOL 帖（含 AI 标注全集）；帖子中的 `mentionedEtfs[]` 是正文确认的全部 ETF 展示事实，`mentioned[]/code/camp` 仍是池内归属 | KOL 两页 |
 | `kolProfile(name, posts, campFn?)` | — | 单 KOL 画像（浏览量合计/产品提及篇数/typeCounts/styleTag/top） | KOL 两页 |
 | `kolOpinions(kol, range)` | — | 兼容保留的其他产品观点及操作[]（当前页面不请求、不展示） | — |
 | `officialPosts(range)` | — | 官号帖子流[]（accountType 发行商/平台运营） | 官号 |

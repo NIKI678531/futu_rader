@@ -1001,10 +1001,10 @@ class SqlProvider:
         by_name = {o["full"]: o for o in self._officials}
         ai = self._post_ai(rng)
         out = []
-        for row, codes, attribution_status in self._attributed_official_posts(rng, by_name):
+        for row, codes, attribution_status, body_etfs in self._attributed_official_posts(rng, by_name):
             o = by_name[row.author_name]
             is_issuer = bool(o.get("comps"))
-            common = self._post_common(rng, row, codes)
+            common = self._post_common(rng, row, codes, body_etfs)
             # 官号动态的契约里没有 `hour`（KOL 帖子有 —— KOL 详情页的日历轴要用）。
             # 多发一个键不会让页面出错，但它是契约漂移：下一个人会以为这是约定的一部分，
             # 然后在官号页上用它，而 demo provider 下这个键根本不存在。
@@ -1066,7 +1066,7 @@ class SqlProvider:
             return None
         rows = defaultdict(lambda: {"count": 0, "posts": 0})
         post_ids = set()
-        for row, codes, _status in self._attributed_official_posts(rng, {o["full"]: o}):
+        for row, codes, _status, _body_etfs in self._attributed_official_posts(rng, {o["full"]: o}):
             for c in codes:
                 rows[c]["count"] += 1
                 rows[c]["posts"] += 1
@@ -1127,14 +1127,14 @@ class SqlProvider:
                     body_codes[feed_id].add(code)
 
         out = []
-        for row, _all_codes in posts:
+        for row, _all_codes, body_etfs in posts:
             codes, status = _attribute_official_products(
                 self._products,
                 by_name[row.author_name],
                 " ".join(part for part in (row.title, row.content) if part),
                 body_codes.get(row.feed_id, set()),
             )
-            out.append((row, codes, status))
+            out.append((row, codes, status, body_etfs))
         return out
 
     # ── 账号域：KOL ──────────────────────────────────────────────────
@@ -1151,7 +1151,7 @@ class SqlProvider:
         }
         ai = self._post_ai(rng)
         posts, seen = [], set()
-        for row, codes in self._posts(
+        for row, codes, body_etfs in self._posts(
             rng,
             list(source_to_name),
             author_uids=self._active_kol_user_ids,
@@ -1163,7 +1163,7 @@ class SqlProvider:
             seen.add(k["name"])
             posts.append(
                 {
-                    **self._post_common(rng, row, codes),
+                    **self._post_common(rng, row, codes, body_etfs),
                     "id": f"kol-{row.feed_id}",
                     "kol": k["name"],
                     "tags": k["tags"],
@@ -3036,7 +3036,7 @@ class SqlProvider:
         return out
 
     def _posts(self, rng, names, *, author_uids=()):
-        """区间内这批作者的帖子，附带正文明确提及的产品池代码。
+        """区间内帖子，附池内归属代码与正文中已确认的全部 ETF。
 
         ``mentions.source='anchor'`` 只是帖子被采集时所在的讨论区。它说明来源，
         不说明作者在正文中谈到了该产品，因此不能进入 KOL 页的 ``code`` /
@@ -3084,28 +3084,69 @@ class SqlProvider:
             # 提及同样在 SQL 里 join 回来，不拿 feed_id 列表当绑定变量（SQLite 上限 999）。
             by_feed = defaultdict(list)
             q = (
-                select(mentions.c.feed_id, mentions.c.code)
+                select(
+                    mentions.c.feed_id,
+                    mentions.c.code,
+                    mentions.c.in_pool,
+                    mentions.c.display_symbol,
+                    mentions.c.display_name,
+                    mentions.c.instrument_type_v2,
+                    mentions.c.sub_instrument_type_v2,
+                )
                 .select_from(mentions.join(feeds, feeds.c.feed_id == mentions.c.feed_id))
                 .where(
                     author_condition,
                     feeds.c.posted_at >= lo,
                     feeds.c.posted_at < hi,
                     mentions.c.source == "body",
-                    mentions.c.in_pool.is_(True),
                 )
             )
-            for feed_id, code in conn.execute(q):
-                by_feed[feed_id].append(code)
+            for mention in conn.execute(q).mappings():
+                by_feed[mention["feed_id"]].append(mention)
         out = []
         for r in rows:
             # mentions 主键已经按 feed/code/source 去重；这里再防御性去重，并用代码排序
             # 保证 MySQL / SQLite 返回同一个主 ETF。正文没有池内产品时保留帖子本身，
             # 但 code=None、mentioned=[]、camp=none，如实表达「发了帖但没提池内 ETF」。
-            codes = list(dict.fromkeys(sorted(by_feed.get(r.feed_id, []))))
-            out.append((r, codes))
+            mention_rows = by_feed.get(r.feed_id, [])
+            codes = sorted({
+                item["code"]
+                for item in mention_rows
+                if item["in_pool"] and item["code"] in self._by_code
+            })
+            body_etfs = []
+            seen_etfs = set()
+            for item in mention_rows:
+                code = item["code"]
+                tracked = bool(item["in_pool"] and code in self._by_code)
+                # 池内目录本身确认产品为 ETF；池外必须有已规范化的可靠 ETF 身份（4）。
+                # 裸 ticker、股票、指数、牛熊证及其他类型全部 fail closed。
+                if not tracked and item["instrument_type_v2"] != 4:
+                    continue
+                if code in seen_etfs:
+                    continue
+                seen_etfs.add(code)
+                product = self._by_code.get(code, {})
+                ticker = item["display_symbol"]
+                if not ticker and tracked:
+                    ticker = f"{str(code).zfill(5)}.HK"
+                body_etfs.append({
+                    "code": code,
+                    "ticker": ticker or code,
+                    "name": product.get("name") or item["display_name"],
+                    "issuer": product.get("issuer"),
+                    "ownership": product.get("ownership"),
+                    "inPool": tracked,
+                })
+            body_etfs.sort(key=lambda item: (
+                0 if item["inPool"] else 1,
+                str(item["ticker"]),
+                str(item["code"]),
+            ))
+            out.append((r, codes, body_etfs))
         return out
 
-    def _post_common(self, rng, row, codes):
+    def _post_common(self, rng, row, codes, body_etfs):
         """帖子行里**能数出来**的部分。AI 标注块由调用方并入。"""
         posted_hkt = utc_naive_to_hkt(row.posted_at)
         day = posted_hkt.date()
@@ -3138,6 +3179,8 @@ class SqlProvider:
                 }
                 for c in codes
             ],
+            # 展示事实：正文明确提及的全部 ETF（含池外）；与上面的池内产品归属分离。
+            "mentionedEtfs": body_etfs,
             "camp": _camp(self._by_code, codes),
             "campPrimary": _camp(self._by_code, codes[:1]),
         }
