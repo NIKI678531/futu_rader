@@ -35,7 +35,7 @@ K 线、热度折线、趋势折线画在同一条横轴上。桶由 `buildRange
 from providers import get_provider
 from providers.sentinel import MISSING
 
-from .ranges import VALID_KEYS
+from .range_spec import is_valid_range_key
 
 
 def candles_for(code, range_key):
@@ -45,7 +45,7 @@ def candles_for(code, range_key):
     仍可能有空桶（休市），两者的区别在每根 K 的 `note` 上。`missing` 是空桶计数。
     `source` 与 `adjustment` 由当前已验证行情标的下发，不由接口层猜测。
     """
-    if range_key not in VALID_KEYS:
+    if not is_valid_range_key(range_key):
         return MISSING
     return get_provider().candles_for(code, range_key)
 
@@ -58,7 +58,7 @@ def heat_series_for(code, range_key):
     白挨一次串行往返）。这个端点存在是因为 PRD §5 要求每个契约函数 1:1 对应端点。
     两者不会发散：它们是同一次计算的两个出口。
     """
-    if range_key not in VALID_KEYS:
+    if not is_valid_range_key(range_key):
         return MISSING
     return get_provider().heat_series_for(code, range_key)
 
@@ -70,7 +70,7 @@ def stages_for(code, range_key):
     不足时是 `None`，`categoryLabel` 随之是「样本不足」—— 那是六态里的「样本不足」
     （查过了、不下结论），与字段级 `None` 的「暂不可用」是两态，别在渲染层合并。
     """
-    if range_key not in VALID_KEYS:
+    if not is_valid_range_key(range_key):
         return MISSING
     return get_provider().stages_for(code, range_key)
 

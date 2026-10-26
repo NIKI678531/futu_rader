@@ -489,6 +489,7 @@ def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_
                     kol_user_ids=kol_user_ids,
                     scope_id=scope_id, priority_of=priority_of(name),
                     filter_config=filter_config,
+                    comment_routes=comment_routes,
                 )
     if task in ("post_annotation", "both"):
         stats["posts"] = _extract_posts(

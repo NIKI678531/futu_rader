@@ -17,7 +17,10 @@ from ai import config, neardup  # noqa: E402
 from ai.providers.base import Completion, Usage  # noqa: E402
 from jobs import audit, extract, pipeline  # noqa: E402
 from radar_db import create_all, make_engine  # noqa: E402
-from radar_db.schema import annotations, comments, feeds, meta_kv, synthesis_outputs  # noqa: E402
+from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config  # noqa: E402
+from radar_db.schema import (  # noqa: E402
+    annotations, comments, feed_mentions, feeds, meta_kv, synthesis_outputs,
+)
 
 CODE = "3033"
 KOL = "孫子的末代傳人"
@@ -29,9 +32,17 @@ def engine(tmp_path):
     create_all(eng)
     with eng.begin() as conn:
         conn.execute(insert(meta_kv).values(k="anchor", v="2026-08-25"))
+        conn.execute(insert(meta_kv), [
+            {"k": key, "v": value}
+            for key, value in filter_readiness_values(load_comment_filter_config()).items()
+        ])
         conn.execute(insert(feeds).values(feed_id=1, code=CODE, posted_at=datetime(2026, 8, 22, 10), feed_type=1,
+                                          source_ticker="03033.HK",
                                           title="恒科", content="正文", author_name=KOL,
                                           like_count=0, comment_count=0, image_count=0, raw_json_broken=False))
+        conn.execute(insert(feed_mentions).values(
+            feed_id=1, raw_ticker="03033.HK", market="HK", occurrences=1,
+        ))
         rows = []
         for i in range(14):
             rows.append({"comment_id": 100 + i, "feed_id": 1,
@@ -66,6 +77,8 @@ class UniversalFake:
                 data = {"points": [{"text": "多條評論認可費率", "evidence_ids": ids[:1]}], "needs_review": False}
             elif kind in ("theme_label", "neg_category"):
                 data = {"results": [{"key": b["key"], "title": "費率同類最低", "summary": "如此。",
+                                     "key_points": [{"text": "評論點出具體產品體驗",
+                                                     "evidence_ids": b["evidence_ids"][:1]}],
                                      "evidence_ids": b["evidence_ids"][:1]} for b in f["buckets"]]}
             elif kind == "stage_unit":
                 data = {"results": [{"key": u["key"], "category": "add_opportunity", "digest": "加倉為主",
@@ -81,6 +94,7 @@ class UniversalFake:
             ids = [line.split('"')[3] for line in user.splitlines() if '"item_id"' in line]
             if schema_name == "kol_comment_opinion_batch":
                 data = {"results": [{"item_id": i, "summary": "費率低長期持有", "action": "加仓", "evidence": "費率係同類最低",
+                                     "post_type": "market",
                                      "needs_review": False} for i in ids]}
             elif schema_name == "post_annotation_batch":
                 data = {"results": [{"item_id": i, "post_type": "market", "direction": None, "direction_pending": False,
@@ -217,8 +231,12 @@ def test_ready_range_synthesizes_while_older_comments_remain(engine, cfg, tmp_pa
     pipeline.run(engine, cfg, ext["scope_id"], provider=UniversalFake(), skip_synth=True)
     with engine.begin() as conn:
         conn.execute(insert(feeds).values(feed_id=2, code=CODE, posted_at=datetime(2026, 7, 20),
+                                         source_ticker="03033.HK",
                                          feed_type=1, title="ETF", content="ETF", raw_json_broken=False,
                                          like_count=0, comment_count=1, image_count=0))
+        conn.execute(insert(feed_mentions).values(
+            feed_id=2, raw_ticker="03033.HK", market="HK", occurrences=1,
+        ))
         conn.execute(insert(comments).values(comment_id=999, feed_id=2, content="ETF fee too high",
                                             author_name="reader", author_uid="old-reader"))
     extended = extract.run(engine, cfg, codes=[CODE], date_from=datetime(2026, 6, 27),

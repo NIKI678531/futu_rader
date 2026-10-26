@@ -30,6 +30,7 @@ import Kpis from './Kpis'
 import Board from './Board'
 import Tooltip from './Tooltip'
 import Drawer from './Drawer'
+import { CUSTOM_SYNTHESIS_MESSAGE, hrefWithRange, listenForRangeNavigation, parseCustomRange, rangeFromSearch } from '../../lib/customRange'
 
 /* 热度为 null 时，说清楚缺的是哪一项。
 
@@ -50,11 +51,14 @@ class SectorOverview extends React.Component {
   state = {
     sel: null, sector: 'all', rangeKey: 'd7',
     sort: 'comments', heatMode: 'net', scope: 'all', view: 'split', q: '', listAll: false,
-    onlyNew: false, onlyNeg: false, onlyRisk: false, scrollRisk: false,
+    onlyNew: false, onlyNeg: false, scrollRisk: false,
     secOpen: {}, secAll: {}, flatAll: false, tip: null, bucket: null
   };
   constructor(props) {
     super(props);
+    this.state = Object.assign({}, this.state, {
+      rangeKey: rangeFromSearch(window.location.search, R.PRESETS),
+    });
     /* 首次 render 之前把本屏端点并行发出去，理由见 productMonitor 同处。 */
     prefetchScreen('sector', { rangeKey: this.state.rangeKey });
   }
@@ -71,10 +75,7 @@ class SectorOverview extends React.Component {
       if (st.scope === 'peer' && o.ownership !== 'peer') return false;
       if (st.sector !== 'all' && o.sector !== st.sector) return false;
       if (st.onlyNew && !o.isNew) return false;
-      /* `alerts[code]` 是关注程度为高的负面类别数：没标过 null、标过 0 或正数。筛选按 `> 0`
-         判：null 与 0 都不算「有舆情」（没查过不能报警），但两者在舆情列上要分开渲染（rows 里）。 */
-      if (st.onlyNeg && !(P.alerts[o.code] > 0)) return false;
-      if (st.onlyRisk && !(P.complianceCount[o.code] > 0)) return false;
+      if (st.onlyNeg && !(P.complianceCount[o.code] > 0)) return false;
       if (q && o.code.toLowerCase().indexOf(q) < 0 && o.name.toLowerCase().indexOf(q) < 0) return false;
       return true;
     });
@@ -103,7 +104,7 @@ class SectorOverview extends React.Component {
                要缺一起缺，所以整行一句长文案，不写三遍。 */
             { k: '积极 ／ 消极 ／ 中性', v: o.attitude == null ? '数据暂不可用' : o.attitude.positive + ' / ' + o.attitude.negative + ' / ' + o.attitude.neutral + (!funnel.available ? ' · 数据暂不可用' : ''), fg: 'rgba(255,255,255,0.88)' },
             { k: '情绪净值', v: this.netText(o), fg: 'rgba(255,255,255,0.88)' }
-          ].concat(rc > 0 ? [{ k: '需合规关注', v: rc + ' 条 · AI 识别待确认', fg: '#F3A6A6' }] : [])
+          ].concat(rc > 0 ? [{ k: '舆情', v: rc + ' 条 · AI 识别待确认', fg: '#F3A6A6' }] : [])
         }
       });
     };
@@ -170,12 +171,17 @@ class SectorOverview extends React.Component {
   }
 
   componentDidMount() {
+    this._stopRangeNavigation = listenForRangeNavigation(R.PRESETS, (rangeKey) => {
+      prefetchScreen('sector', { rangeKey });
+      this.setState({ rangeKey, sel: null, tip: null, bucket: null });
+    });
     var el = this.heatRef.current;
     if (el) {
       var measure = () => {
         var w = el.getBoundingClientRect().width;
         if (w > 50 && Math.abs(w - (this.state.heatW || 0)) > 1) this.setState({ heatW: w });
       };
+      this._measureHeat = measure;
       measure();
       if (window.ResizeObserver) { this._ro = new ResizeObserver(measure); this._ro.observe(el); }
       else window.addEventListener('resize', measure);
@@ -202,7 +208,11 @@ class SectorOverview extends React.Component {
     }
     this.setState(patch);
   }
-  componentWillUnmount() { if (this._ro) this._ro.disconnect(); }
+  componentWillUnmount() {
+    if (this._ro) this._ro.disconnect();
+    if (!this._ro && this._measureHeat) window.removeEventListener('resize', this._measureHeat);
+    if (this._stopRangeNavigation) this._stopRangeNavigation();
+  }
 
   seg(active, label, patch) {
     return {
@@ -248,7 +258,7 @@ class SectorOverview extends React.Component {
     };
   }
 
-  /* 从榜单红标进入抽屉时，把抽屉滚到重点舆情区块 */
+  /* 从榜单红标进入抽屉时，把抽屉滚到舆情区块 */
   componentDidUpdate() {
     if (this.state.scrollRisk && this.state.sel) {
       var body = this.drawerBodyRef.current, el = this.riskRef.current;
@@ -259,13 +269,16 @@ class SectorOverview extends React.Component {
 
   renderVals() {
     var s = this.state, self = this;
+    var customRange = !!parseCustomRange(s.rangeKey);
     var range = R.buildRange(s.rangeKey);
     var rk = R.ranks(s.rangeKey);
 
     var presets = R.PRESETS.map(function (p) {
-      var on = p.k === s.rangeKey;
+      var on = p.k === range.key;
       return {
-        label: p.label, go: () => self.go({ rangeKey: p.k, sel: null, tip: null }),
+        key: p.k, label: p.label, go: (key) => self.go({ rangeKey: key || p.k, sel: null, tip: null }),
+        custom: p.custom, earliestDate: p.earliestDate, latestDate: p.latestDate,
+        maxDays: p.maxDays, rangeKey: s.rangeKey,
         placeholder: p.placeholder,
         screenDiffNew: p.screenDiffNew,
         active: on,
@@ -285,8 +298,6 @@ class SectorOverview extends React.Component {
     /* 可见产品：搜索与筛选只改变可见范围，排名与色阶标尺仍来自全市场 */
     var P = R.pool(s.rangeKey);
     var visible = self.visibleFor(s);
-    /* 需合规关注：命中产品数按其余筛选条件计算，供快捷筛选显示计数；同业产品该字段不适用 */
-    var riskVisibleN = self.visibleFor(Object.assign({}, s, { onlyRisk: false })).filter(function (o) { return P.complianceCount[o.code] > 0; }).length;
     /* 时间桶色阶：6 级离散蓝阶，按该产品区间峰值归一，相邻级别肉眼可分 */
     var STEP = ['#F1F3F6', '#D7E6F8', '#A8CAEF', '#6D9FD9', '#3574BC', '#0E4A8C'];
     var cellBg = function (v, peak) {
@@ -313,7 +324,7 @@ class SectorOverview extends React.Component {
       heat: { label: '讨论热度', note: '按区间讨论热度降序', get: function (o) { return o.discussionHeat; } },
       /* null 用与态度列同一个哨兵排到最末：`null - 5` 在 JS 里是 -5，不挡就会把「没标过」
          混进「0 条」那一段里排。 */
-      neg: { label: '舆情', note: '按舆情条数（可归类为需关注问题的内容）降序', get: function (o) { var n = P.negMentions[o.code]; return n == null ? -1e9 : n; } },
+      neg: { label: '舆情', note: '按高风险负面评论条数降序', get: function (o) { var n = P.complianceCount[o.code]; return n == null ? -1e9 : n; } },
       /* `-1e9` 是「不参与排序」的哨兵，排到最末。标注整块缺失与样本不足在**排序**上
          同样处理（都排不出名次），但在**显示**上必须分开 —— 分开的地方在下面 rows 里。 */
       att: { label: '正面／负面', note: '按正面占比（正面÷(正面＋负面)）降序 · 样本不足不参与', get: function (o) { var a = o.attitude; if (a == null) return -1e9; var v = a.positive + a.negative; return (a.sampleSufficient && v) ? a.positive / v : -1e9; } }
@@ -341,7 +352,7 @@ class SectorOverview extends React.Component {
          到 5 条且已有正负态度就画比例；一条正负态度都识别不到时改画灰条。 */
       var att = o.attitude;
       var attitudeBar = sectorAttitudeBar(o);
-      var g = growthPct(o), negN = P.negMentions[o.code];
+      var g = growthPct(o), negN = P.complianceCount[o.code];
       var on = s.sel === o.code;
       /* 热议总结整块可能是 null：它要 AI 归纳（`providers/sql.py::hot_summaries`），
          接真库时**整池一份**都没有。设计源直接读 `hs.text`／`hs.ok`／`hs.sample`，
@@ -374,11 +385,7 @@ class SectorOverview extends React.Component {
         pos: att == null ? '' : String(att.positive), neg: att == null ? '' : String(att.negative),
         posW: attitudeBar.positiveWidth,
         negW: attitudeBar.negativeWidth,
-        /* `negMentions` 也要 AI（舆情条数来自负面类别）。`null > 0` 为假，红标不出现 ——
-           这是对的：没扫过就不该报警。但 `alertN` 不能是 `String(null)`。
-           三态分开渲染：正数红标、0 留空（扫过了、没有需关注的内容）、null 灰字「暂不可用」
-           （这只产品还没做负面类别标注）。null 与 0 在这一格长得一样，就是把「没查」说成
-           「查了没有」（PRD §3.6）。demo 里没有 null，逐字比对不受影响。 */
+        /* 严格舆情列与筛选、排序、热力图红点共用 complianceCount。 */
         alert: negN > 0, alertN: numRaw(negN), alertNa: negN == null,
         /* 热议总结：AI 一句话归纳区间内该 ETF 的主流具体观点；样本不足／不可用按统一状态文案灰字显示 */
         hot: hsText, hotFg: hsOk ? 'var(--ink-800)' : 'var(--ink-400)',
@@ -530,9 +537,9 @@ class SectorOverview extends React.Component {
       k1: k1, k2: k2, topOwn: topOwn, topPeer: topPeer, topOwnEmpty: topOwn.length === 0, topPeerEmpty: topPeer.length === 0,
       hotRule: R.HOT_RULE,
       rows: rows, rowsEmpty: sorted.length === 0,
-      rowsEmptyText: (s.scope === 'peer' && s.onlyRisk) ? '暂无相关内容 — 同业产品不纳入需合规关注识别，请切换范围或关闭该筛选。'
+      rowsEmptyText: (s.scope === 'peer' && s.onlyNeg) ? '暂无相关内容 — 同业产品不纳入舆情识别，请切换范围或关闭该筛选。'
         : (s.scope === 'peer' ? '暂无相关内容 — 当前条件下没有匹配的同业产品。'
-        : (s.onlyRisk ? '暂无相关内容 — 当前条件下没有需合规关注的产品。' : '暂无相关内容 — 当前搜索与筛选下没有匹配的产品。')),
+        : (s.onlyNeg ? '暂无相关内容 — 当前条件下没有舆情。' : '暂无相关内容 — 当前搜索与筛选下没有匹配的产品。')),
       riskRef: self.riskRef, drawerBodyRef: self.drawerBodyRef,
       listMore: sorted.length > 10,
       listAll: s.listAll,
@@ -578,8 +585,7 @@ class SectorOverview extends React.Component {
       bucketLegend: STEP.map(function (c) { return { bg: c }; }),
       toggles: [
         { on: s.onlyNew, label: '仅新品', go: () => self.go({ onlyNew: !s.onlyNew, sel: null, tip: null }) },
-        { on: s.onlyNeg, label: '仅有舆情', go: () => self.go({ onlyNeg: !s.onlyNeg, sel: null, tip: null }) },
-        { on: s.onlyRisk, label: '仅看需合规关注', n: riskVisibleN, go: () => self.go({ onlyRisk: !s.onlyRisk, sel: null, tip: null }) }
+        { on: s.onlyNeg, label: '仅有舆情', go: () => self.go({ onlyNeg: !s.onlyNeg, sel: null, tip: null }) }
       ].map(function (t) {
         return {
           label: t.label, go: t.go, fw: t.on ? 600 : 400,
@@ -618,15 +624,15 @@ class SectorOverview extends React.Component {
          设计源直接 `.text`／`.slice(0,3)`，第一次开抽屉就 TypeError。null 与空数组
          在这里是两句不同的话，见 productMonitor 同处注释。 */
       var sum = R.summaryFor(code, s.rangeKey);
-      var sumNa = sum == null;
-      if (sumNa) sum = { text: '数据暂不可用 — 舆情总结尚未生成或数据源未提供。', sample: null };
+      var sumNa = sum == null || customRange;
+      if (sumNa) sum = { text: customRange ? CUSTOM_SYNTHESIS_MESSAGE : '数据暂不可用 — 舆情总结尚未生成或数据源未提供。', sample: null };
       /* 同 rows 那处：attitude 整块可能为 null（ADR-0017）。`attNa` 单独一条，
          别并进 `sampleSufficient`。 */
       var att = o.attitude, attNa = att == null;
       var valid = attNa ? 0 : att.positive + att.negative;
       var all = attNa ? 0 : att.positive + att.negative + att.neutral;
       var link = function (extra) {
-        return 'product-monitor.dc.html?code=' + code + '&range=' + s.rangeKey + (extra || '');
+        return hrefWithRange('product-monitor.dc.html?code=' + code + (extra || ''), s.rangeKey);
       };
       var themeRow = function (t) {
         return {
@@ -728,6 +734,7 @@ class SectorOverview extends React.Component {
         posThemes: pos, negThemes: neg,
         noPos: !posNa && pos.length === 0, noNeg: !negNa && neg.length === 0,
         posUnavailable: posNa, negUnavailable: negNa,
+        synthesisUnavailableText: customRange ? CUSTOM_SYNTHESIS_MESSAGE : null,
         posTotal: attNa ? '数据暂不可用' : String(att.positive),
         negTotal: attNa ? '数据暂不可用' : String(att.negative),
         neuTotal: attNa ? '数据暂不可用' : String(att.neutral),
@@ -767,7 +774,7 @@ class SectorOverview extends React.Component {
           };
         }),
         hasComps: comps.status === 'ok', noComps: comps.status !== 'ok',
-        compsEmptyText: comps.status === 'unavailable'
+        compsEmptyText: customRange ? CUSTOM_SYNTHESIS_MESSAGE : comps.status === 'unavailable'
           ? '数据暂不可用 — 该产品的竞品关系尚未核验，映射字段未提供。'
           : '暂无相关内容 — 映射表与自动识别均未给出关联产品。',
         comps: comps.list.slice(0, 3).map(function (c) {

@@ -184,8 +184,9 @@ def test_v1_schema_rejects_v2_shape_and_vice_versa():
         schemas.parse("comment_product", v1, "v2")
 
 
-def test_prompt_registry_defaults_to_v4_and_keeps_historical_versions():
-    assert get_prompt("comment_product").VERSION == "comment-product-v4"
+def test_prompt_registry_defaults_to_v5_and_keeps_historical_versions():
+    assert get_prompt("comment_product").VERSION == "comment-product-v5"
+    assert get_prompt("comment_product", "comment-product-v4").VERSION == "comment-product-v4"
     assert get_prompt("comment_product", "comment-product-v3").VERSION == "comment-product-v3"
     assert get_prompt("comment_product", "comment-product-v2").VERSION == "comment-product-v2"
     assert get_prompt("comment_product", "comment-product-v1").VERSION == "comment-product-v1"

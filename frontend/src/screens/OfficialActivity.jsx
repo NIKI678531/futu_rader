@@ -18,6 +18,7 @@ import Shell from '../components/Shell'
 import DatePresetTabs from '../components/DatePresetTabs'
 import AccountSummaryStrip from '../components/AccountSummaryStrip'
 import withTransition from '../components/withTransition'
+import { listenForRangeNavigation, rangeFromSearch } from '../lib/customRange'
 
 class OfficialActivity extends React.Component {
   /* From the .dc.html `data-props` block: editor-tweakable knobs and their defaults. */
@@ -36,16 +37,26 @@ class OfficialActivity extends React.Component {
   };
   constructor(props) {
     super(props);
+    this.state = Object.assign({}, this.state, {
+      rangeKey: rangeFromSearch(window.location.search, R.PRESETS),
+    });
     /* 首次 render 之前把本屏端点并行发出去（radar.js `urlsFor`），首绘不再是串行往返。 */
     prefetchScreen('official', { rangeKey: this.state.rangeKey });
   }
   componentDidMount() {
     this._onResize = () => this.syncStrips();
     window.addEventListener('resize', this._onResize);
+    this._stopRangeNavigation = listenForRangeNavigation(R.PRESETS, (rangeKey) => {
+      prefetchScreen('official', { rangeKey });
+      this.setState({ rangeKey, shown: 30, open: {} });
+    });
     this.syncStrips();
   }
   componentDidUpdate() { this.syncStrips(); }
-  componentWillUnmount() { window.removeEventListener('resize', this._onResize); }
+  componentWillUnmount() {
+    window.removeEventListener('resize', this._onResize);
+    if (this._stopRangeNavigation) this._stopRangeNavigation();
+  }
   /* 任何筛选变化都把发帖流折回首屏；官号/产品被其他方式改动时清掉「来自官号清单」来源 */
   go(patch) {
     if (!('shown' in patch)) patch.shown = 30;

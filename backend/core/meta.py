@@ -42,6 +42,7 @@ officials 两个键**根本不出现**在响应里，前端据此渲染「暂不
 
 import json
 import hashlib
+from datetime import date, timedelta
 from pathlib import Path
 
 from providers import get_provider
@@ -76,6 +77,15 @@ def meta_payload():
                 key: month[key] for key in
                 ("key", "days", "label", "gran", "granLabel", "benchLabel", "trendTitle")
             } | {"bucketCount": len(month["buckets"])})
+
+    complete = provider.build_range("d30")
+    latest = date.fromisoformat(complete["to"]) if complete else None
+    payload["customRange"] = {
+        "earliestDate": (latest - timedelta(days=29)).isoformat() if latest else None,
+        "latestDate": latest.isoformat() if latest else None,
+        "maxDays": 30,
+        "generativeSupported": False,
+    }
 
     return payload
 

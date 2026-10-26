@@ -153,6 +153,16 @@ def build(key, anchor, *, days_override=None, data_through=None):
     return result
 
 
+def build_custom(date_from, date_to):
+    """Build an inclusive HKT custom window and its adjacent equal-length baseline."""
+    first = date.fromisoformat(date_from) if isinstance(date_from, str) else date_from
+    last = date.fromisoformat(date_to) if isinstance(date_to, str) else date_to
+    days = (last - first).days + 1
+    result = build("d30", last, days_override=days)
+    result.update({"key": "custom", "label": "自选日期"})
+    return result
+
+
 def parse_anchor(s):
     """`'2026-08-26'` → `date`。给不出锚点时返回 None，不用今天兜底。
 

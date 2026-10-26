@@ -164,7 +164,7 @@ def test_demo_kol_mentions_merge_post_summary_and_raw_evidence(client):
     assert row["representativeExcerpt"] == raw
     post_evidence = next(item for item in row["evidence"] if item["sourceKind"] == "帖子")
     assert post_evidence["excerpt"] == raw
-    assert post_evidence["sourceUrl"] == "https://www.futunn.com/post/8651204"
+    assert post_evidence["sourceUrl"] == "https://q.futunn.com/feed/8651204?lang=zh-cn"
 
     newer_comment = rows[1]
     assert newer_comment["lastMentionedAt"] == "2026-08-30 13:12"
@@ -242,6 +242,8 @@ def test_kol_mention_rows_carry_their_own_evidence(client, own_code):
         for e in k["evidence"]:
             assert e["authorName"] == k["kolName"]
             assert e["excerpt"] and e["sourceUrl"]
+            assert e["sourceUrl"].startswith("https://q.futunn.com/feed/")
+            assert e["sourceUrl"].endswith("?lang=zh-cn")
 
 
 # ── 原文证据：四个参数全链路 ────────────────────────────────────────────
@@ -252,6 +254,8 @@ def test_evidence_shape(client, own_code):
         assert set(e) == {"id", "publishedAt", "authorName", "authorType", "excerpt",
                           "productCodes", "comments", "interactions", "sourceUrl"}
         assert e["authorType"] in ("普通散户", "合作 KOL", "官方账号")
+        assert e["sourceUrl"].startswith("https://q.futunn.com/feed/")
+        assert e["sourceUrl"].endswith("?lang=zh-cn")
 
 
 def test_evidence_is_sorted_newest_first(client, own_code):

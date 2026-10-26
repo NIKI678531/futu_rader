@@ -7,7 +7,7 @@
    （见 out.stats 上方，与 lib/profile.js 同一处偏差）。 */
 import React from 'react'
 import R, { prefetchScreen } from '../data/radar'
-import { num, conf2, typeStyle, md, shell, rgba, CAMP, reviewBadge, needsReview, kolDisplayLabel } from '../lib/view'
+import { num, conf2, displayedPostType, md, shell, rgba, CAMP, reviewBadge, needsReview, kolDisplayLabel } from '../lib/view'
 import { kolProfile } from '../lib/profile'
 import { compareKolReach, kolProductComposition } from '../lib/kolMetrics'
 import { mentionedEtfsOf, primaryDisplayedEtf } from '../lib/kolEtfs'
@@ -17,6 +17,7 @@ import Shell from '../components/Shell'
 import DatePresetTabs from '../components/DatePresetTabs'
 import withTransition from '../components/withTransition'
 import DcLink from '../components/DcLink'
+import { listenForRangeNavigation, rangeFromSearch } from '../lib/customRange'
 
 class KolDetail extends React.Component {
   constructor(props) {
@@ -26,13 +27,20 @@ class KolDetail extends React.Component {
       new URLSearchParams(location.search).forEach(function (v, k) { q[k] = v; });
     } catch (e) { q = {}; }
     this.state = {
-      rangeKey: q.range || 'd7',
+      rangeKey: rangeFromSearch(location.search, R.PRESETS),
       kol: q.kol || null,
       sel: q.post || null
     };
     /* 首次 render 之前把本屏端点并行发出去（radar.js `prefetchScreen`）。 */
     prefetchScreen('kolDetail', { rangeKey: this.state.rangeKey, kol: this.state.kol });
   }
+  componentDidMount() {
+    this._stopRangeNavigation = listenForRangeNavigation(R.PRESETS, (rangeKey) => {
+      prefetchScreen('kolDetail', { rangeKey, kol: this.state.kol });
+      this.setState({ rangeKey, sel: null });
+    });
+  }
+  componentWillUnmount() { if (this._stopRangeNavigation) this._stopRangeNavigation(); }
   data() { return R.kolImpact(this.state.rangeKey); }
   camp(p) { return p.camp; }
   /* 三态，不是两态：举了手（true）、没举（false）、不知道（null）。判据是
@@ -142,7 +150,7 @@ class KolDetail extends React.Component {
 
     /* 左表：点行 = 选中该帖（右侧高亮那天）+ 展开原文 */
     out.posts = ps.map(function (p, i) {
-      var sec = secOf(p.sector), st = typeStyle(p.postType), on = !!(p0 && p.id === p0.id), displayedEtfs = mentionedEtfsOf(p);
+      var sec = secOf(p.sector), st = displayedPostType(p), on = !!(p0 && p.id === p0.id), displayedEtfs = mentionedEtfsOf(p);
       return {
         key: p.id,
         time: p.time,
@@ -158,7 +166,6 @@ class KolDetail extends React.Component {
           ? (p.postType == null ? '类型尚未生成' : '类型已生成')
           : '类型置信度 ' + conf2(p.confidence),
         review: self.review(p),
-        hasDir: !!p.hasDir, dir: p.dir ? p.dir.label : '', dbg: p.dir ? p.dir.bg : 'transparent', dfg: p.dir ? p.dir.fg : 'transparent',
         /* `!p.hasSummary` 把 null 和 false 合成了一句「图片帖」—— 前者是「还没生成」，
            后者是「查过了，这篇确实只有图」。合成的那一刻，未标注的帖子全被说成了图片帖。 */
         summary: p.hasSummary ? p.summary : '', noSummary: p.hasSummary === false, summaryNa: p.hasSummary == null,
@@ -178,7 +185,7 @@ class KolDetail extends React.Component {
         open: on, hasText: p.fullText != null, sentences: on ? sentencesOf(p) : [],
         ownership: ownershipOf(p),
         likes: num(p.likes), comments: num(p.comments), shares: num(p.shares), eng: num(p.engagement),
-        url: p.url, stop: function (e) { e.stopPropagation(); },
+        url: p.url || null, hasUrl: !!p.url, stop: function (e) { e.stopPropagation(); },
         bg: on ? 'var(--csop-blue-50)' : (i % 2 ? 'var(--canvas)' : '#fff'),
         go: function () { self.setState({ sel: on ? '' : p.id }); }
       };
@@ -224,7 +231,7 @@ class KolDetail extends React.Component {
       })(i);
     }
     var chartPrimary = p0 ? primaryDisplayedEtf(p0) : null;
-    out.chartNote = p0 ? '高亮 ' + p0.dateText + '（' + typeStyle(p0.postType).label + ' · ' + (chartPrimary ? chartPrimary.ticker : '未提及 ETF') + '）' : '这段时间没有发帖';
+    out.chartNote = p0 ? '高亮 ' + p0.dateText + '（' + displayedPostType(p0).label + ' · ' + (chartPrimary ? chartPrimary.ticker : '未提及 ETF') + '）' : '这段时间没有发帖';
     out.campCells = [
       { label: '只提自家', value: String(prof.own), fg: '#2361AD' },
       { label: '双方都提', value: String(prof.both), fg: '#3674C2' },
@@ -365,9 +372,6 @@ class KolDetail extends React.Component {
                         <td style={s('padding:11px 6px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
                           <div style={s('display:flex;flex-direction:column;align-items:flex-start;gap:4px')}>
                             <span style={s(`padding:2px 7px;border-radius:var(--radius-small);background:${p.tbg};font:600 12px/1.6 var(--font-cjk);color:${p.tfg};white-space:nowrap`)}>{p.type}</span>
-                            {p.hasDir && (
-                              <span title="操作方向 · AI 判定" style={s(`padding:2px 7px;border-radius:var(--radius-small);background:${p.dbg};font:600 12px/1.6 var(--font-cjk);color:${p.dfg};white-space:nowrap`)}>{p.dir}</span>
-                            )}
                             {/* 徽章文案由 `review_state` 决定（ADR-0019 §2），逐字取自 PRD §3.9 */}
                             {p.review && (
                               <span style={s('padding:0 6px;border-radius:var(--radius-pill);background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500);white-space:nowrap')}>{p.review}</span>
@@ -401,7 +405,9 @@ class KolDetail extends React.Component {
                         <td style={s('padding:11px 14px 11px 6px;vertical-align:top;text-align:right;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
                           <div title={`赞 ${p.likes} · 评 ${p.comments} · 转 ${p.shares}`} style={s('font:600 13px/1.5 var(--font-mono);color:var(--ink-800)')}>{p.eng}</div>
                           <div style={s('font:400 11px/1.4 var(--font-mono);color:var(--ink-400)')}>{p.likes}/{p.comments}/{p.shares}</div>
-                          <a href={p.url} target="_blank" rel="noopener" onClick={p.stop} style={s('display:inline-flex;align-items:center;margin-top:5px;padding:2px 9px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>原帖 ↗</a>
+                          {p.hasUrl
+                            ? <a href={p.url} target="_blank" rel="noopener noreferrer" onClick={p.stop} style={s('display:inline-flex;align-items:center;margin-top:5px;padding:2px 9px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>原帖 ↗</a>
+                            : <span style={s('display:inline-block;margin-top:5px;font:500 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>链接暂不可用</span>}
                         </td>
                       </tr>
                     ))}

@@ -15,18 +15,18 @@
 from providers import get_provider
 from providers.sentinel import MISSING
 
-from .ranges import VALID_KEYS
+from .range_spec import is_valid_range_key
 
 
 def official_posts(range_key):
     """区间内全部官号的帖子级内容流（含 AI 摘要 / 类型双标签 / 提及产品 / 阵营）。"""
-    if range_key not in VALID_KEYS:
+    if not is_valid_range_key(range_key):
         return MISSING
     return get_provider().official_posts(range_key)
 
 
 def etf_mentions_for(account, range_key):
     """单个官号在区间内的 ETF 提及统计（自家在前、竞品在后，按出现次数）。"""
-    if range_key not in VALID_KEYS:
+    if not is_valid_range_key(range_key):
         return MISSING
     return get_provider().etf_mentions_for(account, range_key)

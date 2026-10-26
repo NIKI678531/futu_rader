@@ -6,8 +6,29 @@ from sqlalchemy import insert, select
 from ai import config
 from jobs.full_own import prepare, prioritize_scope, queue_status
 from radar_db import create_all, make_engine
+from radar_db.comment_filter import filter_readiness_values, load_comment_filter_config
 from radar_db.leases import WorkerLease
-from radar_db.schema import annotation_jobs, comments, feeds, meta_kv
+from radar_db.schema import annotation_jobs, comments, feed_mentions, feeds, meta_kv
+
+
+def _ready_rows():
+    return [
+        {"k": key, "v": value}
+        for key, value in filter_readiness_values(load_comment_filter_config()).items()
+    ]
+
+
+def _mark_ready(conn):
+    conn.execute(insert(meta_kv), _ready_rows())
+
+
+def _mention(conn, feed_id, code):
+    conn.execute(insert(feed_mentions).values(
+        feed_id=feed_id,
+        raw_ticker=f"0{code}.HK",
+        market="HK",
+        occurrences=1,
+    ))
 
 
 def test_prepare_reuses_scopes_and_leases_exclude_other_workers(tmp_path):
@@ -15,6 +36,7 @@ def test_prepare_reuses_scopes_and_leases_exclude_other_workers(tmp_path):
     create_all(engine)
     with engine.begin() as conn:
         conn.execute(insert(meta_kv).values(k="anchor", v="2026-08-25"))
+        _mark_ready(conn)
     cfg = config.load(model="test", prompt_version="comment-product-v2", schema_version="v2", taxonomy_version="v2")
     scopes, start = prepare(engine, cfg, date(2026, 8, 25), ["3033"])
     repeated, _ = prepare(engine, cfg, date(2026, 8, 25), ["3033"])
@@ -58,10 +80,13 @@ def test_selected_ranges_only_queue_their_current_and_baseline_windows(tmp_path)
     create_all(engine)
     with engine.begin() as conn:
         conn.execute(insert(meta_kv).values(k="anchor", v="2026-08-25"))
+        _mark_ready(conn)
         for feed_id, posted_at in ((1, datetime(2026, 7, 1)), (2, datetime(2026, 8, 12)),
                                    (3, datetime(2026, 8, 25))):
             conn.execute(insert(feeds).values(feed_id=feed_id, code="3033", posted_at=posted_at,
+                         source_ticker="03033.HK",
                          feed_type=1, like_count=0, comment_count=1, image_count=0, raw_json_broken=False))
+            _mention(conn, feed_id, "3033")
             conn.execute(insert(comments).values(comment_id=feed_id, feed_id=feed_id,
                          content="ETF fee too high", author_uid=f"reader-{feed_id}"))
     cfg = config.load(model="test", prompt_version="comment-product-v2", schema_version="v2", taxonomy_version="v2")
@@ -78,9 +103,12 @@ def test_optimized_prepare_matches_candidates_and_reuses_scopes(tmp_path):
     create_all(engine)
     with engine.begin() as conn:
         conn.execute(insert(meta_kv).values(k="anchor", v="2026-08-25"))
+        _mark_ready(conn)
         for feed_id, code in ((1, "3033"), (2, "2802")):
             conn.execute(insert(feeds).values(feed_id=feed_id, code=code, posted_at=datetime(2026, 8, 25),
+                         source_ticker=f"0{code}.HK",
                          feed_type=1, like_count=0, comment_count=1, image_count=0, raw_json_broken=False))
+            _mention(conn, feed_id, code)
             conn.execute(insert(comments).values(comment_id=feed_id, feed_id=feed_id,
                          content="ETF fee too high", author_uid=f"reader-{feed_id}"))
     cfg = config.load(model="test", prompt_version="comment-product-v2", schema_version="v2", taxonomy_version="v2")

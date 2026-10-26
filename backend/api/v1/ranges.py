@@ -9,7 +9,8 @@ import logging
 from flask import abort, request
 
 from core.envelope import respond
-from core.ranges import build_range
+from core.range_spec import CustomRangeError
+from core.ranges import build_custom_key, build_range
 from providers.sentinel import MISSING
 
 from . import v1_bp
@@ -20,6 +21,11 @@ log = logging.getLogger(__name__)
 
 @v1_bp.get("/ranges/<key>")
 def ranges(key):
+    if key == "custom":
+        try:
+            key = build_custom_key(request.args.get("from"), request.args.get("to"))
+        except CustomRangeError as exc:
+            abort(400, description=str(exc))
     log.info(
         "range_request key=%s path=%s remote_addr=%s",
         key,

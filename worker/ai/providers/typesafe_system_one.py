@@ -17,7 +17,7 @@ import time
 import requests
 
 from .. import redact
-from ..schemas import ASPECTS, ASPECTS_V3, COMPLIANCE_TAGS, ISSUER_ASPECTS, POST_TYPES
+from ..schemas import ASPECTS, ASPECTS_V3, COMPLIANCE_TAGS, HIGH_RISK_TAGS, ISSUER_ASPECTS, POST_TYPES
 from .base import Completion, PermanentError, Provider, RunStopped, TransientError, Usage
 
 log = logging.getLogger("worker.ai.provider.typesafe")
@@ -67,6 +67,7 @@ _COMPLIANCE_LABELS = {
     "unverified_claim": "未经证实指控",
     "mobilization": "煽动扩散",
     "compliance_concern": "合规质疑",
+    "abusive_attack": "辱骂攻击",
 }
 
 
@@ -208,7 +209,11 @@ _ISSUER_ASPECT_HINTS = {
 
 
 def _aspects_for(schema_version):
-    return ASPECTS_V3 if schema_version == "v3" else ASPECTS
+    return ASPECTS_V3 if schema_version in ("v3", "v4") else ASPECTS
+
+
+def _compliance_tags_for(schema_version):
+    return HIGH_RISK_TAGS if schema_version == "v4" else COMPLIANCE_TAGS
 
 
 def _first_excerpt(context):
@@ -312,7 +317,7 @@ def _questions_for(task, payload, schema_version):
                 + "？",
                 "明确涉及该方面", "没有涉及该方面",
             )
-        if schema_version == "v3":
+        if schema_version in ("v3", "v4"):
             questions["issuer_relevance_attitude"] = _choice(
                 (
                     "只判断 comment 对发行商「南方东英（CSOP）」这家公司本身的评价，"
@@ -333,13 +338,14 @@ def _questions_for(task, payload, schema_version):
                 )
         if schema_version != "v1":
             descriptions = {
+                "abusive_attack": "针对指定 ETF 或南方东英的直接辱骂、侮辱或恶意人身攻击",
                 "regulatory_complaint": "已向或打算向证监会、SFC、消委会、金管局、港交所或警方投诉举报",
                 "serious_allegation": "指控发行人、做市商或平台操纵、欺诈、内幕、利益输送等严重违法违规",
                 "unverified_claim": "传播未附依据的清盘、停牌、被查、跑路或暴雷等重大事实断言",
                 "mobilization": "号召他人集体投诉、留名、刷差评或转发扩散",
                 "compliance_concern": "质疑销售宣传、风险披露、KYC 或适当性安排",
             }
-            for tag in COMPLIANCE_TAGS:
+            for tag in _compliance_tags_for(schema_version):
                 questions[f"compliance__{tag}"] = _noul(
                     f"comment 是否出现需要关注的 {tag} 信号？只标信号，不判断事实真伪。",
                     descriptions[tag], "没有这种信号",
@@ -353,11 +359,12 @@ def _questions_for(task, payload, schema_version):
                 criteria,
             )
         if schema_version != "v1" and excerpts:
+            signal_name = "高风险舆情" if schema_version == "v4" else "合规关注"
             questions["compliance_evidence"] = _choice(
-                "选择最能支撑合规关注信号的连续原文；若无信号就选 none。",
+                f"选择最能支撑{signal_name}信号的连续原文；若无信号就选 none。",
                 criteria,
             )
-        if schema_version == "v3" and excerpts:
+        if schema_version in ("v3", "v4") and excerpts:
             questions["issuer_evidence"] = _choice(
                 "选择最能支撑对南方东英这家公司评价的连续原文；若没有评价就选 none。",
                 criteria,
@@ -473,7 +480,7 @@ def _map_answers(task, payload, questions, answers, context, schema_version):
         }
         if schema_version != "v1":
             tags = []
-            for tag in COMPLIANCE_TAGS:
+            for tag in _compliance_tags_for(schema_version):
                 probability = _read_noul(answers, f"compliance__{tag}")
                 if probability >= _NOUL_YES:
                     tags.append(tag)
@@ -497,8 +504,22 @@ def _map_answers(task, payload, questions, answers, context, schema_version):
                 ),
                 "compliance_evidence": compliance_evidence,
             })
-            if schema_version == "v3":
+            if schema_version in ("v3", "v4"):
                 _apply_v3_contract(result, answers, questions, context, reasons)
+            if schema_version == "v4" and tags:
+                product_negative = (
+                    result.get("relevance") == "relevant"
+                    and result.get("attitude") == "negative"
+                )
+                issuer_negative = (
+                    result.get("issuer_relevance") == "relevant"
+                    and result.get("issuer_attitude") == "negative"
+                )
+                if not (product_negative or issuer_negative):
+                    result.update(
+                        compliance_tags=[], compliance_rationale=None,
+                        compliance_evidence=None,
+                    )
             result["needs_review"] = bool(reasons)
             result["uncertainty_reasons"] = _dedupe(reasons)
         return result

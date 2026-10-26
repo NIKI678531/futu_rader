@@ -94,6 +94,52 @@ def test_demo_today_uses_the_frozen_current_data_time_not_the_complete_day(clien
     assert data["dataThrough"] == "2026-09-02T09:00:00 HKT"
 
 
+def test_custom_range_uses_inclusive_hkt_days_and_an_equal_adjacent_benchmark(client):
+    response = client.get("/api/v1/ranges/custom?from=2026-08-20&to=2026-08-25")
+    assert response.status_code == 200
+    data = response.get_json()["data"]
+    assert data["key"] == "custom"
+    assert data["label"] == "自选日期"
+    assert data["from"] == "2026-08-20"
+    assert data["to"] == "2026-08-25"
+    assert data["days"] == 6
+    assert data["dates"] == [f"2026-08-{day:02d}" for day in range(20, 26)]
+    assert data["benchFrom"] == "2026-08-14"
+    assert data["benchTo"] == "2026-08-19"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "from=2026-08-20",
+        "from=2026-08-25&to=2026-08-20",
+        "from=2026-08-02&to=2026-08-03",
+        "from=2026-08-03&to=2026-09-02",
+        "from=2026-02-30&to=2026-03-01",
+    ],
+)
+def test_custom_range_rejects_missing_reversed_out_of_window_and_invalid_dates(client, query):
+    response = client.get("/api/v1/ranges/custom?" + query)
+    assert response.status_code == 400
+
+
+def test_custom_range_query_is_supported_by_every_range_sensitive_endpoint(sql_client):
+    response = sql_client.get(
+        "/api/v1/pool?range=custom&from=2026-08-20&to=2026-08-25"
+    )
+    assert response.status_code == 200
+    data = response.get_json()["data"]
+    assert isinstance(data["list"], list)
+    assert "complianceCount" in data
+
+
+def test_internal_custom_cache_token_is_not_accepted_as_a_public_query(sql_client):
+    response = sql_client.get(
+        "/api/v1/pool?range=custom:2026-08-20:2026-08-25"
+    )
+    assert response.status_code == 400
+
+
 def test_unknown_preset_is_a_404_not_a_silent_fallback(client):
     """静默回落到 d7 会让前端拿到另一段时间的数据却浑然不觉。"""
     r = client.get("/api/v1/ranges/d99")

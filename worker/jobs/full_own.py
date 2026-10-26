@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 for folder in (ROOT, ROOT / "worker", ROOT / "backend"):
     sys.path.insert(0, str(folder))
 
+import clock
 from ai import config
 from core.calendar import PRESETS, build
 from jobs import annotate, extract, pipeline
@@ -322,7 +323,7 @@ def main():
                 scheduler.add_job(lambda: sync(engine, FmpClient(), codes, start, anchor, force=True),
                                   "interval", hours=1, max_instances=1, coalesce=True)
             scheduler.add_job(tick, "interval", seconds=5, max_instances=1, coalesce=True,
-                              next_run_time=datetime.now())
+                              next_run_time=clock.now())
             try:
                 scheduler.start()
             except (KeyboardInterrupt, SystemExit):

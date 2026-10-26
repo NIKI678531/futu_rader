@@ -387,6 +387,8 @@ def test_compliance_items_never_conclude(client, codes):
             assert x["reviewState"] == "ai_pending"
             assert x["reviewLabel"] == "AI 识别 · 待人工确认"
             assert x["excerpt"] and x["detectionRationale"] and x["sourceUrl"]
+            assert x["sourceUrl"].startswith("https://q.futunn.com/feed/")
+            assert x["sourceUrl"].endswith("?lang=zh-cn")
             n += 1
     assert n
 

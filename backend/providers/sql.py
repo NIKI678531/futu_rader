@@ -15,7 +15,7 @@
 | 类别 | 例子 | 现状 |
 |---|---|---|
 | 计数 | 提及数、评论量、点赞、转发、互动、热度、活跃账号、排名、环比 | **真实** |
-| 主数据 | 产品池、官号名单、KOL 名单 | 真实（客户维护，见下） |
+| 主数据 | HKEX 每日活跃 ETP 产品池、官号名单、KOL 名单 | 真实 |
 | 日历 | 区间、时间桶、基准区间 | 真实（`core/calendar.py`，锚点来自 `meta_kv`） |
 | 内容 | 帖子标题正文、评论正文、作者、链接 | **真实** |
 | AI 标注（有写入方） | 帖子类型／摘要／操作方向、评论态度、合规命中、证据引文 | **随标注走**：库里有现行结论就是真值，没有就是 None |
@@ -84,13 +84,16 @@ from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
 from core import stages as core_stages, themes as core_themes, topics as core_topics  # noqa: E402
 from core.attitude import LOW_SAMPLE, sample_sufficient  # noqa: E402
-from core.calendar import PRESETS, build, parse_anchor  # noqa: E402
+from core.calendar import PRESETS, build, build_custom, parse_anchor  # noqa: E402
+from core.range_spec import parse_custom_key, validate_selectable  # noqa: E402
 from core.data_clock import latest_hkt_data_time  # noqa: E402
 from core.delta import delta  # noqa: E402
+from core.futu_links import futu_feed_url  # noqa: E402
 from core.heat import heat_of  # noqa: E402
 from radar_db import make_engine  # noqa: E402
 from radar_db.annotations_read import (  # noqa: E402
     COMMENT_PRODUCT_PROMPT_VERSIONS,
+    HIGH_RISK_PROMPT_VERSIONS,
     PRODUCT_FEEDBACK_PROMPT_VERSIONS,
     current_annotations,
     released_annotations,
@@ -242,7 +245,7 @@ class SqlProvider:
         anchor_present = "anchor" in self._meta
         raw_anchor = self._meta.get("anchor")
 
-        if key not in PRESETS:
+        if key not in PRESETS and parse_custom_key(key) is None:
             reason = "unsupported_range_key"
             causes = "caller_requested_unknown_range_key"
         elif self._last_meta_error:
@@ -541,9 +544,14 @@ class SqlProvider:
         }
 
     def build_range(self, key):
-        if key not in PRESETS or self._anchor is None:
+        custom = parse_custom_key(key)
+        if (key not in PRESETS and custom is None) or self._anchor is None:
             # 锚点取不到 ⇒ 整个区间是未知，不用今天兜底（见 core/calendar.parse_anchor）。
             return None
+        if custom is not None:
+            first, last = custom
+            validate_selectable(first, last, self._anchor)
+            return build_custom(first, last)
         if key != "d0":
             return build(key, self._anchor)
         data_through = self._d0_data_through()
@@ -1246,6 +1254,9 @@ class SqlProvider:
 
     def _effective_anchor(self, range_key):
         """Published d0 generations are keyed by their actual data day."""
+        if parse_custom_key(range_key) is not None:
+            # Custom facts never read or publish Layer-B generations.
+            return None
         if self._anchor is None:
             return None
         if range_key != "d0":
@@ -1562,7 +1573,7 @@ class SqlProvider:
 
     def _units(self, code, rng):
         """区间内产品反馈、购买意愿与市场方向单元。整块 None＝没标过。"""
-        key = ("units", code, rng["key"])
+        key = ("units", code, rng["from"], rng["to"])
         if key in self._cache:
             return self._cache[key]
         lo, hi = _window(rng)
@@ -2042,7 +2053,7 @@ class SqlProvider:
                 "excerpt": quotes.get(rel_row["annotation_id"]) or (detail.content or "")[:240],
                 "original": detail.content or "", "authorName": detail.author_name,
                 "publishedAt": utc_naive_to_hkt(detail.posted_at).strftime("%m-%d %H:%M"),
-                "sourceUrl": f"https://www.futunn.com/post/{detail.feed_id}",
+                "sourceUrl": futu_feed_url(detail.feed_id),
                 "evidenceIds": [f"c{comment_id}"],
                 "reviewState": rel_row["review_state"],
             })
@@ -2609,7 +2620,7 @@ class SqlProvider:
         return items[:n]
 
     def compliance_for(self, code, range_key):
-        """需合规关注（PRD §4.2 P10）。四态各有各的意思，一个都不能合并：
+        """舆情（高风险负面评论）。四态各有各的意思，一个都不能合并：
 
         - `na`          同业产品不纳入识别 —— 字段不适用，不是「没查到」。
         - `unavailable` 这个区间的合规识别没跑过 —— 该有值但取不到。
@@ -2648,86 +2659,77 @@ class SqlProvider:
         return out
 
     def _compliance_scan(self, rng):
-        """按产品读取现行合规结论。v2 写 `tags`，兼容旧行的 `risk_tags`。
-
-        空标签是「已分析但未命中」，不是风险条目；只有该产品自己的标注能证明它已分析。
-        没有标注的产品仍是 unavailable，不因其他产品有结果就显示零条。
-        """
-        key = ("compliance", rng["key"])
+        """Read strict v5 high-risk negative comments; never include parent posts."""
+        key = ("compliance", rng["from"], rng["to"])
         if key in self._cache:
             return self._cache[key]
 
         window = _window(rng)
         lo, hi = window
-        qualified = self._qualified_feed_ids(lo, hi)
-        feed_rows = self._current_annotations("compliance", "feed", window=window)
-        rows = {
-            "comment": {
-                unit: row
-                for by_unit in self._released_window_annotations("compliance", lo, hi).values()
-                for unit, row in by_unit.items()
-            },
-            "feed": {
-                unit: row
-                for unit, row in feed_rows.items()
-                if row.get("feed_id") in qualified.get(unit[1], ())
-            },
-        }
-        comment_relevance = {
-            unit: row
-            for by_unit in self._released_window_annotations("relevance", lo, hi).values()
-            for unit, row in by_unit.items()
-        }
-        scanned_codes = self._completed_codes(rng["from"], rng["to"], rng.get("key"))
+        def released(kind):
+            return released_annotations(
+                self._engine,
+                kind,
+                "comment",
+                task="comment_product",
+                prompt_version=HIGH_RISK_PROMPT_VERSIONS,
+                window=window,
+                parent_filter_config=self._comment_filter_config,
+            )
+
+        rows = released("compliance")
+        product_relevance = released("relevance")
+        product_attitude = released("attitude")
+        issuer_relevance = released("issuer_relevance")
+        issuer_attitude = released("issuer_attitude")
+        scanned_codes = {code for _target_id, code in rows}
         ev = self._evidence_rows(
-            [a["annotation_id"] for table in rows.values() for a in table.values()]
+            [a["annotation_id"] for a in rows.values()]
         )
         by_code = defaultdict(list)
-        for target_type, source_kind in (("comment", "评论"), ("feed", "帖子")):
-            src = self._sources(target_type, [tid for tid, _s in rows[target_type]])
-            for (target_id, code), a in rows[target_type].items():
-                r = src.get(target_id)
-                if r is None or code not in self._by_code:
-                    continue
-                relevance = comment_relevance.get((target_id, code)) if target_type == "comment" else None
-                if target_type == "comment" and relevance is None:
-                    continue
-                value = a["value"]
-                if not isinstance(value, dict) or not isinstance(value.get("tags", value.get("risk_tags")), list):
-                    continue
-                scanned_codes.add(code)
-                if target_type == "comment" and relevance["value"] != "relevant":
-                    continue
-                tags = list(value.get("tags", value.get("risk_tags")) or [])
-                if not tags:
-                    continue
-                quotes = ev.get(a["annotation_id"], [])
-                author = r["authorName"]
-                author_type = self._author_type(author)
-                by_code[code].append(
-                    {
-                        "id": f"cr-{a['annotation_id']}",
-                        "productCodes": [code],
-                        "publishedAt": _stamp(r["postedAt"]),
-                        "authorName": author,
-                        "authorType": author_type,
-                        "isKnownKol": author_type == "合作 KOL",
-                        # 有定位到的引文就用引文（读的人要能在原文里逐字找到它），
-                        # 没有就退回整段原文 —— 不截断，截断出来的「引文」定位不到。
-                        "excerpt": quotes[0][2] if quotes else r["text"],
-                        "riskTags": tags,
-                        "riskLabels": [_RISK_LABEL.get(t, t) for t in tags],
-                        "detectionRationale": value.get("rationale"),
-                        # PRD §4.2 P10 逐字，**恒定**，不随 review_state 变
-                        # （ADR-0019 §2 表末行）。
-                        "reviewState": "ai_pending",
-                        "reviewLabel": "AI 识别 · 待人工确认",
-                        "sourceKind": source_kind,
-                        "sourceUrl": r["url"],
-                        "comments": r["comments"],
-                        "interactions": r["interactions"],
-                    }
-                )
+        src = self._sources("comment", [tid for tid, _s in rows])
+        allowed = set(_RISK_LABEL)
+        for unit, a in rows.items():
+            target_id, code = unit
+            r = src.get(target_id)
+            if r is None or code not in self._by_code:
+                continue
+            product_negative = (
+                (product_relevance.get(unit) or {}).get("value") == "relevant"
+                and (product_attitude.get(unit) or {}).get("value") == "negative"
+            )
+            issuer_negative = (
+                (issuer_relevance.get(unit) or {}).get("value") == "relevant"
+                and (issuer_attitude.get(unit) or {}).get("value") == "negative"
+            )
+            value = a["value"]
+            tags = value.get("tags") if isinstance(value, dict) else None
+            if not (product_negative or issuer_negative) or not isinstance(tags, list):
+                continue
+            tags = [tag for tag in tags if tag in allowed]
+            if not tags:
+                continue
+            quotes = ev.get(a["annotation_id"], [])
+            author = r["authorName"]
+            author_type = self._author_type(author)
+            by_code[code].append({
+                "id": f"cr-{a['annotation_id']}",
+                "productCodes": [code],
+                "publishedAt": _stamp(r["postedAt"]),
+                "authorName": author,
+                "authorType": author_type,
+                "isKnownKol": author_type == "合作 KOL",
+                "excerpt": quotes[0][2] if quotes else r["text"],
+                "riskTags": tags,
+                "riskLabels": [_RISK_LABEL[tag] for tag in tags],
+                "detectionRationale": value.get("rationale"),
+                "reviewState": "ai_pending",
+                "reviewLabel": "AI 识别 · 待人工确认",
+                "sourceKind": "评论",
+                "sourceUrl": r["url"],
+                "comments": r["comments"],
+                "interactions": r["interactions"],
+            })
         for items in by_code.values():
             items.sort(key=lambda x: (x["publishedAt"] or "", x["id"]), reverse=True)
         out = {"scannedCodes": scanned_codes, "byCode": dict(by_code)}
@@ -3169,7 +3171,7 @@ class SqlProvider:
             "comments": n_comments,
             "shares": shares,
             "engagement": _add_all([likes, n_comments, shares]),
-            "url": f"https://www.futunn.com/post/{row.feed_id}",
+            "url": futu_feed_url(row.feed_id),
             "mentioned": [
                 {
                     "code": c,
@@ -3235,7 +3237,7 @@ class SqlProvider:
         不是 False（一个确切的「没有」）。模型明确写下的 `summary=false` 是一条结论
         （「这篇没有可摘的内容」），和「这一行压根没写」是两回事。
         """
-        key = ("post_ai", rng["key"])
+        key = ("post_ai", rng["from"], rng["to"])
         if key in self._cache:
             return self._cache[key]
         window = _window(rng)
@@ -3319,7 +3321,7 @@ class SqlProvider:
                             "postedAt": utc_naive_to_hkt(r.own_posted or r.feed_posted),
                             "comments": r.comment_count,
                             "interactions": _add_all([r.like_count, r.share_count]),
-                            "url": f"https://www.futunn.com/post/{r.feed_id}",
+                            "url": futu_feed_url(r.feed_id),
                         }
                 else:
                     q = select(
@@ -3341,7 +3343,7 @@ class SqlProvider:
                             "postedAt": utc_naive_to_hkt(r.posted_at),
                             "comments": r.comment_count,
                             "interactions": _add_all([r.like_count, r.share_count]),
-                            "url": f"https://www.futunn.com/post/{r.feed_id}",
+                            "url": futu_feed_url(r.feed_id),
                         }
         return out
 
@@ -3624,6 +3626,8 @@ def _benchmark_data_through(rng):
 
 def _baseline_range(rng):
     """Build the adjacent comparison range, preserving d0's partial cutoff."""
+    if rng["key"] == "custom":
+        return build_custom(rng["benchFrom"], rng["benchTo"])
     return build(
         "d1" if rng["key"] == "d0" else rng["key"],
         date.fromisoformat(rng["benchTo"]),
@@ -3733,13 +3737,13 @@ _DIRECTIONS = {
     "hold": ("持有观望", "neu"),
 }
 
-# 五类风险标签，逐字来自 `design/radar-data.js:1439` 的 `RISK_TAG`（＝ PRD §4.2 P10）。
+# 严格舆情的五类命中原因。
 _RISK_LABEL = {
+    "abusive_attack": "辱骂攻击",
     "regulatory_complaint": "监管举报",
     "serious_allegation": "严重指控",
-    "unverified_claim": "疑似未经证实指控",
+    "unverified_claim": "未经证实的重大传闻",
     "mobilization": "煽动扩散",
-    "compliance_concern": "合规质疑",
 }
 
 

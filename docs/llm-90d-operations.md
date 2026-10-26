@@ -10,7 +10,7 @@
 ```powershell
 cd worker; .\.venv\Scripts\pip install -r requirements.txt; cd ..
 # worker\.env：AI_PRIMARY_BASE_URL / AI_PRIMARY_API_KEY / AI_PRIMARY_MODEL 三项必填；
-# AI_PROMPT_VERSION=comment-product-v4、AI_TAXONOMY_VERSION=product-feedback-v4、AI_SCHEMA_VERSION=v3。
+# AI_PROMPT_VERSION=comment-product-v5、AI_TAXONOMY_VERSION=product-feedback-v4、AI_SCHEMA_VERSION=v4。
 # AI_FILL_MISSING_ONLY=false：v4 切换区间必须 supersede 重标，不能只补缺失项。
 # AI_MICRO_BATCH_SIZE 先按 provider 能力设置：普通 LLM 校准通过后可用 5；System One 固定为 1。
 # AI_CONCURRENCY 先 4；探明限流后再调。
@@ -103,7 +103,7 @@ Copy-Item "P:\NIKI\dump-market_insight-202608261101-2\*.sql" "C:\data\dump\"
 & $py -m scripts.evaluate_gold --file "$env:LOCALAPPDATA\futu-radar\calibration-<时间>-gold\gold-llm-400.xlsx" --no-write
 ```
 
-报告 `qualityGate.passed` 只有在 400 条均为同一请求模型与供应商返回模型、`comment-product-v4`、schema、taxonomy 和目录规则版本的直接 LLM 结论，产品反馈 precision ≥95%、recall ≥90%，固定市场内容误入／产品身份回归 case 全部通过，且官号反馈用当前归属代码复跑通过时才会为 true。自由备注不参与门禁。门槛未过时（包括 `--no-write`）命令返回非零且不写 `meta_kv.ai_validation`；`--apply` 同样会从混淆矩阵重算指标并核对当前策略及固定 manifest，不能用手改 `passed=true`、漏掉案例或使用旧报告绕过。具体填表规则见 [gold-labeling-guide.md](gold-labeling-guide.md)。
+报告 `qualityGate.passed` 只有在 400 条均为同一请求模型与供应商返回模型、`comment-product-v5`、schema v4、taxonomy 和目录规则版本的直接 LLM 结论，产品反馈 precision ≥95%、recall ≥90%，严格舆情固定正反例与产品身份回归 case 全部通过，且官号反馈用当前归属代码复跑通过时才会为 true。自由备注不参与门禁。门槛未过时（包括 `--no-write`）命令返回非零且不写 `meta_kv.ai_validation`；`--apply` 同样会从混淆矩阵重算指标并核对当前策略及固定 manifest，不能用手改 `passed=true`、漏掉案例或使用旧报告绕过。具体填表规则见 [gold-labeling-guide.md](gold-labeling-guide.md)。
 
 通过后把生成的 `gold-eval-*.json` 作为 `--quality-report`（自动任务可放入 `AI_QUALITY_REPORT` Secret），并与第 4 步的 `--calibration-report` 一起交给生产 `jobs.refresh analyze`。缺任一份，或任一份策略不匹配，都会在第一次模型请求前停止。
 

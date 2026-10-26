@@ -4,7 +4,7 @@
 import React from 'react'
 import R, { prefetchScreen } from '../data/radar'
 import {
-  num, conf2, descN, typeStyle, rgba, shell, dirStyle, reviewBadge, needsReview,
+  num, conf2, descN, typeStyle, displayedPostType, rgba, shell, dirStyle, reviewBadge, needsReview, kolDisplayLabel,
   CAMP, POST_TYPES, TYPE_BY_KEY, DIRECTIONS, DIR_BY_KEY,
 } from '../lib/view'
 import { kolProfile } from '../lib/profile'
@@ -17,6 +17,7 @@ import DatePresetTabs from '../components/DatePresetTabs'
 import AccountSummaryStrip from '../components/AccountSummaryStrip'
 import withTransition from '../components/withTransition'
 import DcLink from '../components/DcLink'
+import { hrefWithRange, listenForRangeNavigation, rangeFromSearch } from '../lib/customRange'
 
 class KolActivity extends React.Component {
   static defaultProps = {
@@ -28,7 +29,7 @@ class KolActivity extends React.Component {
   constructor(props) {
     super(props);
     this.state = {
-      rangeKey: 'd7', sort: 'time', leaderSort: 'views', sel: null,
+      rangeKey: rangeFromSearch(window.location.search, R.PRESETS), sort: 'time', leaderSort: 'views', sel: null,
       etf: 'ALL', kol: 'ALL', post: 'ALL', types: [], dirs: [],
       etfMenu: false, kolMenu: false, postMenu: false, typeMenu: false,
       /* 表内筛选：发帖记录（q / camp / onlyPending / tTypeMenu）与声量排名（lq / lCamp / lType） */
@@ -42,13 +43,17 @@ class KolActivity extends React.Component {
     var p = {};
     try {
       var u = new URLSearchParams(window.location.search);
-      var etf = u.get('etf'), kol = u.get('kol'), rg = u.get('range');
+      var etf = u.get('etf'), kol = u.get('kol');
       if (etf) p.etf = etf;
       if (kol && R.KOLS.some(function (x) { return x.name === kol && x.active; })) p.kol = kol;
-      if (rg && R.PRESETS.some(function (x) { return x.k === rg; })) p.rangeKey = rg;
     } catch (e) { /* 深链参数不可用时保留默认筛选 */ }
     if (Object.keys(p).length) this.setState(p);
+    this._stopRangeNavigation = listenForRangeNavigation(R.PRESETS, (rangeKey) => {
+      prefetchScreen('kol', { rangeKey });
+      this.setState({ rangeKey, sel: null });
+    });
   }
+  componentWillUnmount() { if (this._stopRangeNavigation) this._stopRangeNavigation(); }
   data() { return R.kolImpact(this.state.rangeKey); }
   camp(p) { return p.camp; }
   codesOf(p) { return mentionedEtfsOf(p).map(function (m) { return m.code; }); }
@@ -66,9 +71,10 @@ class KolActivity extends React.Component {
   annNa(p) { return p.postType == null; }
   typeOk(p) {
     var t = this.state.types, d = this.state.dirs;
-    if (t.length && t.indexOf(p.postType) < 0) return false;
-    if (d.length && !(p.directionPending ? d.indexOf('pending') >= 0 : (p.direction && d.indexOf(p.direction) >= 0))) return false;
-    return true;
+    if (!t.length && !d.length) return true;
+    var key = displayedPostType(p).filterKey;
+    return t.some(function (k) { return key === 'content:' + k; })
+      || d.some(function (k) { return key === 'direction:' + k; });
   }
   /* 导出 CSV：只导当前表格所见（日期范围 × 顶部四级 × 表内筛选 × 当前排序）；UTF-8 带 BOM + CRLF，Excel 直开不乱码；首行为筛选摘要 */
   exportCsv(list, summary, filename) {
@@ -131,7 +137,6 @@ class KolActivity extends React.Component {
     };
     this.LC = this.props.lowConfidence != null ? this.props.lowConfidence : 0.7;
     var clamp = this.props.summaryLines != null ? this.props.summaryLines : 2;
-    var dual = this.props.typeScheme !== '合并单标签';
     var range = R.buildRange(s.rangeKey);
     /* 切区间会触发新的 kolImpact 取数；进 transition 让旧内容留着，不退回骨架（withTransition.jsx）。 */
     var out = shell('accounts', 'kol', s, function (x) { self.props.startTransition(function () { self.setState(x); }); });
@@ -224,7 +229,7 @@ class KolActivity extends React.Component {
     out.postToggle = function () { if (postEnabled) self.setState({ postMenu: !s.postMenu, etfMenu: false, kolMenu: false, typeMenu: false }); };
     out.postClose = function () { self.setState({ postMenu: false }); };
     out.postMenu = [{ k: 'ALL', time: '全部 ' + kolPosts.length + ' 篇', code: '', type: '' }].concat(
-      kolPosts.map(function (p) { var primary = primaryDisplayedEtf(p); return { k: p.id, time: p.time, code: primary ? primary.ticker : '—', type: typeStyle(p.postType).label }; })).map(function (o) {
+      kolPosts.map(function (p) { var primary = primaryDisplayedEtf(p); return { k: p.id, time: p.time, code: primary ? primary.ticker : '—', type: displayedPostType(p).label }; })).map(function (o) {
         var on = o.k === s.post;
         return {
           key: o.k, time: o.time, code: o.code, type: o.type, tick: on ? '✓' : '',
@@ -240,11 +245,12 @@ class KolActivity extends React.Component {
       /* 没标注过的不进任何一格。放进去会得到键名 "null" 的一格（谁都不会去读），
          同时让八格之和悄悄小于总篇数 —— 菜单看起来数得清清楚楚，其实漏了一批。
          漏掉的那批改在菜单头上明说（typeNaNote），不摊进八个类型里。 */
-      if (p.postType == null) { typeBaseNa++; return; }
-      typeCounts[p.postType] = (typeCounts[p.postType] || 0) + 1;
-      if (p.directionPending) dirCounts.pending = (dirCounts.pending || 0) + 1; else if (p.direction) dirCounts[p.direction] = (dirCounts[p.direction] || 0) + 1;
+      var shown = displayedPostType(p);
+      if (shown.filterKey == null) { typeBaseNa++; return; }
+      if (shown.source === 'direction') dirCounts[shown.k] = (dirCounts[shown.k] || 0) + 1;
+      else typeCounts[shown.k] = (typeCounts[shown.k] || 0) + 1;
     });
-    out.typeNaNote = typeBaseNa ? '另有 ' + typeBaseNa + ' 篇内容形式尚未标注，不计入下表' : '';
+    out.typeNaNote = typeBaseNa ? '另有 ' + typeBaseNa + ' 篇展示类型尚未标注，不计入下表' : '';
     var DIR_DEF = { add: '在已有持仓上继续买入', open: '首次买入建立仓位', reduce: '部分卖出降低仓位', close: '全部卖出离场', hold: '明确表示暂不操作', pending: '操作类帖子但方向置信度不足' };
     var dirLabel = function (k) { return k === 'pending' ? '方向待确认' : DIR_BY_KEY[k].label; };
     var picked = s.types.map(function (k) { return TYPE_BY_KEY[k].label; }).concat(s.dirs.map(dirLabel));
@@ -312,7 +318,7 @@ class KolActivity extends React.Component {
     out.hasTf = !!qq || s.camp !== 'ALL' || s.onlyPending || s.types.length > 0 || s.dirs.length > 0;
     out.clearTf = function () { self.setState({ q: '', camp: 'ALL', onlyPending: false, types: [], dirs: [] }); };
 
-    /* KPI：发帖数 / 提及自家 / 提及竞品 / 类型识别（内容形式 × 操作方向） */
+    /* KPI：底层仍保留内容形式与操作方向，页面展示单一优先类型。 */
     var spKols = {}; sp.forEach(function (p) { spKols[p.kol] = 1; });
     var ownAny = 0, peerAny = 0, both = 0, pendingN = 0, noSum = 0, tc = {}, opN = 0, addN = 0, redN = 0, dirPend = 0, annNa = 0;
     sp.forEach(function (p) {
@@ -345,7 +351,7 @@ class KolActivity extends React.Component {
       { label: '发帖数', value: String(sp.length), unit: '篇', pct: '', pfg: 'transparent', sub: '涉及 ' + Object.keys(spKols).length + ' 位重点KOL · 最近 ' + M.range.days + ' 天', vfg: 'var(--ink-900)' },
       { label: '提及自家产品', value: String(ownAny), unit: '篇', pct: pct(ownAny, sp.length), pfg: 'var(--csop-blue-700)', sub: '其中 ' + both + ' 篇同时提及竞品 · 按产品池规则匹配', vfg: 'var(--csop-blue-700)' },
       { label: '提及竞品', value: String(peerAny), unit: '篇', pct: pct(peerAny, sp.length), pfg: 'var(--ink-600)', sub: '仅提竞品、未提自家的有 ' + (peerAny - both) + ' 篇', vfg: 'var(--ink-800)' },
-      { label: '类型已识别（内容形式 × 操作方向）', value: String(annOk), unit: '篇', pct: '', pfg: 'transparent', sub: typeSub, vfg: 'var(--ink-900)' }
+      { label: '展示类型已识别', value: String(annOk), unit: '篇', pct: '', pfg: 'transparent', sub: typeSub, vfg: 'var(--ink-900)' }
     ];
 
     /* 发帖记录 */
@@ -376,7 +382,7 @@ class KolActivity extends React.Component {
     out.exportCursor = list.length ? 'pointer' : 'not-allowed';
     out.exportOp = list.length ? '1' : '0.6';
     out.rows = list.map(function (p, i) {
-      var sec = secOf(p.sector), st = typeStyle(p.postType), dirOn = !!p.hasDir;
+      var sec = secOf(p.sector), st = displayedPostType(p);
       var displayedEtfs = mentionedEtfsOf(p);
       return {
         key: p.id,
@@ -389,9 +395,7 @@ class KolActivity extends React.Component {
         issuer: displayedEtfs.length > 1 ? displayedEtfs.length + ' 只 ETF'
           : (p.code ? issuerShort(p.issuer) : (displayedEtfs.length ? '其他公司产品' : '正文未提及 ETF')),
         pbg: p.code ? rgba(sec.hue, 0.12) : 'var(--ink-100)', pfg: p.code ? sec.hue : 'var(--ink-500)',
-        /* 双标签：形式在上、方向在下；合并单标签（Tweaks）：「加仓 · 晒单」一枚 */
-        type: dual ? st.label : ((dirOn ? p.dir.label + ' · ' : '') + st.label), tbg: st.bg, tfg: st.fg,
-        hasDir: dual && dirOn, dir: dirOn ? p.dir.label : '', dbg: dirOn ? p.dir.bg : 'transparent', dfg: dirOn ? p.dir.fg : 'transparent',
+        type: st.label, tbg: st.bg, tfg: st.fg,
         pending: self.pending(p), conf: conf2(p.confidence), review: self.review(p),
         /* 摘要位有**三**态：有摘要、查过了是图片帖（「暂无内容」侧）、标注还没跑
            （「暂不可用」侧）。原来只有前两态，于是没跑过标注的帖子会被写成
@@ -400,7 +404,7 @@ class KolActivity extends React.Component {
         noSummary: p.hasSummary === false, summaryNa: self.annNa(p),
         ownership: ownershipOf(p),
         likes: num(p.likes), comments: num(p.comments), shares: num(p.shares), views: num(p.views),
-        url: p.url, stop: function (e) { e.stopPropagation(); },
+        url: p.url || null, hasUrl: !!p.url, stop: function (e) { e.stopPropagation(); },
         bg: p.id === s.sel ? 'var(--csop-blue-50)' : (i % 2 ? 'var(--canvas)' : '#fff'),
         /* 只打开抽屉，不改动上方筛选 */
         go: function () { self.setState({ sel: p.id }); }
@@ -427,7 +431,13 @@ class KolActivity extends React.Component {
     });
     out.leaderSortNote = s.leaderSort === 'views' ? '按浏览量降序' : (s.leaderSort === 'n' ? '按篇数降序' : '按评论量降序');
 
-    /* 排名表内筛选：KOL 名称 / 标签 × 提及范围（camp）× 主要类型 */
+    /* 排名表内筛选：KOL 名称 / 名单标签 × 提及范围 × KOL 类型。 */
+    var rosterTags = function (name, posts) {
+      var meta = R.KOLS.filter(function (k) { return k.name === name; })[0];
+      var raw = meta && meta.tags != null ? meta.tags : (posts[0] ? posts[0].tags : '');
+      return (Array.isArray(raw) ? raw : String(raw || '').split(','))
+        .map(function (x) { return kolDisplayLabel(String(x).trim()); }).filter(Boolean);
+    };
     var lqq = norm(s.lq);
     var lBase = leaders.filter(function (l) {
       if (lqq && norm(l.kol + ' ' + (l.posts[0] ? l.posts[0].tags : '')).indexOf(lqq) < 0) return false;
@@ -436,23 +446,24 @@ class KolActivity extends React.Component {
       if (s.lCamp === 'both') return l.ownAny > 0 && l.peerAny > 0;
       return true;
     });
-    /* 「主要类型」未知的不进任何一格，与顶部④同一条规矩：漏掉的在菜单头上明说，
-       不摊进八个类型里冒充计数。 */
-    var ltc = {}, lBaseNa = 0;
-    lBase.forEach(function (l) { if (l.topType == null) lBaseNa++; else ltc[l.topType] = (ltc[l.topType] || 0) + 1; });
-    out.lTypeNaNote = lBaseNa ? '另有 ' + lBaseNa + ' 位的主要类型尚未标注，不计入下表' : '';
-    var lRows = lBase.filter(function (l) { return s.lType === 'ALL' || l.topType === s.lType; });
+    var ltc = {}, allRosterTags = {};
+    lBase.forEach(function (l) {
+      l.rosterTags = rosterTags(l.kol, l.posts);
+      l.rosterTags.forEach(function (tag) { allRosterTags[tag] = 1; ltc[tag] = (ltc[tag] || 0) + 1; });
+    });
+    out.lTypeNaNote = '';
+    var lRows = lBase.filter(function (l) { return s.lType === 'ALL' || l.rosterTags.indexOf(s.lType) >= 0; });
     out.lq = s.lq; out.lqBc = lqq ? 'var(--csop-blue-600)' : 'var(--border-2)';
     out.setLq = function (e) { self.setState({ lq: e.target.value }); };
     out.lCamps = seg(s.lCamp, 'lCamp');
-    out.lTypeLabel = s.lType === 'ALL' ? '全部' : TYPE_BY_KEY[s.lType].label;
+    out.lTypeLabel = s.lType === 'ALL' ? '全部' : s.lType;
     out.lTypeOpen = !!s.lTypeMenu; out.lTypeCaret = s.lTypeMenu ? '▲' : '▼';
     out.lTypeBc = (s.lTypeMenu || s.lType !== 'ALL') ? 'var(--csop-blue-600)' : 'var(--border-2)';
     out.lTypeBg = s.lTypeMenu ? 'var(--csop-blue-50)' : '#fff';
     out.lTypeToggle = function () { self.setState({ lTypeMenu: !s.lTypeMenu, tTypeMenu: false, etfMenu: false, kolMenu: false, postMenu: false, typeMenu: false }); };
     out.lTypeClose = function () { self.setState({ lTypeMenu: false }); };
-    out.lTypeMenu = [{ k: 'ALL', label: '全部类型', def: '', n: lBase.length, tbg: 'transparent', tfg: 'var(--ink-800)' }].concat(
-      POST_TYPES.map(function (t) { var st = typeStyle(t.k); return { k: t.k, label: t.label, def: t.def, n: ltc[t.k] || 0, tbg: st.bg, tfg: st.fg }; })).map(function (o) {
+    out.lTypeMenu = [{ k: 'ALL', label: '全部类型', def: '名单中的全部 KOL', n: lBase.length, tbg: 'transparent', tfg: 'var(--ink-800)' }].concat(
+      Object.keys(allRosterTags).sort().map(function (tag) { return { k: tag, label: tag, def: '名单维护的 KOL 类型', n: ltc[tag] || 0, tbg: 'var(--csop-blue-50)', tfg: 'var(--csop-blue-700)' }; })).map(function (o) {
         var on = o.k === s.lType;
         return {
           key: o.k, label: o.label, def: o.def, n: String(o.n), tick: on ? '✓' : '', tbg: o.tbg, tfg: o.tfg,
@@ -468,7 +479,7 @@ class KolActivity extends React.Component {
     var p0 = this.selPost();
     var selKol = p0 ? p0.kol : null;
     var leaderRows = lRows.map(function (l, i) {
-      var on = s.kol === l.kol || selKol === l.kol, st = typeStyle(l.topType);
+      var on = s.kol === l.kol || selKol === l.kol;
       return {
         key: l.kol,
         rank: String(i + 1), rankFg: i < 3 ? 'var(--csop-blue-700)' : 'var(--ink-400)',
@@ -476,11 +487,11 @@ class KolActivity extends React.Component {
         ownW: (l.own / mxN * 100).toFixed(1), bothW: (l.both / mxN * 100).toFixed(1), peerW: (l.peer / mxN * 100).toFixed(1),
         ownAny: String(l.ownAny), peerAny: String(l.peerAny),
         views: num(l.views), eng: num(l.comments),
-        type: st.label, tbg: st.bg, tfg: st.fg,
+        tags: l.rosterTags,
         fw: on ? 600 : 500,
         dot: on ? 'var(--csop-blue-600)' : 'var(--csop-silver-400)',
         bg: on ? 'var(--csop-blue-50)' : 'transparent',
-        href: 'kol-detail.dc.html?kol=' + encodeURIComponent(l.kol) + '&range=' + s.rangeKey,
+        href: hrefWithRange('kol-detail.dc.html?kol=' + encodeURIComponent(l.kol), s.rangeKey),
         stop: function (e) { e.stopPropagation(); },
         /* 点 KOL 行：打开他互动最高的一篇，抽屉里可切换其余篇 */
         go: function () { self.setState({ sel: l.top ? l.top.id : null }); }
@@ -493,14 +504,13 @@ class KolActivity extends React.Component {
     /* 抽屉：帖子内容卡 */
     out.selOn = !!p0;
     if (p0) {
-      var sec0 = secOf(p0.sector), st0 = typeStyle(p0.postType), ann0 = self.annNa(p0);
+      var sec0 = secOf(p0.sector), st0 = displayedPostType(p0), ann0 = self.annNa(p0);
       var etfs0 = mentionedEtfsOf(p0), primary0 = primaryDisplayedEtf(p0);
       var sameKol = etfPosts.filter(function (q) { return q.kol === p0.kol; }).sort(function (a, b) { return b.t - a.t; });
       out.sel = {
-        kol: p0.kol, kolTags: p0.tags.split(',').join(' · '), time: p0.time, code: primary0 ? primary0.ticker : '—', name: primary0 ? (primary0.name || 'ETF 名称暂不可用') : '正文未提及 ETF', url: p0.url,
+        kol: p0.kol, kolTags: p0.tags.split(',').join(' · '), time: p0.time, code: primary0 ? primary0.ticker : '—', name: primary0 ? (primary0.name || 'ETF 名称暂不可用') : '正文未提及 ETF', url: p0.url || null, hasUrl: !!p0.url,
         pbg: primary0 ? (primary0.inPool === false ? 'var(--warning-100)' : rgba(sec0.hue, 0.12)) : 'var(--ink-100)', pfg: primary0 ? (primary0.inPool === false ? 'var(--warning-700)' : sec0.hue) : 'var(--ink-500)',
-        type: dual ? st0.label : ((p0.hasDir ? p0.dir.label + ' · ' : '') + st0.label), tbg: st0.bg, tfg: st0.fg, pending: self.pending(p0), confidence: conf2(p0.confidence), review: self.review(p0),
-        hasDir: dual && !!p0.hasDir, dir: p0.hasDir ? p0.dir.label : '', dbg: p0.hasDir ? p0.dir.bg : 'transparent', dfg: p0.hasDir ? p0.dir.fg : 'transparent',
+        type: st0.label, tbg: st0.bg, tfg: st0.fg, pending: self.pending(p0), confidence: conf2(p0.confidence), review: self.review(p0),
         /* `evidenceIdx >= 0` 不能单独判 null：JS 的关系比较会把 null 当 0，`null >= 0`
            是 **true**，于是「判定依据的原句已在下方原文中标出」会挂在一篇根本没标注过的
            帖子上，而下面的原文里一句高亮都没有。三态要分开写。 */
@@ -513,7 +523,7 @@ class KolActivity extends React.Component {
           var on = q.id === p0.id, qPrimary = primaryDisplayedEtf(q);
           return {
             key: q.id,
-            time: q.time, code: qPrimary ? qPrimary.ticker : '—', type: typeStyle(q.postType).label,
+            time: q.time, code: qPrimary ? qPrimary.ticker : '—', type: displayedPostType(q).label,
             fw: on ? 600 : 500,
             fg: on ? 'var(--csop-blue-700)' : 'var(--ink-700)',
             bg: on ? 'var(--csop-blue-50)' : '#fff',
@@ -547,7 +557,7 @@ class KolActivity extends React.Component {
           { label: '转发', value: num(p0.shares) },
           { label: '浏览', value: num(p0.views) }
         ],
-        detailHref: 'kol-detail.dc.html?kol=' + encodeURIComponent(p0.kol) + '&post=' + encodeURIComponent(p0.id) + '&range=' + s.rangeKey
+        detailHref: hrefWithRange('kol-detail.dc.html?kol=' + encodeURIComponent(p0.kol) + '&post=' + encodeURIComponent(p0.id), s.rangeKey)
       };
     }
     return out;
@@ -668,7 +678,7 @@ class KolActivity extends React.Component {
               </div>
               {v.typeOpen && (
                 <div onMouseLeave={v.typeClose} style={s('position:absolute;left:0;top:38px;z-index:45;width:372px;background:#fff;border:1px solid var(--border-2);border-radius:var(--radius-card);box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
-                  {this.typeMenuBody(v, '多选 · AI 判定的帖子类型 · 内容形式与操作方向可跨组选（交集）')}
+                  {this.typeMenuBody(v, '多选 · 按表格实际展示类型统计 · 选中项之间为“或”')}
                 </div>
               )}
             </div>
@@ -709,7 +719,7 @@ class KolActivity extends React.Component {
                 </div>
                 {v.tTypeOpen && (
                   <div onMouseLeave={v.tTypeClose} style={s('position:absolute;left:0;top:36px;z-index:45;width:372px;background:#fff;border:1px solid var(--border-2);border-radius:var(--radius-card);box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
-                    {this.typeMenuBody(v, '多选 · 与顶部「④ 类型」同步 · 内容形式 × 操作方向')}
+                    {this.typeMenuBody(v, '多选 · 与顶部「④ 类型」同步 · 操作方向优先')}
                   </div>
                 )}
               </div>
@@ -763,9 +773,6 @@ class KolActivity extends React.Component {
                       <td style={s('padding:11px 6px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
                         <div style={s('display:flex;flex-direction:column;align-items:flex-start;gap:4px')}>
                           <span style={s(`padding:2px 8px;border-radius:var(--radius-small);background:${r.tbg};font:600 12px/1.6 var(--font-cjk);color:${r.tfg};white-space:nowrap`)}>{r.type}</span>
-                          {r.hasDir && (
-                            <span title="操作方向 · AI 判定" style={s(`padding:2px 8px;border-radius:var(--radius-small);background:${r.dbg};font:600 12px/1.6 var(--font-cjk);color:${r.dfg};white-space:nowrap`)}>{r.dir}</span>
-                          )}
                           {/* 如实声明（ADR-0019 §2／§4）：标注过的帖子都挂一枚，文案由
                               `review_state` 决定，逐字取自 PRD §3.9。置信度不再跟在徽章
                               后面 —— 它是模型自报的数，不是「有没有人看过」的事实，两件事
@@ -792,7 +799,9 @@ class KolActivity extends React.Component {
                       <td style={s('padding:11px 6px;vertical-align:top;text-align:right;font:500 13px/1.6 var(--font-mono);color:var(--ink-700);border-bottom:1px solid var(--ink-100);white-space:nowrap')}>{r.likes} / {r.comments} / {r.shares}</td>
                       <td data-testid="kol-post-view-cell" data-screen-diff-new="kol-view-column" style={s('padding:11px 6px;vertical-align:top;text-align:right;font:500 13px/1.6 var(--font-mono);color:var(--ink-700);border-bottom:1px solid var(--ink-100);white-space:nowrap')}>{r.views}</td>
                       <td style={s('padding:11px 16px 11px 6px;vertical-align:top;text-align:right;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
-                        <a href={r.url} target="_blank" rel="noopener" onClick={r.stop} style={s('display:inline-flex;align-items:center;padding:4px 11px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>原帖 ↗</a>
+                        {r.hasUrl
+                          ? <a href={r.url} target="_blank" rel="noopener noreferrer" onClick={r.stop} style={s('display:inline-flex;align-items:center;padding:4px 11px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>原帖 ↗</a>
+                          : <span style={s('font:500 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>链接暂不可用</span>}
                       </td>
                     </tr>
                   ))}
@@ -825,13 +834,13 @@ class KolActivity extends React.Component {
               </div>
               <div style={s('position:relative;flex:none')}>
                 <div onClick={v.lTypeToggle} style={s(`display:flex;align-items:center;gap:8px;height:30px;box-sizing:border-box;padding:0 11px;border:1px solid ${v.lTypeBc};border-radius:var(--radius-control);background:${v.lTypeBg};cursor:pointer;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>
-                  <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>主要类型</span>
+                  <span style={s('font:600 11px/1.4 var(--font-cjk);letter-spacing:0.12em;color:var(--ink-400)')}>KOL 类型</span>
                   <span style={s('font:600 13px/1.4 var(--font-cjk);color:var(--csop-blue-700)')}>{v.lTypeLabel}</span>
                   <span style={s('font:400 9px/1 var(--font-cjk);color:var(--ink-400)')}>{v.lTypeCaret}</span>
                 </div>
                 {v.lTypeOpen && (
                   <div onMouseLeave={v.lTypeClose} style={s('position:absolute;left:0;top:36px;z-index:45;width:372px;background:#fff;border:1px solid var(--border-2);border-radius:var(--radius-card);box-shadow:0 10px 28px rgba(14,42,82,0.16)')}>
-                    <div style={s('padding:7px 12px;border-bottom:1px solid var(--border-1);background:var(--canvas);font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>单选 · 该 KOL 区间内最多的一类</div>
+                    <div style={s('padding:7px 12px;border-bottom:1px solid var(--border-1);background:var(--canvas);font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>单选 · 来自 KOL 名单 · 多标签按任一标签命中</div>
                     {v.lTypeNaNote && (
                       <div style={s('padding:6px 12px;border-bottom:1px solid var(--border-1);background:var(--warning-100);font:400 12px/1.5 var(--font-cjk);color:var(--warning-700)')}>{v.lTypeNaNote}</div>
                     )}
@@ -863,7 +872,7 @@ class KolActivity extends React.Component {
                     <span style={s('flex:none;width:120px;padding-left:8px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>自家 / 其他</span>
                     <span data-screen-diff-new="kol-view-column" style={s('flex:none;width:68px;text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>浏览量</span>
                     <span style={s('flex:none;width:52px;text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>评论量</span>
-                    <span style={s('flex:none;width:68px;padding-left:6px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>主要类型</span>
+                    <span style={s('flex:none;width:116px;padding-left:6px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>KOL 类型</span>
                     <span style={s('flex:none;width:54px')}></span>
                   </div>
                   {col.rows.map((l) => (
@@ -884,7 +893,7 @@ class KolActivity extends React.Component {
                       </div>
                       <span data-testid="kol-leader-views" data-screen-diff-new="kol-view-column" style={s('flex:none;width:68px;text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{l.views}</span>
                       <span style={s('flex:none;width:52px;text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{l.eng}</span>
-                      <span style={s('flex:none;width:68px;padding-left:6px;box-sizing:border-box')}><span style={s(`display:inline-block;padding:1px 7px;border-radius:var(--radius-small);background:${l.tbg};font:600 11px/1.6 var(--font-cjk);color:${l.tfg};white-space:nowrap`)}>{l.type}</span></span>
+                      <span style={s('flex:none;width:116px;padding-left:6px;box-sizing:border-box;display:flex;gap:3px;flex-wrap:wrap')}>{l.tags.map((tag) => <span key={tag} style={s('display:inline-block;padding:1px 6px;border-radius:var(--radius-small);background:var(--csop-blue-50);font:600 10px/1.5 var(--font-cjk);color:var(--csop-blue-700);white-space:nowrap')}>{tag}</span>)}</span>
                       <DcLink href={l.href} onClick={l.stop} style={s('flex:none;width:54px;box-sizing:border-box;text-align:center;padding:3px 0;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>详情 →</DcLink>
                     </div>
                   ))}
@@ -911,9 +920,6 @@ class KolActivity extends React.Component {
                   <span style={s(`padding:3px 9px;border-radius:var(--radius-pill);background:${v.sel.pbg};font:600 13px/1.5 var(--font-mono);color:${v.sel.pfg}`)}>{v.sel.code}</span>
                   <span style={s('font:400 13px/1.5 var(--font-cjk);color:var(--ink-600);max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{v.sel.name}</span>
                   <span style={s(`padding:3px 9px;border-radius:var(--radius-small);background:${v.sel.tbg};font:600 12px/1.5 var(--font-cjk);color:${v.sel.tfg}`)}>{v.sel.type}</span>
-                  {v.sel.hasDir && (
-                    <span title="操作方向 · AI 判定" style={s(`padding:3px 9px;border-radius:var(--radius-small);background:${v.sel.dbg};font:600 12px/1.5 var(--font-cjk);color:${v.sel.dfg}`)}>{v.sel.dir}</span>
-                  )}
                   {v.sel.review && (
                     <span style={s('padding:2px 7px;border-radius:var(--radius-pill);background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500)')}>{v.sel.review}</span>
                   )}
@@ -983,7 +989,9 @@ class KolActivity extends React.Component {
 
               <div style={s('flex:none;padding:16px 24px;border-top:1px solid var(--border-1);background:var(--canvas);display:flex;align-items:center;gap:12px')}>
                 <DcLink href={v.sel.detailHref} style={s('flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:11px 16px;border-radius:var(--radius-control);background:var(--csop-blue-600);font:600 14px/1.4 var(--font-cjk);color:#fff;text-decoration:none')} className={hover('background:var(--csop-blue-800);text-decoration:none')}>查看 {v.sel.kol} 的完整详情 →</DcLink>
-                <a href={v.sel.url} target="_blank" rel="noopener" style={s('flex:none;display:flex;align-items:center;justify-content:center;padding:11px 16px;border-radius:var(--radius-control);background:#fff;border:1px solid var(--border-2);font:600 14px/1.4 var(--font-cjk);color:var(--ink-700);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>在 Futu 查看原帖 ↗</a>
+                {v.sel.hasUrl
+                  ? <a href={v.sel.url} target="_blank" rel="noopener noreferrer" style={s('flex:none;display:flex;align-items:center;justify-content:center;padding:11px 16px;border-radius:var(--radius-control);background:#fff;border:1px solid var(--border-2);font:600 14px/1.4 var(--font-cjk);color:var(--ink-700);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>在 Futu 查看原帖 ↗</a>
+                  : <span style={s('flex:none;padding:11px 16px;font:500 13px/1.4 var(--font-cjk);color:var(--ink-400)')}>原帖链接暂不可用</span>}
               </div>
             </div>
           </>

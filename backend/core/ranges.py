@@ -14,13 +14,34 @@ import logging
 
 from providers import get_provider
 from providers.sentinel import MISSING
+from .range_spec import (
+    CustomRangeError,
+    PRESET_KEYS,
+    custom_key,
+    parse_custom_key,
+    validate_selectable,
+)
 
 
 log = logging.getLogger(__name__)
 
 # PRD §3.1 的预设，加上「当天」d0。未知 key 不做兜底回落——静默回落到 d7 会让前端以为自己拿到了
 # 请求的区间，图表横轴和标题却是另一段时间。
-VALID_KEYS = ("d0", "d1", "d2", "d7", "d14", "d30", "mtd")
+VALID_KEYS = PRESET_KEYS
+
+
+def build_custom_key(date_from, date_to):
+    """Validate an HTTP custom-range tuple and return its internal cache key."""
+    key = custom_key(date_from, date_to)
+    provider = get_provider()
+    complete = provider.build_range("d30")
+    latest = None
+    if complete is not None and complete is not MISSING:
+        from datetime import date
+        latest = date.fromisoformat(complete["to"])
+    first, last = parse_custom_key(key)
+    validate_selectable(first, last, latest)
+    return key
 
 
 def build_range(key):
@@ -29,7 +50,11 @@ def build_range(key):
     未知 key 返回 MISSING —— 那是「没这个东西」，由端点转成 404；
     与「有这个东西但取不到值」（None → unavailable）是两回事。
     """
-    if key not in VALID_KEYS:
+    try:
+        custom = parse_custom_key(key)
+    except CustomRangeError:
+        return MISSING
+    if key not in VALID_KEYS and custom is None:
         return MISSING
 
     try:

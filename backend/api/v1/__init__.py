@@ -13,7 +13,10 @@ evidence（topics / kol-mentions / evidence）、prices（candles / heat-series 
 `observe` 是 `pool().list` 的一个元素（core/market.py）。
 """
 
-from flask import Blueprint, request
+from flask import Blueprint, abort, request
+
+from core.range_spec import CustomRangeError
+from core.ranges import build_custom_key
 
 v1_bp = Blueprint("v1", __name__)
 
@@ -27,7 +30,15 @@ def range_key():
     会让前端拿到另一段时间的数据却浑然不觉 —— 页面上不会有任何迹象说明它看的不是
     自己要的区间。
     """
-    return request.args.get("range", DEFAULT_RANGE)
+    key = request.args.get("range", DEFAULT_RANGE)
+    if key != "custom":
+        if str(key).startswith("custom:"):
+            abort(400, description="自选日期请使用 range=custom&from=...&to=...")
+        return key
+    try:
+        return build_custom_key(request.args.get("from"), request.args.get("to"))
+    except CustomRangeError as exc:
+        abort(400, description=str(exc))
 
 
 # 导入即注册路由，必须在蓝图创建之后

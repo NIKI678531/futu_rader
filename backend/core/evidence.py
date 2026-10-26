@@ -28,7 +28,7 @@
 from providers import get_provider
 from providers.sentinel import MISSING
 
-from .ranges import VALID_KEYS
+from .range_spec import is_valid_range_key
 
 # PRD §5 `evidenceFor` 逐字：不传取 6 条，最多 12 条。
 DEFAULT_COUNT = 6
@@ -44,7 +44,7 @@ def topics_for(code, range_key):
     `peak`（峰值桶）与 `split`（正／中／负构成）。区间内没有提及时是空数组 ——
     「暂无内容」，不是 0 条话题里挑出来的 0（铁律 2）。
     """
-    if range_key not in VALID_KEYS:
+    if not is_valid_range_key(range_key):
         return MISSING
     return get_provider().topics_for(code, range_key)
 
@@ -58,7 +58,7 @@ def kol_mentions_for(code, range_key):
     极性。`status: 'unavailable'` 则是另一件事：KOL 身份映射对这只产品没接上，
     整张表都取不到，与「名单里没人提过它」（空列表 → empty）不同。
     """
-    if range_key not in VALID_KEYS:
+    if not is_valid_range_key(range_key):
         return MISSING
     return get_provider().kol_mentions_for(code, range_key)
 
@@ -70,7 +70,7 @@ def evidence_for(code, ctx_key, polarity, count=None):
     未知面板 id 一律 MISSING。
     """
     parts = str(ctx_key).split("|")
-    if len(parts) != 2 or parts[0] not in VALID_KEYS or not parts[1]:
+    if len(parts) != 2 or not is_valid_range_key(parts[0]) or not parts[1]:
         return MISSING
     if polarity not in POLARITIES:
         return MISSING

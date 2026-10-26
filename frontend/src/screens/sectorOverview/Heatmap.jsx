@@ -32,7 +32,7 @@ export default function Heatmap({ v, full = false }) {
           {v.tiles.map((t) => (
             <div key={t.key} onClick={t.go} onMouseEnter={t.hoverIn} onMouseLeave={t.hoverOut} style={s(`position:absolute;left:${t.x}px;top:${t.y}px;width:${t.w}px;height:${t.h}px;box-sizing:border-box;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;overflow:hidden;background:${t.bg};box-shadow:${t.ring};border-radius:2px;cursor:pointer`)}>
               {t.risk && (
-                <span title="需合规关注 · AI 识别待人工确认" style={s('position:absolute;top:4px;right:4px;width:7px;height:7px;border-radius:var(--radius-pill);background:var(--negative-600);box-shadow:0 0 0 1.5px #fff')}></span>
+                <span title="舆情 · AI 识别待人工确认" style={s('position:absolute;top:4px;right:4px;width:7px;height:7px;border-radius:var(--radius-pill);background:var(--negative-600);box-shadow:0 0 0 1.5px #fff')}></span>
               )}
               <span style={s(`font:${t.codeFont};color:${t.fg};white-space:nowrap`)}>{t.code}</span>
               <span style={s(`font:${t.valFont};color:${t.fg};white-space:nowrap`)}>{t.val}</span>

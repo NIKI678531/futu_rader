@@ -1,3 +1,5 @@
+import { rangeFromSearch } from './customRange.js'
+
 export const DEFAULT_PRODUCT_CODE = '7709'
 export const DEFAULT_PRODUCT_RANGE = 'd7'
 
@@ -7,11 +9,8 @@ export function productCodeOrDefault(master, code) {
 
 export function productSelectionFromSearch(master, presets, search = '') {
   const params = new URLSearchParams(search)
-  const requestedRange = params.get('range')
   return {
     code: productCodeOrDefault(master, params.get('code')),
-    rangeKey: presets.some(item => item.k === requestedRange)
-      ? requestedRange
-      : DEFAULT_PRODUCT_RANGE,
+    rangeKey: rangeFromSearch(search, presets, DEFAULT_PRODUCT_RANGE),
   }
 }

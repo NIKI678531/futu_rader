@@ -19,7 +19,7 @@ STATUS_LEGEND = [
     ("样本不足", "有效产品态度评论少于 10 条，不输出倾向结论。"),
     (
         "待确认",
-        "AI 自动识别的竞品关系、动态分类或重点舆情（需合规关注）信号，尚未人工确认。",
+        "AI 自动识别的竞品关系、动态分类或舆情信号，尚未人工确认。",
     ),
 ]
 
@@ -36,6 +36,16 @@ def test_meta_returns_ok_envelope(client):
     r = client.get("/api/v1/meta")
     assert r.status_code == 200
     assert r.get_json()["status"] == "ok"
+
+
+def test_meta_advertises_the_rolling_complete_day_custom_window(client):
+    capability = client.get("/api/v1/meta").get_json()["data"]["customRange"]
+    assert capability == {
+        "earliestDate": "2026-08-03",
+        "latestDate": "2026-09-01",
+        "maxDays": 30,
+        "generativeSupported": False,
+    }
 
 
 def test_meta_exposes_comment_ai_routing_generation(client, sql_client):

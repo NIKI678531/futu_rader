@@ -133,7 +133,7 @@ export default function Drawer({ v }) {
                     <div style={s('padding:12px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容</div>
                   )}
                   {sel.posUnavailable && (
-                    <div style={s('padding:12px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 13px/1.6 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用</div>
+                    <div style={s('padding:12px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 13px/1.6 var(--font-cjk);color:var(--warning-700)')}>{sel.synthesisUnavailableText || '数据暂不可用'}</div>
                   )}
                 </div>
                 <div>
@@ -149,7 +149,7 @@ export default function Drawer({ v }) {
                     <div style={s('padding:12px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 13px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容</div>
                   )}
                   {sel.negUnavailable && (
-                    <div style={s('padding:12px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 13px/1.6 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用</div>
+                    <div style={s('padding:12px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 13px/1.6 var(--font-cjk);color:var(--warning-700)')}>{sel.synthesisUnavailableText || '数据暂不可用'}</div>
                   )}
                 </div>
               </div>
@@ -181,8 +181,7 @@ export default function Drawer({ v }) {
               </div>
 
               <div ref={v.riskRef} style={s('display:flex;align-items:center;gap:8px;margin-bottom:10px')}>
-                <span style={s('font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)')}>重点舆情</span>
-                <span style={s('padding:2px 8px;border-radius:var(--radius-pill);background:var(--negative-100);font:600 12px/1.5 var(--font-cjk);color:var(--negative-700)')}>需合规关注</span>
+                <span style={s('font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)')}>舆情</span>
                 {sel.riskOk && (
                   <span style={s('font:600 14px/1.2 var(--font-mono);color:var(--negative-700)')}>{sel.riskN}</span>
                 )}
@@ -218,7 +217,7 @@ export default function Drawer({ v }) {
                 </div>
               )}
               {sel.riskEmpty && (
-                <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500);margin-bottom:20px')}>暂无相关内容 — 区间内未识别到需合规关注的言论；普通消极观点与负面问题见相邻模块。</div>
+                <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500);margin-bottom:20px')}>暂无相关内容 — 区间内未识别到舆情；普通负面评论与消极观点见相邻模块。</div>
               )}
               {sel.riskUnavailable && (
                 <div style={s('padding:14px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 14px/1.6 var(--font-cjk);color:var(--warning-700);margin-bottom:20px')}>数据暂不可用 — 风险识别结果尚未核验或数据源未提供，不展示推测内容。</div>
@@ -226,12 +225,12 @@ export default function Drawer({ v }) {
               {sel.riskNa && (
                 <div style={s('display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid var(--border-1);border-radius:var(--radius-control);background:#fff;margin-bottom:20px')}>
                   <span style={s('flex:none;min-width:26px;padding:2px 8px;border-radius:var(--radius-pill);background:var(--ink-100);font:600 13px/1.4 var(--font-mono);color:var(--ink-700);text-align:center')}>—</span>
-                  <span style={s('font:400 13px/1.6 var(--font-cjk);color:var(--ink-500);text-wrap:pretty')}>同业产品不纳入重点舆情（需合规关注）识别范围，字段不适用。</span>
+                  <span style={s('font:400 13px/1.6 var(--font-cjk);color:var(--ink-500);text-wrap:pretty')}>同业产品不纳入舆情识别范围，字段不适用。</span>
                 </div>
               )}
 
               <div style={s('display:flex;align-items:center;gap:8px;margin-bottom:10px')}>
-                <span style={s('font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)')}>负面舆情摘要</span>
+                <span style={s('font:600 13px/1.2 var(--font-cjk);letter-spacing:0.14em;color:var(--ink-400)')}>负面评论摘要</span>
               </div>
               {sel.hasNegCats && (
                 <div style={s('margin-bottom:20px')}>
@@ -248,7 +247,7 @@ export default function Drawer({ v }) {
                 </div>
               )}
               {sel.noNegCats && (
-                <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500);margin-bottom:20px')}>暂无相关内容 — 区间内没有可归类为需关注负面舆情的内容。</div>
+                <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500);margin-bottom:20px')}>暂无相关内容 — 区间内没有可归类的负面评论。</div>
               )}
               {sel.negCatsUnavailable && (
                 <div style={s('padding:14px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 14px/1.6 var(--font-cjk);color:var(--warning-700);margin-bottom:20px')}>数据暂不可用 — 负面归类尚未生成或数据源未提供，本区域不展示推测内容。</div>

@@ -135,7 +135,7 @@ export default function Attitude({ v }) {
             <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 区间内没有可归类的积极观点。</div>
           )}
           {v.posUnavailable && (
-            <div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 积极观点聚类尚未生成或数据源未提供，本区域不展示推测内容。</div>
+            <div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>{v.synthesisUnavailableText || '数据暂不可用 — 积极观点聚类尚未生成或数据源未提供，本区域不展示推测内容。'}</div>
           )}
         </div>
 
@@ -157,7 +157,7 @@ export default function Attitude({ v }) {
             <div style={s('padding:14px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.6 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 区间内没有可归类的消极观点。</div>
           )}
           {v.negUnavailable && (
-            <div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 消极观点聚类尚未生成或数据源未提供，本区域不展示推测内容。</div>
+            <div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>{v.synthesisUnavailableText || '数据暂不可用 — 消极观点聚类尚未生成或数据源未提供，本区域不展示推测内容。'}</div>
           )}
         </div>
       </div>

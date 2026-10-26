@@ -326,7 +326,7 @@ class TestOfficialPosts:
         assert (p["likes"], p["comments"], p["shares"]) == (10, 4, 2)
         assert p["engagement"] == 16
         assert p["t"] == 9  # 距区间起点 9 小时
-        assert p["url"] == "https://www.futunn.com/post/1"
+        assert p["url"] == "https://q.futunn.com/feed/1?lang=zh-cn"
 
     def test_annotation_block_is_none_not_a_default_verdict(self, provider):
         """`postType: "other", confidence: 0` 会让界面显示一个我们没做出的分类。"""
@@ -387,6 +387,7 @@ class TestKolImpact:
         assert len(r["posts"]) == 1
         assert r["posts"][0]["kol"] == KOL_NAME
         assert r["posts"][0]["views"] == 888  # browse_count 是真的
+        assert r["posts"][0]["url"] == "https://q.futunn.com/feed/2?lang=zh-cn"
 
     def test_anchor_without_body_mention_is_not_published_as_an_etf_mention(self, provider):
         """讨论区是采集来源，不是作者在正文提到该 ETF 的证据。"""
@@ -1226,6 +1227,12 @@ class TestIssuerOpinions:
 
         assert [row["commentId"] for row in by_code["7709"]["list"]] == [11]
         assert [row["commentId"] for row in by_code["7747"]["list"]] == [13]
+        assert by_code["7709"]["list"][0]["sourceUrl"] == (
+            "https://q.futunn.com/feed/1?lang=zh-cn"
+        )
+        assert by_code["7747"]["list"][0]["sourceUrl"] == (
+            "https://q.futunn.com/feed/3?lang=zh-cn"
+        )
         assert by_code[OWN_CODE] == {
             "status": "unavailable",
             "issuer": "南方东英",
@@ -1278,7 +1285,7 @@ class TestPostAnnotations:
         """
         p = add_annotations(provider, self.TRIPLE)
         kol_post = p.kol_impact("d1")["posts"][0]
-        assert kol_post["url"].endswith("/2"), "标的是 f1，这里查的是 f2"
+        assert kol_post["url"] == "https://q.futunn.com/feed/2?lang=zh-cn", "标的是 f1，这里查的是 f2"
         for k in ("postType", "typeLabel", "summary", "direction", "fullText", "reviewState"):
             assert kol_post[k] is None, k
 
@@ -1378,7 +1385,7 @@ class TestEvidenceLocatesTheOriginalText:
         assert items[0]["excerpt"] == COMMENT_TEXT[11]
         assert items[0]["authorType"] == "普通散户"
         assert items[0]["productCodes"] == [OWN_CODE]
-        assert items[0]["sourceUrl"] == "https://www.futunn.com/post/1"
+        assert items[0]["sourceUrl"] == "https://q.futunn.com/feed/1?lang=zh-cn"
 
     def test_a_polarity_with_no_hits_is_empty_not_missing(self, provider):
         """标过了、这个极性一条都没有 ⇒ 空列表（「暂无相关内容」）。
@@ -1413,19 +1420,21 @@ class TestEvidenceLocatesTheOriginalText:
 
 
 class TestComplianceFourStates:
-    """需合规关注（第 5 项）。PRD §4.2 P10 的四态，一个都不能合并。"""
+    """舆情（高风险负面评论）的四态，一个都不能合并。"""
 
     HIT = {
         "annotation_id": 1,
         "target_id": 11,
         "kind": "compliance",
-        "value": {"risk_tags": ["regulatory_complaint"], "rationale": "评论里提到要去投诉。"},
+        "run_id": "risk-run-test",
+        "value": {"tags": ["regulatory_complaint"], "rationale": "评论里提到要去投诉。"},
     }
 
     @classmethod
     def comment_rows(cls, hit=None):
         return [
-            {"annotation_id": 90, "target_id": 11, "kind": "relevance", "value": "relevant"},
+            {"annotation_id": 90, "target_id": 11, "kind": "relevance", "value": "relevant", "run_id": "risk-run-test"},
+            {"annotation_id": 91, "target_id": 11, "kind": "attitude", "value": "negative", "run_id": "risk-run-test"},
             hit or cls.HIT,
         ]
 
@@ -1446,7 +1455,7 @@ class TestComplianceFourStates:
         p = add_annotations(provider, self.comment_rows())
         assert p.compliance_for(OTHER_OWN_CODE, "d1") == {"status": "unavailable", "list": []}
 
-    def test_v2_empty_tags_are_not_risk_items(self, provider):
+    def test_v5_empty_tags_are_not_risk_items(self, provider):
         p = add_annotations(
             provider,
             self.comment_rows({**self.HIT, "value": {"tags": [], "rationale": None}}),
@@ -1454,7 +1463,7 @@ class TestComplianceFourStates:
         assert p.compliance_for(OWN_CODE, "d1") == {"status": "empty", "list": []}
         assert p.pool("d1")["complianceCount"][OWN_CODE] == 0
 
-    def test_v2_tags_keep_the_actual_risk_label(self, provider):
+    def test_v5_tags_keep_the_actual_risk_label(self, provider):
         p = add_annotations(provider, self.comment_rows({
             **self.HIT,
             "value": {"tags": ["regulatory_complaint"], "rationale": "明确投诉意图"},
@@ -1462,6 +1471,21 @@ class TestComplianceFourStates:
         hit = p.compliance_for(OWN_CODE, "d1")["list"][0]
         assert hit["riskTags"] == ["regulatory_complaint"]
         assert hit["riskLabels"] == ["监管举报"]
+
+    def test_legacy_general_compliance_questions_are_not_risk_items(self, provider):
+        p = add_annotations(provider, self.comment_rows({
+            **self.HIT,
+            "value": {"tags": ["compliance_concern"], "rationale": "一般披露疑问"},
+        }))
+        assert p.compliance_for(OWN_CODE, "d1") == {"status": "empty", "list": []}
+
+    def test_abusive_attack_uses_the_new_reason_label(self, provider):
+        p = add_annotations(provider, self.comment_rows({
+            **self.HIT,
+            "value": {"tags": ["abusive_attack"], "rationale": "直接辱骂产品"},
+        }))
+        hit = p.compliance_for(OWN_CODE, "d1")["list"][0]
+        assert hit["riskLabels"] == ["辱骂攻击"]
 
     def test_a_hit_comes_back_with_its_rationale_and_a_locatable_quote(self, provider):
         p = add_annotations(provider, self.comment_rows())
@@ -1483,6 +1507,7 @@ class TestComplianceFourStates:
         assert hit["excerpt"] == "不太划算"
         assert hit["excerpt"] in COMMENT_TEXT[11], "引文要能在原文里逐字找到"
         assert hit["sourceKind"] == "评论"
+        assert hit["sourceUrl"] == "https://q.futunn.com/feed/1?lang=zh-cn"
 
     def test_the_badge_is_constant_no_matter_what_the_review_state_says(self, provider):
         """「AI 识别 · 待人工确认」**恒定**（PRD §4.2 P10 逐字，ADR-0019 §2 表末行）。
@@ -1494,45 +1519,43 @@ class TestComplianceFourStates:
         hit = p.compliance_for(OWN_CODE, "d1")["list"][0]
         assert (hit["reviewState"], hit["reviewLabel"]) == ("ai_pending", "AI 识别 · 待人工确认")
 
-    def test_a_post_level_hit_says_so(self, provider):
-        """合规命中可以落在帖子上，不只是评论 —— 两个命名空间各查一次。"""
+    def test_parent_post_hits_are_never_returned(self, provider):
+        """舆情严格只收评论，父帖的历史 compliance 行仅保留审计。"""
         p = add_annotations(
             provider,
             [
                 {"annotation_id": 1, "target_id": 1, "target_type": "feed",
                  "kind": "compliance",
-                 "value": {"risk_tags": ["mobilization"], "rationale": "号召大家一起去。"}},
+                 "value": {"tags": ["mobilization"], "rationale": "号召大家一起去。"},
+                 "run_id": "risk-run-test"},
             ],
         )
-        hit = p.compliance_for(OWN_CODE, "d1")["list"][0]
-        assert hit["sourceKind"] == "帖子"
-        assert hit["riskLabels"] == ["煽动扩散"]
+        assert p.compliance_for(OWN_CODE, "d1") == {"status": "unavailable", "list": []}
 
-    def test_comment_hits_require_current_relevance_but_feed_hits_remain(self, provider):
+    def test_comment_hits_require_current_negative_relevance(self, provider):
         p = add_annotations(provider, [
-            {"annotation_id": 10, "target_id": 11, "kind": "relevance", "value": "relevant"},
+            {"annotation_id": 10, "target_id": 11, "kind": "relevance", "value": "relevant", "run_id": "risk-run-test"},
+            {"annotation_id": 16, "target_id": 11, "kind": "attitude", "value": "negative", "run_id": "risk-run-test"},
             {"annotation_id": 11, "target_id": 11, "kind": "compliance",
-             "value": {"tags": ["regulatory_complaint"], "rationale": "明确投诉意图"}},
-            {"annotation_id": 12, "target_id": 13, "kind": "relevance", "value": "relevant"},
-            {"annotation_id": 13, "target_id": 13, "kind": "relevance", "value": "irrelevant",
-             "supersedes_id": 12},
+             "value": {"tags": ["regulatory_complaint"], "rationale": "明确投诉意图"}, "run_id": "risk-run-test"},
+            {"annotation_id": 12, "target_id": 13, "kind": "relevance", "value": "relevant", "run_id": "risk-run-test"},
+            {"annotation_id": 13, "target_id": 13, "kind": "attitude", "value": "neutral", "run_id": "risk-run-test"},
             {"annotation_id": 14, "target_id": 13, "kind": "compliance",
-             "value": {"tags": ["mobilization"], "rationale": "旧的风险结论"}},
-            {"annotation_id": 15, "target_id": 1, "target_type": "feed", "kind": "compliance",
-             "value": {"tags": ["mobilization"], "rationale": "帖子级结论"}},
+             "value": {"tags": ["mobilization"], "rationale": "非负面不应返回"}, "run_id": "risk-run-test"},
         ])
 
         result = p.compliance_for(OWN_CODE, "d1")
 
         assert result["status"] == "ok"
-        assert {item["id"] for item in result["list"]} == {"cr-11", "cr-15"}
-        assert {item["sourceKind"] for item in result["list"]} == {"评论", "帖子"}
+        assert {item["id"] for item in result["list"]} == {"cr-11"}
+        assert {item["sourceKind"] for item in result["list"]} == {"评论"}
 
     def test_irrelevant_comment_is_scanned_but_its_risk_hit_is_hidden(self, provider):
         p = add_annotations(provider, [
-            {"annotation_id": 10, "target_id": 11, "kind": "relevance", "value": "irrelevant"},
+            {"annotation_id": 10, "target_id": 11, "kind": "relevance", "value": "irrelevant", "run_id": "risk-run-test"},
+            {"annotation_id": 12, "target_id": 11, "kind": "attitude", "value": None, "run_id": "risk-run-test"},
             {"annotation_id": 11, "target_id": 11, "kind": "compliance",
-             "value": {"tags": ["mobilization"], "rationale": "与产品无关"}},
+             "value": {"tags": ["mobilization"], "rationale": "与产品无关"}, "run_id": "risk-run-test"},
         ])
 
         assert p.compliance_for(OWN_CODE, "d1") == {"status": "empty", "list": []}

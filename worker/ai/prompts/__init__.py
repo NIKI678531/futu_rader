@@ -15,6 +15,7 @@ from . import (
     comment_product_v2,
     comment_product_v3,
     comment_product_v4,
+    comment_product_v5,
     kol_opinion_v1,
     kol_opinion_v2,
     post_annotation_v1,
@@ -24,6 +25,7 @@ from . import (
 # 任务 → {VERSION: 模块}。每个任务的第一个键是默认（最新）版本。
 _REGISTRY = {
     "comment_product": {
+        comment_product_v5.VERSION: comment_product_v5,
         comment_product_v4.VERSION: comment_product_v4,
         comment_product_v3.VERSION: comment_product_v3,
         comment_product_v2.VERSION: comment_product_v2,
@@ -48,6 +50,7 @@ SCHEMA_OF = {
     # output shape, so it intentionally reuses the proven strict v2 schema.
     comment_product_v3.VERSION: "v2",
     comment_product_v4.VERSION: "v3",
+    comment_product_v5.VERSION: "v4",
     post_annotation_v1.VERSION: "v1",
     post_annotation_v2.VERSION: "v2",
     kol_opinion_v1.VERSION: "v1",

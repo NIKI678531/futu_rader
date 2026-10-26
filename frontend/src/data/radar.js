@@ -43,6 +43,7 @@
  */
 import { invalidate, read, qs } from '../lib/api'
 import { withTodayPlaceholder } from '../lib/datePresets'
+import { CUSTOM_SYNTHESIS_MESSAGE, parseCustomRange, rangeQuery } from '../lib/customRange'
 import {
   isTodayRange,
   todayBenchmark,
@@ -66,7 +67,7 @@ const DEFAULT_RANGE = 'd7'
 /* 单产品端点的路径。产品代码进 URL 路径段，一律编码 —— 现在的代码都是 '3033' 这种
    纯数字，但编码一次的成本是零，漏了一次的成本是一个能被拼进路径的字符串。 */
 const product = (code, tail, rangeKey) =>
-  `/products/${encodeURIComponent(code)}/${tail}` + qs({ range: rangeKey || DEFAULT_RANGE })
+  `/products/${encodeURIComponent(code)}/${tail}` + qs(rangeQuery(rangeKey || DEFAULT_RANGE))
 
 /* 这个 token 是 P6 响应契约的一部分，不是后端筛选条件。市场观点从市场方向改为购买／
    持有意愿、摘要升级为详细证据稿后，旧页面模块里可能还留着同 URL 的 Map 缓存；换 URL
@@ -85,7 +86,7 @@ export function prefetchScreen(screen, { rangeKey = DEFAULT_RANGE, kol, code } =
   if (screen === 'kol' || screen === 'kolDetail') requests.push(() => migrated.kolImpact(rangeKey))
   if (screen === 'sector') {
     requests.push(() => migrated.pool(rangeKey), () => migrated.ranks(rangeKey),
-      () => isLocalToday(rangeKey) ? null : read('/hot-summaries' + qs({ range: rangeKey })))
+      () => isLocalToday(rangeKey) ? null : read('/hot-summaries' + qs(rangeQuery(rangeKey))))
   }
   if (screen === 'product' && code) {
     requests.push(
@@ -118,7 +119,12 @@ const migrated = {
      区间、时间桶、基准区间、各处文案全部后端下发。PRD §5 逐字：前端不自行算桶。 */
   buildRange(key) {
     const rangeKey = key || DEFAULT_RANGE
-    return isLocalToday(rangeKey) ? todayRange(meta()) : read(`/ranges/${encodeURIComponent(rangeKey)}`)
+    const custom = parseCustomRange(rangeKey)
+    return isLocalToday(rangeKey)
+      ? todayRange(meta())
+      : custom
+        ? read('/ranges/custom' + qs({ from: custom.from, to: custom.to }))
+        : read(`/ranges/${encodeURIComponent(rangeKey)}`)
   },
 
   /* kolImpact(range) → GET /kol/impact?range=
@@ -127,7 +133,7 @@ const migrated = {
   kolImpact(rangeKey) {
     return todayReady(
       rangeKey,
-      () => read('/kol/impact' + qs({ range: rangeKey || DEFAULT_RANGE })),
+      () => read('/kol/impact' + qs(rangeQuery(rangeKey || DEFAULT_RANGE))),
       () => todayKolImpact(meta()),
     )
   },
@@ -139,7 +145,7 @@ const migrated = {
     return todayReady(
       rangeKey,
       () => read(
-        `/kol/${encodeURIComponent(kol)}/opinions` + qs({ range: rangeKey || DEFAULT_RANGE }),
+        `/kol/${encodeURIComponent(kol)}/opinions` + qs(rangeQuery(rangeKey || DEFAULT_RANGE)),
       ),
       () => [],
     )
@@ -152,7 +158,7 @@ const migrated = {
   pool(rangeKey) {
     return todayReady(
       rangeKey,
-      () => read('/pool' + qs({ range: rangeKey || DEFAULT_RANGE })),
+      () => read('/pool' + qs(rangeQuery(rangeKey || DEFAULT_RANGE))),
       () => todayPool(meta()),
     )
   },
@@ -164,7 +170,7 @@ const migrated = {
   ranks(rangeKey) {
     return todayReady(
       rangeKey,
-      () => read('/ranks' + qs({ range: rangeKey || DEFAULT_RANGE })),
+      () => read('/ranks' + qs(rangeQuery(rangeKey || DEFAULT_RANGE))),
       () => todayRanks(meta()),
     )
   },
@@ -196,19 +202,21 @@ const migrated = {
      `ok` 为 false 时 text 已经是该状态的文案，屏幕直接渲染，不按 status 再拼一遍。 */
   hotSummaryFor(code, rangeKey) {
     if (isLocalToday(rangeKey)) return null
+    if (parseCustomRange(rangeKey)) return { ok: false, text: CUSTOM_SYNTHESIS_MESSAGE, sample: null, status: 'unsupported' }
     /* 整池那份**自己**可能是 null（`DATA_PROVIDER=sql` 下热议总结要 AI 归纳，
        `providers/sql.py::hot_summaries` 整块返回 None）。`null[code]` 是硬 TypeError，
        整个板块总览当场白屏、错误边界报「页面渲染失败」—— 而后端好好的，只是这一栏
        还没生成。容器不知道 ⇒ 里面每一个也不知道，所以这里发 null 而不是 `{}` 或
        `{ok:false,text:'…'}`：后者是在这一层替页面编文案，六态判定不在取数层
        （api.js 硬约束 1）。 */
-    const all = read('/hot-summaries' + qs({ range: rangeKey || DEFAULT_RANGE }))
+    const all = read('/hot-summaries' + qs(rangeQuery(rangeKey || DEFAULT_RANGE)))
     return all == null ? null : all[code]
   },
 
   /* summaryFor(code, range) → GET /products/{code}/summary?range= */
   summaryFor(code, rangeKey) {
     if (isLocalToday(rangeKey)) return null
+    if (parseCustomRange(rangeKey)) return { text: CUSTOM_SYNTHESIS_MESSAGE, sample: null, aiStatus: 'unsupported' }
     return read(product(code, 'summary', rangeKey))
   },
 
@@ -216,6 +224,7 @@ const migrated = {
      端点只返回当前产品的产品态度与市场摘要；前端仍按 code 校验，避免旧缓存串产品。 */
   marketOutlook(code, rangeKey) {
     if (isLocalToday(rangeKey)) return null
+    if (parseCustomRange(rangeKey)) return null
     return read(marketOutlookProduct(code, rangeKey))
   },
 
@@ -224,6 +233,7 @@ const migrated = {
      调用点从来都是正负各取一次，拆成两个端点等于白挨一次串行往返。 */
   themesFor(code, rangeKey, polarity) {
     if (isLocalToday(rangeKey)) return null
+    if (parseCustomRange(rangeKey)) return null
     /* 同 hotSummaryFor：主题聚类整块要 AI（`providers/sql.py::themes_for` 返回 None），
        `null['positive']` 是硬 TypeError，产品监控整页白屏。 */
     const both = read(product(code, 'themes', rangeKey))
@@ -240,6 +250,7 @@ const migrated = {
 
   themesStale(code, rangeKey) {
     if (isLocalToday(rangeKey)) return null
+    if (parseCustomRange(rangeKey)) return null
     const both = read(product(code, 'themes', rangeKey))
     return both == null ? null : both.stale
   },
@@ -247,6 +258,7 @@ const migrated = {
   /* negCatsFor(code, range) → GET /products/{code}/negative-categories?range= */
   negCatsFor(code, rangeKey) {
     if (isLocalToday(rangeKey)) return null
+    if (parseCustomRange(rangeKey)) return null
     return read(product(code, 'negative-categories', rangeKey))
   },
 
@@ -254,6 +266,7 @@ const migrated = {
      `{status, list}`：'unavailable'（传播关系取不到）与 'empty'（确实没有对位竞品）
      在页面上是两句话，别在这一层合并成「list 为空」。 */
   competitorsFor(code, rangeKey) {
+    if (parseCustomRange(rangeKey)) return { status: 'unsupported', list: [] }
     return todayReady(
       rangeKey,
       () => read(product(code, 'competitors', rangeKey)),
@@ -276,6 +289,7 @@ const migrated = {
      没人聊它」，页面渲染「暂无内容」，不是 0 条话题里挑出来的 0。 */
   topicsFor(code, rangeKey) {
     if (isLocalToday(rangeKey)) return null
+    if (parseCustomRange(rangeKey)) return null
     return read(product(code, 'topics', rangeKey))
   },
 
@@ -339,7 +353,7 @@ const migrated = {
   officialPosts(rangeKey) {
     return todayReady(
       rangeKey,
-      () => read('/officials/posts' + qs({ range: rangeKey || DEFAULT_RANGE })),
+      () => read('/officials/posts' + qs(rangeQuery(rangeKey || DEFAULT_RANGE))),
       () => todayOfficialPosts(),
     )
   },
@@ -351,7 +365,7 @@ const migrated = {
       rangeKey,
       () => read(
         `/officials/${encodeURIComponent(account)}/etf-mentions` +
-          qs({ range: rangeKey || DEFAULT_RANGE }),
+          qs(rangeQuery(rangeKey || DEFAULT_RANGE)),
       ),
       () => todayEtfMentions(),
     )
@@ -429,15 +443,23 @@ const constants = {
   get DEFAULT_RANGE() { return meta().defaultRange },
   get UPDATED() { return meta().updatedAt },
   get PRESETS() {
-    return withTodayPlaceholder(
+    const presets = withTodayPlaceholder(
       meta().presets.map((p) => ({
         k: p.key,
         days: p.days,
         label: p.label,
         screenDiffNew: p.key === 'd0',
-      })),
+      })).filter(p => p.k !== 'mtd'),
     )
+    const custom = meta().customRange
+    if (custom?.earliestDate && custom?.latestDate) presets.push({
+      k: 'custom', label: '自选日期', custom: true,
+      earliestDate: custom.earliestDate, latestDate: custom.latestDate,
+      maxDays: custom.maxDays, generativeSupported: custom.generativeSupported,
+    })
+    return presets
   },
+  get CUSTOM_RANGE() { return meta().customRange },
   get ETF_MENTION_RULE() { return meta().rules.etfMention },
   get TYPE_RULE() { return meta().rules.postType },
   get HOT_RULE() { return meta().rules.hotSummary },

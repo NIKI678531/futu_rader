@@ -46,9 +46,11 @@ COMMENT_PRODUCT_PROMPT_VERSIONS = (
     "comment-product-v2",
     "comment-product-v3",
     "comment-product-v4",
+    "comment-product-v5",
 )
 
-PRODUCT_FEEDBACK_PROMPT_VERSIONS = ("comment-product-v4",)
+PRODUCT_FEEDBACK_PROMPT_VERSIONS = ("comment-product-v4", "comment-product-v5")
+HIGH_RISK_PROMPT_VERSIONS = ("comment-product-v5",)
 
 
 def _chunked(items, n):

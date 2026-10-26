@@ -34,7 +34,7 @@
 from providers import get_provider
 from providers.sentinel import MISSING
 
-from .ranges import VALID_KEYS
+from .range_spec import is_valid_range_key
 
 
 def pool(range_key):
@@ -44,7 +44,7 @@ def pool(range_key):
     池上的子集运算，按组合切会变成组合爆炸（ADR-0003 端点粒度），而且每切一次都要
     重新回答一遍「排名要不要跟着变」——答案永远是不变，那就别给它变的机会。
     """
-    if range_key not in VALID_KEYS:
+    if not is_valid_range_key(range_key):
         return MISSING
     return get_provider().pool(range_key)
 
@@ -57,7 +57,7 @@ def ranks(range_key):
 
     这是**评论量**排名。KOL 声量排名是另一套指标，不受本条约束（PRD §4.3 M5）。
     """
-    if range_key not in VALID_KEYS:
+    if not is_valid_range_key(range_key):
         return MISSING
     return get_provider().ranks(range_key)
 
@@ -68,6 +68,6 @@ def benchmark(code, range_key):
     `buckets` 与 `base.buckets` 逐桶对齐，每桶给出五条序列（评论数／活跃账号数／互动数／
     积极／消极）的 delta。趋势图悬停要用，而悬停不可能每次打一趟接口。
     """
-    if range_key not in VALID_KEYS:
+    if not is_valid_range_key(range_key):
         return MISSING
     return get_provider().benchmark(code, range_key)

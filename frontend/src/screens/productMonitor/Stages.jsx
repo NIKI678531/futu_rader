@@ -18,7 +18,7 @@ export default function Stages({ v }) {
       </div>
       {v.heatDisclosure && <div style={s('padding:10px 20px;font:400 12px/1.6 var(--font-cjk);color:var(--warning-700)')}>{v.heatDisclosure}</div>}
       {v.stageUnavailable && (
-        <div style={s('margin:16px 20px 0;padding:14px 16px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>AI 阶段观点待分析 — 下方仅展示数据库中的原始热度；积极／消极与分阶段观点暂不可用。</div>
+        <div style={s('margin:16px 20px 0;padding:14px 16px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>{v.stageUnavailableText || 'AI 阶段观点待分析 — 下方仅展示数据库中的原始热度；积极／消极与分阶段观点暂不可用。'}</div>
       )}
       {v.stageEmpty && (
         <div style={s('margin:16px 20px;padding:14px 16px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 当前日期范围内该 ETF 没有讨论，不输出阶段观点。</div>

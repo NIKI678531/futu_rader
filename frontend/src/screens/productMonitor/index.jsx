@@ -38,6 +38,7 @@ import Stages from './Stages'
 import Topics from './Topics'
 import Competitors from './Competitors'
 import EvidenceDrawer from './EvidenceDrawer'
+import { CUSTOM_SYNTHESIS_MESSAGE, hrefWithRange, listenForRangeNavigation, parseCustomRange, rangeQuery } from '../../lib/customRange'
 
 export default class ProductMonitor extends React.Component {
   static defaultProps = {
@@ -69,6 +70,10 @@ export default class ProductMonitor extends React.Component {
   componentDidMount() {
     this._onResize = () => this.measureTrend();
     window.addEventListener('resize', this._onResize);
+    this._stopRangeNavigation = listenForRangeNavigation(R.PRESETS, (rangeKey) => {
+      prefetchScreen('product', { rangeKey, code: this.state.code });
+      this.setState({ rangeKey, panel: null, post: null, hover: null });
+    });
     this.measureTrend();
     /* 字体就绪后强制重画一次：画布文字在 webfont 载入前后度量不同，否则刻度会错位 */
     try {
@@ -79,9 +84,8 @@ export default class ProductMonitor extends React.Component {
     var p = {};
     try {
       var u = new URLSearchParams(window.location.search);
-      var c = u.get('code'), rg = u.get('range'), ev = u.get('ev'), risk = u.get('risk');
+      var c = u.get('code'), ev = u.get('ev'), risk = u.get('risk');
       if (c && R.MASTER[c]) p.code = c;
-      if (rg && R.PRESETS.some(function (x) { return x.k === rg; })) p.rangeKey = rg;
       if (ev) {
         var c2 = p.code || this.state.code, r2 = p.rangeKey || this.state.rangeKey;
         /* 整块 null 时这里本来会抛，被外层 catch 吞成「深链参数不可用」—— 结果是对的，
@@ -105,7 +109,11 @@ export default class ProductMonitor extends React.Component {
     this.setState(p, () => this.drawTrend());
   }
   componentDidUpdate() { this.drawTrend(); }
-  componentWillUnmount() { clearTimeout(this._lt); window.removeEventListener('resize', this._onResize); }
+  componentWillUnmount() {
+    clearTimeout(this._lt);
+    window.removeEventListener('resize', this._onResize);
+    if (this._stopRangeNavigation) this._stopRangeNavigation();
+  }
 
   go(patch) {
     var st = this.state;
@@ -120,7 +128,8 @@ export default class ProductMonitor extends React.Component {
     }
     this.setState(patch, () => {
       try {
-        var u = window.location.pathname + '?code=' + this.state.code + '&range=' + this.state.rangeKey;
+        var params = new URLSearchParams(Object.assign({ code: this.state.code }, rangeQuery(this.state.rangeKey)));
+        var u = window.location.pathname + '?' + params.toString();
         window.history.replaceState(null, '', u);
       } catch (e) { /* 沙箱内可能不允许改写地址 */ }
     });
@@ -167,7 +176,7 @@ export default class ProductMonitor extends React.Component {
     cr.list.forEach(function (r) { r.riskLabels.forEach(function (l) { if (!seen[l]) { seen[l] = 1; all.push(l); } }); });
     var tags = item ? item.riskLabels.join('、') : all.join('、');
     return {
-      kind: 'risk', id: 'risk', polarity: 'negative', title: '重点舆情（需合规关注）原文',
+      kind: 'risk', id: 'risk', polarity: 'negative', title: '舆情原文',
       filter: '风险标签 · ' + tags, count: cr.list.length, items: cr.list, post: item ? item.id : null,
       extra: [
         { k: '产品', v: code + ' ' + R.MASTER[code].name },
@@ -356,6 +365,7 @@ export default class ProductMonitor extends React.Component {
     var code = productCodeOrDefault(R.MASTER, s.code);
     var m = R.MASTER[code];
     var range = R.buildRange(s.rangeKey);
+    var customRange = !!parseCustomRange(s.rangeKey);
     var P = R.pool(s.rangeKey);
     var o = R.observe(code, s.rangeKey);
     var funnel = commentFunnelView(o.commentFunnel);
@@ -369,9 +379,11 @@ export default class ProductMonitor extends React.Component {
     var allValid = attNa ? 0 : valid + att.neutral;
 
     var presets = R.PRESETS.map(function (p) {
-      var on = p.k === s.rangeKey;
+      var on = p.k === range.key;
       return {
-        label: p.label, go: () => self.go({ rangeKey: p.k, panel: null, post: null, hover: null }),
+        key: p.k, label: p.label, go: (key) => self.go({ rangeKey: key || p.k, panel: null, post: null, hover: null }),
+        custom: p.custom, earliestDate: p.earliestDate, latestDate: p.latestDate,
+        maxDays: p.maxDays, rangeKey: s.rangeKey,
         placeholder: p.placeholder,
         screenDiffNew: p.screenDiffNew,
         active: on,
@@ -420,7 +432,7 @@ export default class ProductMonitor extends React.Component {
         spanPeak: hasPk ? '峰值 ' + short(pk) : '各时段分布均匀'
       };
     };
-    /* 消极观点行内合并原「负面舆情监控」的关注程度、生命周期与出现时间 */
+    /* 消极观点行内展示普通负面评论的关注程度、生命周期与出现时间 */
     var sevStyle = { '高': ['var(--negative-100)', 'var(--negative-700)'], '中': ['var(--warning-100)', 'var(--warning-700)'], '低': ['var(--ink-100)', 'var(--ink-600)'] };
     var lifeStyleT = { '新增': ['var(--negative-100)', 'var(--negative-700)'], '持续': ['var(--warning-100)', 'var(--warning-700)'], '消退': ['var(--ink-100)', 'var(--ink-600)'] };
     var themeMeta = function (t) {
@@ -557,7 +569,7 @@ export default class ProductMonitor extends React.Component {
       };
     });
 
-    /* 本轮新增：价格 K 线、产品相关 KOL、重点舆情（需合规关注）—— 均随 code + rangeKey 同步重算，不残留上一只产品的数据 */
+    /* 价格 K 线、产品相关 KOL、舆情均随 code + rangeKey 同步重算。 */
     var px = naBox(R.candlesFor(code, s.rangeKey));
     var pxOn = !!s.legend.px;
     var pxSource = priceSourceLabel(px);
@@ -578,7 +590,7 @@ export default class ProductMonitor extends React.Component {
         name: k.kolName, type: kolDisplayLabel(k.kolTypeLabel), tags: String(k.kolTags || '').split(',').join(' · '),
         count: String(k.mentionCommentCount), last: display.latestPost,
         summary: display.postSummary, evidence: String(k.evidenceCount),
-        detailHref: 'kol-detail.dc.html?kol=' + encodeURIComponent(k.kolName) + '&range=' + encodeURIComponent(s.rangeKey),
+        detailHref: hrefWithRange('kol-detail.dc.html?kol=' + encodeURIComponent(k.kolName), s.rangeKey),
         stop: function (e) { e.stopPropagation(); },
         go: () => self.openPanel(self.kolPanel(k, code, s.rangeKey))
       };
@@ -719,6 +731,7 @@ export default class ProductMonitor extends React.Component {
 
       marketOutlookRows: marketOutlookRows,
       marketOutlookNa: marketOutlookNa,
+      marketOutlookUnavailableText: customRange ? CUSTOM_SYNTHESIS_MESSAGE : '数据暂不可用 — 市场行情摘要尚未生成。',
       marketOutlookEmpty: !marketOutlookNa && marketOutlookRows.length === 0,
       marketOutlookTitle: '产品市场观点与总结',
       marketOutlookEmptyText: '暂无相关内容 — 当前区间没有识别到该产品相关的市场方向讨论。',
@@ -772,6 +785,7 @@ export default class ProductMonitor extends React.Component {
       issuerToggle: () => this.setState({ issuerMore: !s.issuerMore }),
       noPos: !posNa && posThemes.length === 0, noNeg: !negNa && negThemes.length === 0,
       posUnavailable: posNa, negUnavailable: negNa,
+      synthesisUnavailableText: customRange ? CUSTOM_SYNTHESIS_MESSAGE : null,
       posMoreVisible: posAll.length > 3, negMoreVisible: negAll.length > 3,
       posMoreLabel: s.posMore ? '收起' : '展开全部 ' + posAll.length + ' 条',
       negMoreLabel: s.negMore ? '收起' : '展开全部 ' + negAll.length + ' 条',
@@ -795,7 +809,7 @@ export default class ProductMonitor extends React.Component {
       pxSourceDisclosure: priceSourceDisclosure(px, R.DATA_PROVIDER),
       kolScope: kolDisplayLabel(kolRes.scope), kolHas: kolRes.status === 'ok', kolEmpty: kolRes.status === 'empty', kolUnavailable: kolRes.status === 'unavailable',
       kolRows: kolRows, kolMoreVisible: kolAll.length > 5,
-      kolActivityHref: 'kol-activity.dc.html?etf=' + encodeURIComponent(code) + '&range=' + encodeURIComponent(s.rangeKey),
+      kolActivityHref: hrefWithRange('kol-activity.dc.html?etf=' + encodeURIComponent(code), s.rangeKey),
       kolMoreLabel: s.kolMore ? '收起，只看前 5 位' : '展开全部 ' + kolAll.length + ' 位',
       kolToggle: () => this.setState({ kolMore: !s.kolMore }),
       riskHas: cr.status === 'ok', riskEmpty: cr.status === 'empty', riskUnavailable: cr.status === 'unavailable', riskNa: cr.status === 'na',
@@ -809,7 +823,7 @@ export default class ProductMonitor extends React.Component {
       hasComps: comps.length > 0, noComps: comps.length === 0, comps: comps,
       compCount: String(comps.length),
       compScopeText: o.ownership === 'own' ? '自家产品 · 固定关联竞品与 AI 自动候选' : '竞品产品 · 反向展示对位自家产品与同类竞品',
-      compsEmptyText: compsRes.status === 'unavailable'
+      compsEmptyText: customRange ? CUSTOM_SYNTHESIS_MESSAGE : compsRes.status === 'unavailable'
         ? '数据暂不可用 — 该产品的竞品关系字段尚未核验，不展示推测关联。'
         : '暂无相关内容 — 映射表与自动识别在当前区间内都没有给出关联产品。',
 
@@ -893,6 +907,7 @@ export default class ProductMonitor extends React.Component {
     Object.assign(out, {
       trendW: String(HG.W), heatGridW: String(hpw), axRX: String(HG.W - 127), axPX: String(HG.W - 72), trendBoxRef: self.trendBoxRef,
       stageOk: stageOk, stageUnavailable: stageUnavailable, stageEmpty: SG.status === 'empty',
+      stageUnavailableText: customRange ? CUSTOM_SYNTHESIS_MESSAGE : null,
       heatChartVisible: hsr.length > 0 && (stageOk || stageUnavailable),
       stageGranLabel: SG.granLabel, heatGranLabel: isHalf ? '60 分钟' : '自然日', stageRule: SG.rule || R.STAGE_RULE, heatFormulaText: R.HEAT_FORMULA,
       heatPath: heatPath,
@@ -993,7 +1008,8 @@ export default class ProductMonitor extends React.Component {
           codes: e.productCodes.map(function (c) { return { code: c }; }),
           comments: e.comments == null ? '暂不可用' : e.comments.toLocaleString('en-US'),
           inter: e.interactions == null ? '暂不可用' : e.interactions.toLocaleString('en-US'),
-          url: e.sourceUrl || '#', stop: (ev) => ev.stopPropagation(),
+          url: e.sourceUrl || null, hasUrl: !!e.sourceUrl,
+          stop: (ev) => ev.stopPropagation(),
           source: e.sourceKind || '评论',
           hasAtt: !!e.attitudeLabel, att: e.attitudeLabel || '',
           abg: (ATT_STYLE[e.attitude] || ['var(--ink-100)', 'var(--ink-600)'])[0],
@@ -1042,7 +1058,7 @@ export default class ProductMonitor extends React.Component {
         {v.loading && (
           <div style={s('display:flex;align-items:center;gap:10px;margin:14px 24px 0;padding:9px 15px;border:1px solid var(--csop-blue-200);border-radius:var(--radius-control);background:var(--csop-blue-50)')}>
             <span style={s('width:8px;height:8px;border-radius:var(--radius-pill);background:var(--csop-blue-600)')}></span>
-            <span style={s('font:500 14px/1.4 var(--font-cjk);color:var(--csop-blue-800)')}>数据加载中 — 正在按新的产品与日期范围重新聚合舆情、KOL、重点舆情与行情数据</span>
+            <span style={s('font:500 14px/1.4 var(--font-cjk);color:var(--csop-blue-800)')}>数据加载中 — 正在按新的产品与日期范围重新聚合评论、KOL、舆情与行情数据</span>
           </div>
         )}
 

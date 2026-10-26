@@ -61,7 +61,8 @@ def pending_days(engine, scope_id):
                          .outerjoin(comments, comments.c.comment_id == annotation_jobs.c.target_id)
                          .outerjoin(feeds, feeds.c.feed_id == comments.c.feed_id))
             .where(scope_condition(scope_id), annotation_jobs.c.task == "comment_product",
-                   annotation_jobs.c.target_type == "comment", annotation_jobs.c.status != "done")
+                   annotation_jobs.c.target_type == "comment",
+                   annotation_jobs.c.status.notin_(("done", "superseded")))
             .distinct()
         )
         for code, posted_at in rows:
@@ -116,7 +117,7 @@ def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=
             unfinished = conn.execute(
                 select(annotation_jobs.c.job_id).where(
                     scope_condition(scope_id),
-                    annotation_jobs.c.status != "done",
+                    annotation_jobs.c.status.notin_(("done", "superseded")),
                 ).limit(1)
             ).first()
         summary["complete"] = unfinished is None

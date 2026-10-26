@@ -140,9 +140,8 @@ class PostAnnotation(BaseModel):
 # - `market_direction`：对大盘／指数／宏观的方向判断，与产品态度**独立**。PRD §3.4 逐字：
 #   「单纯预测指数或价格涨跌归入产品话题情绪」—— 这一列就是「产品话题情绪」（P13）的原料。
 #   相关性为 irrelevant 的评论照样可以有方向（「大盘要崩」对产品无关，对市场看空）。
-# - `compliance_tags` / `compliance_rationale` / `compliance_evidence`：重点舆情五类
-#   （runbook §20）。合规不再是一个单独任务 —— 每条评论本来就要发给模型，再为合规发一遍等于
-#   两倍请求。空数组＝「查过了，不是重点舆情」，**必须落库**（§20.4）。
+# - `compliance_tags` / `compliance_rationale` / `compliance_evidence`：兼容字段名，
+#   v5 起表示严格舆情五类。它不再是单独任务；空数组表示已检查但不命中，仍必须落库。
 #
 # 七个维度在文献给出的安全区内（arXiv 2604.03684：≤10 维精度损失 <2pp）。
 
@@ -150,6 +149,10 @@ MARKET_DIRECTIONS = ("bullish", "bearish", "neutral")
 COMPLIANCE_TAGS = (
     "regulatory_complaint", "serious_allegation", "unverified_claim",
     "mobilization", "compliance_concern",
+)
+HIGH_RISK_TAGS = (
+    "abusive_attack", "regulatory_complaint", "serious_allegation",
+    "unverified_claim", "mobilization",
 )
 COMPLIANCE_RATIONALE_MAX = 40
 
@@ -265,6 +268,26 @@ class CommentAnnotationV3(BaseModel):
         return self
 
 
+class CommentAnnotationV4(CommentAnnotationV3):
+    """comment-product-v5: strict high-risk negative-comment contract."""
+
+    compliance_tags: list[Literal[HIGH_RISK_TAGS]]  # type: ignore[valid-type]
+
+    @model_validator(mode="after")
+    def _high_risk_cross_fields(self):
+        if self.compliance_tags:
+            product_negative = self.relevance == "relevant" and self.attitude == "negative"
+            issuer_negative = (
+                self.issuer_relevance == "relevant"
+                and self.issuer_attitude == "negative"
+            )
+            if not (product_negative or issuer_negative):
+                raise ValueError(
+                    f"{self.item_id}: 高风险标签仅可用于与产品或南方东英相关的负面评论"
+                )
+        return self
+
+
 # ── KOL 评论观点（PRD §4.4 M7「其他产品观点及操作」） ─────────────────────
 #
 # 只跑合作 KOL 的评论。`summary` 是这条评论对该产品观点的一句话（≤30 字），`action` 是设计源
@@ -316,7 +339,7 @@ TASKS = {
 # 按 schema 版本选模型。`v1` 是 Gate 0–2 的形状，保留给回放与对照实验；生产默认 `v2`
 # （`AI_SCHEMA_VERSION`）。post_annotation 两版形状相同。
 VERSIONED = {
-    "comment_product": {"v1": CommentAnnotation, "v2": CommentAnnotationV2, "v3": CommentAnnotationV3},
+    "comment_product": {"v1": CommentAnnotation, "v2": CommentAnnotationV2, "v3": CommentAnnotationV3, "v4": CommentAnnotationV4},
     "post_annotation": {"v1": PostAnnotation, "v2": PostAnnotation},
     "kol_comment_opinion": {"v1": KolOpinionAnnotation, "v2": KolOpinionAnnotationV2},
 }
@@ -354,6 +377,11 @@ class CommentBatchV3(BaseModel):
     results: list[CommentAnnotationV3]
 
 
+class CommentBatchV4(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    results: list[CommentAnnotationV4]
+
+
 class PostBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     results: list[PostAnnotation]
@@ -366,7 +394,7 @@ BATCHES = {
 }
 
 VERSIONED_BATCHES = {
-    "comment_product": {"v1": CommentBatch, "v2": CommentBatchV2, "v3": CommentBatchV3},
+    "comment_product": {"v1": CommentBatch, "v2": CommentBatchV2, "v3": CommentBatchV3, "v4": CommentBatchV4},
     "post_annotation": {"v1": PostBatch, "v2": PostBatch},
     "kol_comment_opinion": {"v1": KolOpinionBatch, "v2": KolOpinionBatchV2},
 }

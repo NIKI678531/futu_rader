@@ -70,7 +70,9 @@ export default function EvidenceDrawer({ v }) {
                     ))}
                     <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>评论 <span style={s('font:600 12px/1.4 var(--font-mono);color:var(--ink-800)')}>{e.comments}</span></span>
                     <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>互动 <span style={s('font:600 12px/1.4 var(--font-mono);color:var(--ink-800)')}>{e.inter}</span></span>
-                    <a href={e.url} target="_blank" rel="noopener" onClick={e.stop} style={s('margin-left:auto;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('color:var(--csop-blue-800);text-decoration:underline')}>Futu 原文 ↗</a>
+                    {e.hasUrl
+                      ? <a href={e.url} target="_blank" rel="noopener noreferrer" onClick={e.stop} style={s('margin-left:auto;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('color:var(--csop-blue-800);text-decoration:underline')}>Futu 原文 ↗</a>
+                      : <span style={s('margin-left:auto;font:500 12px/1.4 var(--font-cjk);color:var(--ink-400);white-space:nowrap')}>原文链接暂不可用</span>}
                     <span style={s('font:500 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>{e.expandLabel}</span>
                   </div>
                   {e.open && (

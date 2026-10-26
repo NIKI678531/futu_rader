@@ -282,16 +282,17 @@ class TestThemesAndNegCats:
         pool = provider.pool("d1")
         assert pool["own"]["neg"] == 4
         assert pool["own"]["dNeg"]["abs"] == 3
-        assert pool["own"]["risk"] == 0
+        # 通用分析完成标记来自旧 Prompt，不能证明严格 v5 舆情已扫描。
+        assert pool["own"]["risk"] is None
         assert pool["complianceCount"][PEER_CODE] is None
 
-    def test_completed_empty_scope_enables_zero_risk_but_incomplete_scope_does_not(self, provider):
+    def test_old_completed_scope_does_not_claim_v5_risk_was_scanned(self, provider):
         provider._meta["own_analysis_progress"] = json.dumps({
             "anchor": "2026-08-25", "baselineFrom": "2026-08-12", "sourceVersion": {},
             "products": {OWN_CODE: {"complete": True, "queue": {}}},
         })
-        assert provider.compliance_for(OWN_CODE, "d1") == {"status": "empty", "list": []}
-        assert provider.pool("d1")["complianceCount"][OWN_CODE] == 0
+        assert provider.compliance_for(OWN_CODE, "d1") == {"status": "unavailable", "list": []}
+        assert provider.pool("d1")["complianceCount"][OWN_CODE] is None
         assert provider.pool("d1")["own"]["risk"] is None
 
     def test_counts_come_from_annotations_labels_from_synth(self, provider):

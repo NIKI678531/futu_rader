@@ -23,6 +23,7 @@
  *   数据和 PRD 约束，从门面 R 上读（背后是 GET /meta）。
  */
 import R from '../data/radar'
+import { kolDisplayTypeChoice } from './kolDisplayType'
 
 /* ── 日期 ───────────────────────────────────────────────────────────── */
 
@@ -74,7 +75,7 @@ export function kolDisplayLabel(v) {
 
 /* 整块没取到 → 该契约形状的 `unavailable` 态。
 
-   市场域有一串端点是 `{status, list}`（关联竞品、重点舆情、产品相关 KOL、阶段观点、
+   市场域有一串端点是 `{status, list}`（关联竞品、舆情、产品相关 KOL、阶段观点、
    K 线……）。`DATA_PROVIDER=sql` 下它们**整块**是 null —— 这些结论要 AI 标注或行情源，
    ADR-0017 说得很清楚。而屏幕代码直接 `res.list.map(…)`／`res.status === 'ok'`，
    接真库时第一次渲染就 TypeError，产品监控整页白屏，错误边界报「页面渲染失败」：
@@ -278,6 +279,23 @@ export function dirStyle(k, pending) {
   return { k: d.k, label: d.label, bg: t.bg, fg: t.fg, tone: d.tone };
 }
 
+/* 表格只展示一个类型：操作方向优先，未识别到方向时才回退到内容形式。
+   `filterKey` 带命名空间，避免未来内容枚举与方向枚举重名。底层两个字段仍原样保留，
+   CSV 也继续分别导出，只有展示与筛选统一读这个派生值。 */
+export function displayedPostType(p) {
+  var choice = kolDisplayTypeChoice(p);
+  if (choice.source === 'direction' && choice.key === 'pending') {
+    var pending = dirStyle(null, true);
+    return Object.assign({ source: 'direction', filterKey: 'direction:pending' }, pending);
+  }
+  if (choice.source === 'direction') {
+    var direction = dirStyle(choice.key, false);
+    return Object.assign({ source: 'direction', filterKey: 'direction:' + direction.k }, direction);
+  }
+  var content = typeStyle(choice.key);
+  return Object.assign({ source: 'content', filterKey: content.k == null ? null : 'content:' + content.k }, content);
+}
+
 /* 阵营徽章。**三分互斥**：一条动态只能归一类（PRD 账号域，ADR-0013 O4）。
    KOL 页问的是另一个问题（「这个 KOL 提没提我们」，提自家含 both），别顺手统一。 */
 export var CAMP = {
@@ -365,7 +383,9 @@ export function shell(domainKey, subKey, st, go) {
     presets: R.PRESETS.map(function (p) {
       var on = p.k === range.key;
       return {
-        label: p.label, go: function () { go({ rangeKey: p.k }); },
+        key: p.k, label: p.label, go: function (key) { go({ rangeKey: key || p.k }); },
+        custom: p.custom, earliestDate: p.earliestDate, latestDate: p.latestDate,
+        maxDays: p.maxDays, rangeKey: st.rangeKey,
         placeholder: p.placeholder,
         screenDiffNew: p.screenDiffNew,
         active: on,

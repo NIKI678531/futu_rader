@@ -1,4 +1,4 @@
-"""观点主题与负面舆情类别的**计数**口径（PRD §4.2 P9、§4.1 S10、§3.4 三层负面）。
+"""观点主题与消极观点类别的**计数**口径（PRD §4.2 P9、§4.1 S10、§3.4 三层负面）。
 
 叶子模块：不 import provider，只吃已经取出来的判定单元。
 
@@ -216,7 +216,7 @@ def themes(code, units_by_polarity, base_units_by_polarity, buckets, bucket_inde
 
 
 def neg_categories(code, neg_units, base_neg_units, buckets, bucket_index, labels=None, stamp=None):
-    """负面舆情类别（3–6 个，按提及数降序）。`neg_units` 是全部消极判定单元。
+    """消极观点类别（3–6 个，按提及数降序）。`neg_units` 是全部消极判定单元。
 
     `stamp(ts)` 把时间戳格式化成页面要的 `MM-DD HH:00`；默认取 `%m-%d %H:00`。
     """

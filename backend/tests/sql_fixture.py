@@ -163,6 +163,24 @@ def make_sql_provider(broken_share=True, anchor=ANCHOR):
         conn.execute(
             annotation_runs.insert(),
             {
+                "run_id": "risk-run-test",
+                "task": "comment_product",
+                "provider": "openai_compatible",
+                "model_id": "test-model",
+                "prompt_version": "comment-product-v5",
+                "taxonomy_version": "high-risk-negative-v1",
+                "schema_version": "v4",
+                "started_at": datetime(2026, 8, 25, 12, 0),
+                "finished_at": datetime(2026, 8, 25, 12, 1),
+                "status": "done",
+                "input_count": 0,
+                "success_count": 0,
+                "error_count": 0,
+            },
+        )
+        conn.execute(
+            annotation_runs.insert(),
+            {
                 "run_id": "kol-run-test",
                 "task": "kol_comment_opinion",
                 "provider": "openai_compatible",

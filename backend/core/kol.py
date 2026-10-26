@@ -22,7 +22,7 @@ PRD §4.3 M5 逐字要求声量排名「随 ETF 与类型筛选变化、不随 K
 from providers import get_provider
 from providers.sentinel import MISSING
 
-from .ranges import VALID_KEYS
+from .range_spec import is_valid_range_key
 
 
 def kol_impact(range_key):
@@ -31,7 +31,7 @@ def kol_impact(range_key):
     一次发整个区间的帖子，而不是按筛选组合切端点：KOL 页的四级级联、类型多选、表内
     关键词都是同一份帖子上的子集运算，按组合切会变成组合爆炸（ADR-0003 端点粒度）。
     """
-    if range_key not in VALID_KEYS:
+    if not is_valid_range_key(range_key):
         return MISSING
     return get_provider().kol_impact(range_key)
 
@@ -46,6 +46,6 @@ def kol_opinions(kol, range_key):
     样本不够就不输出倾向结论（PRD §3.5、§3.6 的「样本不足」态）。这个 `None` 必须
     原样上线 —— 换成 `0` 就成了「中性」，而中性是个结论，我们并没有得出它。
     """
-    if range_key not in VALID_KEYS:
+    if not is_valid_range_key(range_key):
         return MISSING
     return get_provider().kol_opinions(kol, range_key)

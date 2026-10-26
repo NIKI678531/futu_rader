@@ -40,7 +40,7 @@ export default function Overview({ v }) {
         </div>
 
         {v.marketOutlookNa && (
-          <div style={s('padding:18px;font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>数据暂不可用 — 市场行情摘要尚未生成。</div>
+          <div style={s('padding:18px;font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>{v.marketOutlookUnavailableText}</div>
         )}
         {v.marketOutlookEmpty && (
           <div style={s('padding:18px;font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>{v.marketOutlookEmptyText}</div>

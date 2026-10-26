@@ -144,10 +144,10 @@ def load(_allow_missing_key=False, **overrides):
         micro_batch_size=_int("AI_MICRO_BATCH_SIZE", 5),
         max_input_tokens=_int("AI_MAX_INPUT_TOKENS", 8000),
         concurrency=_int("AI_CONCURRENCY", 4),
-        # v4 separates product-quality feedback, market/trading talk and issuer opinions.
-        prompt_version=os.getenv("AI_PROMPT_VERSION", "comment-product-v4").strip(),
+        # v5 adds the strict high-risk negative-comment contract.
+        prompt_version=os.getenv("AI_PROMPT_VERSION", "comment-product-v5").strip(),
         taxonomy_version=os.getenv("AI_TAXONOMY_VERSION", "product-feedback-v4").strip(),
-        schema_version=os.getenv("AI_SCHEMA_VERSION", "v3").strip(),
+        schema_version=os.getenv("AI_SCHEMA_VERSION", "v4").strip(),
         structured_output=_bool("AI_STRUCTURED_OUTPUT", True),
         reasoning_effort=os.getenv("AI_REASONING_EFFORT", "low").strip(),
         store=_bool("AI_STORE", False),
