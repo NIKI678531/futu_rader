@@ -6,7 +6,7 @@ from sqlalchemy import insert
 
 from ai import config
 from ai import release_regressions
-from jobs import analyze
+from jobs import analyze, full_own
 from scripts import calibrate
 from radar_db import create_all, make_engine
 from radar_db.comment_routes import COMMENT_ROUTE_VERSION
@@ -32,6 +32,43 @@ def test_plan_uses_complete_source_day_and_deduplicates_ranges(engine):
     assert plan["priorityDays"] == ["2026-08-25", "2026-08-24", "2026-08-23", "2026-08-22"]
     assert plan["ranges"] == ["d1", "d2"]
     assert plan["modelRequestsMade"] == 0
+
+
+def test_plan_and_runner_share_the_semantic_source_snapshot(engine):
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv), [
+            {"k": "data_revision", "v": "raw-facts-v2"},
+            {"k": "ai_input_revision", "v": "semantic-facts-v1"},
+            {"k": "etl_generation", "v": "etl-7"},
+            {"k": "comment_route_version", "v": "content-cashtag-v2"},
+            {"k": "comment_route_pool_digest", "v": "pool-v3"},
+        ])
+
+    args = analyze.parser().parse_args(["plan", "--ranges", "d7", "--codes", "3033"])
+    plan = analyze.make_plan(engine, args)
+
+    assert full_own.source_state(engine) == plan["sourceState"] == {
+        "anchor": "2026-08-25",
+        "data_revision": "semantic-facts-v1",
+        "etl_generation": "etl-7",
+        "comment_route_version": "content-cashtag-v2",
+        "comment_route_pool_digest": "pool-v3",
+    }
+
+    # Raw collection bookkeeping does not invalidate AI work while its semantic
+    # input revision is unchanged.
+    with engine.begin() as conn:
+        conn.execute(
+            meta_kv.update().where(meta_kv.c.k == "data_revision").values(v="raw-facts-v3")
+        )
+    assert full_own.source_state(engine) == plan["sourceState"]
+
+    # A real AI-input change must still reject the stale plan.
+    with engine.begin() as conn:
+        conn.execute(
+            meta_kv.update().where(meta_kv.c.k == "ai_input_revision").values(v="semantic-facts-v2")
+        )
+    assert full_own.source_state(engine) != plan["sourceState"]
 
 
 def test_today_plan_uses_the_observed_partial_day_not_the_complete_anchor(engine):

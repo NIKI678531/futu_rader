@@ -22,6 +22,7 @@ from jobs import annotate, extract, pipeline
 from radar_db import make_engine
 from radar_db.events import emit
 from radar_db.leases import WorkerLease
+from radar_db.revisions import ai_source_version
 from radar_db.schema import analysis_scopes, annotation_jobs, comments, feeds, meta_kv
 from radar_db.scope_jobs import scope_condition
 
@@ -34,10 +35,9 @@ def save_progress(engine, progress):
 
 
 def prepare(engine, cfg, anchor, codes, *, ranges=None, optimized=False, page_size=1000):
-    with engine.connect() as conn:
-        source_version = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
-            meta_kv.c.k.in_(("data_revision", "etl_generation")),
-        )).all())
+    source_version = {
+        key: value for key, value in source_state(engine).items() if key != "anchor"
+    }
     windows = [build(key, anchor) for key in (ranges or PRESETS)]
     start = min(date.fromisoformat(window["benchFrom"]) for window in windows)
     end = datetime.combine(anchor, time.min)
@@ -109,9 +109,11 @@ def prioritize_scope(engine, scope_id, anchor, *, own, daily=False):
 
 def source_state(engine):
     with engine.connect() as conn:
-        return dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
-            meta_kv.c.k.in_(("anchor", "data_revision", "etl_generation")),
-        )).all())
+        values = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v)).all())
+    return {
+        **({"anchor": values["anchor"]} if values.get("anchor") else {}),
+        **ai_source_version(values),
+    }
 
 
 def run_manual(engine, cfg, plan, provider, *, scopes=None, page_size=1000):
@@ -228,10 +230,10 @@ def main():
         scopes, start = prepare(engine, cfg, anchor, codes, ranges=ranges)
         for code, scope_id in scopes.items():
             prioritize_scope(engine, scope_id, anchor, own=ownership[code] == "own")
+        source_version = {
+            key: value for key, value in source_state(engine).items() if key != "anchor"
+        }
         with engine.connect() as conn:
-            source_version = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
-                meta_kv.c.k.in_(("data_revision", "etl_generation")),
-            )).all())
             saved = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "own_analysis_progress")).scalar()
         prior = json.loads(saved) if saved else {}
         reusable = (prior.get("anchor") == anchor.isoformat() and prior.get("model") == cfg.model
@@ -263,11 +265,11 @@ def main():
                 if args.watch:
                     scheduler.pause()
                 return
-            with engine.connect() as conn:
-                current_anchor = conn.execute(select(meta_kv.c.v).where(meta_kv.c.k == "anchor")).scalar_one()
-                current_source = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v).where(
-                    meta_kv.c.k.in_(("data_revision", "etl_generation")),
-                )).all())
+            current_state = source_state(engine)
+            current_anchor = current_state["anchor"]
+            current_source = {
+                key: value for key, value in current_state.items() if key != "anchor"
+            }
             if current_source != source_version or (not args.anchor and current_anchor != anchor.isoformat()):
                 if not args.anchor:
                     anchor = date.fromisoformat(current_anchor)
