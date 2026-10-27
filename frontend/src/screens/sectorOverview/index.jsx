@@ -31,6 +31,7 @@ import Board from './Board'
 import Tooltip from './Tooltip'
 import Drawer from './Drawer'
 import { hrefWithRange, listenForRangeNavigation, rangeFromSearch } from '../../lib/customRange'
+import { opinionRiskCounts } from '../../lib/opinionRisk'
 
 /* 热度为 null 时，说清楚缺的是哪一项。
 
@@ -67,7 +68,7 @@ class SectorOverview extends React.Component {
   riskRef = React.createRef();
 
   /* 板块、范围、搜索与开关只改变可见范围；排名与色阶标尺始终来自全市场 */
-  visibleFor(st) {
+  visibleFor(st, complianceCount) {
     var P = R.pool(st.rangeKey);
     var q = (st.q || '').trim().toLowerCase();
     return P.list.filter(function (o) {
@@ -75,19 +76,19 @@ class SectorOverview extends React.Component {
       if (st.scope === 'peer' && o.ownership !== 'peer') return false;
       if (st.sector !== 'all' && o.sector !== st.sector) return false;
       if (st.onlyNew && !o.isNew) return false;
-      if (st.onlyNeg && !(P.complianceCount[o.code] > 0)) return false;
+      if (st.onlyNeg && !(complianceCount[o.code] > 0)) return false;
       if (q && o.code.toLowerCase().indexOf(q) < 0 && o.name.toLowerCase().indexOf(q) < 0) return false;
       return true;
     });
   }
 
   /* 榜单行与热力图色块共用同一张悬浮卡；榜单行跟随光标横向定位，色块居中于自身 */
-  productHover(o, hr, poolN, atMouse) {
+  productHover(o, hr, poolN, atMouse, riskCount) {
     return (e) => {
       var t = this.state.tip;
       if (t && t.code === o.code && t.i === -1) return;
       var r = e.currentTarget.getBoundingClientRect();
-      var rc = R.pool(this.state.rangeKey).complianceCount[o.code];
+      var rc = riskCount;
       var funnel = commentFunnelView(o.commentFunnel);
       this.setState({
         tip: {
@@ -296,7 +297,8 @@ class SectorOverview extends React.Component {
 
     /* 可见产品：搜索与筛选只改变可见范围，排名与色阶标尺仍来自全市场 */
     var P = R.pool(s.rangeKey);
-    var visible = self.visibleFor(s);
+    var complianceCount = opinionRiskCounts(P, s.rangeKey, function (code, rangeKey) { return R.complianceFor(code, rangeKey); });
+    var visible = self.visibleFor(s, complianceCount);
     /* 时间桶色阶：6 级离散蓝阶，按该产品区间峰值归一，相邻级别肉眼可分 */
     var STEP = ['#F1F3F6', '#D7E6F8', '#A8CAEF', '#6D9FD9', '#3574BC', '#0E4A8C'];
     var cellBg = function (v, peak) {
@@ -323,7 +325,7 @@ class SectorOverview extends React.Component {
       heat: { label: '讨论热度', note: '按区间讨论热度降序', get: function (o) { return o.discussionHeat; } },
       /* null 用与态度列同一个哨兵排到最末：`null - 5` 在 JS 里是 -5，不挡就会把「没标过」
          混进「0 条」那一段里排。 */
-      neg: { label: '舆情', note: '按舆情条数降序', get: function (o) { var n = P.complianceCount[o.code]; return n == null ? -1e9 : n; } },
+      neg: { label: '舆情', note: '按舆情条数降序', get: function (o) { var n = complianceCount[o.code]; return n == null ? -1e9 : n; } },
       /* `-1e9` 是「不参与排序」的哨兵，排到最末。标注整块缺失与样本不足在**排序**上
          同样处理（都排不出名次），但在**显示**上必须分开 —— 分开的地方在下面 rows 里。 */
       att: { label: '正面／负面', note: '按正面占比（正面÷(正面＋负面)）降序 · 样本不足不参与', get: function (o) { var a = o.attitude; if (a == null) return -1e9; var v = a.positive + a.negative; return (a.sampleSufficient && v) ? a.positive / v : -1e9; } }
@@ -351,7 +353,7 @@ class SectorOverview extends React.Component {
          到 5 条且已有正负态度就画比例；一条正负态度都识别不到时改画灰条。 */
       var att = o.attitude;
       var attitudeBar = sectorAttitudeBar(o);
-      var g = growthPct(o), negN = P.complianceCount[o.code];
+      var g = growthPct(o), negN = complianceCount[o.code];
       var on = s.sel === o.code;
       /* 热议总结整块可能是 null：它要 AI 归纳（`providers/sql.py::hot_summaries`），
          接真库时**整池一份**都没有。设计源直接读 `hs.text`／`hs.ok`／`hs.sample`，
@@ -393,7 +395,7 @@ class SectorOverview extends React.Component {
           : hsText,
         bg: on ? 'var(--csop-blue-50)' : (i % 2 ? 'var(--canvas)' : '#fff'),
         codeFg: on ? 'var(--csop-blue-700)' : 'var(--ink-900)',
-        hoverIn: self.productHover(o, heatRankOf(o), poolN, true),
+        hoverIn: self.productHover(o, heatRankOf(o), poolN, true, complianceCount[o.code]),
         hoverOut: () => { if (self.state.tip) self.setState({ tip: null }); },
         go: () => self.go({ sel: o.code, tip: null })
       };
@@ -463,8 +465,8 @@ class SectorOverview extends React.Component {
         sub: (tw >= 82 && th >= 50) ? (v == null ? '样本不足' : subLabel + ' ' + fmtVal(v)) : '',
         subFont: '500 10px/1.2 var(--font-mono)',
         ring: on ? 'inset 0 0 0 2px var(--csop-navy-900)' : 'inset 0 0 0 0.5px rgba(255,255,255,0.5)',
-        risk: !dim && P.complianceCount[o.code] > 0,
-        hoverIn: self.productHover(o, heatRankOf(o), poolN, false),
+        risk: !dim && complianceCount[o.code] > 0,
+        hoverIn: self.productHover(o, heatRankOf(o), poolN, false, complianceCount[o.code]),
         hoverOut: () => { if (self.state.tip) self.setState({ tip: null }); },
         go: () => self.go({ sel: o.code, tip: null })
       });
@@ -576,7 +578,7 @@ class SectorOverview extends React.Component {
       q: s.q, hasQ: hasQ, qBc: hasQ ? 'var(--csop-blue-600)' : 'var(--border-2)',
       onSearch: (e) => {
         var v = e.target.value;
-        var res = self.visibleFor(Object.assign({}, s, { q: v }));
+        var res = self.visibleFor(Object.assign({}, s, { q: v }), complianceCount);
         self.go({ q: v, sel: res.length === 1 ? res[0].code : null, tip: null, flatAll: false });
       },
       clearQ: () => self.go({ q: '', sel: null, tip: null }),

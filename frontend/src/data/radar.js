@@ -44,6 +44,7 @@
 import { invalidate, read, qs } from '../lib/api'
 import { withTodayPlaceholder } from '../lib/datePresets'
 import { parseCustomRange, rangeQuery } from '../lib/customRange'
+import { narrowOpinionRisk } from '../lib/opinionRisk'
 import {
   isTodayRange,
   todayBenchmark,
@@ -270,11 +271,11 @@ const migrated = {
   /* complianceFor(code, range) → GET /products/{code}/compliance?range=
      `{status, list}`：同业产品是 'na'（字段不适用），风险识别没接上是 'unavailable'。 */
   complianceFor(code, rangeKey) {
-    return todayReady(
+    return narrowOpinionRisk(todayReady(
       rangeKey,
       () => read(product(code, 'compliance', rangeKey)),
       () => todayCompliance(meta(), code),
-    )
+    ))
   },
 
   /* topicsFor(code, range) → GET /products/{code}/topics?range=
