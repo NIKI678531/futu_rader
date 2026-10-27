@@ -48,7 +48,7 @@ test('all business pages use the shared date preset tabs', () => {
   assert.match(tabs, /aria-pressed=\{Boolean\(preset\.active\)\}/)
   assert.match(tabs, /preset\.custom \? setOpen\(!open\) : choose\(preset\)/)
   assert.match(tabs, /data-custom-date-picker/)
-  assert.match(tabs, /CUSTOM_SYNTHESIS_MESSAGE/)
+  assert.match(tabs, /CUSTOM_ANALYSIS_MESSAGE/)
   assert.match(tabs, /data-screen-diff-new=\{preset\.placeholder \|\| preset\.screenDiffNew \? 'today-range-placeholder'/)
   assert.match(source('data/radar.js'), /screenDiffNew: p\.key === 'd0'/)
   assert.doesNotMatch(tabs, /data-date-preset-notice|数据接入中/)

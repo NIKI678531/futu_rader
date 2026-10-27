@@ -12,7 +12,7 @@ export default function Stages({ v }) {
           <span style={s('min-width:0;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500);text-wrap:pretty')}>讨论热度随时间变化 · AI 按时段归纳主流观点（{v.stageGranLabel}）· 与上方趋势面板同一时间轴</span>
         </div>
         <div style={s('flex:none;display:flex;align-items:center;gap:8px')}>
-          {v.stageUnavailable && <span style={s('padding:3px 10px;border-radius:var(--radius-pill);background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>AI 阶段观点 · 待分析</span>}
+          {v.stageUnavailable && <span style={s('padding:3px 10px;border-radius:var(--radius-pill);background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>{v.stageAggregate ? 'AI 态度已聚合 · 阶段待归纳' : 'AI 阶段观点 · 待分析'}</span>}
           <span style={s('padding:3px 10px;border-radius:var(--radius-pill);background:var(--csop-blue-50);font:500 12px/1.6 var(--font-cjk);color:var(--csop-blue-700);white-space:nowrap')}>折线粒度 {v.heatGranLabel}</span>
         </div>
       </div>

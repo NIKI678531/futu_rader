@@ -35,12 +35,17 @@ def build_custom_key(date_from, date_to):
     key = custom_key(date_from, date_to)
     provider = get_provider()
     complete = provider.build_range("d30")
+    earliest = None
     latest = None
     if complete is not None and complete is not MISSING:
         from datetime import date
         latest = date.fromisoformat(complete["to"])
+    bounds = getattr(provider, "custom_date_bounds", None)
+    if callable(bounds):
+        earliest, provider_latest = bounds()
+        latest = provider_latest or latest
     first, last = parse_custom_key(key)
-    validate_selectable(first, last, latest)
+    validate_selectable(first, last, earliest, latest)
     return key
 
 

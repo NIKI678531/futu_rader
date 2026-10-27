@@ -30,7 +30,7 @@ import Kpis from './Kpis'
 import Board from './Board'
 import Tooltip from './Tooltip'
 import Drawer from './Drawer'
-import { CUSTOM_SYNTHESIS_MESSAGE, hrefWithRange, listenForRangeNavigation, parseCustomRange, rangeFromSearch } from '../../lib/customRange'
+import { hrefWithRange, listenForRangeNavigation, rangeFromSearch } from '../../lib/customRange'
 
 /* 热度为 null 时，说清楚缺的是哪一项。
 
@@ -269,7 +269,6 @@ class SectorOverview extends React.Component {
 
   renderVals() {
     var s = this.state, self = this;
-    var customRange = !!parseCustomRange(s.rangeKey);
     var range = R.buildRange(s.rangeKey);
     var rk = R.ranks(s.rangeKey);
 
@@ -624,8 +623,8 @@ class SectorOverview extends React.Component {
          设计源直接 `.text`／`.slice(0,3)`，第一次开抽屉就 TypeError。null 与空数组
          在这里是两句不同的话，见 productMonitor 同处注释。 */
       var sum = R.summaryFor(code, s.rangeKey);
-      var sumNa = sum == null || customRange;
-      if (sumNa) sum = { text: customRange ? CUSTOM_SYNTHESIS_MESSAGE : '数据暂不可用 — 舆情总结尚未生成或数据源未提供。', sample: null };
+      var sumNa = sum == null;
+      if (sumNa) sum = { text: '数据暂不可用 — 舆情总结尚未生成或数据源未提供。', sample: null };
       /* 同 rows 那处：attitude 整块可能为 null（ADR-0017）。`attNa` 单独一条，
          别并进 `sampleSufficient`。 */
       var att = o.attitude, attNa = att == null;
@@ -730,11 +729,12 @@ class SectorOverview extends React.Component {
         ofg: o.ownership === 'own' ? 'var(--csop-blue-700)' : 'var(--ink-600)',
         summary: sum.text, sample: sumNa ? '数据暂不可用' : String(sum.sample), sampleOk: !sumNa, rangeText: range.text,
         /* 正常结果不再显示来源徽章；只有 AI 要点尚未生成时保留状态提示。 */
-        sumAiLabel: sum.aiStatus === 'unavailable' ? '计数句 · AI 要点待生成' : null,
+        sumAiLabel: sum.aiStatus === 'unavailable' ? '计数句 · AI 要点待生成'
+          : sum.aiStatus === 'aggregate' ? 'AI 标注 · 按区间聚合' : null,
         posThemes: pos, negThemes: neg,
         noPos: !posNa && pos.length === 0, noNeg: !negNa && neg.length === 0,
         posUnavailable: posNa, negUnavailable: negNa,
-        synthesisUnavailableText: customRange ? CUSTOM_SYNTHESIS_MESSAGE : null,
+        synthesisUnavailableText: null,
         posTotal: attNa ? '数据暂不可用' : String(att.positive),
         negTotal: attNa ? '数据暂不可用' : String(att.negative),
         neuTotal: attNa ? '数据暂不可用' : String(att.neutral),
@@ -774,7 +774,7 @@ class SectorOverview extends React.Component {
           };
         }),
         hasComps: comps.status === 'ok', noComps: comps.status !== 'ok',
-        compsEmptyText: customRange ? CUSTOM_SYNTHESIS_MESSAGE : comps.status === 'unavailable'
+        compsEmptyText: comps.status === 'unavailable'
           ? '数据暂不可用 — 该产品的竞品关系尚未核验，映射字段未提供。'
           : '暂无相关内容 — 映射表与自动识别均未给出关联产品。',
         comps: comps.list.slice(0, 3).map(function (c) {

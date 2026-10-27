@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 
 
 PRESET_KEYS = ("d0", "d1", "d2", "d7", "d14", "d30", "mtd")
@@ -51,16 +51,18 @@ def is_valid_range_key(key: object) -> bool:
 def validate_selectable(
     first: date,
     last: date,
+    earliest_available: date | None,
     latest_complete: date | None,
 ) -> None:
-    """Validate against the rolling 30-complete-day window when its anchor exists."""
+    """Validate a short interval against the dates actually available to query."""
     custom_key(first, last)  # validates order and inclusive length
-    if latest_complete is None:
-        return
-    earliest = latest_complete - timedelta(days=CUSTOM_MAX_DAYS - 1)
-    if first < earliest or last > latest_complete:
+    if earliest_available is not None and first < earliest_available:
         raise CustomRangeError(
-            "自选日期仅可选择最新完整数据日及此前 29 天"
+            f"自选日期开始日不得早于最早可用数据日 {earliest_available.isoformat()}"
+        )
+    if latest_complete is not None and last > latest_complete:
+        raise CustomRangeError(
+            f"自选日期结束日不得晚于最新完整数据日 {latest_complete.isoformat()}"
         )
 
 

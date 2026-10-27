@@ -38,12 +38,13 @@ def test_meta_returns_ok_envelope(client):
     assert r.get_json()["status"] == "ok"
 
 
-def test_meta_advertises_the_rolling_complete_day_custom_window(client):
+def test_meta_advertises_the_available_complete_day_custom_window(client):
     capability = client.get("/api/v1/meta").get_json()["data"]["customRange"]
     assert capability == {
         "earliestDate": "2026-08-03",
         "latestDate": "2026-09-01",
         "maxDays": 30,
+        "analysisSupported": True,
         "generativeSupported": False,
     }
 

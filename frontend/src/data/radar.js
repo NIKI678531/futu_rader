@@ -43,7 +43,7 @@
  */
 import { invalidate, read, qs } from '../lib/api'
 import { withTodayPlaceholder } from '../lib/datePresets'
-import { CUSTOM_SYNTHESIS_MESSAGE, parseCustomRange, rangeQuery } from '../lib/customRange'
+import { parseCustomRange, rangeQuery } from '../lib/customRange'
 import {
   isTodayRange,
   todayBenchmark,
@@ -202,7 +202,6 @@ const migrated = {
      `ok` 为 false 时 text 已经是该状态的文案，屏幕直接渲染，不按 status 再拼一遍。 */
   hotSummaryFor(code, rangeKey) {
     if (isLocalToday(rangeKey)) return null
-    if (parseCustomRange(rangeKey)) return { ok: false, text: CUSTOM_SYNTHESIS_MESSAGE, sample: null, status: 'unsupported' }
     /* 整池那份**自己**可能是 null（`DATA_PROVIDER=sql` 下热议总结要 AI 归纳，
        `providers/sql.py::hot_summaries` 整块返回 None）。`null[code]` 是硬 TypeError，
        整个板块总览当场白屏、错误边界报「页面渲染失败」—— 而后端好好的，只是这一栏
@@ -216,7 +215,6 @@ const migrated = {
   /* summaryFor(code, range) → GET /products/{code}/summary?range= */
   summaryFor(code, rangeKey) {
     if (isLocalToday(rangeKey)) return null
-    if (parseCustomRange(rangeKey)) return { text: CUSTOM_SYNTHESIS_MESSAGE, sample: null, aiStatus: 'unsupported' }
     return read(product(code, 'summary', rangeKey))
   },
 
@@ -224,7 +222,6 @@ const migrated = {
      端点只返回当前产品的产品态度与市场摘要；前端仍按 code 校验，避免旧缓存串产品。 */
   marketOutlook(code, rangeKey) {
     if (isLocalToday(rangeKey)) return null
-    if (parseCustomRange(rangeKey)) return null
     return read(marketOutlookProduct(code, rangeKey))
   },
 
@@ -233,7 +230,6 @@ const migrated = {
      调用点从来都是正负各取一次，拆成两个端点等于白挨一次串行往返。 */
   themesFor(code, rangeKey, polarity) {
     if (isLocalToday(rangeKey)) return null
-    if (parseCustomRange(rangeKey)) return null
     /* 同 hotSummaryFor：主题聚类整块要 AI（`providers/sql.py::themes_for` 返回 None），
        `null['positive']` 是硬 TypeError，产品监控整页白屏。 */
     const both = read(product(code, 'themes', rangeKey))
@@ -250,7 +246,6 @@ const migrated = {
 
   themesStale(code, rangeKey) {
     if (isLocalToday(rangeKey)) return null
-    if (parseCustomRange(rangeKey)) return null
     const both = read(product(code, 'themes', rangeKey))
     return both == null ? null : both.stale
   },
@@ -258,7 +253,6 @@ const migrated = {
   /* negCatsFor(code, range) → GET /products/{code}/negative-categories?range= */
   negCatsFor(code, rangeKey) {
     if (isLocalToday(rangeKey)) return null
-    if (parseCustomRange(rangeKey)) return null
     return read(product(code, 'negative-categories', rangeKey))
   },
 
@@ -266,7 +260,6 @@ const migrated = {
      `{status, list}`：'unavailable'（传播关系取不到）与 'empty'（确实没有对位竞品）
      在页面上是两句话，别在这一层合并成「list 为空」。 */
   competitorsFor(code, rangeKey) {
-    if (parseCustomRange(rangeKey)) return { status: 'unsupported', list: [] }
     return todayReady(
       rangeKey,
       () => read(product(code, 'competitors', rangeKey)),
@@ -289,7 +282,6 @@ const migrated = {
      没人聊它」，页面渲染「暂无内容」，不是 0 条话题里挑出来的 0。 */
   topicsFor(code, rangeKey) {
     if (isLocalToday(rangeKey)) return null
-    if (parseCustomRange(rangeKey)) return null
     return read(product(code, 'topics', rangeKey))
   },
 
@@ -452,10 +444,11 @@ const constants = {
       })).filter(p => p.k !== 'mtd'),
     )
     const custom = meta().customRange
-    if (custom?.earliestDate && custom?.latestDate) presets.push({
+    if (custom?.latestDate) presets.push({
       k: 'custom', label: '自选日期', custom: true,
       earliestDate: custom.earliestDate, latestDate: custom.latestDate,
-      maxDays: custom.maxDays, generativeSupported: custom.generativeSupported,
+      maxDays: custom.maxDays, analysisSupported: custom.analysisSupported,
+      generativeSupported: custom.generativeSupported,
     })
     return presets
   },

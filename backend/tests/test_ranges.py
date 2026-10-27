@@ -4,9 +4,12 @@
 少一样前端就得自己补，铁律 1 就破了。
 """
 
+from datetime import date
+
 import pytest
 
 import core.ranges as ranges_core
+from core.range_spec import validate_selectable
 from sql_fixture import make_sql_provider
 
 RANGE_KEYS = ["d0", "d1", "d2", "d7", "d14", "d30"]
@@ -108,6 +111,41 @@ def test_custom_range_uses_inclusive_hkt_days_and_an_equal_adjacent_benchmark(cl
     assert data["benchTo"] == "2026-08-19"
 
 
+def test_short_historical_range_is_valid_when_its_facts_are_available():
+    # Regression: 08-03 ～ 08-10 is eight days.  Its age relative to the
+    # current anchor must not make the Apply button/API reject it.
+    validate_selectable(
+        date(2026, 8, 3),
+        date(2026, 8, 10),
+        date(2026, 7, 1),
+        date(2026, 10, 26),
+    )
+
+
+def test_sql_provider_loads_retained_historical_content_beyond_the_latest_30_days():
+    provider = make_sql_provider(anchor="2026-10-26")
+    key = "custom:2026-08-24:2026-08-25"
+
+    rng = provider.build_range(key)
+    pool = provider.pool(key)
+
+    assert rng["from"] == "2026-08-24" and rng["to"] == "2026-08-25"
+    assert pool is not None
+    assert any(item["comments"] > 0 for item in pool["list"])
+
+
+def test_consecutive_custom_intervals_keep_compliance_caches_isolated():
+    provider = make_sql_provider()
+    first = provider.build_range("custom:2026-08-24:2026-08-24")
+    second = provider.build_range("custom:2026-08-24:2026-08-25")
+
+    provider._compliance_scan(first)
+    provider._compliance_scan(second)
+
+    assert ("compliance", "custom", "2026-08-24", "2026-08-24") in provider._cache
+    assert ("compliance", "custom", "2026-08-24", "2026-08-25") in provider._cache
+
+
 @pytest.mark.parametrize(
     "query",
     [
@@ -124,13 +162,31 @@ def test_custom_range_rejects_missing_reversed_out_of_window_and_invalid_dates(c
 
 
 def test_custom_range_query_is_supported_by_every_range_sensitive_endpoint(sql_client):
-    response = sql_client.get(
-        "/api/v1/pool?range=custom&from=2026-08-20&to=2026-08-25"
-    )
+    query = "?range=custom&from=2026-08-20&to=2026-08-25"
+    response = sql_client.get("/api/v1/pool" + query)
     assert response.status_code == 200
     data = response.get_json()["data"]
     assert isinstance(data["list"], list)
     assert "complianceCount" in data
+
+    # Regression: the frontend used to short-circuit all of these for custom
+    # dates.  Keep the public HTTP tuple wired through every AI-backed surface,
+    # even when an individual product legitimately returns unavailable/empty.
+    for path in (
+        "/api/v1/hot-summaries",
+        "/api/v1/products/3033/summary",
+        "/api/v1/products/3033/market-outlook",
+        "/api/v1/products/3033/themes",
+        "/api/v1/products/3033/negative-categories",
+        "/api/v1/products/3033/competitors",
+        "/api/v1/products/3033/topics",
+        "/api/v1/products/3033/stages",
+    ):
+        endpoint = sql_client.get(path + query)
+        assert endpoint.status_code == 200, path
+        assert endpoint.get_json()["status"] in {
+            "ok", "empty", "unavailable", "low_sample", "na",
+        }, path
 
 
 def test_internal_custom_cache_token_is_not_accepted_as_a_public_query(sql_client):

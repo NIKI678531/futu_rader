@@ -38,7 +38,7 @@ import Stages from './Stages'
 import Topics from './Topics'
 import Competitors from './Competitors'
 import EvidenceDrawer from './EvidenceDrawer'
-import { CUSTOM_SYNTHESIS_MESSAGE, hrefWithRange, listenForRangeNavigation, parseCustomRange, rangeQuery } from '../../lib/customRange'
+import { hrefWithRange, listenForRangeNavigation, rangeQuery } from '../../lib/customRange'
 
 export default class ProductMonitor extends React.Component {
   static defaultProps = {
@@ -365,7 +365,6 @@ export default class ProductMonitor extends React.Component {
     var code = productCodeOrDefault(R.MASTER, s.code);
     var m = R.MASTER[code];
     var range = R.buildRange(s.rangeKey);
-    var customRange = !!parseCustomRange(s.rangeKey);
     var P = R.pool(s.rangeKey);
     var o = R.observe(code, s.rangeKey);
     var funnel = commentFunnelView(o.commentFunnel);
@@ -731,7 +730,7 @@ export default class ProductMonitor extends React.Component {
 
       marketOutlookRows: marketOutlookRows,
       marketOutlookNa: marketOutlookNa,
-      marketOutlookUnavailableText: customRange ? CUSTOM_SYNTHESIS_MESSAGE : '数据暂不可用 — 市场行情摘要尚未生成。',
+      marketOutlookUnavailableText: '数据暂不可用 — 市场行情摘要尚未生成。',
       marketOutlookEmpty: !marketOutlookNa && marketOutlookRows.length === 0,
       marketOutlookTitle: '产品市场观点与总结',
       marketOutlookEmptyText: '暂无相关内容 — 当前区间没有识别到该产品相关的市场方向讨论。',
@@ -785,7 +784,7 @@ export default class ProductMonitor extends React.Component {
       issuerToggle: () => this.setState({ issuerMore: !s.issuerMore }),
       noPos: !posNa && posThemes.length === 0, noNeg: !negNa && negThemes.length === 0,
       posUnavailable: posNa, negUnavailable: negNa,
-      synthesisUnavailableText: customRange ? CUSTOM_SYNTHESIS_MESSAGE : null,
+      synthesisUnavailableText: null,
       posMoreVisible: posAll.length > 3, negMoreVisible: negAll.length > 3,
       posMoreLabel: s.posMore ? '收起' : '展开全部 ' + posAll.length + ' 条',
       negMoreLabel: s.negMore ? '收起' : '展开全部 ' + negAll.length + ' 条',
@@ -823,7 +822,7 @@ export default class ProductMonitor extends React.Component {
       hasComps: comps.length > 0, noComps: comps.length === 0, comps: comps,
       compCount: String(comps.length),
       compScopeText: o.ownership === 'own' ? '自家产品 · 固定关联竞品与 AI 自动候选' : '竞品产品 · 反向展示对位自家产品与同类竞品',
-      compsEmptyText: customRange ? CUSTOM_SYNTHESIS_MESSAGE : compsRes.status === 'unavailable'
+      compsEmptyText: compsRes.status === 'unavailable'
         ? '数据暂不可用 — 该产品的竞品关系字段尚未核验，不展示推测关联。'
         : '暂无相关内容 — 映射表与自动识别在当前区间内都没有给出关联产品。',
 
@@ -897,6 +896,7 @@ export default class ProductMonitor extends React.Component {
     var hh = (s.heatHover != null && hsr[s.heatHover]) ? hsr[s.heatHover] : null, hhStage = hh ? stageOf(hh.i) : null;
     var stageOk = SG.status === 'ok' || SG.status === 'low_sample';
     var stageUnavailable = SG.status === 'unavailable';
+    var stageAggregate = SG.analysisMode === 'annotation_aggregate';
     var lowTone = ['var(--ink-100)', 'var(--ink-500)'];
     var heatDays = [];
     if (isHalf) {
@@ -907,7 +907,8 @@ export default class ProductMonitor extends React.Component {
     Object.assign(out, {
       trendW: String(HG.W), heatGridW: String(hpw), axRX: String(HG.W - 127), axPX: String(HG.W - 72), trendBoxRef: self.trendBoxRef,
       stageOk: stageOk, stageUnavailable: stageUnavailable, stageEmpty: SG.status === 'empty',
-      stageUnavailableText: customRange ? CUSTOM_SYNTHESIS_MESSAGE : null,
+      stageAggregate: stageAggregate,
+      stageUnavailableText: SG.statusDetail || null,
       heatChartVisible: hsr.length > 0 && (stageOk || stageUnavailable),
       stageGranLabel: SG.granLabel, heatGranLabel: isHalf ? '60 分钟' : '自然日', stageRule: SG.rule || R.STAGE_RULE, heatFormulaText: R.HEAT_FORMULA,
       heatPath: heatPath,
@@ -922,8 +923,8 @@ export default class ProductMonitor extends React.Component {
       heatTipRows: hh ? [
         { k: '讨论热度', v: hh.heat.toLocaleString('en-US') },
         { k: '筛后评论量', v: hh.comments.toLocaleString('en-US') },
-        { k: '积极 ／ 消极', v: stageUnavailable ? 'AI 分析待完成' : hh.positive + ' ／ ' + hh.negative },
-        { k: '所属阶段', v: stageUnavailable ? 'AI 分析待完成' : (hhStage ? numOf(hhStage.n) + ' ' + hhStage.categoryLabel : '—') }
+        { k: '积极 ／ 消极', v: stageUnavailable && !stageAggregate ? 'AI 分析待完成' : hh.positive + ' ／ ' + hh.negative },
+        { k: '所属阶段', v: stageUnavailable ? '阶段归纳待生成' : (hhStage ? numOf(hhStage.n) + ' ' + hhStage.categoryLabel : '—') }
       ] : [],
       heatAxis: hsr.filter(function (p, i) { return isHalf ? !!p.label : (i % every === 0); }).map(function (p) { return { x: hx(p.i).toFixed(1), label: p.label }; }),
       hasHeatDays: heatDays.length > 0,

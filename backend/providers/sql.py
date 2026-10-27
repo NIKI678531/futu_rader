@@ -549,7 +549,8 @@ class SqlProvider:
             return None
         if custom is not None:
             first, last = custom
-            validate_selectable(first, last, self._anchor)
+            earliest, latest = self.custom_date_bounds()
+            validate_selectable(first, last, earliest, latest)
             return build_custom(first, last)
         if key != "d0":
             return build(key, self._anchor)
@@ -564,6 +565,43 @@ class SqlProvider:
             else self._anchor + timedelta(days=1)
         )
         return build("d0", data_day, data_through=data_through)
+
+    def custom_date_bounds(self):
+        """Return the first stored HKT fact day and the latest complete day.
+
+        The interval itself is still capped at 30 days.  The former UI used
+        ``anchor - 29`` as the earliest day, which incorrectly prevented users
+        from selecting a short historical interval such as 08-03 to 08-10 even
+        when those facts were still present in the database.
+        """
+        key = ("custom_date_bounds",)
+        if key not in self._cache:
+            try:
+                with self._engine.connect() as conn:
+                    first_timestamp = conn.execute(
+                        select(func.min(feeds.c.posted_at))
+                    ).scalar_one_or_none()
+            except SQLAlchemyError:
+                log.exception("custom_date_bounds_read_failed")
+                first_timestamp = None
+            earliest = (
+                utc_naive_to_hkt(first_timestamp).date()
+                if first_timestamp is not None
+                else None
+            )
+            # Never make the picker narrower than the previously advertised
+            # rolling d30 window.  A sparse/empty database may have its first
+            # stored post near the anchor while the intervening empty days are
+            # still valid, queryable facts.
+            rolling_earliest = (
+                self._anchor - timedelta(days=29)
+                if self._anchor is not None
+                else None
+            )
+            if rolling_earliest is not None:
+                earliest = min(earliest, rolling_earliest) if earliest else rolling_earliest
+            self._cache[key] = (earliest, self._anchor)
+        return self._cache[key]
 
     def _d0_data_through(self):
         key = ("d0_data_through",)
@@ -1692,6 +1730,7 @@ class SqlProvider:
         rng = self._filtered_range(range_key)
         if rng is None:
             return None
+        custom = parse_custom_key(range_key) is not None
         scan = self._scan(rng["from"], rng["to"], rng)
         out = {}
         for code in self._by_code:
@@ -1719,6 +1758,30 @@ class SqlProvider:
                     out[code] = {"status": "low_sample", "text": "样本不足，暂无主流观点", "sample": valid, "ok": False}
                 continue
             if row is None or not isinstance(row["value"], dict) or "text" not in row["value"]:
+                if custom:
+                    net = att["positive"] - att["negative"]
+                    comparison = (
+                        "积极反馈占多数"
+                        if net > 0
+                        else "消极反馈占多数"
+                        if net < 0
+                        else "积极与消极反馈数量相当"
+                    )
+                    out[code] = {
+                        "status": "ok",
+                        "text": (
+                            f"AI 标注聚合：{comparison}"
+                            f"（积极 {att['positive']} 条、消极 {att['negative']} 条）"
+                        ),
+                        "sample": valid,
+                        "tone": "pos" if net > 0 else "neg" if net < 0 else "neu",
+                        "ok": True,
+                        "analysisMode": "annotation_aggregate",
+                        "reviewState": None,
+                        "evidenceIds": [],
+                        "stale": False,
+                    }
+                    continue
                 out[code] = {"status": "unavailable", "text": "数据暂不可用", "sample": valid, "ok": False}
                 continue
             net = att["positive"] - att["negative"]
@@ -1867,8 +1930,16 @@ class SqlProvider:
         return {
             "text": "".join(sentences), "sample": valid, "low": False, "points": points,
             "evidenceIds": list(dict.fromkeys(ev_ids)),
-            "aiStatus": "ok" if has_model_points else "unavailable",
-            "summaryMode": "ai" if has_model_points else "facts",
+            "aiStatus": (
+                "ok" if has_model_points else
+                "aggregate" if parse_custom_key(range_key) is not None else
+                "unavailable"
+            ),
+            "summaryMode": (
+                "ai" if has_model_points else
+                "annotation_aggregate" if parse_custom_key(range_key) is not None else
+                "facts"
+            ),
             "reviewState": row["reviewState"] if row else None,
             "stale": has_model_points and self._stale(code, range_key, "summary"),
         }
@@ -1914,6 +1985,11 @@ class SqlProvider:
             code, core_themes.group_by_polarity(u["units"]), self._base_units_grouped(code, rng),
             rng["buckets"], self._bucket_index(rng), self._labels(code, range_key, "theme_label", split=True),
         )
+        if parse_custom_key(range_key) is not None:
+            for row in out["positive"] + out["negative"]:
+                if row.get("labelStatus") == "unavailable":
+                    row["labelStatus"] = "aggregate"
+                row["analysisMode"] = "annotation_aggregate"
         out["stale"] = self._stale(code, range_key, "theme_label")
         return out
 
@@ -2083,6 +2159,10 @@ class SqlProvider:
         stale = self._stale(code, range_key, "neg_category")
         for row in rows:
             row["stale"] = stale
+            if parse_custom_key(range_key) is not None:
+                if row.get("labelStatus") == "unavailable":
+                    row["labelStatus"] = "aggregate"
+                row["analysisMode"] = "annotation_aggregate"
         return rows
 
     def topics_for(self, code, range_key):
@@ -2114,6 +2194,10 @@ class SqlProvider:
         stale = self._stale(code, range_key, "topic_label")
         for row in rows:
             row["stale"] = stale
+            if parse_custom_key(range_key) is not None:
+                if row.get("labelStatus") == "unavailable":
+                    row["labelStatus"] = "aggregate"
+                row["analysisMode"] = "annotation_aggregate"
         return rows
 
     def stages_for(self, code, range_key):
@@ -2155,6 +2239,13 @@ class SqlProvider:
 
         out = core_stages.build(code, series, rng["gran"], rng["days"], cat_of, digest_of, summary_of)
         out["stale"] = self._stale(code, range_key, "stage_unit", "stage_summary")
+        if parse_custom_key(range_key) is not None:
+            out["analysisMode"] = "annotation_aggregate"
+            if out["status"] == "unavailable":
+                out["statusDetail"] = (
+                    "已按所选区间聚合 AI 积极／消极标注；"
+                    "阶段分类与阶段摘要尚无该区间的生成结果。"
+                )
         return out
 
     def competitors_for(self, code, range_key):
@@ -2533,7 +2624,8 @@ class SqlProvider:
         """
         if code not in self._by_code:
             return MISSING
-        rng = self._filtered_range(str(ctx_key).split("|")[0])
+        range_key = str(ctx_key).split("|", 1)[0]
+        rng = self._filtered_range(range_key)
         if rng is None:
             return None
         window = _window(rng)
@@ -2573,13 +2665,13 @@ class SqlProvider:
         panel_id = str(ctx_key).split("|", 1)[1]
         referenced_ids = set()
         if panel_id == "sum":
-            synth_row = self._synth(code, rng["key"], "summary").get(NO_SUBJECT)
+            synth_row = self._synth(code, range_key, "summary").get(NO_SUBJECT)
             referenced_ids.update((synth_row or {}).get("evidenceIds") or [])
         else:
             prefix = f"{code}-{polarity}-"
             if panel_id.startswith(prefix):
                 aspect = panel_id[len(prefix):]
-                synth_row = self._synth(code, rng["key"], "theme_label").get(
+                synth_row = self._synth(code, range_key, "theme_label").get(
                     f"{polarity}|{aspect}"
                 )
                 referenced_ids.update((synth_row or {}).get("evidenceIds") or [])

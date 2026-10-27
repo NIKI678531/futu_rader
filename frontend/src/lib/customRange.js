@@ -1,5 +1,5 @@
 export const CUSTOM_PREFIX = 'custom:'
-export const CUSTOM_SYNTHESIS_MESSAGE = '自选日期区间暂不提供 AI 生成总结'
+export const CUSTOM_ANALYSIS_MESSAGE = 'AI 分析按所选日期区间重新聚合'
 
 function validIsoDay(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return false
@@ -16,6 +16,22 @@ export function parseCustomRange(value) {
   return match ? { from: match[1], to: match[2] } : null
 }
 
+export function customRangeValidation(from, to, capability = {}) {
+  const maxDays = capability.maxDays || 30
+  if (!from || !to) return { days: 0, error: '请选择开始日和结束日' }
+  if (!validIsoDay(from) || !validIsoDay(to)) return { days: 0, error: '日期格式无效' }
+  const days = Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z')) / 86400000) + 1
+  if (from > to) return { days, error: '结束日不能早于开始日' }
+  if (days > maxDays) return { days, error: `首尾合计 ${days} 个自然日，最多可选 ${maxDays} 天` }
+  if (capability.earliestDate && from < capability.earliestDate) {
+    return { days, error: `开始日最早可选 ${capability.earliestDate}` }
+  }
+  if (capability.latestDate && to > capability.latestDate) {
+    return { days, error: `结束日最晚可选 ${capability.latestDate}` }
+  }
+  return { days, error: '' }
+}
+
 export function rangeQuery(rangeKey) {
   const custom = parseCustomRange(rangeKey)
   return custom ? { range: 'custom', from: custom.from, to: custom.to } : { range: rangeKey }
@@ -29,14 +45,8 @@ export function rangeFromSearch(search, presets, fallback = 'd7') {
     const to = params.get('to')
     const capability = presets.find(item => item.custom || item.k === 'custom')
     if (!capability) return fallback
-    const days = validIsoDay(from) && validIsoDay(to)
-      ? Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z')) / 86400000) + 1
-      : 0
-    if (validIsoDay(from) && validIsoDay(to) && from <= to
-      && Number.isInteger(capability.maxDays)
-      && days <= capability.maxDays
-      && (!capability.earliestDate || from >= capability.earliestDate)
-      && (!capability.latestDate || to <= capability.latestDate)) {
+    const validation = customRangeValidation(from, to, capability)
+    if (Number.isInteger(capability.maxDays) && !validation.error) {
       return makeCustomRange(from, to)
     }
     return fallback

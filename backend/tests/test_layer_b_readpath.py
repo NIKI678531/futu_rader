@@ -618,6 +618,41 @@ class TestTopicsAndHot:
 
 
 class TestSummary:
+    def test_custom_range_aggregates_released_ai_labels_without_reusing_preset_prose(self, provider):
+        p = annotated(provider)
+        add_synth(p, [
+            {"kind": "summary", "value": {"points": [
+                {"text": "这是 d1 专属文案", "evidence_ids": ["c100"]},
+            ]}},
+            {"kind": "hot_summary", "value": {"text": "这是 d1 热议文案"}},
+        ])
+        custom = "custom:2026-08-25:2026-08-25"
+
+        hot = p.hot_summaries(custom)[OWN_CODE]
+        summary = p.summary_for(OWN_CODE, custom)
+        themes = p.themes_for(OWN_CODE, custom)
+        categories = p.neg_cats_for(OWN_CODE, custom)
+        topics = p.topics_for(OWN_CODE, custom)
+        outlook = p.market_outlook(OWN_CODE, custom)["list"][0]
+        stages = p.stages_for(OWN_CODE, custom)
+
+        assert hot["status"] == "ok" and hot["analysisMode"] == "annotation_aggregate"
+        assert "积极 8 条、消极 4 条" in hot["text"]
+        assert "d1 热议文案" not in hot["text"]
+        assert summary["aiStatus"] == "aggregate"
+        assert summary["summaryMode"] == "annotation_aggregate"
+        assert "d1 专属文案" not in summary["text"]
+        assert all(
+            row["analysisMode"] == "annotation_aggregate" and row["labelStatus"] == "aggregate"
+            for row in themes["positive"] + themes["negative"] + categories + topics
+        )
+        assert outlook["status"] == "ok"
+        assert outlook["analysisMode"] == "annotation_aggregate"
+        assert "看空 1" in outlook["summary"]
+        assert stages["analysisMode"] == "annotation_aggregate"
+        assert stages["status"] == "unavailable"
+        assert "AI 积极／消极标注" in stages["statusDetail"]
+
     def test_dirty_source_keeps_the_previous_summary_and_marks_it_stale(self, provider):
         p = annotated(provider)
         add_synth(p, [{"kind": "summary", "value": {"points": [

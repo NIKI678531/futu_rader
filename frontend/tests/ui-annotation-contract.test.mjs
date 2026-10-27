@@ -67,7 +67,10 @@ test('visible application surfaces omit the traceable-source badge only', () => 
   const badges = source('lib/view.js')
   assert.match(badges, /if \(state === 'needs_review'\) return 'AI 生成 · 待确认'/)
   assert.match(badges, /return hasEvidence \? null : 'AI 生成'/)
-  assert.match(source('screens/productMonitor/Stages.jsx'), /v\.stageUnavailable && <span[^>]*>AI 阶段观点 · 待分析<\/span>/)
+  const stages = source('screens/productMonitor/Stages.jsx')
+  assert.match(stages, /v\.stageUnavailable && <span/)
+  assert.match(stages, /AI 阶段观点 · 待分析/)
+  assert.match(stages, /AI 态度已聚合 · 阶段待归纳/)
 })
 
 test('visible application surfaces do not use the legacy freshness wording', () => {

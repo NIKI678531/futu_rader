@@ -157,17 +157,18 @@ def market_outlook_row(product, topics, attitude_counts):
         for key in ("positive", "negative", "neutral")
     ))
     primary = max(valid, key=lambda topic: (int(topic.get("mentions") or 0), str(topic.get("id") or "")))
-    # SQL topics carry a deterministic fallback sentence while their AI label is
-    # pending.  This table promises an AI topic summary, so do not present that
-    # fallback as generated prose.  Frozen demo rows predate ``labelStatus`` and
-    # are complete by construction.
+    # SQL topics normally hide their deterministic fallback while a preset's
+    # generated label is pending.  A custom range is different: its ``aggregate``
+    # row is an exact-window aggregation of released per-comment AI direction
+    # labels, so the fallback sentence is the analysis result rather than prose
+    # borrowed from another date preset.
     label_status = primary.get("labelStatus")
     stale = bool(primary.get("stale"))
     # Freshness is an operational signal, not an availability gate.  The
     # currently published generation stays visible while the dirty/older
     # input is being recomputed (ADR-0033); unsupported prompt versions are
     # still rejected independently through ``labelStatus``.
-    summary = primary.get("summary") if label_status in (None, "ok") else None
+    summary = primary.get("summary") if label_status in (None, "ok", "aggregate") else None
     return {
         **base,
         **opinion,
@@ -177,6 +178,11 @@ def market_outlook_row(product, topics, attitude_counts):
         "stale": stale,
         "reviewState": primary.get("reviewState"),
         "evidenceIds": list(primary.get("evidenceIds") or []),
+        **(
+            {"analysisMode": primary["analysisMode"]}
+            if primary.get("analysisMode")
+            else {}
+        ),
     }
 
 

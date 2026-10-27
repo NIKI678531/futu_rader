@@ -326,9 +326,9 @@ class DemoProvider:
     def build_range(self, key):
         custom = parse_custom_key(key)
         if custom is not None:
-            latest = self._lookup("ranges", "d30")["to"]
             first, last = custom
-            validate_selectable(first, last, datetime.fromisoformat(latest).date())
+            earliest, latest = self.custom_date_bounds()
+            validate_selectable(first, last, earliest, latest)
             return build_custom(first, last)
         if key == "d0":
             updated = self.master().get("updatedAt")
@@ -342,6 +342,14 @@ class DemoProvider:
                 return None
             return build("d0", data_through.date(), data_through=data_through)
         return self._lookup("ranges", key)
+
+    def custom_date_bounds(self):
+        """Dates covered by the frozen demo's complete d30 fact window."""
+        complete = self._lookup("ranges", "d30")
+        return (
+            datetime.fromisoformat(complete["from"]).date(),
+            datetime.fromisoformat(complete["to"]).date(),
+        )
 
     @staticmethod
     def _with_comment_funnel(observation):

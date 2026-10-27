@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import {
-  CUSTOM_SYNTHESIS_MESSAGE,
+  CUSTOM_ANALYSIS_MESSAGE,
+  customRangeValidation,
   inheritCurrentRange,
   listenForRangeNavigation,
   makeCustomRange,
@@ -24,7 +25,20 @@ test('custom range deep links round-trip and reject invalid or out-of-window dat
   assert.equal(rangeFromSearch('?range=custom&from=2026-08-25&to=2026-08-20', capability), 'd7')
   assert.equal(rangeFromSearch('?range=custom&from=2026-02-30&to=2026-03-01', capability), 'd7')
   assert.equal(rangeFromSearch('?range=custom&from=2026-08-02&to=2026-08-03', capability), 'd7')
-  assert.equal(CUSTOM_SYNTHESIS_MESSAGE, '自选日期区间暂不提供 AI 生成总结')
+  assert.equal(CUSTOM_ANALYSIS_MESSAGE, 'AI 分析按所选日期区间重新聚合')
+})
+
+test('a short historical interval remains selectable when its facts are retained', () => {
+  assert.deepEqual(
+    customRangeValidation('2026-08-03', '2026-08-10', {
+      earliestDate: '2026-07-01', latestDate: '2026-10-26', maxDays: 30,
+    }),
+    { days: 8, error: '' },
+  )
+  assert.match(
+    customRangeValidation('2026-08-03', '2026-09-02', capability[0]).error,
+    /31 个自然日/,
+  )
 })
 
 test('cross-page links retain the validated custom range tuple', () => {
@@ -60,10 +74,14 @@ test('browser history replays and cleans up custom date navigation', () => {
   }
 })
 
-test('custom ranges bypass generative topic and competitor fetches', () => {
+test('custom ranges request every AI-backed endpoint instead of being short-circuited', () => {
   const source = readFileSync(new URL('../src/data/radar.js', import.meta.url), 'utf8')
-  assert.match(source, /competitorsFor[\s\S]*?parseCustomRange\(rangeKey\).*?status: 'unsupported'/)
-  assert.match(source, /topicsFor[\s\S]*?parseCustomRange\(rangeKey\).*?return null/)
+  assert.doesNotMatch(source, /CUSTOM_SYNTHESIS_MESSAGE|status: 'unsupported'/)
+  assert.match(source, /hotSummaryFor[\s\S]*?read\('\/hot-summaries'/)
+  assert.match(source, /summaryFor[\s\S]*?read\(product\(code, 'summary', rangeKey\)\)/)
+  assert.match(source, /marketOutlook[\s\S]*?read\(marketOutlookProduct\(code, rangeKey\)\)/)
+  assert.match(source, /competitorsFor[\s\S]*?read\(product\(code, 'competitors', rangeKey\)\)/)
+  assert.match(source, /topicsFor[\s\S]*?read\(product\(code, 'topics', rangeKey\)\)/)
 })
 
 test('KOL displayed type prioritises every operation direction and pending state', () => {
