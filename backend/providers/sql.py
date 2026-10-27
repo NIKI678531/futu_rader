@@ -93,7 +93,6 @@ from core.heat import heat_of  # noqa: E402
 from radar_db import make_engine  # noqa: E402
 from radar_db.annotations_read import (  # noqa: E402
     COMMENT_PRODUCT_PROMPT_VERSIONS,
-    HIGH_RISK_PROMPT_VERSIONS,
     PRODUCT_FEEDBACK_PROMPT_VERSIONS,
     current_annotations,
     released_annotations,
@@ -2620,7 +2619,7 @@ class SqlProvider:
         return items[:n]
 
     def compliance_for(self, code, range_key):
-        """舆情（高风险负面评论）。四态各有各的意思，一个都不能合并：
+        """舆情（沿用原重点舆情口径）。四态各有各的意思，一个都不能合并：
 
         - `na`          同业产品不纳入识别 —— 字段不适用，不是「没查到」。
         - `unavailable` 这个区间的合规识别没跑过 —— 该有值但取不到。
@@ -2659,77 +2658,84 @@ class SqlProvider:
         return out
 
     def _compliance_scan(self, rng):
-        """Read strict v5 high-risk negative comments; never include parent posts."""
-        key = ("compliance", rng["from"], rng["to"])
+        """按产品读取原重点舆情结论，兼容既有 ``tags`` / ``risk_tags`` 数据。
+
+        展示名称从「重点舆情」改为「舆情」不改变分析口径、Prompt 版本或历史
+        数据可读性。空标签表示已分析但未命中；只有产品自己的标注能证明已分析。
+        """
+        # Every custom descriptor has ``key == 'custom'``.  Include its actual
+        # closed interval or a 10-day request can poison the cache of a later
+        # 20-day request in the same provider process.
+        key = ("compliance", rng["key"], rng["from"], rng["to"])
         if key in self._cache:
             return self._cache[key]
 
         window = _window(rng)
         lo, hi = window
-        def released(kind):
-            return released_annotations(
-                self._engine,
-                kind,
-                "comment",
-                task="comment_product",
-                prompt_version=HIGH_RISK_PROMPT_VERSIONS,
-                window=window,
-                parent_filter_config=self._comment_filter_config,
-            )
-
-        rows = released("compliance")
-        product_relevance = released("relevance")
-        product_attitude = released("attitude")
-        issuer_relevance = released("issuer_relevance")
-        issuer_attitude = released("issuer_attitude")
-        scanned_codes = {code for _target_id, code in rows}
+        qualified = self._qualified_feed_ids(lo, hi)
+        feed_rows = self._current_annotations("compliance", "feed", window=window)
+        rows = {
+            "comment": {
+                unit: row
+                for by_unit in self._released_window_annotations("compliance", lo, hi).values()
+                for unit, row in by_unit.items()
+            },
+            "feed": {
+                unit: row
+                for unit, row in feed_rows.items()
+                if row.get("feed_id") in qualified.get(unit[1], ())
+            },
+        }
+        comment_relevance = {
+            unit: row
+            for by_unit in self._released_window_annotations("relevance", lo, hi).values()
+            for unit, row in by_unit.items()
+        }
+        scanned_codes = self._completed_codes(rng["from"], rng["to"], rng.get("key"))
         ev = self._evidence_rows(
-            [a["annotation_id"] for a in rows.values()]
+            [a["annotation_id"] for table in rows.values() for a in table.values()]
         )
         by_code = defaultdict(list)
-        src = self._sources("comment", [tid for tid, _s in rows])
-        allowed = set(_RISK_LABEL)
-        for unit, a in rows.items():
-            target_id, code = unit
-            r = src.get(target_id)
-            if r is None or code not in self._by_code:
-                continue
-            product_negative = (
-                (product_relevance.get(unit) or {}).get("value") == "relevant"
-                and (product_attitude.get(unit) or {}).get("value") == "negative"
-            )
-            issuer_negative = (
-                (issuer_relevance.get(unit) or {}).get("value") == "relevant"
-                and (issuer_attitude.get(unit) or {}).get("value") == "negative"
-            )
-            value = a["value"]
-            tags = value.get("tags") if isinstance(value, dict) else None
-            if not (product_negative or issuer_negative) or not isinstance(tags, list):
-                continue
-            tags = [tag for tag in tags if tag in allowed]
-            if not tags:
-                continue
-            quotes = ev.get(a["annotation_id"], [])
-            author = r["authorName"]
-            author_type = self._author_type(author)
-            by_code[code].append({
-                "id": f"cr-{a['annotation_id']}",
-                "productCodes": [code],
-                "publishedAt": _stamp(r["postedAt"]),
-                "authorName": author,
-                "authorType": author_type,
-                "isKnownKol": author_type == "合作 KOL",
-                "excerpt": quotes[0][2] if quotes else r["text"],
-                "riskTags": tags,
-                "riskLabels": [_RISK_LABEL[tag] for tag in tags],
-                "detectionRationale": value.get("rationale"),
-                "reviewState": "ai_pending",
-                "reviewLabel": "AI 识别 · 待人工确认",
-                "sourceKind": "评论",
-                "sourceUrl": r["url"],
-                "comments": r["comments"],
-                "interactions": r["interactions"],
-            })
+        for target_type, source_kind in (("comment", "评论"), ("feed", "帖子")):
+            src = self._sources(target_type, [tid for tid, _s in rows[target_type]])
+            for (target_id, code), a in rows[target_type].items():
+                r = src.get(target_id)
+                if r is None or code not in self._by_code:
+                    continue
+                relevance = comment_relevance.get((target_id, code)) if target_type == "comment" else None
+                if target_type == "comment" and relevance is None:
+                    continue
+                value = a["value"]
+                tags = value.get("tags", value.get("risk_tags")) if isinstance(value, dict) else None
+                if not isinstance(tags, list):
+                    continue
+                scanned_codes.add(code)
+                if target_type == "comment" and relevance["value"] != "relevant":
+                    continue
+                tags = list(tags)
+                if not tags:
+                    continue
+                quotes = ev.get(a["annotation_id"], [])
+                author = r["authorName"]
+                author_type = self._author_type(author)
+                by_code[code].append({
+                    "id": f"cr-{a['annotation_id']}",
+                    "productCodes": [code],
+                    "publishedAt": _stamp(r["postedAt"]),
+                    "authorName": author,
+                    "authorType": author_type,
+                    "isKnownKol": author_type == "合作 KOL",
+                    "excerpt": quotes[0][2] if quotes else r["text"],
+                    "riskTags": tags,
+                    "riskLabels": [_RISK_LABEL.get(tag, tag) for tag in tags],
+                    "detectionRationale": value.get("rationale"),
+                    "reviewState": "ai_pending",
+                    "reviewLabel": "AI 识别 · 待人工确认",
+                    "sourceKind": source_kind,
+                    "sourceUrl": r["url"],
+                    "comments": r["comments"],
+                    "interactions": r["interactions"],
+                })
         for items in by_code.values():
             items.sort(key=lambda x: (x["publishedAt"] or "", x["id"]), reverse=True)
         out = {"scannedCodes": scanned_codes, "byCode": dict(by_code)}
@@ -3737,13 +3743,13 @@ _DIRECTIONS = {
     "hold": ("持有观望", "neu"),
 }
 
-# 严格舆情的五类命中原因。
+# 原重点舆情的五类风险标签；展示名称改为「舆情」不改变历史标签口径。
 _RISK_LABEL = {
-    "abusive_attack": "辱骂攻击",
     "regulatory_complaint": "监管举报",
     "serious_allegation": "严重指控",
-    "unverified_claim": "未经证实的重大传闻",
+    "unverified_claim": "疑似未经证实指控",
     "mobilization": "煽动扩散",
+    "compliance_concern": "合规质疑",
 }
 
 

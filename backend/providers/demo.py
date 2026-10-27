@@ -78,15 +78,6 @@ _DEMO_MARKET_DIRECTION_TOPIC_TITLES = frozenset({
     "虚拟资产监管进展",
 })
 
-_HIGH_RISK_TAG_LABELS = {
-    "abusive_attack": "辱骂攻击",
-    "regulatory_complaint": "监管投诉举报",
-    "serious_allegation": "重大指控",
-    "unverified_claim": "未经证实的重大传闻",
-    "mobilization": "煽动扩散",
-}
-
-
 def _canonicalize_fixture_links(value):
     """Upgrade frozen fixture post URLs without rewriting multi-megabyte JSON files."""
     if isinstance(value, list):
@@ -384,25 +375,6 @@ class DemoProvider:
             return None
         if data is MISSING:
             return MISSING
-        data = deepcopy(data)
-        # The frozen fixture was generated under the former broad
-        # ``compliance`` definition.  Project it through the current strict
-        # reader so the board column/filter/heat-dot and the drawer all count
-        # the same comment-only high-risk set.
-        compliance_count = {}
-        for product in self.master().get("products", []):
-            code = str(product["code"])
-            report = self.compliance_for(code, range_key)
-            if (
-                product.get("ownership") != "own"
-                or report is None
-                or report is MISSING
-                or report.get("status") in {"na", "unavailable"}
-            ):
-                compliance_count[code] = None
-            else:
-                compliance_count[code] = len(report.get("list", []))
-        data["complianceCount"] = compliance_count
         own = data["own"]
         own_count = own["count"]
         return {
@@ -518,21 +490,7 @@ class DemoProvider:
         return self._product_range_lookup("competitors", code, range_key)
 
     def compliance_for(self, code, range_key):
-        value = self._product_range_lookup("compliance", code, range_key)
-        if value is None or value is MISSING or value.get("status") in {"na", "unavailable"}:
-            return value
-
-        rows = []
-        for source in value.get("list", []):
-            tags = [tag for tag in source.get("riskTags", []) if tag in _HIGH_RISK_TAG_LABELS]
-            if source.get("sourceKind") != "评论" or not tags:
-                continue
-            rows.append({
-                **deepcopy(source),
-                "riskTags": tags,
-                "riskLabels": [_HIGH_RISK_TAG_LABELS[tag] for tag in tags],
-            })
-        return {**deepcopy(value), "status": "ok" if rows else "empty", "list": rows}
+        return self._product_range_lookup("compliance", code, range_key)
 
     def topics_for(self, code, range_key):
         return self._product_range_lookup("topics", code, range_key)

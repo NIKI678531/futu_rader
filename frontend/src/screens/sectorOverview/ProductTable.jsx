@@ -67,10 +67,10 @@ export default function ProductTable({ v }) {
             </div>
             <span style={s('flex:none;width:48px;display:flex;justify-content:flex-end')}>
               {r.alert && (
-                <span title="高风险负面评论条数" style={s('padding:1px 7px;border-radius:var(--radius-pill);background:var(--negative-100);font:600 12px/1.6 var(--font-mono);color:var(--negative-700)')}>{r.alertN}</span>
+                <span title="舆情条数" style={s('padding:1px 7px;border-radius:var(--radius-pill);background:var(--negative-100);font:600 12px/1.6 var(--font-mono);color:var(--negative-700)')}>{r.alertN}</span>
               )}
               {r.alertNa && (
-                <span title="舆情条数暂不可用：该产品尚未完成严格风险识别" style={s('font:400 11px/1.4 var(--font-cjk);color:var(--ink-400);white-space:nowrap')}>暂不可用</span>
+                <span title="舆情条数暂不可用：该产品尚未完成舆情识别" style={s('font:400 11px/1.4 var(--font-cjk);color:var(--ink-400);white-space:nowrap')}>暂不可用</span>
               )}
             </span>
             <span title={r.hotTitle} style={s(`flex:1.3;min-width:220px;padding-left:10px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;font:400 13px/18px var(--font-cjk);color:${r.hotFg};text-wrap:pretty`)}>

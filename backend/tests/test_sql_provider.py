@@ -1420,21 +1420,19 @@ class TestEvidenceLocatesTheOriginalText:
 
 
 class TestComplianceFourStates:
-    """舆情（高风险负面评论）的四态，一个都不能合并。"""
+    """舆情沿用原重点舆情口径；四态一个都不能合并。"""
 
     HIT = {
         "annotation_id": 1,
         "target_id": 11,
         "kind": "compliance",
-        "run_id": "risk-run-test",
-        "value": {"tags": ["regulatory_complaint"], "rationale": "评论里提到要去投诉。"},
+        "value": {"risk_tags": ["regulatory_complaint"], "rationale": "评论里提到要去投诉。"},
     }
 
     @classmethod
     def comment_rows(cls, hit=None):
         return [
-            {"annotation_id": 90, "target_id": 11, "kind": "relevance", "value": "relevant", "run_id": "risk-run-test"},
-            {"annotation_id": 91, "target_id": 11, "kind": "attitude", "value": "negative", "run_id": "risk-run-test"},
+            {"annotation_id": 90, "target_id": 11, "kind": "relevance", "value": "relevant"},
             hit or cls.HIT,
         ]
 
@@ -1455,7 +1453,7 @@ class TestComplianceFourStates:
         p = add_annotations(provider, self.comment_rows())
         assert p.compliance_for(OTHER_OWN_CODE, "d1") == {"status": "unavailable", "list": []}
 
-    def test_v5_empty_tags_are_not_risk_items(self, provider):
+    def test_empty_tags_are_not_risk_items(self, provider):
         p = add_annotations(
             provider,
             self.comment_rows({**self.HIT, "value": {"tags": [], "rationale": None}}),
@@ -1463,7 +1461,7 @@ class TestComplianceFourStates:
         assert p.compliance_for(OWN_CODE, "d1") == {"status": "empty", "list": []}
         assert p.pool("d1")["complianceCount"][OWN_CODE] == 0
 
-    def test_v5_tags_keep_the_actual_risk_label(self, provider):
+    def test_tags_keep_the_actual_risk_label(self, provider):
         p = add_annotations(provider, self.comment_rows({
             **self.HIT,
             "value": {"tags": ["regulatory_complaint"], "rationale": "明确投诉意图"},
@@ -1472,20 +1470,13 @@ class TestComplianceFourStates:
         assert hit["riskTags"] == ["regulatory_complaint"]
         assert hit["riskLabels"] == ["监管举报"]
 
-    def test_legacy_general_compliance_questions_are_not_risk_items(self, provider):
+    def test_original_compliance_concern_remains_readable(self, provider):
         p = add_annotations(provider, self.comment_rows({
             **self.HIT,
             "value": {"tags": ["compliance_concern"], "rationale": "一般披露疑问"},
         }))
-        assert p.compliance_for(OWN_CODE, "d1") == {"status": "empty", "list": []}
-
-    def test_abusive_attack_uses_the_new_reason_label(self, provider):
-        p = add_annotations(provider, self.comment_rows({
-            **self.HIT,
-            "value": {"tags": ["abusive_attack"], "rationale": "直接辱骂产品"},
-        }))
         hit = p.compliance_for(OWN_CODE, "d1")["list"][0]
-        assert hit["riskLabels"] == ["辱骂攻击"]
+        assert hit["riskLabels"] == ["合规质疑"]
 
     def test_a_hit_comes_back_with_its_rationale_and_a_locatable_quote(self, provider):
         p = add_annotations(provider, self.comment_rows())
@@ -1519,43 +1510,45 @@ class TestComplianceFourStates:
         hit = p.compliance_for(OWN_CODE, "d1")["list"][0]
         assert (hit["reviewState"], hit["reviewLabel"]) == ("ai_pending", "AI 识别 · 待人工确认")
 
-    def test_parent_post_hits_are_never_returned(self, provider):
-        """舆情严格只收评论，父帖的历史 compliance 行仅保留审计。"""
+    def test_a_post_level_hit_says_so(self, provider):
+        """原重点舆情口径包含帖子级命中，改名后仍应可读。"""
         p = add_annotations(
             provider,
             [
                 {"annotation_id": 1, "target_id": 1, "target_type": "feed",
                  "kind": "compliance",
-                 "value": {"tags": ["mobilization"], "rationale": "号召大家一起去。"},
-                 "run_id": "risk-run-test"},
+                 "value": {"tags": ["mobilization"], "rationale": "号召大家一起去。"}},
             ],
         )
-        assert p.compliance_for(OWN_CODE, "d1") == {"status": "unavailable", "list": []}
+        hit = p.compliance_for(OWN_CODE, "d1")["list"][0]
+        assert hit["sourceKind"] == "帖子"
+        assert hit["riskLabels"] == ["煽动扩散"]
 
-    def test_comment_hits_require_current_negative_relevance(self, provider):
+    def test_comment_hits_require_current_relevance(self, provider):
         p = add_annotations(provider, [
-            {"annotation_id": 10, "target_id": 11, "kind": "relevance", "value": "relevant", "run_id": "risk-run-test"},
-            {"annotation_id": 16, "target_id": 11, "kind": "attitude", "value": "negative", "run_id": "risk-run-test"},
+            {"annotation_id": 10, "target_id": 11, "kind": "relevance", "value": "relevant"},
             {"annotation_id": 11, "target_id": 11, "kind": "compliance",
-             "value": {"tags": ["regulatory_complaint"], "rationale": "明确投诉意图"}, "run_id": "risk-run-test"},
-            {"annotation_id": 12, "target_id": 13, "kind": "relevance", "value": "relevant", "run_id": "risk-run-test"},
-            {"annotation_id": 13, "target_id": 13, "kind": "attitude", "value": "neutral", "run_id": "risk-run-test"},
+             "value": {"tags": ["regulatory_complaint"], "rationale": "明确投诉意图"}},
+            {"annotation_id": 12, "target_id": 13, "kind": "relevance", "value": "relevant"},
+            {"annotation_id": 13, "target_id": 13, "kind": "relevance", "value": "irrelevant",
+             "supersedes_id": 12},
             {"annotation_id": 14, "target_id": 13, "kind": "compliance",
-             "value": {"tags": ["mobilization"], "rationale": "非负面不应返回"}, "run_id": "risk-run-test"},
+             "value": {"tags": ["mobilization"], "rationale": "旧的风险结论"}},
+            {"annotation_id": 15, "target_id": 1, "target_type": "feed", "kind": "compliance",
+             "value": {"tags": ["mobilization"], "rationale": "帖子级结论"}},
         ])
 
         result = p.compliance_for(OWN_CODE, "d1")
 
         assert result["status"] == "ok"
-        assert {item["id"] for item in result["list"]} == {"cr-11"}
-        assert {item["sourceKind"] for item in result["list"]} == {"评论"}
+        assert {item["id"] for item in result["list"]} == {"cr-11", "cr-15"}
+        assert {item["sourceKind"] for item in result["list"]} == {"评论", "帖子"}
 
     def test_irrelevant_comment_is_scanned_but_its_risk_hit_is_hidden(self, provider):
         p = add_annotations(provider, [
-            {"annotation_id": 10, "target_id": 11, "kind": "relevance", "value": "irrelevant", "run_id": "risk-run-test"},
-            {"annotation_id": 12, "target_id": 11, "kind": "attitude", "value": None, "run_id": "risk-run-test"},
+            {"annotation_id": 10, "target_id": 11, "kind": "relevance", "value": "irrelevant"},
             {"annotation_id": 11, "target_id": 11, "kind": "compliance",
-             "value": {"tags": ["mobilization"], "rationale": "与产品无关"}, "run_id": "risk-run-test"},
+             "value": {"tags": ["mobilization"], "rationale": "与产品无关"}},
         ])
 
         assert p.compliance_for(OWN_CODE, "d1") == {"status": "empty", "list": []}

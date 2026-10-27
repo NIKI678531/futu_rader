@@ -324,7 +324,7 @@ class SectorOverview extends React.Component {
       heat: { label: '讨论热度', note: '按区间讨论热度降序', get: function (o) { return o.discussionHeat; } },
       /* null 用与态度列同一个哨兵排到最末：`null - 5` 在 JS 里是 -5，不挡就会把「没标过」
          混进「0 条」那一段里排。 */
-      neg: { label: '舆情', note: '按高风险负面评论条数降序', get: function (o) { var n = P.complianceCount[o.code]; return n == null ? -1e9 : n; } },
+      neg: { label: '舆情', note: '按舆情条数降序', get: function (o) { var n = P.complianceCount[o.code]; return n == null ? -1e9 : n; } },
       /* `-1e9` 是「不参与排序」的哨兵，排到最末。标注整块缺失与样本不足在**排序**上
          同样处理（都排不出名次），但在**显示**上必须分开 —— 分开的地方在下面 rows 里。 */
       att: { label: '正面／负面', note: '按正面占比（正面÷(正面＋负面)）降序 · 样本不足不参与', get: function (o) { var a = o.attitude; if (a == null) return -1e9; var v = a.positive + a.negative; return (a.sampleSufficient && v) ? a.positive / v : -1e9; } }
@@ -385,7 +385,7 @@ class SectorOverview extends React.Component {
         pos: att == null ? '' : String(att.positive), neg: att == null ? '' : String(att.negative),
         posW: attitudeBar.positiveWidth,
         negW: attitudeBar.negativeWidth,
-        /* 严格舆情列与筛选、排序、热力图红点共用 complianceCount。 */
+        /* 舆情列沿用原重点舆情计数；筛选、排序与热力图红点共用 complianceCount。 */
         alert: negN > 0, alertN: numRaw(negN), alertNa: negN == null,
         /* 热议总结：AI 一句话归纳区间内该 ETF 的主流具体观点；样本不足／不可用按统一状态文案灰字显示 */
         hot: hsText, hotFg: hsOk ? 'var(--ink-800)' : 'var(--ink-400)',

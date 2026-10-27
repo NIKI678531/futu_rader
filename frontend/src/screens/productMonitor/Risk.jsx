@@ -1,6 +1,6 @@
 import { s, hover } from '../../lib/dc'
 
-/* 舆情＝与产品或发行商相关、态度负面且命中高风险原因的评论。 */
+/* 舆情（原「重点舆情」）— 只改展示名称，识别口径保持不变。 */
 export default function Risk({ v }) {
   return (
     <div data-testid="product-risk-section" style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:14px;overflow:hidden')}>
@@ -9,10 +9,11 @@ export default function Risk({ v }) {
       )}
       <div style={s('display:flex;align-items:center;gap:12px;padding:15px 20px;border-bottom:1px solid var(--border-1)')}>
         <span style={s('font:600 18px/1.3 var(--font-cjk)')}>舆情</span>
+        <span style={s('padding:3px 10px;border-radius:var(--radius-pill);background:var(--negative-100);font:600 12px/1.6 var(--font-cjk);color:var(--negative-700)')}>需合规关注</span>
         {v.riskHas && (
           <span data-testid="product-risk-total" style={s('font:600 18px/1.3 var(--font-mono);color:var(--negative-700)')}>{v.riskN}</span>
         )}
-        <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>辱骂攻击 · 监管投诉举报 · 重大指控 · 未经证实的重大传闻 · 煽动扩散</span>
+        <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>监管举报 · 严重指控 · 疑似未经证实指控 · 煽动扩散 · 合规质疑 · 独立于普通消极观点与负面产品问题</span>
         <span style={s('margin-left:auto;padding:3px 10px;border-radius:var(--radius-pill);background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>AI 识别 · 待人工确认</span>
       </div>
       {v.riskHas && (
@@ -43,12 +44,12 @@ export default function Risk({ v }) {
             {v.riskMoreVisible && (
               <button type="button" data-testid="product-risk-toggle" aria-expanded={v.riskExpanded} aria-controls="product-risk-list" onClick={v.riskToggle} style={s('flex:none;padding:0;border:0;background:transparent;font:500 13px/1.6 var(--font-cjk);color:var(--csop-blue-600);cursor:pointer;white-space:nowrap')}>{v.riskMoreLabel}</button>
             )}
-            <span style={s('font:400 12px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>仅收录与当前产品或南方东英相关、态度负面且命中上述高风险原因的评论；普通费率、点差、跟踪误差、披露疑问或一般负面评论不进入。系统只识别风险信号并提供原文，不判定言论真伪或是否违规。</span>
+            <span style={s('font:400 12px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>舆情是独立的风险标签，不等同于普通消极观点或可归类的负面产品问题；同一条评论可同时属于消极观点与舆情，并标明命中原因。系统只识别风险信号并提供原文，不判定言论真伪、是否违法或产品是否违规，不生成风险分数，不触发通知或处置流程。</span>
           </div>
         </>
       )}
       {v.riskEmpty && (
-        <div style={s('padding:20px')}><div style={s('padding:16px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 当前区间未识别到舆情；普通负面评论与消极观点见上方排行。</div></div>
+        <div style={s('padding:20px')}><div style={s('padding:16px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 当前区间未识别到需合规关注的言论；普通消极观点与负面问题见上方排行。</div></div>
       )}
       {v.riskUnavailable && (
         <div style={s('padding:20px')}><div style={s('padding:16px;border:1px dashed var(--warning-600);border-radius:var(--radius-control);background:var(--warning-100);font:400 14px/1.7 var(--font-cjk);color:var(--warning-700)')}>数据暂不可用 — 风险识别结果尚未核验或数据源未提供，本区域不展示推测内容。</div></div>
@@ -56,7 +57,7 @@ export default function Risk({ v }) {
       {v.riskNa && (
         <div style={s('display:flex;align-items:center;gap:10px;padding:16px 20px')}>
           <span style={s('flex:none;min-width:30px;padding:3px 9px;border-radius:var(--radius-pill);background:var(--ink-100);font:600 13px/1.4 var(--font-mono);color:var(--ink-700);text-align:center')}>—</span>
-          <span style={s('font:400 14px/1.6 var(--font-cjk);color:var(--ink-500);text-wrap:pretty')}>同业产品不纳入舆情识别范围，本区域不适用；该产品的负面评论与消极观点见上方排行。</span>
+          <span style={s('font:400 14px/1.6 var(--font-cjk);color:var(--ink-500);text-wrap:pretty')}>同业产品不纳入舆情（需合规关注）识别范围，本区域不适用；该产品的消极观点与负面问题见上方排行。</span>
         </div>
       )}
     </div>
