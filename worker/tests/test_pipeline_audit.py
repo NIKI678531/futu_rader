@@ -265,3 +265,51 @@ def test_llm_annotations_reach_folded_comments(engine, cfg, tmp_path):
     assert labels["relevance"] == "relevant"
     assert labels["attitude"] == "positive"
     assert labels["aspect"] == ["fee"]
+
+
+class ClassificationOnlyFake(UniversalFake):
+    """Layer A classifier that cannot generate Layer B text."""
+
+    supports_generation = False
+
+    def complete_json(self, system, user, schema, schema_name):
+        assert not schema_name.startswith("synth_")
+        return super().complete_json(system, user, schema, schema_name)
+
+
+def test_layer_b_uses_dedicated_generation_model(engine, cfg, tmp_path, monkeypatch):
+    from dataclasses import replace
+    from ai import providers
+
+    generator = UniversalFake()
+    monkeypatch.setitem(
+        providers._PROVIDERS,
+        "fake_generation",
+        lambda _cfg, **_kwargs: generator,
+    )
+    cfg = replace(
+        cfg,
+        synth_provider="fake_generation",
+        synth_base_url="https://gen.invalid/v1",
+        synth_api_key="k",
+        synth_model="gen-model",
+    )
+    ext = extract.run(
+        engine,
+        cfg,
+        codes=[CODE],
+        date_from=datetime(2026, 8, 19),
+        date_to=datetime(2026, 8, 25),
+        task="both",
+        ownership={CODE: "own"},
+        report_dir=tmp_path,
+    )
+    classifier = ClassificationOnlyFake()
+
+    out = pipeline.run(engine, cfg, ext["scope_id"], provider=classifier, ranges=["d7"])
+
+    steps = {step["task"]: step for step in out["steps"]}
+    assert steps["comment_product"]["success"] == 13
+    assert steps["synthesize"]["errors"] == 0
+    assert any(call.startswith("synth_") for call in generator.calls)
+    assert not any(call.startswith("synth_") for call in classifier.calls)

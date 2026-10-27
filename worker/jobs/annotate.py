@@ -764,7 +764,8 @@ def run(engine, cfg=None, *, task="comment_product", max_items=None, provider=No
     provider = provider or build_provider(cfg)
     prompt, schema_version = resolve(task, cfg)
 
-    batch_size = cfg.micro_batch_size
+    provider_limit = getattr(provider, "max_batch_size", None)
+    batch_size = min(cfg.micro_batch_size, provider_limit) if provider_limit else cfg.micro_batch_size
     budget = max_items if max_items is not None else batch_size
     run_id = new_run_id()
     started = clock.now()
@@ -931,12 +932,16 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
         if stop_event is not None and stop_event.is_set():
             raise PermanentError(getattr(stop_event, "reason", "cancelled"))
         local["requests"] += 1
-        comp = provider.complete_json(
-            prompt.SYSTEM,
-            prompt.user_message(payloads),
-            schemas.batch_json_schema(task, schema_version),
-            f"{task}_batch",
-        )
+        complete_annotations = getattr(provider, "complete_annotations", None)
+        if complete_annotations is not None:
+            comp = complete_annotations(task, payloads, schema_version)
+        else:
+            comp = provider.complete_json(
+                prompt.SYSTEM,
+                prompt.user_message(payloads),
+                schemas.batch_json_schema(task, schema_version),
+                f"{task}_batch",
+            )
     except PermanentError as exc:
         if stop_event is not None:
             stop_event.reason = str(exc)

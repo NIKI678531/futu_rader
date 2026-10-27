@@ -41,7 +41,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from ai import config  # noqa: E402
-from ai.providers import build as build_provider  # noqa: E402
+from ai.providers import build as build_provider, build_synthesis  # noqa: E402
 from jobs import annotate, audit, synthesize  # noqa: E402
 from radar_db import make_engine  # noqa: E402
 from radar_db.schema import analysis_scopes, annotation_jobs, comments, feeds  # noqa: E402
@@ -121,7 +121,20 @@ def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=
                 ).limit(1)
             ).first()
         summary["complete"] = unfinished is None
-    if not skip_synth:
+    synth_cfg, synth_provider = cfg, provider
+    if not skip_synth and not dry_run:
+        synth_cfg, synth_provider = build_synthesis(cfg, primary=provider)
+    supports_generation = (
+        synth_provider is None or getattr(synth_provider, "supports_generation", True)
+    )
+    if not skip_synth and not supports_generation:
+        summary["steps"].append({
+            "task": "synthesize",
+            "skipped": "没有可生成文字的模型：请在 AI_SYNTH_* 配置生成模型",
+        })
+        if not dry_run:
+            summary["complete"] = False
+    elif not skip_synth:
         ranges = list(ranges or synthesize.DEFAULT_RANGES)
         anchor = anchor_override or synthesize.read_anchor(engine)
         pairs = ready_pairs(engine, scope_id, codes, ranges, anchor) if anchor else []
@@ -129,8 +142,8 @@ def run(engine, cfg, scope_id, *, provider=None, dry_run=False, budget_requests=
         summary["synth_pairs_total"] = len(codes) * len(ranges)
         for code, range_key in pairs:
             kwargs = {"anchor_override": anchor_override} if anchor_override is not None else {}
-            st = synthesize.run(engine, cfg, codes=[code], ranges=[range_key],
-                                provider=provider, dry_run=dry_run, **kwargs)
+            st = synthesize.run(engine, synth_cfg, codes=[code], ranges=[range_key],
+                                provider=synth_provider, dry_run=dry_run, **kwargs)
             summary["steps"].append({"task": "synthesize", "code": code, "range": range_key,
                                      **{key: st[key] for key in ("run_id", "calls", "written", "skipped_same",
                                                                 "low_sample", "errors", "tok_in", "tok_out")}})

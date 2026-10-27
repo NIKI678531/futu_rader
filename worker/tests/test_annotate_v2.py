@@ -100,6 +100,31 @@ class FakeProvider:
                           raw_text=json.dumps(step), response_id="resp_1")
 
 
+class DecisionProvider:
+    """A classification transport like TypeSafe System One."""
+
+    max_batch_size = 1
+
+    def __init__(self):
+        self.calls = []
+        self._lock = threading.Lock()
+
+    def complete_annotations(self, task, payloads, schema_version):
+        assert task == "comment_product"
+        assert schema_version == "v2"
+        with self._lock:
+            self.calls.append([payload["item_id"] for payload in payloads])
+        return Completion(
+            data={"results": [v2_item(payload["item_id"]) for payload in payloads]},
+            model="decision-model",
+            usage=Usage(),
+            response_id="decision-response",
+        )
+
+    def complete_json(self, *_args):
+        raise AssertionError("decision providers must use complete_annotations")
+
+
 def v2_item(item_id, **over):
     base = {
         "item_id": item_id,
@@ -139,6 +164,16 @@ def script_realistic(ids):
             out.append(v2_item(i, relevance="irrelevant", attitude=None, aspects=[],
                                evidence=None, market_direction="bearish"))
     return {"results": out}
+
+
+def test_decision_provider_uses_annotation_transport_and_batch_limit(engine, cfg):
+    annotate.enqueue_comments(engine, cfg, codes=[CODE])
+    provider = DecisionProvider()
+
+    stats = annotate.run(engine, cfg, max_items=10, provider=provider)
+
+    assert stats["success"] == 3
+    assert sorted(len(call) for call in provider.calls) == [1, 1, 1]
 
 
 def rows(engine, table, *where):
