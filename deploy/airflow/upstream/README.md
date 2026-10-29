@@ -12,6 +12,13 @@ Full KOL/official article bodies additionally require
 `(detail_updated_at, feed_id)` cursor, Radar now fails source preflight instead
 of silently serving the abbreviated first feed snapshot.
 
+The feed-details DAG must also deploy `futu_radar_kol_roster.json` and
+`verify_futu_feed_details.py` from `collector_examples/`. The roster supplies
+stable Futu user IDs instead of relying on mutable nicknames. The verifier makes
+the task fail whenever any recent active-KOL post still lacks a successful
+detail fetch, preventing a short list preview from being treated as the full
+article and losing ETF mentions from later paragraphs.
+
 For every run:
 
 1. Insert a unique `run_id` with `status=running` before collection.

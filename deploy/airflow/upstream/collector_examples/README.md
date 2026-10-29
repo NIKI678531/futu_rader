@@ -14,6 +14,8 @@ Copy the files into the Airflow Git repository:
 | `futu_all_comments_scrape.py` | The existing all-comments DAG file |
 | `futu_important_comments_scrape.py` | The existing important-comments DAG file |
 | `futu_feed_details_backfill.py` | The existing feed-details DAG file |
+| `futu_radar_kol_roster.json` | Next to the feed-details DAG; copy from Radar's reviewed active roster |
+| `verify_futu_feed_details.py` | Next to the feed-details DAG |
 | `futu_api_check.py` | The existing API-check DAG file |
 
 The old combined comments file defines both `all` and `important`. Remove or
@@ -65,6 +67,22 @@ The receipt task checks this. A missing or stale symbol fails closed and leaves
   day and publishes `market-insight://futu-community`.
 - The 08:30/13:30 all runs write receipts without a complete day.
 - Important and detail runs write audit receipts only.
+- The detail run selects every active KOL by stable Futu UID, with nickname
+  aliases retained only as a fallback. It then verifies that every recent KOL
+  post has a non-null `detail_updated_at` and body. Any remaining preview-only
+  row fails the run and prints its feed ID; incomplete text is never reported
+  as a successful detail refresh.
+- The detail run executes hourly from 09:15 through 20:15 on trading weekdays,
+  with `max_active_runs=1`, so posts collected during the day do not remain on
+  their abbreviated list preview until the next evening.
+- Its 30-day scope and 1,000-row ceiling are fixed in the reviewed DAG rather
+  than mutable Airflow Variables. If the ceiling is ever insufficient, the
+  completeness verifier fails the run instead of silently accepting the first
+  batch as complete.
+- `futu_radar_kol_roster.json` must stay semantically identical to
+  `backend/fixtures/kol_roster_updates.json`. Radar's repository tests enforce
+  this before deployment, so an active-roster or nickname change cannot silently
+  disappear from full-article collection again.
 - `futu_api_check` remains an OpenD monitor and writes no community receipt.
 - The screenshot also contains `futu_users_refresh`. Its source was not supplied,
   so it is not replaced by this bundle.

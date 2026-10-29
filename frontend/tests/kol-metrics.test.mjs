@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import { compareKolReach, kolProductComposition, sumPostViews } from '../src/lib/kolMetrics.js'
+import { mentionedEtfsOf } from '../src/lib/kolEtfs.js'
 
 const source = (path) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8')
 
@@ -67,6 +68,17 @@ test('off-catalog ETF mentions are counted as other-company products', () => {
     { other: 1, otherPct: 50, unmentioned: 1 },
   )
   assert.equal(result.companies[0].issuer, '其他公司')
+})
+
+test('post records preserve every ETF found anywhere in the full article', () => {
+  const mentionedEtfs = [
+    { code: '7366', ticker: '07366.HK', inPool: true },
+    { code: '7709', ticker: '07709.HK', inPool: true },
+    { code: '7747', ticker: '07747.HK', inPool: true },
+    { code: '7766', ticker: '07766.HK', inPool: true },
+  ]
+  assert.deepEqual(mentionedEtfsOf({ mentionedEtfs }), mentionedEtfs)
+  assert.match(source('screens/KolActivity.jsx'), /r\.etfs\.map\(\(etf\) =>/)
 })
 
 test('KOL screens expose the new ownership and reach UI without the removed opinions block', () => {

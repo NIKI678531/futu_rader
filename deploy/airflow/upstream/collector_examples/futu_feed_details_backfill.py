@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
+from pathlib import Path
 
 import pendulum
 from airflow import DAG
@@ -19,11 +21,42 @@ WORK_DIR = "/tmp/futu_feed_details_backfill_work"
 REQUIRED_COOKIE_KEYS = ("cipher_device_id", "uid", "web_sig", "ci_sig")
 HKT = pendulum.timezone("Asia/Hong_Kong")
 DEFAULT_RECENT_DAYS = "30"
-DEFAULT_MAX_FEEDS = "300"
+DEFAULT_MAX_FEEDS = "1000"
+KOL_ROSTER_FILE = Path(__file__).with_name("futu_radar_kol_roster.json")
 RUN_ID_TEMPLATE = "{{ dag.dag_id }}:{{ run_id }}"
 SCHEDULED_FOR_TEMPLATE = (
     "{{ data_interval_end.in_timezone('UTC').format('YYYY-MM-DD HH:mm:ss.SSSSSS') }}"
 )
+
+
+def _active_kol_user_ids():
+    """Load the same stable Futu UIDs used by Radar's account domain.
+
+    Nicknames are not identities: several active KOLs publish under a previous
+    display name, and newly activated KOLs may be absent from the scraper's
+    historical ``kol.json``.  The committed roster copy is checked against the
+    application source in the Radar repository test suite.
+    """
+    payload = json.loads(KOL_ROSTER_FILE.read_text(encoding="utf-8"))
+    active = payload.get("activeRoster")
+    user_ids = payload.get("userIds")
+    if not isinstance(active, list) or not isinstance(user_ids, dict):
+        raise ValueError("futu_radar_kol_roster.json has an invalid roster shape")
+    values = []
+    for name in active:
+        for user_id in user_ids.get(name, []):
+            value = str(user_id).strip()
+            if not value.isdigit():
+                raise ValueError(f"Invalid Futu user ID for active KOL {name!r}")
+            if value not in values:
+                values.append(value)
+    if not values:
+        raise ValueError("Active KOL roster contains no stable Futu user IDs")
+    return tuple(values)
+
+
+ACTIVE_KOL_USER_IDS = _active_kol_user_ids()
+ACTIVE_KOL_USER_ID_ARGS = " ".join(ACTIVE_KOL_USER_IDS)
 
 
 def _copy_repo_to_workdir():
@@ -71,14 +104,17 @@ def _failure_callback(context):
 
 with DAG(
     dag_id="futu_feed_details_backfill",
-    description="Backfill fuller Futu post content from detail pages.",
+    description="Continuously refresh complete Futu post content from detail pages.",
     default_args={
         **DEFAULT_ARGS,
         "on_failure_callback": _failure_callback,
         "retries": 0,
         "retry_delay": timedelta(minutes=2),
     },
-    schedule_interval="30 18 * * 1-5",
+    # The list-feed collector runs throughout the trading day. Refresh detail
+    # bodies shortly afterwards so late-paragraph ETF mentions do not remain
+    # absent from the account pages until the following evening.
+    schedule_interval="15 9-20 * * 1-5",
     start_date=pendulum.datetime(2026, 6, 22, tz=HKT),
     catchup=False,
     max_active_runs=1,
@@ -112,19 +148,14 @@ with DAG(
             "pip install -q -r requirements.txt && "
             "python -u -m futu_scraper.cli fetch-feed-details"
             " --db \"$MARKET_INSIGHT_DATABASE_URL\" --kol-file kol.json"
-            "{% set author_ids = var.value.get('futu_feed_detail_author_ids', '') | trim %}"
-            "{% if author_ids %} --author-id {{ author_ids }}{% endif %}"
-            "{% set feed_ids = var.value.get('futu_feed_detail_feed_ids', '') | trim %}"
-            "{% if feed_ids %} --feed-id {{ feed_ids }}{% endif %}"
-            "{% set recent_days = var.value.get('futu_feed_detail_recent_days', '"
-            f"{DEFAULT_RECENT_DAYS}"
-            "') | trim %}"
-            "{% if recent_days %} --recent-days {{ recent_days }}{% endif %}"
-            "{% set max_feeds = var.value.get('futu_feed_detail_max_feeds', '"
-            f"{DEFAULT_MAX_FEEDS}"
-            "') | trim %}"
-            "{% if max_feeds %} --max-feeds {{ max_feeds }}{% endif %}"
-            " --workers 2"
+            f" --author-id {ACTIVE_KOL_USER_ID_ARGS}"
+            f" --recent-days {DEFAULT_RECENT_DAYS}"
+            f" --max-feeds {DEFAULT_MAX_FEEDS}"
+            " --workers 2 && "
+            "python -u verify_futu_feed_details.py"
+            " --db \"$MARKET_INSIGHT_DATABASE_URL\""
+            " --roster futu_radar_kol_roster.json"
+            f" --recent-days {DEFAULT_RECENT_DAYS}"
         ),
     )
     finish_collection_receipt = PythonOperator(

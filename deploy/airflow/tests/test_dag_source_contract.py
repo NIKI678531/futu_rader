@@ -1,9 +1,12 @@
 """DAG policy checks that also run on developer machines without Airflow."""
 
+import json
 from pathlib import Path
 
 
 DAGS = Path(__file__).resolve().parents[1] / "dags"
+UPSTREAM = Path(__file__).resolve().parents[1] / "upstream" / "collector_examples"
+ROOT = Path(__file__).resolve().parents[3]
 
 
 def source(name):
@@ -44,4 +47,29 @@ def test_hkex_catalog_dag_runs_daily_at_0700_hong_kong_time():
     assert "@sha256:" in text
     assert "futu_radar_runtime_secret" in text
     assert 'arguments=["sync"]' in text
+
+
+def test_feed_detail_collector_uses_stable_roster_and_rejects_partial_articles():
+    text = (UPSTREAM / "futu_feed_details_backfill.py").read_text(encoding="utf-8")
+    assert "futu_radar_kol_roster.json" in text
+    assert "ACTIVE_KOL_USER_ID_ARGS" in text
+    assert 'futu_feed_detail_author_ids' not in text
+    assert 'futu_feed_detail_feed_ids' not in text
+    assert 'futu_feed_detail_recent_days' not in text
+    assert 'futu_feed_detail_max_feeds' not in text
+    assert 'DEFAULT_MAX_FEEDS = "1000"' in text
+    assert 'schedule_interval="15 9-20 * * 1-5"' in text
+    assert "verify_futu_feed_details.py" in text
+
+
+def test_upstream_kol_roster_copy_matches_the_application_authority():
+    upstream = json.loads(
+        (UPSTREAM / "futu_radar_kol_roster.json").read_text(encoding="utf-8")
+    )
+    application = json.loads(
+        (ROOT / "backend" / "fixtures" / "kol_roster_updates.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert upstream == application
 
