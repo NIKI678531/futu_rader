@@ -145,14 +145,15 @@ with DAG(
         append_env=True,
         bash_command=(
             f"cd {WORK_DIR} && "
-            "pip install -q -r requirements.txt && "
-            "python -u -m futu_scraper.cli fetch-feed-details"
+            "python -m venv .detail-venv && "
+            ".detail-venv/bin/pip install -q -r requirements.txt && "
+            ".detail-venv/bin/python -u -m futu_scraper.cli fetch-feed-details"
             " --db \"$MARKET_INSIGHT_DATABASE_URL\" --kol-file kol.json"
             f" --author-id {ACTIVE_KOL_USER_ID_ARGS}"
             f" --recent-days {DEFAULT_RECENT_DAYS}"
             f" --max-feeds {DEFAULT_MAX_FEEDS}"
             " --workers 2 && "
-            "python -u verify_futu_feed_details.py"
+            ".detail-venv/bin/python -u verify_futu_feed_details.py"
             " --db \"$MARKET_INSIGHT_DATABASE_URL\""
             " --roster futu_radar_kol_roster.json"
             f" --recent-days {DEFAULT_RECENT_DAYS}"

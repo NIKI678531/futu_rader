@@ -60,6 +60,8 @@ def test_feed_detail_collector_uses_stable_roster_and_rejects_partial_articles()
     assert 'DEFAULT_MAX_FEEDS = "1000"' in text
     assert 'schedule_interval="15 9-20 * * 1-5"' in text
     assert "verify_futu_feed_details.py" in text
+    assert "python -m venv .detail-venv" in text
+    assert ".detail-venv/bin/python -u -m futu_scraper.cli" in text
 
 
 def test_upstream_kol_roster_copy_matches_the_application_authority():
