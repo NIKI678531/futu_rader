@@ -63,6 +63,7 @@ export function isApiError(err) {
 const cache = new Map()
 const listeners = new Set()
 let observedRevision
+const HOURLY_REFRESH_MS = 60 * 60 * 1000
 
 function notify() {
   queueMicrotask(() => { for (const listener of listeners) listener() })
@@ -176,25 +177,33 @@ export function invalidate(url) {
 export function startLiveUpdates(onChange) {
   let stopped = false
   let busy = false
+  let lastReloadAt = Date.now()
   async function check() {
     if (stopped || busy || document.visibilityState === 'hidden') return
     if (Array.from(cache.values()).some(entry => entry.state === 'pending')) return
     busy = true
+    let reload = Date.now() - lastReloadAt >= HOURLY_REFRESH_MS
     try {
       const response = await fetch(BASE + '/version', { cache: 'no-store' })
-      if (!response.ok) return
-      const body = await response.json()
-      const revision = body.data?.dataRevision
-      if (!revision || revision === 'demo') return
-      if (observedRevision === undefined) observedRevision = revision
-      else if (revision !== observedRevision && !stopped) {
-        observedRevision = revision
+      if (response.ok) {
+        const body = await response.json()
+        const revision = body.data?.dataRevision
+        if (revision && revision !== 'demo') {
+          if (observedRevision === undefined) observedRevision = revision
+          else if (revision !== observedRevision) {
+            observedRevision = revision
+            reload = true
+          }
+        }
+      }
+    } catch {
+      // The hourly refresh remains useful if the lightweight version check fails.
+    } finally {
+      if (reload && !stopped) {
+        lastReloadAt = Date.now()
         clearCache()
         onChange()
       }
-    } catch {
-      // Keep the last successful view during a transient version check failure.
-    } finally {
       busy = false
     }
   }

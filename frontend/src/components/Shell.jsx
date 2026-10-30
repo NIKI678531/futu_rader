@@ -48,7 +48,7 @@ function CollectionDisclosure({ data }) {
    the first row; each screen passes its own filter bar as the second row. */
 export default function Shell({ vals, children }) {
   const adminEnabled = useAdminEnabled()
-  const { navGroups = [], rangeText } = vals
+  const { navGroups = [], rangeText, updated } = vals
   const progress = vals.skeleton ? null : R.ANALYSIS_PROGRESS
   const isSql = !vals.skeleton && R.DATA_PROVIDER === 'sql'
   const collection = isSql ? R.DATA_COLLECTION : null
@@ -57,7 +57,6 @@ export default function Shell({ vals, children }) {
   const pageContext = vals.pageContext || null
   const clock = pageContext?.commentClock
   const clockStatus = clock?.status || 'unavailable'
-  const clockLabel = clockStatus === 'partial' ? '已抓取评论最新' : '评论截至'
   const clockValue = clockStatus === 'empty'
     ? '区间内无评论'
     : clock?.postedThrough
@@ -68,9 +67,8 @@ export default function Shell({ vals, children }) {
     : clockStatus === 'unavailable'
       ? '评论实际发帖时间未提供；未使用父帖时间或刷新时间替代'
       : '当前页面数据范围内，已入库评论的最大实际发帖时间'
-  const publishedValue = pageContext?.pagePublishedAt
-    ? compactHkt(pageContext.pagePublishedAt)
-    : '暂不可用'
+  const refreshAvailable = Boolean(updated && !String(updated).includes('暂不可用'))
+  const refreshValue = refreshAvailable ? `${compactHkt(updated)} HKT` : (updated || '暂不可用')
   const warm = (href) => {
     const target = String(href || '')
     const targetAccount = /official|kol/.test(target)
@@ -129,14 +127,14 @@ export default function Shell({ vals, children }) {
             <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>HKT 自然日</span>
           </div>
           <div style={s('width:1px;height:15px;background:var(--border-2)')}></div>
+          <div data-page-refresh-clock style={s('flex:none;display:flex;align-items:baseline;gap:5px;white-space:nowrap')}>
+            <span data-screen-diff-new="page-refresh-label" style={s('font:500 11px/1.4 var(--font-cjk);color:var(--ink-500)')}>刷新时间</span>
+            <span style={s('font:600 12px/1.4 var(--font-mono);color:var(--ink-800)')}>{refreshValue}</span>
+          </div>
           <div data-page-comment-clock data-screen-diff-new="page-comment-clock" title={coverageTitle} style={s(`flex:none;display:flex;align-items:center;gap:5px;height:30px;box-sizing:border-box;padding:0 9px;border:1px solid ${clockStatus === 'partial' ? 'var(--warning-600)' : 'var(--border-2)'};border-radius:var(--radius-control);background:${clockStatus === 'partial' ? 'var(--warning-100)' : '#fff'};white-space:nowrap`)}>
-            <span style={s('font:500 11px/1.4 var(--font-cjk);color:var(--ink-500)')}>{clockLabel}</span>
+            <span style={s('font:500 11px/1.4 var(--font-cjk);color:var(--ink-500)')}>页面数据截至</span>
             <span style={s('font:600 12px/1.4 var(--font-mono);color:var(--ink-800)')}>{clockValue}</span>
             {clock?.postedThrough && <span style={s('font:400 10px/1.4 var(--font-cjk);color:var(--ink-400)')}>HKT</span>}
-          </div>
-          <div data-page-published-clock title={pageContext?.latestFeedPostedAt ? `最新帖子发布时间 ${pageContext.latestFeedPostedAt}` : undefined} style={s('flex:none;display:flex;align-items:baseline;gap:5px;white-space:nowrap')}>
-            <span data-screen-diff-new="page-published-label" style={s('font:500 11px/1.4 var(--font-cjk);color:var(--ink-500)')}>页面更新</span>
-            <span style={s('font:600 12px/1.4 var(--font-mono);color:var(--ink-800)')}>{publishedValue}</span>
           </div>
           {isSql && <ProgressButton />}
           {isSql && adminEnabled && (

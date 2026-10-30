@@ -61,7 +61,7 @@ const DESIGN_ORIGIN = 'http://localhost:5174'
 const TODAY_PLACEHOLDER_SELECTOR = '[data-screen-diff-new="today-range-placeholder"]'
 const PAGE_CLOCK_SELECTORS = [
   '[data-screen-diff-new="page-comment-clock"]',
-  '[data-screen-diff-new="page-published-label"]',
+  '[data-screen-diff-new="page-refresh-label"]',
 ]
 
 /* 榜单行、热力图色块、Top3 卡都是「点一下把 sel 设成这个代码」，所以按代码的**完整文字**

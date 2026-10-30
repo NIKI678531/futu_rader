@@ -15,8 +15,19 @@ test('business and page navigation share the compact shell header', () => {
   assert.doesNotMatch(shell, />最近更新</)
   assert.doesNotMatch(shell, /height:42px/)
   assert.match(shell, /data-page-comment-clock/)
-  assert.match(shell, /评论截至/)
-  assert.match(shell, /data-page-published-clock/)
+  assert.match(shell, /页面数据截至/)
+  assert.match(shell, /data-page-refresh-clock/)
+  assert.match(shell, /刷新时间/)
+  assert.doesNotMatch(shell, /页面更新/)
+  assert.doesNotMatch(shell, /pageContext\?\.pagePublishedAt/)
+})
+
+test('business pages refresh their cached data at least once an hour', () => {
+  const api = source('lib/api.js')
+
+  assert.match(api, /HOURLY_REFRESH_MS\s*=\s*60\s*\*\s*60\s*\*\s*1000/)
+  assert.match(api, /Date\.now\(\)\s*-\s*lastReloadAt\s*>=\s*HOURLY_REFRESH_MS/)
+  assert.match(api, /if \(reload && !stopped\) \{[\s\S]*clearCache\(\)[\s\S]*onChange\(\)/)
 })
 
 test('business screens share the simplified-Chinese Apple font and radius scale', () => {
