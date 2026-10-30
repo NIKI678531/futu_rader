@@ -63,10 +63,10 @@ export default function Shell({ vals, children }) {
       ? compactHkt(clock.postedThrough)
       : '暂不可用'
   const coverageTitle = clockStatus === 'partial'
-    ? `部分评论缺少实际发帖时间：有时间 ${clock.timestamped} / 已入库 ${clock.stored}`
+    ? `当前页面内容中，部分评论缺少实际发帖时间：有时间 ${clock.timestamped} / 共 ${clock.stored}`
     : clockStatus === 'unavailable'
-      ? '评论实际发帖时间未提供；未使用父帖时间或刷新时间替代'
-      : '当前页面数据范围内，已入库评论的最大实际发帖时间'
+      ? '当前页面内容没有可用的评论发帖时间；未使用父帖时间、同步时间或刷新时间替代'
+      : '当前页面实际内容所使用评论的最大原始发帖时间'
   const refreshAvailable = Boolean(updated && !String(updated).includes('暂不可用'))
   const refreshValue = refreshAvailable ? `${compactHkt(updated)} HKT` : (updated || '暂不可用')
   const warm = (href) => {

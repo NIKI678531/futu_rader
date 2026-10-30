@@ -797,6 +797,85 @@ def test_oversized_post_uses_a_bounded_head_tail_excerpt(posts, cfg):
     assert post_type["review_state"] == "needs_review"
 
 
+def test_post_bounding_includes_system_prompt_and_schema_token_overhead(cfg):
+    from ai import schemas
+    from ai.batching import BatchPolicy, measure
+
+    prompt, schema_version = annotate.resolve("post_annotation", cfg)
+    batch_schema = schemas.batch_json_schema("post_annotation", schema_version)
+    payload = annotate.redact.post_payload(
+        "feed:1",
+        "长" * 3500,
+        title="低于字节上限但完整输入超过 token 上限",
+        product={"code": "3037", "name": "恒生指數ETF"},
+    )
+    policy = BatchPolicy(1, 8000, 12288)
+    original = measure(
+        [payload], prompt.SYSTEM, prompt.user_message, batch_schema
+    )
+
+    assert original["payloadBytes"] < policy.max_payload_bytes
+    assert original["inputTokensEstimate"] > policy.max_input_tokens
+
+    bounded = annotate._bounded_post_payload(
+        payload, prompt, batch_schema, policy
+    )
+    usage = measure(
+        [bounded], prompt.SYSTEM, prompt.user_message, batch_schema
+    )
+
+    assert usage["inputTokensEstimate"] <= policy.max_input_tokens
+    assert usage["payloadBytes"] <= policy.max_payload_bytes
+    assert bounded["content_truncated"] is True
+    assert bounded["content"].startswith("长")
+    assert "中间内容已省略" in bounded["content"]
+
+
+def test_token_policy_retires_the_obsolete_failed_full_text_job(posts, cfg):
+    from dataclasses import replace
+
+    with posts.begin() as conn:
+        conn.execute(
+            update(feeds)
+            .where(feeds.c.feed_id == 2)
+            .values(content="长" * 3500)
+        )
+    old_policy = replace(
+        cfg,
+        grouped_batches=True,
+        micro_batch_size=1,
+        max_input_tokens=20000,
+        max_payload_bytes=12288,
+    )
+    annotate.enqueue_posts(posts, old_policy, codes=[CODE])
+    with posts.begin() as conn:
+        conn.execute(
+            update(annotation_jobs)
+            .where(
+                annotation_jobs.c.task == "post_annotation",
+                annotation_jobs.c.target_id == 2,
+            )
+            .values(
+                status="failed",
+                last_error="Input exceeds batch token/byte limit; text was not truncated",
+            )
+        )
+    current_policy = replace(old_policy, max_input_tokens=8000)
+
+    retired = annotate.retire_stale_oversized_posts(
+        posts, current_policy, [CODE]
+    )
+
+    job = rows(
+        posts,
+        annotation_jobs,
+        annotation_jobs.c.task == "post_annotation",
+        annotation_jobs.c.target_id == 2,
+    )[0]
+    assert retired == 1
+    assert job["status"] == "superseded"
+
+
 def test_a_post_that_expressed_no_action_still_gets_a_direction_row(posts, cfg):
     """`direction=null, direction_pending=false` 是 Prompt 里的第 1 种情形：
     「帖子没有表达任何操作」。同样是结论，同样不能因为值是 null 就不写。"""

@@ -449,6 +449,7 @@ def run(engine, cfg, *, codes, date_from, date_to, task="comment_product", with_
         "time_basis": "feed_posted_at", "dry_run": dry_run, "anchor": anchor.isoformat(),
         "prompt_version": prompt.VERSION, "taxonomy_version": cfg.taxonomy_version,
         "schema_version": schema_version, "exactRuleVersion": EXACT_RULE_VERSION,
+        "payloadPolicyVersion": annotate.PAYLOAD_POLICY_VERSION,
         "commentRouteVersion": COMMENT_ROUTE_VERSION if comment_routes else None,
         "comments": None, "posts": None, "estimate": None,
     }

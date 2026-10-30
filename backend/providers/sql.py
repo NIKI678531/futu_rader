@@ -443,12 +443,14 @@ class SqlProvider:
         return urls
 
     def page_context(self, screen, range_key, *, code=None, account=None, kol=None):
-        """Return the latest real child-comment time for one screen scope.
+        """Return the real child-comment time behind the current page content.
 
-        Ranges in this product are selected by parent-post time.  The maximum
-        below deliberately comes from ``comments.posted_at`` and can therefore
-        be later than the selected parent range.  Missing comment timestamps
-        are disclosed; they are never replaced by their parent feed time.
+        Ranges are selected by parent-post time.  The maximum deliberately
+        comes from ``comments.posted_at`` for the same page/product/account
+        scope that drives the visible comment counts.  AI-backed modules are a
+        subset of those units, so already visible partial results cannot move
+        the clock outside the page's actual source content.  Missing comment
+        timestamps are disclosed and never replaced by feed or refresh time.
         """
         account_screen = screen in {"official", "kol", "kol_detail"}
         rng = self._content_range(range_key) if account_screen else self._filtered_range(range_key)

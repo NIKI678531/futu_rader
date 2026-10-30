@@ -3,11 +3,10 @@
 from datetime import datetime
 
 from sqlalchemy import update
-
 from radar_db.schema import comments, meta_kv
 
 
-def test_official_clock_uses_real_comment_time_and_discloses_partial_coverage(sql_provider):
+def test_official_clock_tracks_the_comments_used_by_current_page_content(sql_provider):
     with sql_provider._engine.begin() as conn:
         conn.execute(
             update(comments)
@@ -15,6 +14,7 @@ def test_official_clock_uses_real_comment_time_and_discloses_partial_coverage(sq
             .values(posted_at=datetime(2026, 8, 25, 3, 45))
         )
         conn.execute(meta_kv.insert(), [
+            {"k": "data_revision", "v": "live-source-revision-1"},
             {"k": "ai_public_revision", "v": "published-1"},
             {"k": "ai_public_updated_at", "v": "2026-08-25T08:00:00Z"},
         ])
@@ -30,6 +30,23 @@ def test_official_clock_uses_real_comment_time_and_discloses_partial_coverage(sq
     }
     assert data["pagePublishedAt"] == "2026-08-25T16:00+08:00"
     assert data["latestFeedPostedAt"] != data["commentClock"]["postedThrough"]
+
+    with sql_provider._engine.begin() as conn:
+        conn.execute(
+            update(comments)
+            .where(comments.c.comment_id == 11)
+            .values(posted_at=datetime(2026, 8, 25, 4, 30))
+        )
+        conn.execute(
+            update(meta_kv)
+            .where(meta_kv.c.k == "data_revision")
+            .values(v="new-live-source-revision")
+        )
+    sql_provider.refresh()
+
+    refreshed = sql_provider.page_context("official", "d1")
+    assert refreshed["commentClock"]["postedThrough"] == "2026-08-25T12:30+08:00"
+    assert refreshed["commentClock"]["postedThrough"] != data["commentClock"]["postedThrough"]
 
 
 def test_page_context_http_rejects_unknown_screen(sql_client):

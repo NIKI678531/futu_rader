@@ -55,7 +55,8 @@ def prepare(engine, cfg, anchor, codes, *, ranges=None, optimized=False, page_si
             ).order_by(analysis_scopes.c.created_at.desc())).mappings().first()
         old_stats = json.loads(existing["stats_json"] or "{}") if existing else {}
         if (existing and existing["stats_json"] and old_stats.get("sourceVersion", {}) == source_version
-            and old_stats.get("model", cfg.model) == cfg.model):
+            and old_stats.get("model", cfg.model) == cfg.model
+            and old_stats.get("payloadPolicyVersion") == annotate.PAYLOAD_POLICY_VERSION):
             scopes[code] = existing["scope_id"]
             continue
         missing.append(code)

@@ -18,7 +18,7 @@ from ai.providers import build as build_provider, generation_supported
 from ai.providers.base import RunControl
 from collection.budget import DailyBudget
 from collection.models import HARD_DAILY_MAX
-from jobs import analyze, daily, full_own, refresh, synthesize
+from jobs import analyze, annotate, daily, full_own, refresh, synthesize
 from core.top_products import analysis_products, parse_own_limit
 from radar_db import make_engine
 from radar_db.analysis_requests import (
@@ -246,6 +246,9 @@ def run_analysis(range_key: str, *, engine=None) -> dict:
         },
     )()
     plan = analyze.make_plan(engine, args)
+    retired_oversized = annotate.retire_stale_oversized_posts(
+        engine, cfg, plan["codes"]
+    )
     revived = revive_failed_jobs(engine, plan["codes"])
     max_attempts = int(os.getenv("AI_MANUAL_MAX_HTTP_REQUESTS", str(HARD_DAILY_MAX)))
     if not 1 <= max_attempts <= HARD_DAILY_MAX:
@@ -304,6 +307,7 @@ def run_analysis(range_key: str, *, engine=None) -> dict:
         "reused": work.get("annotationsReused", 0) + work.get("synthesisReused", 0),
         "errors": work.get("errors", 0),
         "revivedJobs": revived,
+        "retiredOversizedJobs": retired_oversized,
         "missingPairs": len(missing),
         "missing": missing[:MISSING_LIST_LIMIT],
         "blockedCodes": blocked[:MISSING_LIST_LIMIT],

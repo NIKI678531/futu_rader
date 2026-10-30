@@ -53,7 +53,7 @@ if os.path.isdir(os.path.join(REPO_ROOT, "radar_db")) and REPO_ROOT not in sys.p
 
 import clock  # noqa: E402
 from ai import config, evidence as ev, neardup, redact, schemas  # noqa: E402
-from ai.batching import BatchPolicy, pack_items
+from ai.batching import BatchPolicy, measure, pack_items
 from ai.providers.base import TruncatedOutput
 from ai.lexicon import product_aliases  # noqa: E402
 from ai.prompts import SCHEMA_OF, get as get_prompt  # noqa: E402
@@ -92,6 +92,9 @@ FILL_MISSING_STAGE = "fill_missing"
 # 帖子正文作为评论上下文时只带开头这么多字。一批 30 条常来自同一篇帖子，正文按 feed_id
 # 只放一次（见 `_user_message_with_context`），但仍要有上限 —— 长文会把系统提示挤出缓存窗口。
 POST_CONTEXT_CHARS = 200
+# Scope reuse must notice changes to the exact payload that is hashed and sent.
+# This version makes post truncation account for prompt/schema token overhead.
+PAYLOAD_POLICY_VERSION = "post-budget-v2"
 
 # 用量估算常数：Gate 2 实测 129 条 ⇒ 14,491 输入 / 9,711 输出 token（含 2,206 推理）。
 # v2 Prompt 更长、输出多三个字段，按 1.4 倍放大。只用于 `--dry-run`，不进任何报表。
@@ -443,6 +446,8 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None
     """
     task = "post_annotation"
     prompt, schema_version = resolve(task, cfg)
+    batch_schema = schemas.batch_json_schema(task, schema_version)
+    policy = BatchPolicy(1, cfg.max_input_tokens, cfg.max_payload_bytes)
     now = clock.now()
     rows = []
 
@@ -473,7 +478,7 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None
         for feed_id, title, content, code, posted_at in conn.execute(q):
             job = {"target_id": feed_id, "subject_code": None}
             payload = _build_payload(task, job, {"text": content, "title": title, "code": code})
-            payload = _bounded_post_payload(payload, prompt, cfg.max_payload_bytes)
+            payload = _bounded_post_payload(payload, prompt, batch_schema, policy)
             rows.append(
                 {
                     "target_type": "feed",
@@ -497,6 +502,69 @@ def enqueue_posts(engine, cfg, *, codes=None, limit=None, since=None, until=None
                 }
             )
     return _insert_jobs(engine, rows)
+
+
+def retire_stale_oversized_posts(engine, cfg, codes):
+    """Supersede failed post jobs whose payload now fits under a new hash.
+
+    The normal extraction pass will enqueue and scope the replacement.  Keeping
+    this repair separate avoids reviving the obsolete full-text hash every hour
+    before the new token-aware payload is prepared.
+    """
+
+    task = "post_annotation"
+    prompt, schema_version = resolve(task, cfg)
+    batch_schema = schemas.batch_json_schema(task, schema_version)
+    policy = BatchPolicy(1, cfg.max_input_tokens, cfg.max_payload_bytes)
+    with engine.connect() as conn:
+        jobs = [dict(row) for row in conn.execute(
+            select(annotation_jobs)
+            .select_from(annotation_jobs.join(
+                feeds, feeds.c.feed_id == annotation_jobs.c.target_id
+            ))
+            .where(
+                annotation_jobs.c.task == task,
+                annotation_jobs.c.target_type == "feed",
+                annotation_jobs.c.status.in_(("failed", "dead")),
+                annotation_jobs.c.last_error.like(
+                    "Input exceeds batch token/byte limit%"
+                ),
+                feeds.c.code.in_(list(codes)),
+            )
+        ).mappings()]
+    if not jobs:
+        return 0
+    sources = _load_sources(engine, task, jobs)
+    stale_ids = []
+    for job in jobs:
+        src = sources.get((job["target_type"], job["target_id"]))
+        if src is None:
+            continue
+        payload = _bounded_post_payload(
+            _build_payload(task, job, src), prompt, batch_schema, policy
+        )
+        current_hash = schemas.input_hash(
+            payload,
+            model=cfg.model,
+            prompt_version=prompt_version(prompt, cfg),
+            taxonomy_version=cfg.taxonomy_version,
+            schema_version=schema_version,
+        )
+        if current_hash != job["input_hash"]:
+            stale_ids.append(job["job_id"])
+    if not stale_ids:
+        return 0
+    with engine.begin() as conn:
+        return int(conn.execute(
+            update(annotation_jobs)
+            .where(annotation_jobs.c.job_id.in_(stale_ids))
+            .values(
+                status="superseded",
+                lease_until=None,
+                last_error="Superseded by token-aware bounded post payload",
+                updated_at=clock.now(),
+            )
+        ).rowcount or 0)
 
 
 def enqueue_kol_comments(
@@ -875,6 +943,8 @@ def _close_run(engine, run_id, stats):
 def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, local, depth=0, stop_event=None):
     """处理一批。失败时按 §11.3 二分，而不是整批判死。返回本批的局部统计。"""
     sources = _load_sources(engine, task, jobs)
+    batch_schema = schemas.batch_json_schema(task, schema_version)
+    policy = BatchPolicy(cfg.micro_batch_size, cfg.max_input_tokens, cfg.max_payload_bytes)
     payloads, usable = [], []
     for job in jobs:
         src = sources.get((job["target_type"], job["target_id"]))
@@ -889,7 +959,7 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
             continue
         payload = _build_payload(task, job, src)
         if task == "post_annotation":
-            payload = _bounded_post_payload(payload, prompt, cfg.max_payload_bytes)
+            payload = _bounded_post_payload(payload, prompt, batch_schema, policy)
         current_hash = schemas.input_hash(
             payload, model=cfg.model, prompt_version=prompt_version(prompt, cfg),
             taxonomy_version=cfg.taxonomy_version, schema_version=schema_version,
@@ -907,13 +977,12 @@ def _process(engine, cfg, provider, prompt, schema_version, task, run_id, jobs, 
         return local
 
     if cfg.grouped_batches:
-        policy = BatchPolicy(cfg.micro_batch_size, cfg.max_input_tokens, cfg.max_payload_bytes)
         packed, oversized = pack_items(
             list(zip(usable, payloads)), key_of=lambda entry: (
                 entry[0][0]["subject_code"], entry[0][1].get("code"),
                 entry[0][1].get("posted_at").date() if entry[0][1].get("posted_at") else None),
             payload_of=lambda entry: entry[1], system=prompt.SYSTEM, render=prompt.user_message,
-            schema=schemas.batch_json_schema(task, schema_version), policy=policy,
+            schema=batch_schema, policy=policy,
         )
         for (job, _src), _payload in oversized:
             _fail(engine, job, "Input exceeds batch token/byte limit; text was not truncated")
@@ -1161,9 +1230,25 @@ def _build_payload(task, job, src):
     )
 
 
-def _bounded_post_payload(payload, prompt, max_payload_bytes):
-    """Keep a post's head and tail when one rendered item exceeds the request limit."""
-    if len(prompt.user_message([payload]).encode("utf-8")) <= max_payload_bytes:
+def _bounded_post_payload(payload, prompt, batch_schema, policy):
+    """Keep a post's head/tail while fitting the complete model input budget.
+
+    The batch gate measures more than the rendered user message: the system
+    prompt and output JSON schema also consume input tokens.  Using the same
+    ``measure`` function here and in ``pack_items`` prevents a post that is
+    below the byte limit but above the token limit from becoming a permanent
+    failed job.
+    """
+    def fits(candidate):
+        usage = measure(
+            [candidate], prompt.SYSTEM, prompt.user_message, batch_schema
+        )
+        return (
+            usage["inputTokensEstimate"] <= policy.max_input_tokens
+            and usage["payloadBytes"] <= policy.max_payload_bytes
+        )
+
+    if fits(payload):
         return payload
     content = payload.get("content") or ""
     marker = "\n…[中间内容已省略]…\n"
@@ -1180,7 +1265,7 @@ def _bounded_post_payload(payload, prompt, max_payload_bytes):
     while low <= high:
         middle = (low + high) // 2
         trial = candidate(middle)
-        if len(prompt.user_message([trial]).encode("utf-8")) <= max_payload_bytes:
+        if fits(trial):
             best = trial
             low = middle + 1
         else:
