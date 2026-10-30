@@ -41,12 +41,65 @@ test('a short historical interval remains selectable when its facts are retained
   )
 })
 
+test('market allows 31 inclusive days while accounts allow one calendar year', () => {
+  assert.equal(
+    customRangeValidation('2026-01-01', '2026-01-31', { maxDays: 31 }).error,
+    '',
+  )
+  assert.match(
+    customRangeValidation('2026-01-01', '2026-02-01', { maxDays: 31 }).error,
+    /最多可选 31 天/,
+  )
+  assert.equal(
+    customRangeValidation('2024-02-29', '2025-02-28', { maxYears: 1 }).error,
+    '',
+  )
+  assert.match(
+    customRangeValidation('2024-02-29', '2025-03-01', { maxYears: 1 }).error,
+    /1 个自然年/,
+  )
+})
+
 test('cross-page links retain the validated custom range tuple', () => {
   try {
     global.window = { location: { search: '?range=custom&from=2026-08-20&to=2026-08-25' } }
     assert.equal(
       inheritCurrentRange('sector-overview.dc.html', capability),
       'sector-overview.dc.html?range=custom&from=2026-08-20&to=2026-08-25',
+    )
+  } finally {
+    delete global.window
+  }
+})
+
+test('cross-domain links restore the last range that is valid for the target domain', () => {
+  const values = new Map()
+  const sessionStorage = {
+    getItem: key => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+  }
+  const accounts = [{
+    k: 'custom', custom: true, scope: 'accounts',
+    earliestDate: '2025-01-01', latestDate: '2026-12-31', maxYears: 1,
+  }, { k: 'd7' }]
+  const market = [{
+    k: 'custom', custom: true, scope: 'market',
+    earliestDate: '2025-01-01', latestDate: '2026-12-31', maxDays: 31,
+  }, { k: 'd7' }]
+  try {
+    global.window = {
+      location: {
+        pathname: '/official',
+        search: '?range=custom&from=2025-11-01&to=2026-10-30',
+      },
+      sessionStorage,
+    }
+    assert.equal(inheritCurrentRange('sector-overview.dc.html', market), 'sector-overview.dc.html?range=d7')
+    window.location.pathname = '/sector'
+    window.location.search = '?range=d7'
+    assert.equal(
+      inheritCurrentRange('kol-activity.dc.html', accounts),
+      'kol-activity.dc.html?range=custom&from=2025-11-01&to=2026-10-30',
     )
   } finally {
     delete global.window

@@ -9,7 +9,7 @@ from datetime import date
 import pytest
 
 import core.ranges as ranges_core
-from core.range_spec import validate_selectable
+from core.range_spec import CustomRangeError, validate_selectable, validate_span
 from sql_fixture import make_sql_provider
 
 RANGE_KEYS = ["d0", "d1", "d2", "d7", "d14", "d30"]
@@ -120,6 +120,16 @@ def test_short_historical_range_is_valid_when_its_facts_are_available():
         date(2026, 7, 1),
         date(2026, 10, 26),
     )
+
+
+def test_market_and_account_custom_span_policies_are_distinct():
+    validate_span(date(2026, 1, 1), date(2026, 1, 31), "market")
+    with pytest.raises(CustomRangeError, match="31"):
+        validate_span(date(2026, 1, 1), date(2026, 2, 1), "market")
+
+    validate_span(date(2024, 2, 29), date(2025, 2, 28), "accounts")
+    with pytest.raises(CustomRangeError, match="自然年"):
+        validate_span(date(2024, 2, 29), date(2025, 3, 1), "accounts")
 
 
 def test_sql_provider_loads_retained_historical_content_beyond_the_latest_30_days():

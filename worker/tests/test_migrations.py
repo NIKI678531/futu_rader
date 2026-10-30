@@ -98,6 +98,16 @@ def test_feeds_has_a_global_posted_at_index_for_legacy_d0_cutoff(migrated):
     assert "ix_feeds_posted_at" in indexes
 
 
+def test_account_year_and_comment_clock_indexes_are_present(migrated):
+    inspector = inspect(migrated)
+    feed_indexes = {item["name"] for item in inspector.get_indexes("feeds")}
+    comment_indexes = {item["name"] for item in inspector.get_indexes("comments")}
+
+    assert "ix_feeds_author_uid_posted" in feed_indexes
+    assert "ix_feeds_author_name_posted" in feed_indexes
+    assert "ix_comments_feed_posted" in comment_indexes
+
+
 def test_migrated_analysis_queue_accepts_today_range(migrated):
     request, created = enqueue(migrated, "d0")
 

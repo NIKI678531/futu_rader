@@ -34,7 +34,8 @@ class KolActivity extends React.Component {
       etfMenu: false, kolMenu: false, postMenu: false, typeMenu: false,
       /* 表内筛选：发帖记录（q / camp / onlyPending / tTypeMenu）与声量排名（lq / lCamp / lType） */
       q: '', camp: 'ALL', onlyPending: false, tTypeMenu: false,
-      lq: '', lCamp: 'ALL', lType: 'ALL', lTypeMenu: false
+      lq: '', lCamp: 'ALL', lType: 'ALL', lTypeMenu: false,
+      shown: 50
     };
     /* 首次 render 之前把本屏端点并行发出去（radar.js `urlsFor`），首绘不再是串行往返。 */
     prefetchScreen('kol', { rangeKey: this.state.rangeKey });
@@ -50,7 +51,7 @@ class KolActivity extends React.Component {
     if (Object.keys(p).length) this.setState(p);
     this._stopRangeNavigation = listenForRangeNavigation(R.PRESETS, (rangeKey) => {
       prefetchScreen('kol', { rangeKey });
-      this.setState({ rangeKey, sel: null });
+      this.setState({ rangeKey, sel: null, shown: 50 });
     });
   }
   componentWillUnmount() { if (this._stopRangeNavigation) this._stopRangeNavigation(); }
@@ -381,7 +382,12 @@ class KolActivity extends React.Component {
     out.exportFg = list.length ? 'var(--csop-blue-600)' : 'var(--ink-400)';
     out.exportCursor = list.length ? 'pointer' : 'not-allowed';
     out.exportOp = list.length ? '1' : '0.6';
-    out.rows = list.map(function (p, i) {
+    var pageSize = 50, shown = Math.min(list.length, s.shown || pageSize);
+    out.shownCount = String(shown);
+    out.hasMoreRows = shown < list.length;
+    out.moreCount = String(Math.min(pageSize, list.length - shown));
+    out.loadMoreRows = function () { self.setState({ shown: shown + pageSize }); };
+    out.rows = list.slice(0, shown).map(function (p, i) {
       var sec = secOf(p.sector), st = displayedPostType(p);
       var displayedEtfs = mentionedEtfsOf(p);
       return {
@@ -808,6 +814,12 @@ class KolActivity extends React.Component {
                 </tbody>
               </table>
             </div>
+            {v.hasMoreRows && (
+              <div style={s('display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 16px;border-top:1px solid var(--border-1);background:var(--canvas-alt)')}>
+                <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>已显示 {v.shownCount} / {v.postCount} 篇</span>
+                <button type="button" onClick={v.loadMoreRows} style={s('padding:6px 14px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);cursor:pointer')}>再看 {v.moreCount} 篇</button>
+              </div>
+            )}
           </div>
 
           <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06)')}>

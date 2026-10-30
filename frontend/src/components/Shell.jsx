@@ -1,6 +1,6 @@
 import { s, hover } from '../lib/dc'
 import DcLink from './DcLink'
-import R from '../data/radar'
+import R, { prefetchScreen } from '../data/radar'
 import { ProgressButton } from './ProgressDrawer'
 import { useAdminEnabled } from '../lib/appRoutes'
 
@@ -48,12 +48,38 @@ function CollectionDisclosure({ data }) {
    the first row; each screen passes its own filter bar as the second row. */
 export default function Shell({ vals, children }) {
   const adminEnabled = useAdminEnabled()
-  const { navGroups = [], rangeText, updated } = vals
+  const { navGroups = [], rangeText } = vals
   const progress = vals.skeleton ? null : R.ANALYSIS_PROGRESS
   const isSql = !vals.skeleton && R.DATA_PROVIDER === 'sql'
   const collection = isSql ? R.DATA_COLLECTION : null
   const activeGroup = navGroups.find((group) => group.subDisplay === 'flex')
   const pageItems = activeGroup?.items || []
+  const pageContext = vals.pageContext || null
+  const clock = pageContext?.commentClock
+  const clockStatus = clock?.status || 'unavailable'
+  const clockLabel = clockStatus === 'partial' ? '已抓取评论最新' : '评论截至'
+  const clockValue = clockStatus === 'empty'
+    ? '区间内无评论'
+    : clock?.postedThrough
+      ? compactHkt(clock.postedThrough)
+      : '暂不可用'
+  const coverageTitle = clockStatus === 'partial'
+    ? `部分评论缺少实际发帖时间：有时间 ${clock.timestamped} / 已入库 ${clock.stored}`
+    : clockStatus === 'unavailable'
+      ? '评论实际发帖时间未提供；未使用父帖时间或刷新时间替代'
+      : '当前页面数据范围内，已入库评论的最大实际发帖时间'
+  const publishedValue = pageContext?.pagePublishedAt
+    ? compactHkt(pageContext.pagePublishedAt)
+    : '暂不可用'
+  const warm = (href) => {
+    const target = String(href || '')
+    const targetAccount = /official|kol/.test(target)
+    const currentAccount = /\/(?:official|kol)(?:\/|$)/.test(window.location.pathname)
+    const rangeKey = targetAccount === currentAccount ? (vals.rangeKey || R.DEFAULT_RANGE) : R.DEFAULT_RANGE
+    if (/official/.test(target)) prefetchScreen('official', { rangeKey })
+    else if (/kol/.test(target)) prefetchScreen('kol', { rangeKey })
+    else if (/sector/.test(target)) prefetchScreen('sector', { rangeKey })
+  }
 
   return (
     <div style={s('position:sticky;top:0;z-index:40;box-shadow:0 1px 0 var(--border-2)')}>
@@ -71,6 +97,7 @@ export default function Shell({ vals, children }) {
             <DcLink
               key={g.name}
               href={g.href}
+              onMouseEnter={() => warm(g.href)}
               style={s(`display:flex;align-items:center;padding:5px 12px;border-radius:var(--radius-small);font:${g.fw} 14px/1.2 var(--font-cjk);color:${g.fg};background:${g.bg};box-shadow:${g.sh};text-decoration:none;white-space:nowrap;transition:all 120ms cubic-bezier(.4,0,.2,1)`)}
               className={hover('color:var(--csop-navy-900);text-decoration:none')}
             >
@@ -86,6 +113,7 @@ export default function Shell({ vals, children }) {
                 <DcLink
                   key={it.name}
                   href={it.href}
+                  onMouseEnter={() => warm(it.href)}
                   style={s(`display:flex;align-items:center;padding:0 10px;font:${it.fw} 14px/1.2 var(--font-cjk);color:${it.fg};box-shadow:inset 0 -2px 0 ${it.bc};text-decoration:none;white-space:nowrap;transition:color 120ms cubic-bezier(.4,0,.2,1)`)}
                   className={hover('color:var(--csop-blue-700);text-decoration:none')}
                 >
@@ -101,8 +129,14 @@ export default function Shell({ vals, children }) {
             <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>HKT 自然日</span>
           </div>
           <div style={s('width:1px;height:15px;background:var(--border-2)')}></div>
-          <div style={s('flex:none;display:flex;align-items:baseline;gap:5px;white-space:nowrap')}>
-            <span style={s('font:600 12px/1.4 var(--font-mono);color:var(--ink-800)')}>{updated}</span>
+          <div data-page-comment-clock data-screen-diff-new="page-comment-clock" title={coverageTitle} style={s(`flex:none;display:flex;align-items:center;gap:5px;height:30px;box-sizing:border-box;padding:0 9px;border:1px solid ${clockStatus === 'partial' ? 'var(--warning-600)' : 'var(--border-2)'};border-radius:var(--radius-control);background:${clockStatus === 'partial' ? 'var(--warning-100)' : '#fff'};white-space:nowrap`)}>
+            <span style={s('font:500 11px/1.4 var(--font-cjk);color:var(--ink-500)')}>{clockLabel}</span>
+            <span style={s('font:600 12px/1.4 var(--font-mono);color:var(--ink-800)')}>{clockValue}</span>
+            {clock?.postedThrough && <span style={s('font:400 10px/1.4 var(--font-cjk);color:var(--ink-400)')}>HKT</span>}
+          </div>
+          <div data-page-published-clock title={pageContext?.latestFeedPostedAt ? `最新帖子发布时间 ${pageContext.latestFeedPostedAt}` : undefined} style={s('flex:none;display:flex;align-items:baseline;gap:5px;white-space:nowrap')}>
+            <span data-screen-diff-new="page-published-label" style={s('font:500 11px/1.4 var(--font-cjk);color:var(--ink-500)')}>页面更新</span>
+            <span style={s('font:600 12px/1.4 var(--font-mono);color:var(--ink-800)')}>{publishedValue}</span>
           </div>
           {isSql && <ProgressButton />}
           {isSql && adminEnabled && (
@@ -122,4 +156,9 @@ export default function Shell({ vals, children }) {
       {progress && <div hidden role="status" style={s('padding:5px 24px;background:var(--canvas-alt);font:400 12px/1.4 var(--font-cjk);color:var(--ink-600)')}>{progress.text}</div>}
     </div>
   )
+}
+
+function compactHkt(value) {
+  const text = String(value || '').replace('T', ' ').replace(/(?:\+08:00| HKT|Z)$/, '')
+  return text.length >= 16 ? text.slice(0, 16) : text
 }

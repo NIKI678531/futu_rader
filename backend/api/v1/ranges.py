@@ -22,8 +22,11 @@ log = logging.getLogger(__name__)
 @v1_bp.get("/ranges/<key>")
 def ranges(key):
     if key == "custom":
+        scope = request.args.get("scope", "market")
         try:
-            key = build_custom_key(request.args.get("from"), request.args.get("to"))
+            key = build_custom_key(
+                request.args.get("from"), request.args.get("to"), scope=scope
+            )
         except CustomRangeError as exc:
             abort(400, description=str(exc))
     log.info(

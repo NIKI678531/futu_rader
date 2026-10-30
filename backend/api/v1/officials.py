@@ -17,7 +17,7 @@ from . import range_key, v1_bp
 
 @v1_bp.get("/officials/posts")
 def officials_posts():
-    key = range_key()
+    key = range_key("accounts")
     data = official_posts(key)
     if data is MISSING:
         abort(404, description=f"未知的区间预设 {key!r}")
@@ -26,7 +26,7 @@ def officials_posts():
 
 @v1_bp.get("/officials/<account>/etf-mentions")
 def officials_etf_mentions(account):
-    key = range_key()
+    key = range_key("accounts")
     data = etf_mentions_for(account, key)
     if data is MISSING:
         abort(404, description=f"未知的区间预设 {key!r} 或官号 {account!r}")

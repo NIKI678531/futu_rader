@@ -59,6 +59,10 @@ const DESIGN_ORIGIN = 'http://localhost:5174'
 /* 2026-10-08 用户要求先在五个业务页加入“当天”前端占位，数据与后端逻辑后补。
    旧设计源保持只读；只按专用属性移除这一枚按钮，其余日期档位仍逐字比较。 */
 const TODAY_PLACEHOLDER_SELECTOR = '[data-screen-diff-new="today-range-placeholder"]'
+const PAGE_CLOCK_SELECTORS = [
+  '[data-screen-diff-new="page-comment-clock"]',
+  '[data-screen-diff-new="page-published-label"]',
+]
 
 /* 榜单行、热力图色块、Top3 卡都是「点一下把 sel 设成这个代码」，所以按代码的**完整文字**
    选中第一个即可，点到哪一个都打开同一只产品的抽屉。3033 是评论量第一，任何筛选态下都在。
@@ -539,7 +543,8 @@ try {
         s.prepare,
         view && view.act,
         (s.omitSections && s.omitSections.react) || [],
-        [TODAY_PLACEHOLDER_SELECTOR].concat((s.omitSelectors && s.omitSelectors.react) || []),
+        [TODAY_PLACEHOLDER_SELECTOR, ...PAGE_CLOCK_SELECTORS]
+          .concat((s.omitSelectors && s.omitSelectors.react) || []),
       )
       const design = await grab(
         page,

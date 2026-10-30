@@ -23,7 +23,7 @@ v1_bp = Blueprint("v1", __name__)
 DEFAULT_RANGE = "d7"
 
 
-def range_key():
+def range_key(scope="market"):
     """?range= 的取值。不传用默认值 d7（与设计源 DEFAULT_KEY 一致）。
 
     传了但不认识的值**不做兜底**，一路带到 core 那边判成 MISSING → 404。静默回落到 d7
@@ -36,7 +36,9 @@ def range_key():
             abort(400, description="自选日期请使用 range=custom&from=...&to=...")
         return key
     try:
-        return build_custom_key(request.args.get("from"), request.args.get("to"))
+        return build_custom_key(
+            request.args.get("from"), request.args.get("to"), scope=scope
+        )
     except CustomRangeError as exc:
         abort(400, description=str(exc))
 
@@ -51,4 +53,5 @@ from . import narrative  # noqa: E402,F401
 from . import evidence  # noqa: E402,F401
 from . import prices  # noqa: E402,F401
 from . import progress  # noqa: E402,F401
+from . import page_context  # noqa: E402,F401
 from . import admin  # noqa: E402,F401

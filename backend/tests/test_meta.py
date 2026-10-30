@@ -43,7 +43,11 @@ def test_meta_advertises_the_available_complete_day_custom_window(client):
     assert capability == {
         "earliestDate": "2026-08-03",
         "latestDate": "2026-09-01",
-        "maxDays": 30,
+        "maxDays": 31,
+        "scopes": {
+            "market": {"maxDays": 31, "label": "最长 31 天"},
+            "accounts": {"maxYears": 1, "label": "最长 1 个自然年"},
+        },
         "analysisSupported": True,
         "generativeSupported": False,
     }

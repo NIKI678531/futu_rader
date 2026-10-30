@@ -323,6 +323,26 @@ class DemoProvider:
         """
         return self._doc("master")
 
+    def page_context(self, screen, range_key, **_filters):
+        """Frozen demo rows do not carry trustworthy child-comment times."""
+        rng = self.build_range(range_key)
+        if rng is None or rng is MISSING:
+            return rng
+        updated = self.master().get("updatedAt")
+        return {
+            "screen": screen,
+            "range": {"from": rng["from"], "to": rng["to"]},
+            "revision": "demo",
+            "pagePublishedAt": updated,
+            "latestFeedPostedAt": updated,
+            "commentClock": {
+                "status": "unavailable",
+                "postedThrough": None,
+                "timestamped": None,
+                "stored": None,
+            },
+        }
+
     def build_range(self, key):
         custom = parse_custom_key(key)
         if custom is not None:

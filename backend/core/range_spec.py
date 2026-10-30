@@ -7,7 +7,10 @@ from datetime import date
 
 PRESET_KEYS = ("d0", "d1", "d2", "d7", "d14", "d30", "mtd")
 CUSTOM_PREFIX = "custom:"
-CUSTOM_MAX_DAYS = 30
+MARKET_SCOPE = "market"
+ACCOUNT_SCOPE = "accounts"
+RANGE_SCOPES = (MARKET_SCOPE, ACCOUNT_SCOPE)
+MARKET_MAX_DAYS = 31
 
 
 class CustomRangeError(ValueError):
@@ -15,13 +18,16 @@ class CustomRangeError(ValueError):
 
 
 def custom_key(date_from: date | str, date_to: date | str) -> str:
+    """Return the internal key after syntax/order validation only.
+
+    The selectable span is endpoint-scoped: market pages allow 31 inclusive
+    days while account pages allow one calendar year.  Keeping that policy out
+    of the internal key lets both domains share the same calendar/cache token.
+    """
     first = _date(date_from, "from")
     last = _date(date_to, "to")
     if last < first:
         raise CustomRangeError("自选日期的结束日不得早于开始日")
-    days = (last - first).days + 1
-    if days > CUSTOM_MAX_DAYS:
-        raise CustomRangeError(f"自选日期最多选择 {CUSTOM_MAX_DAYS} 个自然日")
     return f"{CUSTOM_PREFIX}{first.isoformat()}:{last.isoformat()}"
 
 
@@ -53,9 +59,13 @@ def validate_selectable(
     last: date,
     earliest_available: date | None,
     latest_complete: date | None,
+    *,
+    scope: str | None = None,
 ) -> None:
-    """Validate a short interval against the dates actually available to query."""
-    custom_key(first, last)  # validates order and inclusive length
+    """Validate an interval against its page policy and available facts."""
+    custom_key(first, last)  # validates syntax and order
+    if scope is not None:
+        validate_span(first, last, scope)
     if earliest_available is not None and first < earliest_available:
         raise CustomRangeError(
             f"自选日期开始日不得早于最早可用数据日 {earliest_available.isoformat()}"
@@ -64,6 +74,38 @@ def validate_selectable(
         raise CustomRangeError(
             f"自选日期结束日不得晚于最新完整数据日 {latest_complete.isoformat()}"
         )
+
+
+def validate_span(first: date, last: date, scope: str) -> None:
+    """Apply the inclusive market/account span limit.
+
+    One account year means ``[start, same calendar date next year)``.  This
+    permits 366 days when the selected calendar year crosses 29 February,
+    without allowing 1 January through the following 1 January.
+    """
+    if scope not in RANGE_SCOPES:
+        raise CustomRangeError(f"未知的日期范围作用域 {scope!r}")
+    if last < first:
+        raise CustomRangeError("自选日期的结束日不得早于开始日")
+    days = (last - first).days + 1
+    if scope == MARKET_SCOPE:
+        if days > MARKET_MAX_DAYS:
+            raise CustomRangeError(
+                f"市场页面自选日期最多选择 {MARKET_MAX_DAYS} 个自然日"
+            )
+        return
+    anniversary = _next_anniversary(first)
+    if last >= anniversary:
+        raise CustomRangeError("账号页面自选日期最长为 1 个自然年")
+
+
+def _next_anniversary(value: date) -> date:
+    try:
+        return value.replace(year=value.year + 1)
+    except ValueError:
+        # 29 February's next anniversary is the following 1 March, so the
+        # inclusive interval may still contain the whole leap-year span.
+        return value.replace(year=value.year + 1, month=3, day=1)
 
 
 def _date(value: date | str, name: str) -> date:

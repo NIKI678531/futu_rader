@@ -17,6 +17,9 @@ export default function DatePresetTabs({ presets }) {
   const availableText = customPreset?.earliestDate && customPreset?.latestDate
     ? `可选数据 ${customPreset.earliestDate} ～ ${customPreset.latestDate}`
     : `最新可选 ${customPreset?.latestDate || '暂不可用'}`
+  const limitText = customPreset?.limitLabel || (
+    customPreset?.maxYears === 1 ? '最长 1 个自然年' : `最长 ${customPreset?.maxDays || 31} 天`
+  )
   const choose = (preset, key = preset.key) => {
     setRangeInUrl(key)
     preset.go(key)
@@ -50,7 +53,8 @@ export default function DatePresetTabs({ presets }) {
       )}
       {open && customPreset && (
         <div data-custom-date-picker style={s('position:absolute;z-index:40;right:0;top:calc(100% + 8px);width:320px;padding:14px;background:#fff;border:1px solid var(--border-2);border-radius:var(--radius-card);box-shadow:0 10px 30px rgba(14,42,82,.16)')}>
-          <div style={s('font:600 14px/1.4 var(--font-cjk);color:var(--ink-800);margin-bottom:10px')}>选择 HKT 自然日（含首尾）</div>
+          <div style={s('font:600 14px/1.4 var(--font-cjk);color:var(--ink-800);margin-bottom:2px')}>选择 HKT 自然日（含首尾）</div>
+          <div style={s('font:400 12px/1.5 var(--font-cjk);color:var(--ink-500);margin-bottom:10px')}>{limitText}</div>
           <div style={s('display:grid;grid-template-columns:1fr 1fr;gap:10px')}>
             <label style={s('font:400 12px/1.5 var(--font-cjk);color:var(--ink-500)')}>开始日<input aria-label="自选开始日" type="date" min={customPreset.earliestDate || undefined} max={customPreset.latestDate || undefined} value={from} onChange={event => setFrom(event.target.value)} style={s('display:block;width:100%;box-sizing:border-box;margin-top:4px;padding:6px;border:1px solid var(--border-2);border-radius:var(--radius-control)')} /></label>
             <label style={s('font:400 12px/1.5 var(--font-cjk);color:var(--ink-500)')}>结束日<input aria-label="自选结束日" type="date" min={customPreset.earliestDate || undefined} max={customPreset.latestDate || undefined} value={to} onChange={event => setTo(event.target.value)} style={s('display:block;width:100%;box-sizing:border-box;margin-top:4px;padding:6px;border:1px solid var(--border-2);border-radius:var(--radius-control)')} /></label>

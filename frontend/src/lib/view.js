@@ -359,6 +359,11 @@ export function navGroups(domainKey, subKey) {
    每次渲染都会去拉一份自己从不显示的市场数据。删掉是有意的取舍，不是漏拷。 */
 export function shell(domainKey, subKey, st, go) {
   var range = R.buildRange(st.rangeKey || R.DEFAULT_RANGE);
+  var contextScreen = subKey;
+  if (subKey === 'kol' && !Object.prototype.hasOwnProperty.call(st, 'etf')) contextScreen = 'kol_detail';
+  var contextFilters = subKey === 'official'
+    ? { account: st.acct || undefined }
+    : (subKey === 'kol' ? { kol: st.kol && st.kol !== 'ALL' ? st.kol : undefined } : {});
   return {
     navGroups: navGroups(domainKey, subKey),
     domains: NAV.map(function (d) {
@@ -394,6 +399,8 @@ export function shell(domainKey, subKey, st, go) {
         bg: on ? 'var(--csop-blue-50)' : '#fff'
       };
     }),
-    rangeText: range.text, rangeFrom: range.from, rangeTo: range.to, updated: stamp(R.UPDATED)
+    rangeText: range.text, rangeFrom: range.from, rangeTo: range.to,
+    rangeKey: st.rangeKey || R.DEFAULT_RANGE, updated: stamp(R.UPDATED),
+    pageContext: R.pageContext(contextScreen, st.rangeKey || R.DEFAULT_RANGE, contextFilters)
   };
 }

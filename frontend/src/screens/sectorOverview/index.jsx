@@ -531,7 +531,8 @@ class SectorOverview extends React.Component {
     var out = {
       navGroups: navGroups('portfolio', 'sector'), presets: presets, chips: chips,
       rangeText: range.text, rangeFrom: range.from, rangeTo: range.to,
-      granLabel: range.granLabel, updated: stamp(R.UPDATED),
+      rangeKey: s.rangeKey, granLabel: range.granLabel, updated: stamp(R.UPDATED),
+      pageContext: R.pageContext('sector', s.rangeKey),
       /* 真实的「还在等」：transition 提交前为 true（withTransition.jsx），不再是 520ms 定时器。 */
       loading: !!self.props.isPending, bodyOpacity: self.props.isPending ? '0.45' : '1',
       visibleCount: String(visible.length),

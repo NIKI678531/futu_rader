@@ -146,6 +146,8 @@ feeds = Table(
     # raw_json 不是合法 JSON（源库 TEXT 截断）。这一列为真时，上面几个 NULL 是有解释的。
     Column("raw_json_broken", Boolean, nullable=False, default=False),
     Index("ix_feeds_code_posted", "code", "posted_at"),
+    Index("ix_feeds_author_uid_posted", "author_uid", "posted_at", "feed_id"),
+    Index("ix_feeds_author_name_posted", "author_name", "posted_at", "feed_id"),
     Index("ix_feeds_comment_coverage", "comment_coverage_status"),
     CheckConstraint(
         "comment_coverage_status IN "
@@ -179,6 +181,7 @@ comments = Table(
     Column("content", MEDIUMTEXT),
     Column("like_count", Integer),
     Column("reply_to_comment_id", BigInteger),  # 0 在源里表示「不是回复」→ ETL 写 NULL
+    Index("ix_comments_feed_posted", "feed_id", "posted_at"),
 )
 
 # 评论送模资格的确定性路由。讨论区挂载标的不构成资格；每一行都必须来自父帖

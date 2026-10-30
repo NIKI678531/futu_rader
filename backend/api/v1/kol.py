@@ -19,7 +19,7 @@ from . import range_key, v1_bp
 
 @v1_bp.get("/kol/impact")
 def kol_impact_endpoint():
-    key = range_key()
+    key = range_key("accounts")
     data = kol_impact(key)
     if data is MISSING:
         abort(404, description=f"未知的区间预设 {key!r}")
@@ -28,7 +28,7 @@ def kol_impact_endpoint():
 
 @v1_bp.get("/kol/<name>/opinions")
 def kol_opinions_endpoint(name):
-    key = range_key()
+    key = range_key("accounts")
     data = kol_opinions(name, key)
     # 区间不认识和 KOL 不在名单里，都是「没这条资源」→ 404。
     # 「在名单里但区间内没观点」是另一回事：那是 200 + 空数组 → 页面渲染「暂无相关内容」。

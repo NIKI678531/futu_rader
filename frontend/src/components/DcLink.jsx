@@ -15,7 +15,8 @@ export default function DcLink({ href, children, ...rest }) {
       </a>
     )
   }
-  href = inheritCurrentRange(href, R.PRESETS)
+  const targetScope = /(?:official|kol)(?:-|\/|\.|$)/.test(href) ? 'accounts' : 'market'
+  href = inheritCurrentRange(href, R.presetsFor(targetScope))
   return (
     <Link to={withAppBasePath(basePath, hrefToPath(href))} {...rest}>
       {children}

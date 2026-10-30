@@ -666,6 +666,7 @@ export default class ProductMonitor extends React.Component {
       granLabel: range.granLabel, benchText: range.benchText, benchLabel: range.benchLabel,
       rangeDays: range.days,
       updated: stamp(R.UPDATED), rangeKey: s.rangeKey,
+      pageContext: R.pageContext('product', s.rangeKey, { code: code }),
       loading: s.loading, bodyOpacity: s.loading ? '0.45' : '1',
       code: code, name: o.name, sectorName: o.sectorName, struct: o.struct, issuer: o.issuer,
       listing: m.listingDate,

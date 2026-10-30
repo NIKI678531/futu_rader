@@ -88,7 +88,13 @@ def meta_payload():
     payload["customRange"] = {
         "earliestDate": earliest.isoformat() if earliest else None,
         "latestDate": latest.isoformat() if latest else None,
-        "maxDays": 30,
+        # ``maxDays`` remains during the frontend rollout for old embedded
+        # clients.  New clients use the explicit per-domain capabilities.
+        "maxDays": 31,
+        "scopes": {
+            "market": {"maxDays": 31, "label": "最长 31 天"},
+            "accounts": {"maxYears": 1, "label": "最长 1 个自然年"},
+        },
         "analysisSupported": True,
         "generativeSupported": False,
     }

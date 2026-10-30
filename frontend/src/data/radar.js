@@ -65,6 +65,13 @@ import {
 /* 设计源的 DEFAULT_KEY。屏幕不传区间时用它。 */
 const DEFAULT_RANGE = 'd7'
 
+const pageScope = () => {
+  if (typeof window === 'undefined') return 'market'
+  return /(?:\/|^)(?:official|kol)(?:\/|$)|(?:official|kol)-(?:activity|detail)\.dc\.html/.test(window.location.pathname)
+    ? 'accounts'
+    : 'market'
+}
+
 /* 单产品端点的路径。产品代码进 URL 路径段，一律编码 —— 现在的代码都是 '3033' 这种
    纯数字，但编码一次的成本是零，漏了一次的成本是一个能被拼进路径的字符串。 */
 const product = (code, tail, rangeKey) =>
@@ -82,7 +89,13 @@ export function invalidateMarketOutlook(code, rangeKey) {
 }
 
 export function prefetchScreen(screen, { rangeKey = DEFAULT_RANGE, kol, code } = {}) {
-  const requests = [() => read('/meta'), () => migrated.buildRange(rangeKey)]
+  const scope = screen === 'official' || screen === 'kol' || screen === 'kolDetail' ? 'accounts' : 'market'
+  const contextScreen = screen === 'kolDetail' ? 'kol_detail' : screen
+  const requests = [
+    () => read('/meta'),
+    () => migrated.buildRange(rangeKey, scope),
+    () => migrated.pageContext(contextScreen, rangeKey, { code, kol }),
+  ]
   if (screen === 'official') requests.push(() => migrated.officialPosts(rangeKey))
   if (screen === 'kol' || screen === 'kolDetail') requests.push(() => migrated.kolImpact(rangeKey))
   if (screen === 'sector') {
@@ -118,14 +131,24 @@ export function prefetchScreen(screen, { rangeKey = DEFAULT_RANGE, kol, code } =
 const migrated = {
   /* buildRange(key) → GET /ranges/{key}
      区间、时间桶、基准区间、各处文案全部后端下发。PRD §5 逐字：前端不自行算桶。 */
-  buildRange(key) {
+  buildRange(key, scope = pageScope()) {
     const rangeKey = key || DEFAULT_RANGE
     const custom = parseCustomRange(rangeKey)
     return isLocalToday(rangeKey)
       ? todayRange(meta())
       : custom
-        ? read('/ranges/custom' + qs({ from: custom.from, to: custom.to }))
+        ? read('/ranges/custom' + qs({ from: custom.from, to: custom.to, scope }))
         : read(`/ranges/${encodeURIComponent(rangeKey)}`)
+  },
+
+  pageContext(screen, rangeKey, filters = {}) {
+    return read('/page-context' + qs({
+      screen,
+      ...rangeQuery(rangeKey || DEFAULT_RANGE),
+      code: filters.code,
+      account: filters.account,
+      kol: filters.kol,
+    }))
   },
 
   /* kolImpact(range) → GET /kol/impact?range=
@@ -435,7 +458,7 @@ const constants = {
   get ANALYSIS_PROGRESS() { return meta().analysisProgress },
   get DEFAULT_RANGE() { return meta().defaultRange },
   get UPDATED() { return meta().updatedAt },
-  get PRESETS() {
+  presetsFor(scope = pageScope()) {
     const presets = withTodayPlaceholder(
       meta().presets.map((p) => ({
         k: p.key,
@@ -445,14 +468,18 @@ const constants = {
       })).filter(p => p.k !== 'mtd'),
     )
     const custom = meta().customRange
+    const scoped = custom?.scopes?.[scope]
     if (custom?.latestDate) presets.push({
       k: 'custom', label: '自选日期', custom: true,
       earliestDate: custom.earliestDate, latestDate: custom.latestDate,
-      maxDays: custom.maxDays, analysisSupported: custom.analysisSupported,
+      maxDays: scoped?.maxDays, maxYears: scoped?.maxYears,
+      limitLabel: scoped?.label, scope,
+      analysisSupported: custom.analysisSupported,
       generativeSupported: custom.generativeSupported,
     })
     return presets
   },
+  get PRESETS() { return this.presetsFor(pageScope()) },
   get CUSTOM_RANGE() { return meta().customRange },
   get ETF_MENTION_RULE() { return meta().rules.etfMention },
   get TYPE_RULE() { return meta().rules.postType },

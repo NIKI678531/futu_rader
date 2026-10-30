@@ -58,6 +58,7 @@ worker/.venv/Scripts/alembic -c radar_db/alembic.ini upgrade head
 | `0013` | HKEX ETP 产品目录：官方快照、有效／待源数据／待审核状态及人工竞品映射；迁移时把现有 135 只目录作为初始有效版本。 |
 | `0014` | 管理页 AI 请求队列：按区间持久化排队、运行、租约、结果摘要与错误；Web 与 worker 只通过数据库交接。 |
 | `0015` | 队列记录来源 `requested_by`（`admin` 手动／`schedule` 每日 08:00），区间约束加入 `mtd`（ADR-0031）。worker 启动时对带 `alembic_version` 的库自动 `upgrade head`。 |
+| `0019` | 账号页一年区间与页面评论时钟所需的作者—时间、评论父帖—时间复合索引。 |
 
 ## 写新迁移时
 

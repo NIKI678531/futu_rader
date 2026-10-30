@@ -14,6 +14,9 @@ test('business and page navigation share the compact shell header', () => {
   assert.doesNotMatch(shell, />数据范围</)
   assert.doesNotMatch(shell, />最近更新</)
   assert.doesNotMatch(shell, /height:42px/)
+  assert.match(shell, /data-page-comment-clock/)
+  assert.match(shell, /评论截至/)
+  assert.match(shell, /data-page-published-clock/)
 })
 
 test('business screens share the simplified-Chinese Apple font and radius scale', () => {

@@ -63,8 +63,10 @@ None 由 `core/envelope.py` 判成 `status=unavailable` + HTTP 200，界面渲�
 
 import json
 import logging
+import os
 import re
 import sys
+import threading
 import unicodedata
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
@@ -194,6 +196,28 @@ class SqlProvider:
         # fail at startup instead of silently widening the public data set.
         self._comment_filter_config = load_comment_filter_config()
         self._cache = {}
+        self._start_prewarm()
+
+    def _start_prewarm(self):
+        """Warm the default account screens without delaying process startup."""
+        if os.getenv("RADAR_PREWARM", "1").strip().lower() in {"0", "false", "off"}:
+            return
+        if self._anchor is None:
+            return
+
+        def warm():
+            try:
+                self.kol_impact("d7")
+                self.official_posts("d7")
+                log.info("account_page_prewarm_complete range=d7")
+            except Exception:
+                log.exception("account_page_prewarm_failed range=d7")
+
+        threading.Thread(
+            target=warm,
+            name="radar-account-prewarm",
+            daemon=True,
+        ).start()
 
     def _canonical_kol_name(self, author_name, author_uid=None):
         """Resolve a KOL by stable UID first and historical nickname second."""
@@ -349,6 +373,7 @@ class SqlProvider:
             self._by_code = {product["code"]: product for product in self._products}
         if data_changed:
             self._cache.clear()
+            self._start_prewarm()
         return data_changed
 
     @property
@@ -379,6 +404,110 @@ class SqlProvider:
         }
         if self.updated_at is not None:
             out["updatedAt"] = self.updated_at
+        return out
+
+    def page_context(self, screen, range_key, *, code=None, account=None, kol=None):
+        """Return the latest real child-comment time for one screen scope.
+
+        Ranges in this product are selected by parent-post time.  The maximum
+        below deliberately comes from ``comments.posted_at`` and can therefore
+        be later than the selected parent range.  Missing comment timestamps
+        are disclosed; they are never replaced by their parent feed time.
+        """
+        account_screen = screen in {"official", "kol", "kol_detail"}
+        rng = self._content_range(range_key) if account_screen else self._filtered_range(range_key)
+        if rng is None:
+            return None
+        lo, hi = _window(rng)
+        conditions = [feeds.c.posted_at >= lo, feeds.c.posted_at < hi]
+        if screen == "product":
+            if not code or code not in self._by_code:
+                return MISSING
+            conditions.extend((feeds.c.code == code, self._qualifying_feed_condition(code=code)))
+        elif screen == "sector":
+            conditions.append(self._qualifying_feed_condition())
+        elif screen == "official":
+            officials = self._officials
+            if account:
+                officials = [
+                    row for row in officials
+                    if account in {row["short"], row["full"]}
+                ]
+                if not officials:
+                    return MISSING
+            conditions.append(feeds.c.author_name.in_([row["full"] for row in officials]))
+        else:
+            selected = kol if kol and kol != "ALL" else None
+            active_names = {row["name"] for row in self._kols if row.get("active")}
+            if selected and selected not in active_names:
+                return MISSING
+            names = {
+                source
+                for source, current in self._kol_name_by_source.items()
+                if source in self._active_kol_source_names
+                and (selected is None or current == selected)
+            }
+            uids = {
+                uid
+                for uid, current in self._kol_name_by_uid.items()
+                if uid in self._active_kol_user_ids
+                and (selected is None or current == selected)
+            }
+            conditions.append(or_(feeds.c.author_name.in_(names), feeds.c.author_uid.in_(uids)))
+
+        cache_key = (
+            "page_context", screen, rng["from"], rng["to"], code, account, kol,
+            self._meta.get("data_revision"), self._meta.get("ai_public_revision"),
+        )
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        with self._engine.connect() as conn:
+            stored, timestamped, latest = conn.execute(
+                select(
+                    func.count(comments.c.comment_id),
+                    func.count(comments.c.posted_at),
+                    func.max(comments.c.posted_at),
+                )
+                .select_from(comments.join(feeds, feeds.c.feed_id == comments.c.feed_id))
+                .where(*conditions)
+            ).one()
+        if stored == 0:
+            status = "empty"
+        elif timestamped == 0:
+            status = "unavailable"
+        elif timestamped < stored:
+            status = "partial"
+        else:
+            status = "ok"
+        if latest is not None:
+            latest_hkt = utc_naive_to_hkt(latest)
+            if latest_hkt.tzinfo is None:
+                latest_hkt = latest_hkt.replace(tzinfo=HKT)
+            posted_through = latest_hkt.isoformat(timespec="minutes")
+        else:
+            posted_through = None
+        published = self._meta.get("ai_public_updated_at")
+        if published:
+            try:
+                parsed = datetime.fromisoformat(str(published).replace("Z", "+00:00"))
+                if parsed.tzinfo is not None:
+                    published = parsed.astimezone(HKT).isoformat(timespec="minutes")
+            except ValueError:
+                published = None
+        out = {
+            "screen": screen,
+            "range": {"from": rng["from"], "to": rng["to"]},
+            "revision": self._meta.get("ai_public_revision") or self._meta.get("data_revision"),
+            "pagePublishedAt": published,
+            "latestFeedPostedAt": self.updated_at,
+            "commentClock": {
+                "status": status,
+                "postedThrough": posted_through,
+                "timestamped": timestamped,
+                "stored": stored,
+            },
+        }
+        self._cache[cache_key] = out
         return out
 
     def collection_metadata(self):
@@ -1042,6 +1171,9 @@ class SqlProvider:
         rng = self._content_range(range_key)
         if rng is None:
             return None
+        cache_key = ("official_posts", rng["from"], rng["to"])
+        if cache_key in self._cache:
+            return self._cache[cache_key]
         # 官号在真实数据里只能按**全称**认（`full`），uid 对不上，见模块头第 1 点。
         by_name = {o["full"]: o for o in self._officials}
         ai = self._post_ai(rng)
@@ -1074,6 +1206,7 @@ class SqlProvider:
                 }
             )
         out.sort(key=lambda p: (-p["t"], p["id"]))
+        self._cache[cache_key] = out
         return out
 
     def etf_mentions_for(self, account, range_key):
@@ -1188,6 +1321,9 @@ class SqlProvider:
         rng = self._content_range(range_key)
         if rng is None:
             return None
+        cache_key = ("kol_impact", rng["from"], rng["to"])
+        if cache_key in self._cache:
+            return self._cache[cache_key]
         by_name = {k["name"]: k for k in self._kols if k.get("active")}
         source_to_name = {
             source_name: current_name
@@ -1217,7 +1353,7 @@ class SqlProvider:
                 }
             )
         posts.sort(key=lambda p: (-p["t"], p["id"]))
-        return {
+        out = {
             "posts": posts,
             # leaders 是**全量**兼容画像（不随筛选变化）；新页面按 posts 聚合浏览量定顺序。
             # 画像里的 typeCounts / topType / styleTag 全部来自 AI 类型标注 → None。
@@ -1229,6 +1365,8 @@ class SqlProvider:
             },
             "updated": self.updated_at,
         }
+        self._cache[cache_key] = out
+        return out
 
     # ── 行情源字段：只读当前已验证标的，不跨产品／跨 provider 兜底 ─────
     #

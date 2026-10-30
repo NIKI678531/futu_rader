@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 VALID_KEYS = PRESET_KEYS
 
 
-def build_custom_key(date_from, date_to):
+def build_custom_key(date_from, date_to, *, scope="market"):
     """Validate an HTTP custom-range tuple and return its internal cache key."""
     key = custom_key(date_from, date_to)
     provider = get_provider()
@@ -45,7 +45,7 @@ def build_custom_key(date_from, date_to):
         earliest, provider_latest = bounds()
         latest = provider_latest or latest
     first, last = parse_custom_key(key)
-    validate_selectable(first, last, earliest, latest)
+    validate_selectable(first, last, earliest, latest, scope=scope)
     return key
 
 

@@ -29,7 +29,8 @@ class KolDetail extends React.Component {
     this.state = {
       rangeKey: rangeFromSearch(location.search, R.PRESETS),
       kol: q.kol || null,
-      sel: q.post || null
+      sel: q.post || null,
+      shown: 50
     };
     /* 首次 render 之前把本屏端点并行发出去（radar.js `prefetchScreen`）。 */
     prefetchScreen('kolDetail', { rangeKey: this.state.rangeKey, kol: this.state.kol });
@@ -37,7 +38,7 @@ class KolDetail extends React.Component {
   componentDidMount() {
     this._stopRangeNavigation = listenForRangeNavigation(R.PRESETS, (rangeKey) => {
       prefetchScreen('kolDetail', { rangeKey, kol: this.state.kol });
-      this.setState({ rangeKey, sel: null });
+      this.setState({ rangeKey, sel: null, shown: 50 });
     });
   }
   componentWillUnmount() { if (this._stopRangeNavigation) this._stopRangeNavigation(); }
@@ -149,7 +150,12 @@ class KolDetail extends React.Component {
     ];
 
     /* 左表：点行 = 选中该帖（右侧高亮那天）+ 展开原文 */
-    out.posts = ps.map(function (p, i) {
+    var pageSize = 50, shown = Math.min(ps.length, s.shown || pageSize);
+    out.hasMorePosts = shown < ps.length;
+    out.shownPosts = String(shown);
+    out.morePosts = String(Math.min(pageSize, ps.length - shown));
+    out.loadMorePosts = function () { self.setState({ shown: shown + pageSize }); };
+    out.posts = ps.slice(0, shown).map(function (p, i) {
       var sec = secOf(p.sector), st = displayedPostType(p), on = !!(p0 && p.id === p0.id), displayedEtfs = mentionedEtfsOf(p);
       return {
         key: p.id,
@@ -191,42 +197,48 @@ class KolDetail extends React.Component {
       };
     });
 
-    /* 右上：按天双色堆叠柱（每格一篮）
-       日历轴由 /ranges/{key} 下发（`dates`）。设计源在下面 addDays(range.from, i) 现算，
-       那是演示生成器泄漏进屏幕代码（ADR-0004、静态守卫①）。`buckets` 顶不上它 ——
-       桶的粒度随区间在时/日/周之间变（d1 是 24 个小时桶，d30 是 5 个周桶），而这根
-       时间线固定按天；backend/tests/test_ranges.py 钉住了这条区别。
-       取的是 shell() 已经取过的那份区间（read() 命中缓存），不多发一次请求；
-       `M.range` 是 kolImpact 里那份四字段的裁剪副本，没有 dates。 */
+    /* 长区间不渲染 365 根日柱：31 天以内按日，超过 31 天使用后端周桶。
+       两种轴都来自 /ranges，前端只把帖子放入已下发的边界，不另造日历口径。 */
     var RANGE = R.buildRange(s.rangeKey);
     var DAYS = RANGE.days;
-    var perDay = {};
-    ps.forEach(function (p) {
-      var e = perDay[p.day] = perDay[p.day] || { own: 0, both: 0, peer: 0 };
-      var c = self.camp(p);
-      if (c === 'own') e.own++; else if (c === 'both') e.both++; else if (c === 'competitor') e.peer++;
-      else if (mentionedEtfsOf(p).length) e.peer++;
-    });
+    var slots = (DAYS > 31 ? RANGE.buckets : RANGE.dates.map(function (d) { return { day: d, label: md(d), span: 1 }; }))
+      .map(function (bucket, i, all) {
+        var start = bucket.day || bucket.start;
+        var next = all[i + 1];
+        var nextStart = next ? (next.day || next.start) : null;
+        var matching = ps.filter(function (p) { return p.day >= start && (!nextStart ? p.day <= RANGE.to : p.day < nextStart); });
+        var e = { own: 0, both: 0, peer: 0 };
+        matching.forEach(function (p) {
+          var c = self.camp(p);
+          if (c === 'own') e.own++; else if (c === 'both') e.both++; else if (c === 'competitor') e.peer++;
+          else if (mentionedEtfsOf(p).length) e.peer++;
+        });
+        return { start: start, nextStart: nextStart, label: bucket.label || md(start), matching: matching, counts: e };
+      });
     var mx = 1;
-    Object.keys(perDay).forEach(function (d) { var e = perDay[d], t = e.own + e.both + e.peer; if (t > mx) mx = t; });
+    slots.forEach(function (slot) {
+      var e = slot.counts, total = e.own + e.both + e.peer;
+      if (total > mx) mx = total;
+    });
     var unit = Math.min(40, Math.floor(160 / mx));
-    var step = DAYS > 14 ? 5 : (DAYS > 7 ? 2 : 1);
+    var step = slots.length > 31 ? 4 : (slots.length > 14 ? 5 : (slots.length > 7 ? 2 : 1));
     var selDay = p0 ? p0.day : null;
-    out.colGap = DAYS > 14 ? '3' : '8';
-    out.colPad = DAYS > 14 ? '1' : (DAYS > 2 ? '6' : '40');
+    out.colGap = slots.length > 14 ? '3' : '8';
+    out.colPad = slots.length > 14 ? '1' : (slots.length > 2 ? '6' : '40');
     out.days = [];
-    for (var i = 0; i < DAYS; i++) {
+    for (var i = 0; i < slots.length; i++) {
       (function (i) {
-        var d = RANGE.dates[i], e = perDay[d] || { own: 0, both: 0, peer: 0 }, on = d === selDay;
+        var slot = slots[i], d = slot.start, e = slot.counts;
+        var on = !!selDay && selDay >= d && (!slot.nextStart ? selDay <= RANGE.to : selDay < slot.nextStart);
         out.days.push({
           key: d,
           ownH: String(e.own * unit), bothH: String(e.both * unit), peerH: String(e.peer * unit),
           peerGap: e.peer && (e.both || e.own) ? '1' : '0', bothGap: e.both && e.own ? '1' : '0',
           bg: on ? 'var(--csop-blue-50)' : 'transparent',
-          label: (i % step === 0 || on || DAYS <= 7) ? md(d) : '',
+          label: (i % step === 0 || on || slots.length <= 7) ? md(d) : '',
           lfg: on ? 'var(--csop-blue-700)' : 'var(--ink-400)', lfw: on ? '600' : '500',
-          title: md(d) + ' · 只提自家 ' + e.own + ' · 双方 ' + e.both + ' · 只提其他公司产品 ' + e.peer,
-          go: function () { var q = ps.filter(function (p) { return p.day === d; }).sort(function (a, b) { return a.t - b.t; })[0]; if (q) self.setState({ sel: q.id }); }
+          title: md(d) + (DAYS > 31 ? ' 起该周' : '') + ' · 只提自家 ' + e.own + ' · 双方 ' + e.both + ' · 只提其他公司产品 ' + e.peer,
+          go: function () { var q = slot.matching.slice().sort(function (a, b) { return a.t - b.t; })[0]; if (q) self.setState({ sel: q.id }); }
         });
       })(i);
     }
@@ -414,6 +426,12 @@ class KolDetail extends React.Component {
                   </tbody>
                 </table>
               </div>
+              {v.hasMorePosts && (
+                <div style={s('display:flex;align-items:center;justify-content:center;gap:10px;padding:10px 14px;border-top:1px solid var(--border-1);background:var(--canvas-alt)')}>
+                  <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>已显示 {v.shownPosts} / {v.postCount} 篇</span>
+                  <button type="button" onClick={v.loadMorePosts} style={s('padding:5px 12px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);cursor:pointer')}>再看 {v.morePosts} 篇</button>
+                </div>
+              )}
             </div>
 
             <div style={s('display:flex;flex-direction:column;gap:20px;min-width:0')}>
