@@ -766,7 +766,14 @@ class DemoProvider:
                 continue
             occurrence_counts = _explicit_cashtag_counts(post)
             seen = set()
+            products = {
+                str(product["code"]): product
+                for product in post.get("mentionedEtfs", [])
+                if isinstance(product, dict) and product.get("code")
+            }
             for product in post["attributedProducts"]:
+                products.setdefault(str(product["code"]), product)
+            for product in products.values():
                 code = str(product["code"])
                 if code in seen:
                     continue
@@ -775,10 +782,12 @@ class DemoProvider:
                     code,
                     {
                         "code": code,
+                        "ticker": product.get("ticker") or (f"{code.zfill(5)}.HK" if code.isdigit() else code),
                         "name": product.get("name"),
                         "short": _short_name(product.get("name")),
                         "issuer": product.get("issuer"),
                         "ownership": product.get("ownership"),
+                        "inPool": product.get("inPool", True),
                         "count": 0,
                         "posts": 0,
                     },

@@ -1,11 +1,17 @@
 import pytest
 
-from core.futu_links import canonical_futu_feed_url, futu_feed_url
+from core.futu_links import canonical_futu_feed_url, futu_feed_url, futu_profile_url
 
 
 def test_feed_id_maps_to_the_public_futu_community_route():
     assert futu_feed_url(117149481304068) == (
         "https://q.futunn.com/feed/117149481304068?lang=zh-cn"
+    )
+
+
+def test_user_id_maps_to_the_public_futu_profile_route():
+    assert futu_profile_url(12917760) == (
+        "https://q.futunn.com/profile/12917760?lang=zh-cn"
     )
 
 

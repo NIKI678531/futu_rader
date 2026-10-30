@@ -95,6 +95,9 @@ class OfficialActivity extends React.Component {
   }
   camp(p) { return attributedCampOf(p); }
   codesOf(p) { return attributedCodesOf(p); }
+  displayedCodesOf(p) {
+    return Array.from(new Set(mentionedEtfsOf(p).map(function (m) { return m.code; }).concat(this.codesOf(p))));
+  }
 
   renderVals() {
     var s = this.state, self = this;
@@ -135,7 +138,7 @@ class OfficialActivity extends React.Component {
       var ps = feedAll.filter(function (p) { return p.account === o.short; });
       return {
         short: o.short, full: o.full, comps: o.comps, type: o.comps > 0 ? '发行商官号' : '平台运营',
-        url: o.url,
+        url: o.url || null,
         /* `engagement` ＝ 赞＋评论＋转发，而转发数在源库里有约 0.03% 的行是坏的
            （raw_json 被 TEXT 列截断，ADR-0008），那些帖子的 engagement 是 null。
            设计源这里是 `reduce(t + p.engagement, 0)` —— 镜像里的数永远齐全，所以没事；
@@ -181,15 +184,16 @@ class OfficialActivity extends React.Component {
          这里每行渲染该官号提及的全部 ETF（自家在前、竞品在后，组间细分隔线），横向滚动查看，点击芯片联动发帖流 */
       var h = React.createElement;
       var chipEl = function (e) {
-        var own = e.ownership === 'own', hit = on && s.prod === e.code;
+        var own = e.ownership === 'own', outside = e.inPool === false, hit = on && s.prod === e.code;
+        var ticker = e.ticker || (/^\d+$/.test(e.code) ? e.code.padStart(5, '0') + '.HK' : e.code);
         return h('span', {
           key: e.code, 'data-chip': '1',
-          title: e.name + '（' + e.code + '.HK）· ' + (own ? '南方东英 · 自家' : '竞品 · ' + e.issuer) + ' · 出现 ' + e.count + ' 次 · 涉及 ' + e.posts + ' 帖 · 点击只看该官号关于此 ETF 的帖子',
+          title: (e.name || 'ETF 名称暂不可用') + '（' + ticker + '）· ' + (own ? '南方东英 · 自家' : (outside ? '其他公司产品' : '竞品 · ' + e.issuer)) + ' · 出现 ' + e.count + ' 次 · 涉及 ' + e.posts + ' 帖 · 点击只看该官号关于此 ETF 的帖子',
           onClick: function (ev) { ev.stopPropagation(); self.pickEtf(o.short, e.code, e.short); },
           style: { flex: 'none', display: 'inline-flex', alignItems: 'center', height: 22, padding: '0 9px', borderRadius: 9999, boxSizing: 'border-box',
             background: own ? 'var(--csop-blue-600)' : 'var(--csop-silver-200)', color: own ? '#fff' : 'var(--ink-700)',
             boxShadow: hit ? '0 0 0 2px var(--warning-600)' : 'none', font: '600 12px/1 var(--font-mono)', cursor: 'pointer', whiteSpace: 'nowrap' }
-        }, e.code + ' ' + (e.short.length > 5 ? e.short.slice(0, 5) + '…' : e.short) + ' ×' + e.count);   /* 单个文本节点：整页上百枚芯片，不再嵌套 span，控制 DOM 节点数 */
+        }, ticker.replace(/\.HK$/i, '') + ' ' + (e.short.length > 5 ? e.short.slice(0, 5) + '…' : e.short) + ' ×' + e.count);   /* 单个文本节点：整页上百枚芯片，不再嵌套 span，控制 DOM 节点数 */
       };
       var kids = em.own.map(chipEl);
       if (em.own.length && em.peer.length) kids.push(h('span', { key: '__div', style: { flex: 'none', width: 1, height: 16, background: 'var(--border-2)', margin: '0 2px' } }));
@@ -206,7 +210,7 @@ class OfficialActivity extends React.Component {
         posts: String(o.posts), inter: num(o.inter),
         hasEtf: em.list.length > 0, noEtf: em.list.length === 0,
         etfHead: em.list.length ? em.etfCount + ' 只 · ' + em.total + ' 次' : '— 区间内未提及 ETF',
-        etfHeadTitle: '自家 ' + em.own.length + ' 只 · 竞品 ' + em.peer.length + ' 只 · 涉及 ' + em.postCount + ' 帖 · 仅 ETF，不含个股',
+        etfHeadTitle: '自家 ' + em.own.length + ' 只 · 其他公司 ' + em.peer.length + ' 只 · 涉及 ' + em.postCount + ' 帖 · 仅 ETF，不含个股',
         etfStrip: stripEl,
         fadeDisplay: sm.fade ? 'block' : 'none', fadeBg: 'linear-gradient(to right, rgba(255,255,255,0), ' + rowBg + ' 28%)', tailBg: rowBg,
         tailDisplay: sm.hidden ? 'inline-flex' : 'none', tailText: sm.hidden ? '→ 还有 ' + sm.hidden + ' 只' : '',
@@ -214,7 +218,7 @@ class OfficialActivity extends React.Component {
         color: iss ? '#2361AD' : '#7A5C9E',
         tbg: iss ? 'var(--csop-blue-50)' : '#F1ECF7',
         tfg: iss ? 'var(--csop-blue-700)' : '#5E4480',
-        url: o.url,
+        url: o.url, hasUrl: !!o.url,
         bg: on ? 'var(--csop-blue-50)' : (i % 2 ? 'var(--canvas)' : '#fff'),
         stop: function (e) { e.stopPropagation(); },
         go: function () { self.go({ acct: on ? null : o.short }); }
@@ -250,7 +254,7 @@ class OfficialActivity extends React.Component {
             + (summaryNaN ? ' · 另有 ' + summaryNaN + ' 篇摘要尚未生成' : '')
       }
     ].map(function (x) { return { label: x.label, value: x.value, unit: x.unit, sub: x.sub, vfg: x.vfg || 'var(--ink-900)' }; });
-    var top = isr.slice().sort(function (a, b) { return b.posts - a.posts || descN(a.inter, b.inter); }).slice(0, 8);
+    var top = isr.slice().sort(function (a, b) { return b.posts - a.posts || descN(a.inter, b.inter); });
     var tmx = top.length ? Math.max(1, top[0].posts) : 1;
     out.topIssuers = top.map(function (o, i) {
       return {
@@ -288,8 +292,14 @@ class OfficialActivity extends React.Component {
       });
 
     /* 产品下拉：菜单内即时过滤（代码 / 名称 / 发行商） */
-    var byCode = {};
-    base.forEach(function (p) { self.codesOf(p).forEach(function (c) { byCode[c] = (byCode[c] || 0) + 1; }); });
+    var byCode = {}, etfMeta = {};
+    base.forEach(function (p) {
+      mentionedEtfsOf(p).forEach(function (m) { byCode[m.code] = (byCode[m.code] || 0) + 1; etfMeta[m.code] = m; });
+      self.codesOf(p).forEach(function (code) {
+        if (byCode[code] == null) byCode[code] = 0;
+        if (!mentionedEtfsOf(p).some(function (m) { return m.code === code; })) byCode[code]++;
+      });
+    });
     var pqq = norm(s.prodQ);
     out.prodQ = s.prodQ;
     out.setProdQ = function (e) { self.setState({ prodQ: e.target.value }); };
@@ -302,13 +312,13 @@ class OfficialActivity extends React.Component {
     out.prodClose = function () { self.setState({ prodMenu: false }); };
     var prodItems = [{ k: 'ALL', code: '全部', name: '全部产品', n: base.length, own: '', obg: 'transparent', ofg: 'transparent' }].concat(
       Object.keys(byCode).sort(function (a, b) { return byCode[b] - byCode[a] || (a < b ? -1 : 1); }).map(function (c) {
-        var m = R.MASTER[c], own = m && m.ownership === 'own';
+        var m = R.MASTER[c] || etfMeta[c], own = m && m.ownership === 'own', outside = m && m.inPool === false;
         return {
-          k: c, code: c, name: m ? (own ? m.name : m.issuer + ' · ' + m.name) : c, n: byCode[c],
-          own: own ? '自家' : '竞品', obg: own ? 'var(--csop-blue-600)' : 'var(--csop-silver-200)', ofg: own ? '#fff' : 'var(--ink-700)'
+          k: c, code: (m && m.ticker) || c, name: m ? (outside ? (m.name || '其他公司产品') : (own ? m.name : m.issuer + ' · ' + m.name)) : c, n: byCode[c],
+          own: outside ? '其他公司产品' : (own ? '自家' : '竞品'), obg: own ? 'var(--csop-blue-600)' : 'var(--csop-silver-200)', ofg: own ? '#fff' : 'var(--ink-700)'
         };
       })).filter(function (o) { return o.k === s.prod || !pqq || norm(o.code + ' ' + o.name + ' ' + o.own).indexOf(pqq) >= 0; });
-    out.prodMenuNote = '发帖流中被提及的 ' + Object.keys(byCode).length + ' 个产品（自家 + 竞品）' + (pqq ? ' · 匹配 ' + Math.max(0, prodItems.length - 1) + ' 个' : '');
+    out.prodMenuNote = '全文中被提及的 ' + Object.keys(byCode).length + ' 个 ETF（自家 + 其他公司）' + (pqq ? ' · 匹配 ' + Math.max(0, prodItems.length - 1) + ' 个' : '');
     out.prodMenuEmpty = !!pqq && prodItems.length <= 1;
     out.prodMenu = prodItems.map(function (o) {
       var on = o.k === s.prod;
@@ -318,7 +328,7 @@ class OfficialActivity extends React.Component {
         go: function () { self.go({ prod: o.k, prodMenu: false, prodQ: '' }); }
       };
     });
-    var prodPosts = base.filter(function (p) { return s.prod === 'ALL' || self.codesOf(p).indexOf(s.prod) >= 0; });
+    var prodPosts = base.filter(function (p) { return s.prod === 'ALL' || self.displayedCodesOf(p).indexOf(s.prod) >= 0; });
 
     /* 类型多选：计数按 三态 × 官号 × 产品 的范围算 */
     /* 没标注的不进任何一类：`typeCounts[null]` 会开一个键名为字符串 "null" 的格子，
@@ -419,7 +429,7 @@ class OfficialActivity extends React.Component {
           ? '该帖来源讨论区为 ' + p.sourceAnchorCode + '，但讨论区不作为官号产品归属证据'
           : '正文中没有足够的产品归属证据',
         likes: num(p.likes), comments: num(p.comments), shares: num(p.shares),
-        url: p.url,
+        url: p.url || null, hasUrl: !!p.url,
         openLabel: open ? '收起原文' : '原文',
         linkBg: open ? 'var(--csop-blue-50)' : '#fff',
         linkBc: open ? 'var(--csop-blue-600)' : 'var(--border-2)',
@@ -501,7 +511,7 @@ class OfficialActivity extends React.Component {
                       <th style={s('position:sticky;top:0;z-index:2;width:88px;background:var(--canvas-alt);text-align:left;padding:10px 6px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>发布篇数</th>
                       <th style={s('position:sticky;top:0;z-index:2;width:62px;background:var(--canvas-alt);text-align:right;padding:10px 6px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>互动数</th>
                       <th title={v.etfRule} style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 8px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>
-                        <span style={s('display:flex;align-items:baseline;gap:8px;white-space:nowrap;overflow:hidden')}>提及 ETF（自家／竞品）<span style={s('min-width:0;overflow:hidden;text-overflow:ellipsis;font:400 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>按出现次数 · 仅 ETF · 点芯片看相关帖子 · 可横向滚动</span></span>
+                        <span style={s('display:flex;align-items:baseline;gap:8px;white-space:nowrap;overflow:hidden')}>全文提及 ETF<span style={s('min-width:0;overflow:hidden;text-overflow:ellipsis;font:400 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>自家／其他公司 · 按出现次数 · 不含个股 · 点芯片看相关帖子</span></span>
                       </th>
                       <th style={s('position:sticky;top:0;z-index:2;width:70px;background:var(--canvas-alt);text-align:right;padding:10px 16px 10px 6px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>主页</th>
                     </tr>
@@ -534,7 +544,9 @@ class OfficialActivity extends React.Component {
                           </div>
                         </td>
                         <td style={s('padding:11px 16px 11px 6px;text-align:right;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
-                          <a href={r.url} target="_blank" rel="noopener" onClick={r.stop} style={s('display:inline-flex;align-items:center;padding:4px 9px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>主页 ↗</a>
+                          {r.hasUrl ? (
+                            <a href={r.url} target="_blank" rel="noopener" onClick={r.stop} style={s('display:inline-flex;align-items:center;padding:4px 9px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>主页 ↗</a>
+                          ) : <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-300)')}>—</span>}
                         </td>
                       </tr>
                     ))}
@@ -545,8 +557,8 @@ class OfficialActivity extends React.Component {
 
             <div style={s('display:flex;flex-direction:column;gap:18px;min-width:0')}>
               <div style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);padding:16px 20px 14px;flex:1')}>
-                <div style={s('font:600 18px/1.3 var(--font-cjk);margin-bottom:4px')}>发行商官号发布强度 Top 8</div>
-                <div style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500);margin-bottom:10px')}>仅统计发行商官号 · 篇数 / 互动 · 点击筛选发帖流</div>
+                <div style={s('font:600 18px/1.3 var(--font-cjk);margin-bottom:4px')}>发行商官号发布强度</div>
+                <div style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500);margin-bottom:10px')}>全部发行商官号 · 篇数 / 互动 · 点击筛选发帖流</div>
                 {v.topIssuers.map((t) => (
                   <div key={t.name} onClick={t.go} style={s('display:flex;align-items:center;gap:11px;padding:6px 0;border-bottom:1px solid var(--ink-100);cursor:pointer')} className={hover('background:var(--csop-blue-50)')}>
                     <span style={s('flex:none;width:80px;font:500 13px/1.4 var(--font-cjk);color:var(--ink-700);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{t.name}</span>
@@ -728,6 +740,9 @@ class OfficialActivity extends React.Component {
                   <div style={s('display:flex;align-items:center;gap:10px;margin:12px 0 0;padding:10px 14px 12px;border-top:1px solid var(--ink-100)')}>
                     <span style={s('font:500 13px/1.4 var(--font-mono);color:var(--ink-600);white-space:nowrap')}>赞 {c.likes} · 评 {c.comments} · 转 {c.shares}</span>
                     <span onClick={c.toggle} style={s(`margin-left:auto;display:inline-flex;align-items:center;padding:3px 10px;border:1px solid ${c.linkBc};border-radius:var(--radius-control);background:${c.linkBg};font:500 12px/1.4 var(--font-cjk);color:${c.linkFg};cursor:pointer;white-space:nowrap`)} className={hover('background:var(--csop-blue-50)')}>{c.openLabel}</span>
+                    {c.hasUrl && (
+                      <a href={c.url} target="_blank" rel="noopener" style={s('display:inline-flex;align-items:center;padding:3px 10px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>原帖 ↗</a>
+                    )}
                   </div>
                 </div>
               ))}

@@ -99,10 +99,24 @@ class KolActivity extends React.Component {
         mentioned,
         cell(p.likes), cell(p.comments), cell(p.shares), cell(p.views), p.url].map(esc).join(',');
     }));
+    this.downloadCsv(lines, filename);
+  }
+  downloadCsv(lines, filename) {
     var blob = new Blob(['﻿' + lines.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' });
     var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename;
     document.body.appendChild(a); a.click();
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 800);
+  }
+  exportLeaderCsv(list, summary, filename, rangeKey) {
+    var esc = function (v) { v = v == null ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.split('"').join('""') + '"' : v; };
+    var cell = function (v) { return v == null ? '数据暂不可用' : v; };
+    var head = ['排名', 'KOL', 'KOL类型', '发帖篇数', '仅提自家', '双方都提', '仅提其他公司', '提及自家篇数', '提及其他公司篇数', '浏览量', '评论量', '详情链接'];
+    var lines = [esc('# ' + summary), head.map(esc).join(',')].concat(list.map(function (leader, index) {
+      var detail = hrefWithRange('kol-detail.dc.html?kol=' + encodeURIComponent(leader.kol), rangeKey);
+      return [index + 1, leader.kol, leader.rosterTags.join(' / '), leader.n, leader.own, leader.both, leader.peer,
+        leader.ownAny, leader.peerAny, cell(leader.views), cell(leader.comments), detail].map(esc).join(',');
+    }));
+    this.downloadCsv(lines, filename);
   }
 
   /* 四级联动：ETF → KOL → 帖子，类型独立多选。上一级变化时清掉下一级 */
@@ -480,6 +494,17 @@ class KolActivity extends React.Component {
     out.leaderCount = String(lRows.length);
     out.hasLf = !!lqq || s.lCamp !== 'ALL' || s.lType !== 'ALL';
     out.clearLf = function () { self.setState({ lq: '', lCamp: 'ALL', lType: 'ALL' }); };
+    var leaderCampName = CAMPS.filter(function (x) { return x[0] === s.lCamp; })[0][1];
+    var leaderCsvSummary = ['日期范围 ' + range.from + ' ～ ' + range.to + '（' + range.label + '）', 'ETF ' + (s.etf === 'ALL' ? '全部' : s.etf),
+      '展示类型 ' + (picked.length ? picked.join('、') : '全部'), '关键词 ' + (lqq || '—'), '提及范围 ' + leaderCampName,
+      'KOL类型 ' + (s.lType === 'ALL' ? '全部' : s.lType), '排序 ' + out.leaderSortNote, '共 ' + lRows.length + ' 位', '数据更新 ' + M.updated].join(' · ');
+    var leaderCsvName = 'KOL声量排名_' + range.from + '_' + range.to + (out.hasScope || out.hasLf ? '_筛选' : '') + '.csv';
+    out.exportLeaderCsv = function () { if (lRows.length) self.exportLeaderCsv(lRows, leaderCsvSummary, leaderCsvName, s.rangeKey); };
+    out.leaderExportTip = lRows.length ? '导出当前日期范围、ETF、展示类型及排名筛选下的 ' + lRows.length + ' 位 KOL，与排名所见一致' : '当前筛选下没有可导出的 KOL';
+    out.leaderExportBc = lRows.length ? 'var(--border-2)' : 'var(--border-1)';
+    out.leaderExportFg = lRows.length ? 'var(--csop-blue-600)' : 'var(--ink-400)';
+    out.leaderExportCursor = lRows.length ? 'pointer' : 'not-allowed';
+    out.leaderExportOp = lRows.length ? '1' : '0.6';
 
     var mxN = Math.max.apply(null, lRows.map(function (l) { return l.n; }).concat([1]));
     var p0 = this.selPost();
@@ -826,6 +851,8 @@ class KolActivity extends React.Component {
             <div style={s('display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 20px;border-bottom:1px solid var(--border-1)')}>
               <div style={s('font:600 18px/1.3 var(--font-cjk)')}>KOL 声量排名</div>
               <div style={s('flex:none;display:flex;align-items:center;gap:8px')}>
+                <div onClick={v.exportLeaderCsv} title={v.leaderExportTip} style={s(`display:flex;align-items:center;gap:6px;height:30px;box-sizing:border-box;padding:0 12px;border:1px solid ${v.leaderExportBc};border-radius:var(--radius-control);background:#fff;font:500 13px/1.4 var(--font-cjk);color:${v.leaderExportFg};cursor:${v.leaderExportCursor};opacity:${v.leaderExportOp};white-space:nowrap;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>导出 CSV（{v.leaderCount} 位）</div>
+                <span style={s('width:1px;height:16px;background:var(--border-2);margin:0 4px')}></span>
                 <span style={s('font:600 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>排序</span>
                 <div style={s('display:flex;border:1px solid var(--border-2);border-radius:var(--radius-control);overflow:hidden')}>
                   {v.leaderSorts.map((f) => (

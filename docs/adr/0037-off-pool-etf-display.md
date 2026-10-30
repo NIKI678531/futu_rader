@@ -19,11 +19,14 @@ ADR-0036 修正了挂载讨论区被误当成正文提及的问题，但读路�
    明确确认为 ETF：正文结构化片段 `instrument_type_v2=4`、MarketInsight 证券目录
    `instrument_type=etf`，或完整正文中富途严格 cashtag 的平台展示名明确以 `ETF`／
    「交易所买卖基金」结尾。裸 ticker、普通正文名称和 AI 推断均不构成 ETF 身份。
-3. `mentionedEtfs` 不参与产品归属。既有 `code`、`mentioned`、`camp`、自家/竞品 KPI、
-   官号归属汇总及产品页相关 KOL 继续只认当前产品池。
+3. `mentionedEtfs` 不参与产品归属。既有 `code`、`mentioned`、`camp`、自家/竞品 KPI
+   及产品页相关 KOL 继续只认当前产品池。KOL 与官号页面均用 `mentionedEtfs` 展示全文
+   确认的全部 ETF；官号汇总的 `own`/`peer` 分组仍按池内归属，池外 ETF 归入非自家
+   展示组而不反向改变帖子阵营。
 4. 页面 ETF 列可展示多个 ticker，池外 ETF 使用中性「池外 ETF」标记；指数、股票、
    牛熊证、窝轮及其他产品不显示。
-5. `feed_details` 是长文正文的权威来源。线上同步必须具备
+5. `feed_details` 是长文正文的权威来源。KOL 与客户官号名单都必须进入详情页采集及
+   完整性校验。线上同步必须具备
    `(detail_updated_at, feed_id)` 复合索引；缺失时启动检查失败，不得静默退化为帖子预览。
 
 ## 后果

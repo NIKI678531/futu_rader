@@ -9,7 +9,8 @@
    both / none）。KOL 页问的是「这个 KOL 提没提我们」，「提自家」含 both。
    看起来像不一致，实际是两个不同的问题（ADR-0013 O4）。**不要顺手统一。**
 
-匹配范围只含 ETF 产品池（61 自家 + 59 竞品），个股代码与个股名称不计入。
+展示标签与 KOL 页共用完整正文 `mentionedEtfs`，包括已由证券类型确认的池外 ETF；
+指数、个股与衍生品不显示。产品归属和阵营仍只认当前 ETF 产品池。
 """
 
 from providers import get_provider
@@ -26,7 +27,7 @@ def official_posts(range_key):
 
 
 def etf_mentions_for(account, range_key):
-    """单个官号在区间内的 ETF 提及统计（自家在前、竞品在后，按出现次数）。"""
+    """单个官号的全文 ETF 提及统计（自家在前、其他公司在后，按出现次数）。"""
     if not is_valid_range_key(range_key):
         return MISSING
     return get_provider().etf_mentions_for(account, range_key)

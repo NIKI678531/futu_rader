@@ -15,7 +15,7 @@ import json
 from datetime import date, datetime
 
 import pytest
-from sqlalchemy import delete, insert
+from sqlalchemy import delete, insert, update
 from radar_db.comment_routes import COMMENT_ROUTE_VERSION, readiness_values as route_readiness_values
 from radar_db.schema import (
     annotation_runs,
@@ -1582,6 +1582,22 @@ def test_master_is_served_even_with_an_empty_database():
     assert len(m["products"]) == len(MASTER["products"]) == 135
     assert len(m["officials"]) == 20
     assert len(m["kols"]) == 32
+
+
+def test_master_uses_verified_source_uid_for_official_profile_links(provider):
+    """Synthetic design user ids must not leak into the production contract."""
+    with provider._engine.begin() as conn:
+        conn.execute(
+            update(feeds)
+            .where(feeds.c.feed_id == 1)
+            .values(author_uid="12917760")
+        )
+    provider._cache.clear()
+
+    account = next(
+        row for row in provider.master()["officials"] if row["short"] == "恒生投资"
+    )
+    assert account["url"] == "https://q.futunn.com/profile/12917760?lang=zh-cn"
 
 
 def test_range_key_coverage(provider):

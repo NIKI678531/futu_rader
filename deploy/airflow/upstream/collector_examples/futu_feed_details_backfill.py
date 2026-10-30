@@ -23,6 +23,7 @@ HKT = pendulum.timezone("Asia/Hong_Kong")
 DEFAULT_RECENT_DAYS = "30"
 DEFAULT_MAX_FEEDS = "1000"
 KOL_ROSTER_FILE = Path(__file__).with_name("futu_radar_kol_roster.json")
+OFFICIAL_ROSTER_FILE = Path(__file__).with_name("futu_radar_official_roster.json")
 RUN_ID_TEMPLATE = "{{ dag.dag_id }}:{{ run_id }}"
 SCHEDULED_FOR_TEMPLATE = (
     "{{ data_interval_end.in_timezone('UTC').format('YYYY-MM-DD HH:mm:ss.SSSSSS') }}"
@@ -147,15 +148,20 @@ with DAG(
             f"cd {WORK_DIR} && "
             "python -m venv .detail-venv && "
             ".detail-venv/bin/pip install -q -r requirements.txt && "
+            "OFFICIAL_AUTHOR_IDS=$(.detail-venv/bin/python -u verify_futu_feed_details.py"
+            " --db \"$MARKET_INSIGHT_DATABASE_URL\""
+            " --official-roster futu_radar_official_roster.json"
+            " --print-official-author-ids) && "
             ".detail-venv/bin/python -u -m futu_scraper.cli fetch-feed-details"
             " --db \"$MARKET_INSIGHT_DATABASE_URL\" --kol-file kol.json"
-            f" --author-id {ACTIVE_KOL_USER_ID_ARGS}"
+            f" --author-id {ACTIVE_KOL_USER_ID_ARGS} $OFFICIAL_AUTHOR_IDS"
             f" --recent-days {DEFAULT_RECENT_DAYS}"
             f" --max-feeds {DEFAULT_MAX_FEEDS}"
             " --workers 2 && "
             ".detail-venv/bin/python -u verify_futu_feed_details.py"
             " --db \"$MARKET_INSIGHT_DATABASE_URL\""
             " --roster futu_radar_kol_roster.json"
+            " --official-roster futu_radar_official_roster.json"
             f" --recent-days {DEFAULT_RECENT_DAYS}"
         ),
     )

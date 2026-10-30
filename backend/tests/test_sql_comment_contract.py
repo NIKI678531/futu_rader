@@ -901,3 +901,73 @@ def test_etf_mentions_use_official_attribution_not_source_anchor():
     assert mentions_result["postCount"] == 1
 
 
+def test_official_full_body_returns_all_confirmed_etf_tags_and_counts_occurrences():
+    provider = make_sql_provider()
+    huaxia = next(item for item in provider._officials if item["short"] == "华夏")
+    _add_official_feed(
+        provider,
+        feed_id=906,
+        author_name=huaxia["full"],
+        content=(
+            "$華夏比特幣ETF (03042.HK)$ 开头提及。"
+            "正文后段提到 $Invesco QQQ ETF (QQQ.US)$，"
+            "并再次提到 $Invesco QQQ ETF (QQQ.US)$；"
+            "$Apple (AAPL.US)$ 与 $恒生指数 (800000.HK)$ 不应成为 ETF 标签。"
+        ),
+        anchor_code="3068",
+    )
+    with provider._engine.begin() as conn:
+        conn.execute(
+            insert(mentions),
+            [
+                {
+                    "feed_id": 906,
+                    "code": "3042",
+                    "source": "body",
+                    "in_pool": True,
+                    "display_symbol": "03042.HK",
+                    "display_name": "華夏比特幣ETF",
+                    "instrument_type_v2": 4,
+                },
+                {
+                    "feed_id": 906,
+                    "code": "us:QQQ",
+                    "source": "body",
+                    "in_pool": False,
+                    "display_symbol": "QQQ.US",
+                    "display_name": "Invesco QQQ ETF",
+                    "instrument_type_v2": 4,
+                },
+                {
+                    "feed_id": 906,
+                    "code": "us:AAPL",
+                    "source": "body",
+                    "in_pool": False,
+                    "display_symbol": "AAPL.US",
+                    "display_name": "Apple",
+                    "instrument_type_v2": 3,
+                },
+                {
+                    "feed_id": 906,
+                    "code": "800000",
+                    "source": "body",
+                    "in_pool": False,
+                    "display_symbol": "800000.HK",
+                    "display_name": "恒生指数",
+                    "instrument_type_v2": 6,
+                },
+            ],
+        )
+    provider._cache.clear()
+
+    post = next(post for post in provider.official_posts("d1") if post["id"] == "of-906")
+    assert [item["code"] for item in post["mentionedEtfs"]] == ["3042", "us:QQQ"]
+
+    aggregate = provider.etf_mentions_for("华夏", "d1")
+    assert [item["code"] for item in aggregate["list"]] == ["us:QQQ", "3042"]
+    qqq = next(item for item in aggregate["list"] if item["code"] == "us:QQQ")
+    assert qqq["ticker"] == "QQQ.US"
+    assert qqq["inPool"] is False
+    assert qqq["count"] == 2
+
+

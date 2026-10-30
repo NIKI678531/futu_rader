@@ -1,0 +1,25 @@
+{
+  "reviewedAsOf": "2026-10-30",
+  "officials": [
+    {"short": "恒生投资", "names": ["恒生投資管理有限公司"]},
+    {"short": "华夏", "names": ["華夏基金香港"]},
+    {"short": "Global X", "names": ["Global X ETFs"]},
+    {"short": "平安", "names": ["平安資產管理（香港）"]},
+    {"short": "博时", "names": ["博时国际"]},
+    {"short": "易方达", "names": ["易方达香港"]},
+    {"short": "三星", "names": ["三星ETF"]},
+    {"short": "招证", "names": ["招證資管香港"]},
+    {"short": "潘渡", "names": ["Pando Finance潘渡"]},
+    {"short": "嘉实", "names": ["嘉實國際資產管理"]},
+    {"short": "富邦", "names": ["富邦基金"]},
+    {"short": "LeverageShares", "names": ["LeverageShares"]},
+    {"short": "富途寰球私享", "names": ["富途寰球私享匯"]},
+    {"short": "牛牛新股君", "names": ["牛牛新股君"]},
+    {"short": "牛牛课堂", "names": ["牛牛課堂"]},
+    {"short": "牛牛有料到", "names": ["牛牛有料到"]},
+    {"short": "今日热门", "names": ["今日熱門"]},
+    {"short": "搞活动的牛牛", "names": ["搞活动的牛牛"]},
+    {"short": "玩赚牛牛", "names": ["玩賺牛牛"]},
+    {"short": "牛友有料到", "names": ["牛友有料到"]}
+  ]
+}

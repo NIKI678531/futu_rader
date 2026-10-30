@@ -4,7 +4,17 @@ import importlib.util
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, create_engine, insert, update
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    create_engine,
+    insert,
+    update,
+)
 
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "upstream" / "collector_examples"
@@ -15,7 +25,7 @@ guard = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(guard)
 
 
-def test_full_article_guard_fails_until_every_active_kol_post_has_detail(tmp_path):
+def test_full_article_guard_fails_until_every_monitored_account_post_has_detail(tmp_path):
     engine = create_engine("sqlite:///" + (tmp_path / "source.sqlite").as_posix())
     metadata = MetaData()
     feeds = Table(
@@ -55,24 +65,34 @@ def test_full_article_guard_fails_until_every_active_kol_post_has_detail(tmp_pat
                 "content_text": "不属于 KOL 范围",
                 "detail_updated_at": None,
             },
+            {
+                "feed_id": 4,
+                "posted_at": datetime(2026, 10, 28, 8),
+                "author_uid": "12917760",
+                "author_name": "恒生投資管理有限公司",
+                "content_text": "官号列表预览...",
+                "detail_updated_at": None,
+            },
         ])
 
     roster = EXAMPLES / "futu_radar_kol_roster.json"
+    official_roster = EXAMPLES / "futu_radar_official_roster.json"
     result = guard.audit(
         engine,
         roster,
         recent_days=30,
         before=datetime(2026, 10, 29),
+        official_roster=official_roster,
     )
     assert result["status"] == "incomplete"
-    assert result["posts"] == 2
-    assert result["incomplete"] == 1
-    assert [row["feedId"] for row in result["incompletePosts"]] == [1]
+    assert result["posts"] == 3
+    assert result["incomplete"] == 2
+    assert [row["feedId"] for row in result["incompletePosts"]] == [4, 1]
 
     with engine.begin() as connection:
         connection.execute(
             update(feeds)
-            .where(feeds.c.feed_id == 1)
+            .where(feeds.c.feed_id.in_([1, 4]))
             .values(
                 content_text="全文：$易方達亞太高股息ETF (03483.HK)$",
                 detail_updated_at=datetime(2026, 10, 29, 1),
@@ -83,7 +103,8 @@ def test_full_article_guard_fails_until_every_active_kol_post_has_detail(tmp_pat
         roster,
         recent_days=30,
         before=datetime(2026, 10, 30),
+        official_roster=official_roster,
     )
     assert result["status"] == "ok"
-    assert result["complete"] == 2
+    assert result["complete"] == 3
     assert result["incomplete"] == 0

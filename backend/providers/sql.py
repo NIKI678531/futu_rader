@@ -90,7 +90,7 @@ from core.calendar import PRESETS, build, build_custom, parse_anchor  # noqa: E4
 from core.range_spec import parse_custom_key, validate_selectable  # noqa: E402
 from core.data_clock import latest_hkt_data_time  # noqa: E402
 from core.delta import delta  # noqa: E402
-from core.futu_links import futu_feed_url  # noqa: E402
+from core.futu_links import futu_feed_url, futu_profile_url  # noqa: E402
 from core.heat import heat_of  # noqa: E402
 from radar_db import make_engine  # noqa: E402
 from radar_db.annotations_read import (  # noqa: E402
@@ -100,11 +100,13 @@ from radar_db.annotations_read import (  # noqa: E402
     released_annotations,
 )
 from radar_db.comment_filter import (  # noqa: E402
+    extract_feed_mentions,
     is_filter_ready,
     load_comment_filter_config,
     qualifying_feed_predicate,
     source_ticker_valid_predicate,
 )
+from radar_db.source_normalization import normalize_futu_ticker  # noqa: E402
 from radar_db.comment_routes import (  # noqa: E402
     COMMENT_ROUTE_VERSION,
     is_ready as comment_routes_ready,
@@ -399,12 +401,46 @@ class SqlProvider:
         # 前端据此渲染「数据暂不可用」；绝不退回常量。
         out = {
             "products": [self._product_contract(product) for product in self._products],
-            "officials": self._officials,
+            # The frozen design fixture carries synthetic ``www.futunn.com/user``
+            # ids. Production publishes a profile link only when source facts
+            # identify exactly one real UID for that official name.
+            "officials": [
+                {**official, "url": self._official_profile_urls().get(official["full"])}
+                for official in self._officials
+            ],
             "kols": self._kols,
         }
         if self.updated_at is not None:
             out["updatedAt"] = self.updated_at
         return out
+
+    def _official_profile_urls(self):
+        cache_key = ("official_profile_urls",)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        names = [official["full"] for official in self._officials]
+        found = defaultdict(set)
+        if names:
+            with self._engine.connect() as conn:
+                for author_name, author_uid in conn.execute(
+                    select(feeds.c.author_name, feeds.c.author_uid)
+                    .where(
+                        feeds.c.author_name.in_(names),
+                        feeds.c.author_uid.is_not(None),
+                        func.trim(feeds.c.author_uid) != "",
+                    )
+                    .distinct()
+                ):
+                    uid = str(author_uid).strip()
+                    if uid.isdigit() and int(uid) > 0:
+                        found[author_name].add(uid)
+        urls = {
+            name: futu_profile_url(next(iter(uids)))
+            for name, uids in found.items()
+            if len(uids) == 1
+        }
+        self._cache[cache_key] = urls
+        return urls
 
     def page_context(self, screen, range_key, *, code=None, account=None, kol=None):
         """Return the latest real child-comment time for one screen scope.
@@ -1214,13 +1250,11 @@ class SqlProvider:
 
         注意这**不是**市场域的评论去重口径（PRD §3.2），两者语义相反，别混用。
 
-        `count`（提及次数）当前必然等于 `posts`（帖子数）：官号归属先按正文结构化
-        ticker/cashtag/唯一产品名，再按发行商与唯一资产类别推断；同一篇帖子对同一产品
-        只产生一个归属结果。挂载标的只作来源审计，绝不在这里补一次提及。
-        `mentions` 表的主键是
-        (feed_id, code)，同一篇帖子正文里把同一只 ETF 提三次，在事实层已经并成一行。
-        要还原「按出现次数累加」得回到 `raw_json.summary.rich_text` 逐段数——那是 ETL
-        的活，不是这里的。两列都发出去，是为了将来 ETL 补上时前端不用改。
+        展示集合与 KOL 页共用 ``mentionedEtfs``：完整正文中已确认的池内／池外 ETF
+        都返回，指数、股票与衍生品仍 fail closed。产品归属与阵营继续只认池内产品，
+        两套语义不得混用。严格 cashtag 的重复次数来自完整 ``title + content``；只有
+        结构化身份或唯一产品名、没有可计数 cashtag 的提及保守计一次。挂载标的只作
+        来源审计，绝不在这里补一次提及。
 
         ## 六个键一个都不能少（2026-09-11 修）
 
@@ -1242,28 +1276,44 @@ class SqlProvider:
         rng = self._content_range(range_key)
         if rng is None:
             return None
-        rows = defaultdict(lambda: {"count": 0, "posts": 0})
+        rows = {}
         post_ids = set()
-        for row, codes, _status, _body_etfs in self._attributed_official_posts(rng, {o["full"]: o}):
-            for c in codes:
-                rows[c]["count"] += 1
-                rows[c]["posts"] += 1
-                # 只有真提到了 ETF 的帖子才进 postCount（契约里 postSet 也在这一层写）。
+        for row, codes, _status, body_etfs in self._attributed_official_posts(rng, {o["full"]: o}):
+            # ``body_etfs`` is the same full-body display contract consumed by
+            # the KOL page. Keep inferred in-pool attribution as a fallback,
+            # but never let it hide confirmed off-pool ETFs from the tag list.
+            products = {str(item["code"]): dict(item) for item in body_etfs}
+            for code in codes:
+                if code not in products:
+                    product = self._by_code[code]
+                    products[code] = {
+                        "code": code,
+                        "ticker": f"{str(code).zfill(5)}.HK",
+                        "name": product["name"],
+                        "issuer": product["issuer"],
+                        "ownership": product["ownership"],
+                        "inPool": True,
+                    }
+            occurrence_counts = _full_body_cashtag_counts(row.title, row.content)
+            for code, product in products.items():
+                value = rows.setdefault(
+                    code,
+                    {
+                        "code": code,
+                        "ticker": product.get("ticker") or code,
+                        "name": product.get("name"),
+                        "short": _short_name(product.get("name") or product.get("ticker") or code),
+                        "issuer": product.get("issuer"),
+                        "ownership": product.get("ownership"),
+                        "inPool": bool(product.get("inPool")),
+                        "count": 0,
+                        "posts": 0,
+                    },
+                )
+                value["count"] += max(1, occurrence_counts.get(code, 0))
+                value["posts"] += 1
                 post_ids.add(row.feed_id)
-        items = []
-        for c, v in rows.items():
-            p = self._by_code[c]
-            items.append(
-                {
-                    "code": c,
-                    "name": p["name"],
-                    "short": _short_name(p["name"]),
-                    "issuer": p["issuer"],
-                    "ownership": p["ownership"],
-                    "count": v["count"],
-                    "posts": v["posts"],
-                }
-            )
+        items = list(rows.values())
         items.sort(key=lambda x: (0 if x["ownership"] == "own" else 1, -x["count"], x["code"]))
         return {
             "list": items,
@@ -4226,6 +4276,16 @@ def _attribute_official_products(products, official, text, body_codes):
     if inferred:
         return inferred, "inferred"
     return [], "unattributed"
+
+
+def _full_body_cashtag_counts(title, content):
+    """Normalized ticker occurrence counts from the complete parent body."""
+    counts = defaultdict(int)
+    for mention in extract_feed_mentions(title, content):
+        code = normalize_futu_ticker(mention.raw_ticker)
+        if code is not None:
+            counts[code] += mention.occurrences
+    return counts
 
 
 def _camp(by_code, codes):

@@ -52,7 +52,10 @@ def test_hkex_catalog_dag_runs_daily_at_0700_hong_kong_time():
 def test_feed_detail_collector_uses_stable_roster_and_rejects_partial_articles():
     text = (UPSTREAM / "futu_feed_details_backfill.py").read_text(encoding="utf-8")
     assert "futu_radar_kol_roster.json" in text
+    assert "futu_radar_official_roster.json" in text
     assert "ACTIVE_KOL_USER_ID_ARGS" in text
+    assert "OFFICIAL_AUTHOR_IDS" in text
+    assert "--print-official-author-ids" in text
     assert 'futu_feed_detail_author_ids' not in text
     assert 'futu_feed_detail_feed_ids' not in text
     assert 'futu_feed_detail_recent_days' not in text
@@ -74,4 +77,20 @@ def test_upstream_kol_roster_copy_matches_the_application_authority():
         )
     )
     assert upstream == application
+
+
+def test_upstream_official_roster_covers_every_application_account():
+    upstream = json.loads(
+        (UPSTREAM / "futu_radar_official_roster.json").read_text(encoding="utf-8")
+    )
+    application_source = (
+        ROOT / "backend" / "fixtures" / "demo" / "master.json"
+    ).read_text(encoding="utf-8")
+    application = json.loads(application_source)["officials"]
+    assert [row["short"] for row in upstream["officials"]] == [
+        row["short"] for row in application
+    ]
+    assert [row["names"][0] for row in upstream["officials"]] == [
+        row["full"] for row in application
+    ]
 

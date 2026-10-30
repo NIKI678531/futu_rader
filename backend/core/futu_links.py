@@ -19,6 +19,16 @@ def futu_feed_url(feed_id):
     return f"https://q.futunn.com/feed/{value}?lang=zh-cn"
 
 
+def futu_profile_url(user_id):
+    """Return the public 牛牛圈 profile URL for one verified Futu user id."""
+    if isinstance(user_id, bool):
+        raise ValueError("Futu user id must be a positive integer")
+    value = str(user_id).strip()
+    if not _FEED_ID.fullmatch(value):
+        raise ValueError(f"Invalid Futu user id: {user_id!r}")
+    return f"https://q.futunn.com/profile/{value}?lang=zh-cn"
+
+
 def canonical_futu_feed_url(url):
     """Upgrade a legacy Futu ``/post/<id>`` URL; leave other URLs untouched."""
     if not isinstance(url, str) or not url.strip():
