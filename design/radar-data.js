@@ -1268,13 +1268,18 @@
         var codes = withPeer(primary, ((hv >>> 10) % 100) < (m.ownership === 'own' ? 38 : 48), hv >>> 14);
         var a = annotate(KOL_BANK, pickType(w, hash(key + 'ty')), codes, key, ((hv >>> 16) % 100) < 5);
         var likes = 240 + (hv % 5400), comments = 20 + ((hv >>> 3) % 640), shares = 4 + ((hv >>> 5) % 210);
+        var minute = String(hv % 60).padStart(2, '0');
+        var interactionUpdatedAt = addDays(day, 1) + ' ' + String(hr).padStart(2, '0') + ':' + minute;
+        var demoUpdatedAt = NOW_DATE + ' ' + NOW_TIME;
+        if (interactionUpdatedAt > demoUpdatedAt) interactionUpdatedAt = demoUpdatedAt;
         posts.push(Object.assign({
           id: key, kol: k[0], tags: k[1],
           t: dd * 24 + hr, day: day, hour: hr, dateText: md(day),
-          time: md(day) + ' ' + String(hr).padStart(2, '0') + ':' + String(hv % 60).padStart(2, '0'),
+          time: md(day) + ' ' + String(hr).padStart(2, '0') + ':' + minute,
           code: primary, name: m.name, sector: m.sector, ownership: m.ownership, issuer: m.issuer,
           likes: likes, comments: comments, shares: shares, views: Math.round(likes * rnd(key + 'vw', 9, 22)),
           engagement: likes + comments + shares,
+          interactionUpdatedAt: interactionUpdatedAt,
           url: 'https://www.futunn.com/post/' + (7000000 + (hv % 2000000))
         }, a));
       }

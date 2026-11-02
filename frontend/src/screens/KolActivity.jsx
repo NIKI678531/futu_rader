@@ -4,7 +4,7 @@
 import React from 'react'
 import R, { prefetchScreen } from '../data/radar'
 import {
-  num, conf2, descN, typeStyle, displayedPostType, rgba, shell, dirStyle, reviewBadge, needsReview, kolDisplayLabel,
+  num, stamp, conf2, typeStyle, displayedPostType, rgba, shell, dirStyle, reviewBadge, needsReview, kolDisplayLabel,
   CAMP, POST_TYPES, TYPE_BY_KEY, DIRECTIONS, DIR_BY_KEY,
 } from '../lib/view'
 import { kolProfile } from '../lib/profile'
@@ -15,9 +15,11 @@ import { s, hover, focus } from '../lib/dc'
 import Shell from '../components/Shell'
 import DatePresetTabs from '../components/DatePresetTabs'
 import AccountSummaryStrip from '../components/AccountSummaryStrip'
+import ColumnSort from '../components/ColumnSort'
 import withTransition from '../components/withTransition'
 import DcLink from '../components/DcLink'
 import { hrefWithRange, listenForRangeNavigation, rangeFromSearch } from '../lib/customRange'
+import { compareSortValues, stableSort } from '../lib/tableSort'
 
 class KolActivity extends React.Component {
   static defaultProps = {
@@ -29,7 +31,7 @@ class KolActivity extends React.Component {
   constructor(props) {
     super(props);
     this.state = {
-      rangeKey: rangeFromSearch(window.location.search, R.PRESETS), sort: 'time', leaderSort: 'views', sel: null,
+      rangeKey: rangeFromSearch(window.location.search, R.PRESETS), sort: 'time', sortDir: 'desc', leaderSort: 'views', leaderSortDir: 'desc', sel: null,
       etf: 'ALL', kol: 'ALL', post: 'ALL', types: [], dirs: [],
       etfMenu: false, kolMenu: false, postMenu: false, typeMenu: false,
       /* 表内筛选：发帖记录（q / camp / onlyPending / tTypeMenu）与声量排名（lq / lCamp / lType） */
@@ -369,26 +371,35 @@ class KolActivity extends React.Component {
       { label: '展示类型已识别', value: String(annOk), unit: '篇', pct: '', pfg: 'transparent', sub: typeSub, vfg: 'var(--ink-900)' }
     ];
 
-    /* 发帖记录 */
-    out.sorts = [['eng', '按互动'], ['time', '按时间']].map(function (x) {
-      var on = s.sort === x[0];
-      return {
-        label: x[1], go: function () { self.setState({ sort: x[0] }); },
-        fw: on ? 600 : 400, fg: on ? '#fff' : 'var(--ink-600)', bg: on ? 'var(--csop-blue-600)' : '#fff'
-      };
-    });
-    var list = tbl.slice();
-    /* 互动未知的排最后。`b.engagement - a.engagement` 会把 null 当 0，于是一条
-       「互动量没采到」的帖子被排进「互动最少」那一段，与一条真的没人理的帖子混在一起。
-       `t`（距区间起点的小时数）由后端按 posted_at 算，不会缺，照旧直接相减。 */
-    if (s.sort === 'eng') list.sort(function (a, b) { return descN(a.engagement, b.engagement); });
-    else list.sort(function (a, b) { return b.t - a.t; });
+    /* 发帖记录：每个数据列共享一套升／降序规则；未知值两种方向都排最后。 */
+    var postTime = function (p) { return p.day && p.time ? p.day + ' ' + p.time.slice(-5) : null; };
+    var postSortValue = function (p, key) {
+      var etfs = mentionedEtfsOf(p), shownType = displayedPostType(p), ownership = ownershipOf(p);
+      if (key === 'kol') return p.kol;
+      if (key === 'time') return postTime(p);
+      if (key === 'etf') return etfs.length ? etfs.map(function (item) { return item.ticker; }).join(' / ') : null;
+      if (key === 'type') return shownType.filterKey == null ? null : shownType.label;
+      if (key === 'summary') return p.hasSummary ? p.summary : null;
+      if (key === 'ownership') return ownership.k === 'unknown' ? null : ownership.label;
+      if (key === 'eng') return p.engagement;
+      if (key === 'views') return p.views;
+      return null;
+    };
+    var postTie = function (a, b) {
+      return compareSortValues(postTime(a), postTime(b), 'desc')
+        || compareSortValues(a.id, b.id, 'asc');
+    };
+    var list = stableSort(tbl, function (p) { return postSortValue(p, s.sort); }, s.sortDir, postTie);
+    out.postSortKey = s.sort; out.postSortDir = s.sortDir;
+    out.setPostSort = function (key, direction) { self.setState({ sort: key, sortDir: direction, shown: 50 }); };
+    var postSortLabels = { kol: '重点KOL', time: '发帖时间', etf: 'ETF', type: '类型', summary: 'AI摘要', ownership: 'ETF归属', eng: '互动合计', views: '浏览量' };
+    var postSortNote = (postSortLabels[s.sort] || s.sort) + (s.sortDir === 'asc' ? '升序' : '降序');
     /* 导出 CSV：与表格所见完全一致，首行为筛选摘要 */
     var campName = CAMPS.filter(function (x) { return x[0] === s.camp; })[0][1];
     var hasAnyFilter = out.hasScope || out.hasTf;
     var csvSummary = ['日期范围 ' + range.from + ' ～ ' + range.to + '（' + range.label + '）', 'ETF ' + (s.etf === 'ALL' ? '全部' : s.etf), 'KOL ' + (s.kol === 'ALL' ? '全部' : s.kol),
       '帖子 ' + (s.post === 'ALL' ? '全部' : s.post), '类型 ' + (picked.length ? picked.join('、') : '全部'), '关键词 ' + (qq || '—'), '提及范围 ' + campName,
-      '仅待确认 ' + (s.onlyPending ? '是' : '否'), '排序 ' + (s.sort === 'eng' ? '按互动' : '按时间'), '共 ' + list.length + ' 条', '数据更新 ' + M.updated].join(' · ');
+      '仅待确认 ' + (s.onlyPending ? '是' : '否'), '排序 ' + postSortNote, '共 ' + list.length + ' 条', '数据更新 ' + M.updated].join(' · ');
     var csvName = 'KOL发帖记录_' + range.from + '_' + range.to + (hasAnyFilter ? '_筛选' : '') + '.csv';
     out.exportCsv = function () { if (list.length) self.exportCsv(list, csvSummary, csvName); };
     out.exportTip = list.length ? '导出当前日期范围与筛选条件下的 ' + list.length + ' 条记录，与表格所见一致 · UTF-8 CSV，Excel 可直接打开' : '当前筛选下没有可导出的记录';
@@ -436,20 +447,6 @@ class KolActivity extends React.Component {
     var byK = {};
     basePosts.forEach(function (p) { (byK[p.kol] = byK[p.kol] || []).push(p); });
     var leaders = Object.keys(byK).map(function (k) { return kolProfile(k, byK[k], function (p) { return self.camp(p); }); });
-    /* `n`（篇数）永远数得出来；`views` / `comments` 是合计，有一篇没采到就整份未知。
-       浏览量由 compareKolReach、评论量由 descN 把未知 KOL 排最后，而不是当成 0 排进
-       「触达／讨论最少」那一头 —— 那一头是一个结论，这里要的是「还不知道」。 */
-    if (s.leaderSort === 'views') leaders.sort(compareKolReach);
-    else if (s.leaderSort === 'n') leaders.sort(function (a, b) { return b.n - a.n || descN(a.comments, b.comments) || compareKolReach(a, b); });
-    else leaders.sort(function (a, b) { return descN(a.comments, b.comments) || b.n - a.n || compareKolReach(a, b); });
-    out.leaderSorts = [['views', '按浏览量'], ['n', '按篇数'], ['eng', '按评论量']].map(function (x) {
-      var on = s.leaderSort === x[0];
-      return {
-        label: x[1], go: function () { self.setState({ leaderSort: x[0] }); },
-        fw: on ? 600 : 400, fg: on ? '#fff' : 'var(--ink-600)', bg: on ? 'var(--csop-blue-600)' : '#fff'
-      };
-    });
-    out.leaderSortNote = s.leaderSort === 'views' ? '按浏览量降序' : (s.leaderSort === 'n' ? '按篇数降序' : '按评论量降序');
 
     /* 排名表内筛选：KOL 名称 / 名单标签 × 提及范围 × KOL 类型。 */
     var rosterTags = function (name, posts) {
@@ -458,6 +455,7 @@ class KolActivity extends React.Component {
       return (Array.isArray(raw) ? raw : String(raw || '').split(','))
         .map(function (x) { return kolDisplayLabel(String(x).trim()); }).filter(Boolean);
     };
+    leaders.forEach(function (leader) { leader.rosterTags = rosterTags(leader.kol, leader.posts); });
     var lqq = norm(s.lq);
     var lBase = leaders.filter(function (l) {
       if (lqq && norm(l.kol + ' ' + (l.posts[0] ? l.posts[0].tags : '')).indexOf(lqq) < 0) return false;
@@ -467,12 +465,25 @@ class KolActivity extends React.Component {
       return true;
     });
     var ltc = {}, allRosterTags = {};
-    lBase.forEach(function (l) {
-      l.rosterTags = rosterTags(l.kol, l.posts);
-      l.rosterTags.forEach(function (tag) { allRosterTags[tag] = 1; ltc[tag] = (ltc[tag] || 0) + 1; });
-    });
+    lBase.forEach(function (l) { l.rosterTags.forEach(function (tag) { allRosterTags[tag] = 1; ltc[tag] = (ltc[tag] || 0) + 1; }); });
     out.lTypeNaNote = '';
     var lRows = lBase.filter(function (l) { return s.lType === 'ALL' || l.rosterTags.indexOf(s.lType) >= 0; });
+    var leaderSortValue = function (leader, key) {
+      if (key === 'kol') return leader.kol;
+      if (key === 'n') return leader.n;
+      if (key === 'mix') return [leader.ownAny, leader.peerAny];
+      if (key === 'views') return leader.views;
+      if (key === 'comments') return leader.comments;
+      if (key === 'type') return leader.rosterTags.length ? leader.rosterTags.join(' / ') : null;
+      return null;
+    };
+    lRows = stableSort(lRows, function (leader) { return leaderSortValue(leader, s.leaderSort); }, s.leaderSortDir, function (a, b) {
+      return s.leaderSort === 'views' ? compareKolReach(a, b) : compareSortValues(a.kol, b.kol, 'asc');
+    });
+    out.leaderSortKey = s.leaderSort; out.leaderSortDir = s.leaderSortDir;
+    out.setLeaderSort = function (key, direction) { self.setState({ leaderSort: key, leaderSortDir: direction }); };
+    var leaderSortLabels = { kol: 'KOL', n: '篇数', mix: '自家/其他', views: '浏览量', comments: '评论量', type: 'KOL类型' };
+    out.leaderSortNote = (leaderSortLabels[s.leaderSort] || s.leaderSort) + (s.leaderSortDir === 'asc' ? '升序' : '降序');
     out.lq = s.lq; out.lqBc = lqq ? 'var(--csop-blue-600)' : 'var(--border-2)';
     out.setLq = function (e) { self.setState({ lq: e.target.value }); };
     out.lCamps = seg(s.lCamp, 'lCamp');
@@ -588,6 +599,8 @@ class KolActivity extends React.Component {
           { label: '转发', value: num(p0.shares) },
           { label: '浏览', value: num(p0.views) }
         ],
+        interactionUpdatedAt: stamp(p0.interactionUpdatedAt),
+        interactionUpdatedSuffix: p0.interactionUpdatedAt == null ? '' : ' HKT',
         detailHref: hrefWithRange('kol-detail.dc.html?kol=' + encodeURIComponent(p0.kol) + '&post=' + encodeURIComponent(p0.id), s.rangeKey)
       };
     }
@@ -731,13 +744,6 @@ class KolActivity extends React.Component {
               <div style={s('font:600 18px/1.3 var(--font-cjk)')}>发帖记录</div>
               <div style={s('flex:none;display:flex;align-items:center;gap:8px')}>
                 <div onClick={v.exportCsv} title={v.exportTip} style={s(`display:flex;align-items:center;gap:6px;height:30px;box-sizing:border-box;padding:0 12px;border:1px solid ${v.exportBc};border-radius:var(--radius-control);background:#fff;font:500 13px/1.4 var(--font-cjk);color:${v.exportFg};cursor:${v.exportCursor};opacity:${v.exportOp};white-space:nowrap;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>导出 CSV（{v.postCount} 条）</div>
-                <span style={s('width:1px;height:16px;background:var(--border-2);margin:0 4px')}></span>
-                <span style={s('font:600 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>排序</span>
-                <div style={s('display:flex;border:1px solid var(--border-2);border-radius:var(--radius-control);overflow:hidden')}>
-                  {v.sorts.map((f) => (
-                    <div key={f.label} onClick={f.go} style={s(`padding:5px 11px;font:${f.fw} 13px/1.4 var(--font-cjk);color:${f.fg};background:${f.bg};cursor:pointer;border-right:1px solid var(--border-1)`)}>{f.label}</div>
-                  ))}
-                </div>
               </div>
             </div>
             <div style={s('display:flex;align-items:center;gap:10px;padding:10px 20px;border-bottom:1px solid var(--border-1);background:var(--canvas);flex-wrap:wrap')}>
@@ -774,14 +780,14 @@ class KolActivity extends React.Component {
               <table>
                 <thead>
                   <tr style={s('background:var(--canvas-alt)')}>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 16px;width:150px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>重点KOL</th>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:96px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>发帖时间</th>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:88px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>ETF</th>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:118px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>类型</th>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 10px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>AI 摘要</th>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:96px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>ETF 归属</th>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 6px;width:132px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>赞 / 评 / 转</th>
-                    <th data-testid="kol-post-view-header" data-screen-diff-new="kol-view-column" style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 6px;width:88px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>浏览量</th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 16px;width:150px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="重点KOL" sortKey="kol" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} /></th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:110px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="发帖时间" sortKey="time" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} /></th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:88px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="ETF" sortKey="etf" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} /></th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:118px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="类型" sortKey="type" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} /></th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 10px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="AI 摘要" sortKey="summary" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} /></th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:110px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="ETF 归属" sortKey="ownership" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} /></th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 6px;width:145px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="赞 / 评 / 转" sortKey="eng" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} align="right" /></th>
+                    <th data-testid="kol-post-view-header" data-screen-diff-new="kol-view-column" style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 6px;width:96px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="浏览量" sortKey="views" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} align="right" /></th>
                     <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 16px 10px 6px;width:84px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>原帖</th>
                   </tr>
                 </thead>
@@ -852,13 +858,6 @@ class KolActivity extends React.Component {
               <div style={s('font:600 18px/1.3 var(--font-cjk)')}>KOL 声量排名</div>
               <div style={s('flex:none;display:flex;align-items:center;gap:8px')}>
                 <div onClick={v.exportLeaderCsv} title={v.leaderExportTip} style={s(`display:flex;align-items:center;gap:6px;height:30px;box-sizing:border-box;padding:0 12px;border:1px solid ${v.leaderExportBc};border-radius:var(--radius-control);background:#fff;font:500 13px/1.4 var(--font-cjk);color:${v.leaderExportFg};cursor:${v.leaderExportCursor};opacity:${v.leaderExportOp};white-space:nowrap;transition:background 120ms cubic-bezier(.4,0,.2,1)`)} className={hover('background:var(--csop-blue-50)')}>导出 CSV（{v.leaderCount} 位）</div>
-                <span style={s('width:1px;height:16px;background:var(--border-2);margin:0 4px')}></span>
-                <span style={s('font:600 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>排序</span>
-                <div style={s('display:flex;border:1px solid var(--border-2);border-radius:var(--radius-control);overflow:hidden')}>
-                  {v.leaderSorts.map((f) => (
-                    <div key={f.label} data-screen-diff-new={f.label === '按浏览量' ? 'kol-view-sort' : undefined} onClick={f.go} style={s(`padding:5px 11px;font:${f.fw} 13px/1.4 var(--font-cjk);color:${f.fg};background:${f.bg};cursor:pointer;border-right:1px solid var(--border-1)`)}>{f.label}</div>
-                  ))}
-                </div>
               </div>
             </div>
             <div style={s('display:flex;align-items:center;gap:10px;padding:10px 20px;border-bottom:1px solid var(--border-1);background:var(--canvas);flex-wrap:wrap')}>
@@ -901,17 +900,17 @@ class KolActivity extends React.Component {
                 )}
               </div>
             </div>
-            <div style={s('display:grid;grid-template-columns:1fr 1fr;gap:0 26px;padding:6px 20px 4px')}>
+            <div style={s('display:grid;grid-template-columns:repeat(auto-fit,minmax(620px,1fr));gap:0 26px;padding:6px 20px 4px')}>
               {v.leaderCols.map((col) => (
                 <div key={col.key} style={s('min-width:0')}>
                   <div style={s('display:flex;align-items:center;gap:8px;padding:7px 0 8px;border-bottom:1px solid var(--border-1)')}>
                     <span style={s('flex:none;width:22px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>#</span>
-                    <span style={s('flex:1;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>KOL</span>
-                    <span style={s('flex:none;width:28px;text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>篇</span>
-                    <span style={s('flex:none;width:120px;padding-left:8px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>自家 / 其他</span>
-                    <span data-screen-diff-new="kol-view-column" style={s('flex:none;width:68px;text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>浏览量</span>
-                    <span style={s('flex:none;width:52px;text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>评论量</span>
-                    <span style={s('flex:none;width:116px;padding-left:6px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>KOL 类型</span>
+                    <span style={s('flex:1;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="KOL" sortKey="kol" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} /></span>
+                    <span style={s('flex:none;width:42px;text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="篇" sortKey="n" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} align="right" /></span>
+                    <span style={s('flex:none;width:124px;padding-left:8px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="自家/其他" sortKey="mix" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} /></span>
+                    <span data-screen-diff-new="kol-view-column" style={s('flex:none;width:78px;text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="浏览" sortKey="views" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} align="right" /></span>
+                    <span style={s('flex:none;width:66px;text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="评论" sortKey="comments" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} align="right" /></span>
+                    <span style={s('flex:none;width:116px;padding-left:6px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="KOL类型" sortKey="type" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} /></span>
                     <span style={s('flex:none;width:54px')}></span>
                   </div>
                   {col.rows.map((l) => (
@@ -921,8 +920,8 @@ class KolActivity extends React.Component {
                         <span style={s(`flex:none;width:7px;height:7px;border-radius:var(--radius-pill);background:${l.dot}`)}></span>
                         <span style={s(`font:${l.fw} 14px/1.4 var(--font-cjk);color:var(--ink-800);white-space:nowrap;overflow:hidden;text-overflow:ellipsis`)}>{l.kol}</span>
                       </div>
-                      <span style={s('flex:none;width:28px;text-align:right;font:500 13px/1.4 var(--font-mono);color:var(--ink-600)')}>{l.n}</span>
-                      <div style={s('flex:none;width:120px;display:flex;align-items:center;gap:6px;padding-left:8px')}>
+                      <span style={s('flex:none;width:42px;text-align:right;font:500 13px/1.4 var(--font-mono);color:var(--ink-600)')}>{l.n}</span>
+                      <div style={s('flex:none;width:124px;display:flex;align-items:center;gap:6px;padding-left:8px')}>
                         <div style={s('flex:1;height:8px;display:flex;background:var(--ink-100);border-radius:3px;overflow:hidden')}>
                           <div style={s(`width:${l.ownW}%;height:100%;background:var(--csop-blue-600)`)}></div>
                           <div style={s(`width:${l.bothW}%;height:100%;background:var(--csop-blue-300)`)}></div>
@@ -930,8 +929,8 @@ class KolActivity extends React.Component {
                         </div>
                         <span style={s('flex:none;width:44px;text-align:right;font:600 12px/1.4 var(--font-mono);color:var(--ink-700)')}>{l.ownAny}/{l.peerAny}</span>
                       </div>
-                      <span data-testid="kol-leader-views" data-screen-diff-new="kol-view-column" style={s('flex:none;width:68px;text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{l.views}</span>
-                      <span style={s('flex:none;width:52px;text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{l.eng}</span>
+                      <span data-testid="kol-leader-views" data-screen-diff-new="kol-view-column" style={s('flex:none;width:78px;text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{l.views}</span>
+                      <span style={s('flex:none;width:66px;text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{l.eng}</span>
                       <span style={s('flex:none;width:116px;padding-left:6px;box-sizing:border-box;display:flex;gap:3px;flex-wrap:wrap')}>{l.tags.map((tag) => <span key={tag} style={s('display:inline-block;padding:1px 6px;border-radius:var(--radius-small);background:var(--csop-blue-50);font:600 10px/1.5 var(--font-cjk);color:var(--csop-blue-700);white-space:nowrap')}>{tag}</span>)}</span>
                       <DcLink href={l.href} onClick={l.stop} style={s('flex:none;width:54px;box-sizing:border-box;text-align:center;padding:3px 0;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>详情 →</DcLink>
                     </div>
@@ -1023,7 +1022,8 @@ class KolActivity extends React.Component {
                     </div>
                   ))}
                 </div>
-                <div style={s('margin-top:8px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-400)')}>平台计数字段，取发布后约 24 小时的值；摘要与类型随采集批次每 60 分钟更新。</div>
+                <div data-testid="kol-interaction-updated-at" style={s('margin-top:9px;font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)')}>互动数据截至：<span style={s('font:600 12px/1.6 var(--font-mono);color:var(--ink-800)')}>{v.sel.interactionUpdatedAt}{v.sel.interactionUpdatedSuffix}</span></div>
+                <div style={s('margin-top:3px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-400)')}>平台计数字段，取发布后约 24 小时的值；摘要与类型随采集批次每 60 分钟更新。</div>
               </div>
 
               <div style={s('flex:none;padding:16px 24px;border-top:1px solid var(--border-1);background:var(--canvas);display:flex;align-items:center;gap:12px')}>

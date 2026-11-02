@@ -380,7 +380,7 @@
           </sc-if>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 26px;padding:6px 20px 4px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(620px,1fr));gap:0 26px;padding:6px 20px 4px">
         <sc-for list="{{ leaderCols }}" as="col" hint-placeholder-count="2">
           <div style="min-width:0">
             <div style="display:flex;align-items:center;gap:10px;padding:7px 0 8px;border-bottom:1px solid var(--border-1)">
@@ -496,7 +496,8 @@
             </div>
           </sc-for>
         </div>
-        <div style="margin-top:8px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-400)">平台计数字段，取发布后约 24 小时的值；摘要与类型随采集批次每 60 分钟更新。</div>
+        <div style="margin-top:9px;font:500 12px/1.6 var(--font-cjk);color:var(--ink-600)">互动数据截至：<span style="font:600 12px/1.6 var(--font-mono);color:var(--ink-800)">{{ sel.interactionUpdatedAt }}{{ sel.interactionUpdatedSuffix }}</span></div>
+        <div style="margin-top:3px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-400)">平台计数字段，取发布后约 24 小时的值；摘要与类型随采集批次每 60 分钟更新。</div>
       </div>
 
       <div style="flex:none;padding:16px 24px;border-top:1px solid var(--border-1);background:var(--canvas);display:flex;align-items:center;gap:12px">
@@ -937,6 +938,8 @@ class Component extends DCLogic {
           { label: '转发', value: R.num(p0.shares) },
           { label: '浏览', value: R.num(p0.views) }
         ],
+        interactionUpdatedAt: p0.interactionUpdatedAt || '数据暂不可用',
+        interactionUpdatedSuffix: p0.interactionUpdatedAt ? ' HKT' : '',
         detailHref: 'kol-detail.dc.html?kol=' + encodeURIComponent(p0.kol) + '&post=' + encodeURIComponent(p0.id) + '&range=' + s.rangeKey
       };
     }

@@ -123,12 +123,15 @@ from radar_db.product_identity import maximal_name_codes  # noqa: E402
 from radar_db.revisions import ai_source_version, synthesis_generation_key  # noqa: E402
 from radar_db.schema import (  # noqa: E402
     NO_SUBJECT,
+    analysis_scope_jobs,
+    analysis_scopes,
     annotation_evidence,
     annotation_jobs,
     annotation_runs,
     annotations,
     comments,
     comment_product_routes,
+    feed_counter_observations,
     feed_mentions,
     feeds,
     ingestion_runs,
@@ -1401,6 +1404,12 @@ class SqlProvider:
                     "kol": k["name"],
                     "tags": k["tags"],
                     "views": row.browse_count,
+                    # KOL drawer counters use the selected provisional/settled snapshot,
+                    # so publish that snapshot's own time instead of a page clock.
+                    "interactionUpdatedAt": (
+                        utc_naive_to_hkt(row.interaction_updated_at).strftime("%Y-%m-%d %H:%M")
+                        if row.interaction_updated_at is not None else None
+                    ),
                     **ai.get(row.feed_id, _UNANNOTATED),
                 }
             )
@@ -1589,19 +1598,151 @@ class SqlProvider:
         return False
 
     def _completed_codes(self, first, last, range_key=None):
-        progress_key = f"own_analysis_progress_{range_key}" if range_key else "own_analysis_progress"
-        progress = json.loads(self._meta.get(progress_key, "null"))
-        if not progress and range_key:
-            progress = json.loads(self._meta.get("own_analysis_progress", "null"))
-        if not progress or not progress.get("baselineFrom") or not progress.get("anchor"):
+        """Products whose comment-risk scan has completed for this window.
+
+        The generic progress row is a live control-plane cursor and every new
+        range overwrites it.  Range-specific rows are successful publication
+        snapshots.  Read both so a stale legacy range row cannot shadow a
+        newer generic row, then recover from the durable analysis scopes for
+        databases created before range snapshots were written.
+
+        ``data_revision`` is deliberately not a publication gate here.  A
+        half-hour source sync advances it before the next AI run; hiding the
+        last successful result during that interval violates ADR-0038.  Route,
+        pool and ETL generation changes still invalidate old completions.
+        """
+        progress_keys = []
+        if range_key:
+            progress_keys.append(f"own_analysis_progress_{range_key}")
+        progress_keys.append("own_analysis_progress")
+        completed = set()
+        for key in dict.fromkeys(progress_keys):
+            try:
+                progress = json.loads(self._meta.get(key, "null"))
+            except (TypeError, json.JSONDecodeError):
+                progress = None
+            completed.update(self._progress_completed_codes(progress, first, last))
+        completed.update(self._scope_completed_codes(first, last))
+        return completed
+
+    @staticmethod
+    def _completion_source_compatible(saved, current):
+        """Compare only source generations that invalidate prior publication."""
+        if not isinstance(saved, dict) or not isinstance(current, dict):
+            return False
+
+        for key in ("etl_generation", "comment_route_version", "comment_route_pool_digest"):
+            if saved.get(key) != current.get(key):
+                return False
+        return True
+
+    def _progress_completed_codes(self, progress, first, last):
+        if not progress or progress.get("status") not in (None, "complete"):
+            return set()
+        if not progress.get("baselineFrom") or not progress.get("anchor"):
             return set()
         if progress["baselineFrom"] > first or progress["anchor"] < last:
             return set()
-        source_version = ai_source_version(self._meta)
-        if progress.get("sourceVersion", {}) != source_version:
+        if not self._completion_source_compatible(
+            progress.get("sourceVersion", {}), ai_source_version(self._meta)
+        ):
             return set()
-        return {code for code, row in progress.get("products", {}).items()
-                if row.get("complete") and all(status == "done" for status in row.get("queue", {}))}
+        return {
+            code
+            for code, row in progress.get("products", {}).items()
+            if row.get("complete")
+            and all(status == "done" for status in row.get("queue", {}))
+        }
+
+    def _scope_completed_codes(self, first, last):
+        """Recover published coverage from durable per-product analysis scopes.
+
+        Older workers only updated the single generic progress row.  The scope
+        and its job links are the durable evidence that a product was scanned,
+        including the important zero-candidate case where no annotation row
+        exists at all.
+        """
+        key = ("scope_completed_codes", first, last)
+        if key in self._cache:
+            return self._cache[key]
+        lo = datetime.combine(date.fromisoformat(first), datetime.min.time())
+        hi = datetime.combine(date.fromisoformat(last), datetime.min.time())
+        current_source = ai_source_version(self._meta)
+        current_taxonomy = self._meta.get("product_feedback_taxonomy")
+        candidates = []
+        try:
+            with self._engine.connect() as conn:
+                rows = conn.execute(
+                    select(
+                        analysis_scopes.c.scope_id,
+                        analysis_scopes.c.codes_json,
+                        analysis_scopes.c.taxonomy_version,
+                        analysis_scopes.c.stats_json,
+                        analysis_scopes.c.created_at,
+                    )
+                    .where(
+                        analysis_scopes.c.task.in_(("both", "comment_product")),
+                        analysis_scopes.c.prompt_version.in_(COMMENT_PRODUCT_PROMPT_VERSIONS),
+                        analysis_scopes.c.date_from <= lo,
+                        analysis_scopes.c.date_to >= hi,
+                        analysis_scopes.c.stats_json.isnot(None),
+                    )
+                    .order_by(analysis_scopes.c.created_at.desc())
+                ).mappings()
+                for row in rows:
+                    try:
+                        codes = json.loads(row["codes_json"])
+                        stats = json.loads(row["stats_json"])
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if not isinstance(codes, list) or not isinstance(stats, dict):
+                        continue
+                    if (
+                        current_taxonomy
+                        and row["taxonomy_version"] != current_taxonomy
+                    ):
+                        continue
+                    if not self._completion_source_compatible(
+                        stats.get("sourceVersion", {}), current_source
+                    ):
+                        continue
+                    candidates.append((row["scope_id"], [str(code) for code in codes]))
+
+                incomplete = set()
+                scope_ids = [scope_id for scope_id, _codes in candidates]
+                for chunk in _chunked(scope_ids, 900):
+                    if not chunk:
+                        continue
+                    q = (
+                        select(
+                            analysis_scope_jobs.c.scope_id,
+                            annotation_jobs.c.subject_code,
+                        )
+                        .select_from(
+                            analysis_scope_jobs.join(
+                                annotation_jobs,
+                                annotation_jobs.c.job_id == analysis_scope_jobs.c.job_id,
+                            )
+                        )
+                        .where(
+                            analysis_scope_jobs.c.scope_id.in_(chunk),
+                            annotation_jobs.c.task == "comment_product",
+                            annotation_jobs.c.status.notin_(("done", "superseded")),
+                        )
+                        .distinct()
+                    )
+                    incomplete.update(conn.execute(q).all())
+        except SQLAlchemyError:
+            self._cache[key] = set()
+            return set()
+
+        completed = set()
+        for scope_id, codes in candidates:
+            for code in codes:
+                if code in self._by_code and (scope_id, code) not in incomplete:
+                    completed.add(code)
+        self._cache[key] = completed
+        return completed
 
     def _window_annotations(self, kind, lo, hi):
         key = ("window_annotations", kind, lo, hi)
@@ -2905,10 +3046,10 @@ class SqlProvider:
         return items[:n]
 
     def compliance_for(self, code, range_key):
-        """舆情（沿用原重点舆情口径）。四态各有各的意思，一个都不能合并：
+        """评论级五类高风险舆情。四态各有各的意思，一个都不能合并：
 
         - `na`          同业产品不纳入识别 —— 字段不适用，不是「没查到」。
-        - `unavailable` 这个区间的合规识别没跑过 —— 该有值但取不到。
+        - `unavailable` 这个区间的舆情识别没跑过 —— 该有值但取不到。
         - `empty`       扫过了，这只产品这段时间确实没有命中。
         - `ok`          有命中，每条带 `rationale` 与可回到原文的引文。
         """
@@ -2927,7 +3068,7 @@ class SqlProvider:
         return {"status": "ok" if hits else "empty", "list": hits}
 
     def _compliance_counts(self, rng):
-        """`pool().complianceCount`：每只产品命中的父帖线程数。
+        """`pool().complianceCount`：每只产品命中的评论条数。
 
         与 `fixtures/generate.mjs` 逐字同口径 —— `ok` 给条数、`empty` 给 0、
         `na` 与 `unavailable` 都给 **None**。设计源那句 `|| 0` 把「没扫过」读成
@@ -2944,10 +3085,11 @@ class SqlProvider:
         return out
 
     def _compliance_scan(self, rng):
-        """按产品读取原重点舆情结论，兼容既有 ``tags`` / ``risk_tags`` 数据。
+        """读取评论级五类高风险负面舆情，兼容既有标签字段名。
 
-        展示名称从「重点舆情」改为「舆情」不改变分析口径、Prompt 版本或历史
-        数据可读性。空标签表示已分析但未命中；只有产品自己的标注能证明已分析。
+        舆情不是父帖、一般消极观点或普通合规疑问。一条内容必须是评论，且对
+        当前产品或南方东英的态度为负面，再命中冻结的五类风险标签之一。空标签
+        仍表示已经分析但没有命中；范围完成记录负责覆盖零候选产品。
         """
         # Every custom descriptor has ``key == 'custom'``.  Include its actual
         # closed interval or a 10-day request can poison the cache of a later
@@ -2957,109 +3099,73 @@ class SqlProvider:
             return self._cache[key]
 
         window = _window(rng)
-        lo, hi = window
-        qualified = self._qualified_feed_ids(lo, hi)
-        feed_rows = self._current_annotations("compliance", "feed", window=window)
-        rows = {
-            "comment": {
-                unit: row
-                for by_unit in self._released_window_annotations("compliance", lo, hi).values()
-                for unit, row in by_unit.items()
-            },
-            "feed": {
-                unit: row
-                for unit, row in feed_rows.items()
-                if row.get("feed_id") in qualified.get(unit[1], ())
-            },
-        }
-        comment_relevance = {
-            unit: row
-            for by_unit in self._released_window_annotations("relevance", lo, hi).values()
-            for unit, row in by_unit.items()
-        }
-        scanned_codes = self._completed_codes(rng["from"], rng["to"], rng.get("key"))
-        ev = self._evidence_rows(
-            [a["annotation_id"] for table in rows.values() for a in table.values()]
-        )
-        thread_hits = {}
-        for target_type, source_kind in (("comment", "评论"), ("feed", "帖子")):
-            src = self._sources(target_type, [tid for tid, _s in rows[target_type]])
-            for (target_id, code), a in rows[target_type].items():
-                r = src.get(target_id)
-                if r is None or code not in self._by_code:
-                    continue
-                relevance = comment_relevance.get((target_id, code)) if target_type == "comment" else None
-                if target_type == "comment" and relevance is None:
-                    continue
-                value = a["value"]
-                tags = value.get("tags", value.get("risk_tags")) if isinstance(value, dict) else None
-                if not isinstance(tags, list):
-                    continue
-                scanned_codes.add(code)
-                if target_type == "comment" and relevance["value"] != "relevant":
-                    continue
-                tags = list(tags)
-                if not tags:
-                    continue
-                quotes = ev.get(a["annotation_id"], [])
-                feed_id = r.get("feedId") or target_id
-                author = r.get("postAuthorName") or r["authorName"]
-                author_type = self._author_type(author)
-                post_text = (
-                    r.get("postBody") or r.get("postText") or r.get("postTitle")
-                    or (quotes[0][2] if quotes else r["text"])
-                )
-                item = thread_hits.setdefault((code, feed_id), {
-                    "id": f"cr-thread-{feed_id}-{code}",
-                    "productCodes": [code],
-                    "publishedAt": _stamp(r.get("postPostedAt") or r["postedAt"]),
-                    "authorName": author,
-                    "authorType": author_type,
-                    "isKnownKol": author_type == "合作 KOL",
-                    "excerpt": post_text,
-                    "riskTags": [],
-                    "riskLabels": [],
-                    "detectionRationale": None,
-                    "reviewState": "ai_pending",
-                    "reviewLabel": "AI 识别 · 待人工确认",
-                    "sourceKind": "帖子线程",
-                    "sourceUrl": r["url"],
-                    "comments": r["comments"],
-                    "interactions": r["interactions"],
-                    "post": {
-                        "id": feed_id,
-                        "title": r.get("postTitle"),
-                        "excerpt": post_text,
-                        "authorName": author,
-                        "publishedAt": _stamp(r.get("postPostedAt") or r["postedAt"]),
-                        "sourceUrl": r["url"],
-                    },
-                    "threadComments": [],
-                    "_rationales": [],
-                })
-                for tag in tags:
-                    if tag not in item["riskTags"]:
-                        item["riskTags"].append(tag)
-                        item["riskLabels"].append(_RISK_LABEL.get(tag, tag))
-                rationale = value.get("rationale")
-                if rationale and rationale not in item["_rationales"]:
-                    item["_rationales"].append(rationale)
-                if target_type == "comment":
-                    comment_text = re.sub(r"\s+", " ", str(r.get("text") or "")).strip()
-                    seen = {comment["excerpt"] for comment in item["threadComments"]}
-                    if comment_text and comment_text not in seen and len(item["threadComments"]) < 3:
-                        item["threadComments"].append({
-                            "id": f"c{target_id}",
-                            "excerpt": comment_text,
-                            "authorName": r.get("authorName"),
-                            "publishedAt": _stamp(r.get("postedAt")),
-                            "sourceKind": source_kind,
-                        })
         by_code = defaultdict(list)
-        for (code, _feed_id), item in thread_hits.items():
-            item["commentCount"] = len(item["threadComments"])
-            item["detectionRationale"] = "；".join(item.pop("_rationales")) or None
-            by_code[code].append(item)
+
+        def released(kind):
+            return released_annotations(
+                self._engine,
+                kind,
+                "comment",
+                task="comment_product",
+                prompt_version=COMMENT_PRODUCT_PROMPT_VERSIONS,
+                window=window,
+                parent_filter_config=self._comment_filter_config,
+            )
+
+        rows = released("compliance")
+        product_relevance = released("relevance")
+        product_attitude = released("attitude")
+        issuer_relevance = released("issuer_relevance")
+        issuer_attitude = released("issuer_attitude")
+        scanned_codes = self._completed_codes(rng["from"], rng["to"], rng.get("key"))
+        scanned_codes.update(code for _target_id, code in rows)
+        ev = self._evidence_rows([a["annotation_id"] for a in rows.values()])
+        src = self._sources("comment", [target_id for target_id, _code in rows])
+        allowed = set(_RISK_LABEL)
+
+        for unit, annotation in rows.items():
+            target_id, code = unit
+            source = src.get(target_id)
+            if source is None or code not in self._by_code:
+                continue
+            product_negative = (
+                (product_relevance.get(unit) or {}).get("value") == "relevant"
+                and (product_attitude.get(unit) or {}).get("value") == "negative"
+            )
+            issuer_negative = (
+                (issuer_relevance.get(unit) or {}).get("value") == "relevant"
+                and (issuer_attitude.get(unit) or {}).get("value") == "negative"
+            )
+            if not (product_negative or issuer_negative):
+                continue
+            value = annotation["value"]
+            tags = value.get("tags", value.get("risk_tags")) if isinstance(value, dict) else None
+            if not isinstance(tags, list):
+                continue
+            tags = [tag for tag in tags if tag in allowed]
+            if not tags:
+                continue
+            quotes = ev.get(annotation["annotation_id"], [])
+            author = source["authorName"]
+            author_type = self._author_type(author)
+            by_code[code].append({
+                "id": f"cr-{annotation['annotation_id']}",
+                "productCodes": [code],
+                "publishedAt": _stamp(source["postedAt"]),
+                "authorName": author,
+                "authorType": author_type,
+                "isKnownKol": author_type == "合作 KOL",
+                "excerpt": quotes[0][2] if quotes else source["text"],
+                "riskTags": tags,
+                "riskLabels": [_RISK_LABEL[tag] for tag in tags],
+                "detectionRationale": value.get("rationale"),
+                "reviewState": "ai_pending",
+                "reviewLabel": "AI 识别 · 待人工确认",
+                "sourceKind": "评论",
+                "sourceUrl": source["url"],
+                "comments": source["comments"],
+                "interactions": source["interactions"],
+            })
         for items in by_code.values():
             items.sort(key=lambda x: (x["publishedAt"] or "", x["id"]), reverse=True)
         out = {"scannedCodes": scanned_codes, "byCode": dict(by_code)}
@@ -3384,6 +3490,15 @@ class SqlProvider:
             feeds.c.author_name.in_(names),
             feeds.c.author_uid.in_(author_uids),
         )
+        settled_counters = (
+            select(
+                feed_counter_observations.c.feed_id,
+                func.min(feed_counter_observations.c.observed_at).label("observed_at"),
+            )
+            .where(feed_counter_observations.c.is_settled.is_(True))
+            .group_by(feed_counter_observations.c.feed_id)
+            .subquery()
+        )
         with self._engine.connect() as conn:
             rows = list(
                 conn.execute(
@@ -3404,6 +3519,15 @@ class SqlProvider:
                         feeds.c.comment_count,
                         feeds.c.share_count,
                         feeds.c.browse_count,
+                        func.coalesce(
+                            settled_counters.c.observed_at,
+                            feeds.c.source_observed_at,
+                        ).label("interaction_updated_at"),
+                    ).select_from(
+                        feeds.outerjoin(
+                            settled_counters,
+                            settled_counters.c.feed_id == feeds.c.feed_id,
+                        )
                     ).where(
                         author_condition,
                         feeds.c.posted_at >= lo,
@@ -4087,13 +4211,13 @@ _DIRECTIONS = {
     "hold": ("持有观望", "neu"),
 }
 
-# 原重点舆情的五类风险标签；展示名称改为「舆情」不改变历史标签口径。
+# 评论级高风险舆情的五类冻结标签（PRD §3.4 / P10）。
 _RISK_LABEL = {
+    "abusive_attack": "辱骂攻击",
     "regulatory_complaint": "监管举报",
     "serious_allegation": "严重指控",
     "unverified_claim": "疑似未经证实指控",
     "mobilization": "煽动扩散",
-    "compliance_concern": "合规质疑",
 }
 
 

@@ -595,11 +595,7 @@ export default class ProductMonitor extends React.Component {
       return {
         id: r.id,
         tags: r.riskLabels.map(function (l) { return { label: l }; }),
-        time: r.publishedAt,
-        postTitle: r.post?.title || r.postTitle || '',
-        excerpt: r.post?.excerpt || r.excerpt,
-        rationale: r.detectionRationale,
-        commentCount: String((r.threadComments || r.commentsList || []).length),
+        time: r.publishedAt, excerpt: r.excerpt, rationale: r.detectionRationale,
         author: r.authorName, type: kolDisplayLabel(r.authorType), source: r.sourceKind, code: code, status: r.reviewLabel,
         tbg: r.isKnownKol ? 'var(--csop-blue-50)' : 'var(--canvas-alt)',
         tfg: r.isKnownKol ? 'var(--csop-blue-700)' : 'var(--ink-700)',

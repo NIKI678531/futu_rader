@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from ai import config  # noqa: E402
-from jobs import admin_analysis  # noqa: E402
+from jobs import admin_analysis, full_own  # noqa: E402
 from jobs.admin_analysis import process_next  # noqa: E402
 from radar_db.analysis_requests import enqueue, list_requests  # noqa: E402
 from radar_db.schema import meta_kv, metadata  # noqa: E402
@@ -54,6 +55,44 @@ def test_worker_runs_the_requested_range_and_persists_success_summary():
     assert stored["status"] == "succeeded"
     assert stored["summary"]["aiRequests"] == 0
     assert stored["summary"]["reused"] == 1080
+
+
+def test_successful_progress_is_published_per_range_without_partial_overwrite():
+    engine = _engine()
+    d7 = {
+        "status": "complete",
+        "ranges": ["d7"],
+        "anchor": "2026-11-01",
+        "baselineFrom": "2026-10-19",
+        "products": {"3033": {"complete": True, "queue": {}}},
+    }
+    full_own.save_progress(engine, d7)
+
+    running_d0 = {
+        "status": "running",
+        "ranges": ["d0"],
+        "anchor": "2026-11-02",
+        "baselineFrom": "2026-11-01",
+        "products": {"3033": {"complete": False, "queue": {"pending": 1}}},
+    }
+    full_own.save_progress(engine, running_d0)
+
+    with engine.connect() as conn:
+        values = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v)).all())
+    assert json.loads(values["own_analysis_progress"])["ranges"] == ["d0"]
+    assert json.loads(values["own_analysis_progress_d7"])["status"] == "complete"
+    assert "own_analysis_progress_d0" not in values
+
+    completed_d0 = {
+        **running_d0,
+        "status": "complete",
+        "products": {"3033": {"complete": True, "queue": {}}},
+    }
+    full_own.save_progress(engine, completed_d0)
+    with engine.connect() as conn:
+        values = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v)).all())
+    assert json.loads(values["own_analysis_progress_d0"])["status"] == "complete"
+    assert json.loads(values["own_analysis_progress_d7"])["anchor"] == "2026-11-01"
 
 
 def test_today_request_has_queue_priority_and_reaches_the_worker():

@@ -20,6 +20,7 @@ from radar_db.comment_routes import COMMENT_ROUTE_VERSION, readiness_values as r
 from radar_db.schema import (
     annotation_runs,
     comment_product_routes,
+    feed_counter_observations,
     feed_mentions,
     feeds,
     mentions,
@@ -388,6 +389,42 @@ class TestKolImpact:
         assert r["posts"][0]["kol"] == KOL_NAME
         assert r["posts"][0]["views"] == 888  # browse_count 是真的
         assert r["posts"][0]["url"] == "https://q.futunn.com/feed/2?lang=zh-cn"
+
+    def test_interaction_update_uses_the_selected_settled_snapshot_time(self, provider):
+        with provider._engine.begin() as conn:
+            conn.execute(update(feeds).where(feeds.c.feed_id == 2).values(
+                source_observed_at=datetime(2026, 8, 27, 4),
+            ))
+            conn.execute(insert(feed_counter_observations).values(
+                feed_id=2,
+                observed_at=datetime(2026, 8, 26, 2),
+                like_count=0,
+                comment_count=1,
+                image_count=0,
+                share_count=None,
+                browse_count=888,
+                is_settled=True,
+                source_run_id="settled-run",
+            ))
+        provider._cache.clear()
+
+        post = provider.kol_impact("d1")["posts"][0]
+
+        assert post["interactionUpdatedAt"] == "2026-08-26 10:00"
+
+    def test_interaction_update_uses_latest_observation_until_settled(self, provider):
+        with provider._engine.begin() as conn:
+            conn.execute(update(feeds).where(feeds.c.feed_id == 2).values(
+                source_observed_at=datetime(2026, 8, 25, 5),
+            ))
+        provider._cache.clear()
+
+        post = provider.kol_impact("d1")["posts"][0]
+
+        assert post["interactionUpdatedAt"] == "2026-08-25 13:00"
+
+    def test_interaction_update_is_unknown_without_an_observation_time(self, provider):
+        assert provider.kol_impact("d1")["posts"][0]["interactionUpdatedAt"] is None
 
     def test_anchor_without_body_mention_is_not_published_as_an_etf_mention(self, provider):
         """讨论区是采集来源，不是作者在正文提到该 ETF 的证据。"""
@@ -1424,7 +1461,7 @@ class TestEvidenceLocatesTheOriginalText:
 
 
 class TestComplianceFourStates:
-    """舆情沿用原重点舆情口径；四态一个都不能合并。"""
+    """评论级五类高风险舆情；四态一个都不能合并。"""
 
     HIT = {
         "annotation_id": 1,
@@ -1437,6 +1474,7 @@ class TestComplianceFourStates:
     def comment_rows(cls, hit=None):
         return [
             {"annotation_id": 90, "target_id": 11, "kind": "relevance", "value": "relevant"},
+            {"annotation_id": 91, "target_id": 11, "kind": "attitude", "value": "negative"},
             hit or cls.HIT,
         ]
 
@@ -1474,13 +1512,12 @@ class TestComplianceFourStates:
         assert hit["riskTags"] == ["regulatory_complaint"]
         assert hit["riskLabels"] == ["监管举报"]
 
-    def test_original_compliance_concern_remains_readable(self, provider):
+    def test_general_compliance_concern_is_not_strict_opinion_risk(self, provider):
         p = add_annotations(provider, self.comment_rows({
             **self.HIT,
             "value": {"tags": ["compliance_concern"], "rationale": "一般披露疑问"},
         }))
-        hit = p.compliance_for(OWN_CODE, "d1")["list"][0]
-        assert hit["riskLabels"] == ["合规质疑"]
+        assert p.compliance_for(OWN_CODE, "d1") == {"status": "empty", "list": []}
 
     def test_a_hit_comes_back_with_its_rationale_and_a_locatable_quote(self, provider):
         p = add_annotations(provider, self.comment_rows())
@@ -1499,10 +1536,9 @@ class TestComplianceFourStates:
         assert hit["riskTags"] == ["regulatory_complaint"]
         assert hit["riskLabels"] == ["监管举报"]
         assert hit["detectionRationale"] == "评论里提到要去投诉。"
-        assert hit["post"]["excerpt"] == hit["excerpt"]
-        assert hit["threadComments"][0]["excerpt"] == COMMENT_TEXT[11]
-        assert "不太划算" in hit["threadComments"][0]["excerpt"]
-        assert hit["sourceKind"] == "帖子线程"
+        assert hit["excerpt"] == "不太划算"
+        assert hit["excerpt"] in COMMENT_TEXT[11]
+        assert hit["sourceKind"] == "评论"
         assert hit["sourceUrl"] == "https://q.futunn.com/feed/1?lang=zh-cn"
 
     def test_the_badge_is_constant_no_matter_what_the_review_state_says(self, provider):
@@ -1515,24 +1551,26 @@ class TestComplianceFourStates:
         hit = p.compliance_for(OWN_CODE, "d1")["list"][0]
         assert (hit["reviewState"], hit["reviewLabel"]) == ("ai_pending", "AI 识别 · 待人工确认")
 
-    def test_a_post_level_hit_says_so(self, provider):
-        """原重点舆情口径包含帖子级命中，改名后仍应可读。"""
+    def test_a_post_level_hit_is_not_opinion_risk(self, provider):
+        """父帖即使命中旧标签，也不能进入评论级舆情。"""
         p = add_annotations(
             provider,
             [
+                {"annotation_id": 2, "target_id": 11, "kind": "relevance", "value": "relevant"},
+                {"annotation_id": 3, "target_id": 11, "kind": "attitude", "value": "negative"},
+                {"annotation_id": 4, "target_id": 11, "kind": "compliance",
+                 "value": {"tags": [], "rationale": None}},
                 {"annotation_id": 1, "target_id": 1, "target_type": "feed",
                  "kind": "compliance",
                  "value": {"tags": ["mobilization"], "rationale": "号召大家一起去。"}},
             ],
         )
-        hit = p.compliance_for(OWN_CODE, "d1")["list"][0]
-        assert hit["sourceKind"] == "帖子线程"
-        assert hit["threadComments"] == []
-        assert hit["riskLabels"] == ["煽动扩散"]
+        assert p.compliance_for(OWN_CODE, "d1") == {"status": "empty", "list": []}
 
     def test_comment_hits_require_current_relevance(self, provider):
         p = add_annotations(provider, [
             {"annotation_id": 10, "target_id": 11, "kind": "relevance", "value": "relevant"},
+            {"annotation_id": 16, "target_id": 11, "kind": "attitude", "value": "negative"},
             {"annotation_id": 11, "target_id": 11, "kind": "compliance",
              "value": {"tags": ["regulatory_complaint"], "rationale": "明确投诉意图"}},
             {"annotation_id": 12, "target_id": 13, "kind": "relevance", "value": "relevant"},
@@ -1547,10 +1585,9 @@ class TestComplianceFourStates:
         result = p.compliance_for(OWN_CODE, "d1")
 
         assert result["status"] == "ok"
-        assert {item["id"] for item in result["list"]} == {f"cr-thread-1-{OWN_CODE}"}
-        assert result["list"][0]["sourceKind"] == "帖子线程"
-        assert result["list"][0]["commentCount"] == 1
-        assert set(result["list"][0]["riskTags"]) == {"regulatory_complaint", "mobilization"}
+        assert {item["id"] for item in result["list"]} == {"cr-11"}
+        assert result["list"][0]["sourceKind"] == "评论"
+        assert result["list"][0]["riskTags"] == ["regulatory_complaint"]
 
     def test_irrelevant_comment_is_scanned_but_its_risk_hit_is_hidden(self, provider):
         p = add_annotations(provider, [

@@ -2,7 +2,8 @@ const RISK_LABELS = {
   abusive_attack: '辱骂攻击',
   regulatory_complaint: '监管举报',
   serious_allegation: '严重指控',
-  compliance_concern: '合规质疑',
+  unverified_claim: '疑似未经证实指控',
+  mobilization: '煽动扩散',
 }
 
 const ALLOWED_LABELS = new Set(Object.values(RISK_LABELS))
@@ -29,9 +30,9 @@ function allowedTags(item) {
 /**
  * Frontend display boundary for the narrowed opinion-risk list.
  *
- * Only comment-level insults, regulatory complaints, serious allegations and
- * compliance concerns remain. Posts, market-movement discussion, uncertain
- * claims, mobilisation and unknown classifications are intentionally omitted.
+ * Keep the frozen five comment-level high-risk categories. Parent posts,
+ * ordinary product complaints, generic compliance questions and unknown
+ * classifications are intentionally omitted.
  */
 export function narrowOpinionRisk(result) {
   if (!result || !Array.isArray(result.list)) return result

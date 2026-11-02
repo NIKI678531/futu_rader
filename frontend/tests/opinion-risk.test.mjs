@@ -11,23 +11,24 @@ const item = (id, riskTags, sourceKind = '评论') => ({
   riskLabels: riskTags,
 })
 
-test('opinion risk keeps only the four requested comment categories', () => {
+test('opinion risk keeps the five frozen comment-level risk categories', () => {
   const result = narrowOpinionRisk({
     status: 'ok',
     list: [
       item('insult', ['abusive_attack']),
       item('report', ['regulatory_complaint']),
-      item('allegation', ['serious_allegation', 'unverified_claim']),
-      item('compliance', ['compliance_concern']),
+      item('allegation', ['serious_allegation']),
       item('uncertain', ['unverified_claim']),
       item('spread', ['mobilization']),
+      item('compliance', ['compliance_concern']),
       item('post', ['serious_allegation'], '帖子'),
+      item('thread', ['serious_allegation'], '帖子线程'),
       item('movement', []),
     ],
   })
 
   assert.deepEqual(result.list.map((entry) => entry.id), [
-    'insult', 'report', 'allegation', 'compliance',
+    'insult', 'report', 'allegation', 'uncertain', 'spread',
   ])
   assert.deepEqual(result.list[0].riskLabels, ['辱骂攻击'])
   assert.deepEqual(result.list[2].riskLabels, ['严重指控'])
@@ -35,7 +36,7 @@ test('opinion risk keeps only the four requested comment categories', () => {
 
 test('opinion risk changes an emptied ok result to empty without collapsing other states', () => {
   assert.deepEqual(
-    narrowOpinionRisk({ status: 'ok', list: [item('uncertain', ['unverified_claim'])] }),
+    narrowOpinionRisk({ status: 'ok', list: [item('compliance', ['compliance_concern'])] }),
     { status: 'empty', list: [] },
   )
   assert.deepEqual(

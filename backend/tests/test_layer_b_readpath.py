@@ -14,7 +14,15 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from core import topics as core_topics
-from radar_db.schema import annotation_runs, comments, feeds, mentions, meta_kv, synthesis_outputs
+from radar_db.schema import (
+    analysis_scopes,
+    annotation_runs,
+    comments,
+    feeds,
+    mentions,
+    meta_kv,
+    synthesis_outputs,
+)
 from radar_db.revisions import set_synthesis_generation
 from providers.demo import DemoProvider, MISSING
 from sql_fixture import (
@@ -372,6 +380,67 @@ class TestTopicsAndHot:
 
         assert provider._completed_codes("2026-08-19", "2026-08-25", "d7") == {OWN_CODE}
 
+    def test_stale_range_progress_does_not_shadow_new_generic_progress(self, provider):
+        provider._meta["own_analysis_progress_d7"] = json.dumps({
+            "status": "complete", "anchor": "2026-08-20", "baselineFrom": "2026-08-01",
+            "sourceVersion": {}, "products": {PEER_CODE: {"complete": True, "queue": {}}},
+        })
+        provider._meta["own_analysis_progress"] = json.dumps({
+            "status": "complete", "anchor": "2026-08-25", "baselineFrom": "2026-08-12",
+            "sourceVersion": {}, "products": {OWN_CODE: {"complete": True, "queue": {}}},
+        })
+
+        assert provider._completed_codes("2026-08-19", "2026-08-25", "d7") == {OWN_CODE}
+
+    def test_completed_zero_candidate_scope_restores_empty_risk_state(self, provider):
+        with provider._engine.begin() as conn:
+            conn.execute(insert(analysis_scopes).values(
+                scope_id="scope-complete-empty",
+                task="both",
+                codes_json=json.dumps([OWN_CODE]),
+                date_from=datetime(2026, 8, 12),
+                date_to=datetime(2026, 8, 25),
+                time_basis="feed_posted_at",
+                with_baseline=True,
+                prompt_version="comment-product-v4",
+                taxonomy_version="product-feedback-v4",
+                schema_version="v3",
+                stats_json=json.dumps({"sourceVersion": {}}),
+                created_at=datetime(2026, 8, 26),
+            ))
+        provider._cache.clear()
+
+        assert provider._completed_codes("2026-08-19", "2026-08-25", "d7") == {OWN_CODE}
+        assert provider.compliance_for(OWN_CODE, "d1") == {"status": "empty", "list": []}
+
+    def test_scope_from_an_old_route_generation_stays_unavailable(self, provider):
+        provider._meta.update({
+            "comment_route_version": "content-cashtag-v2",
+            "comment_route_pool_digest": "current-pool",
+        })
+        with provider._engine.begin() as conn:
+            conn.execute(insert(analysis_scopes).values(
+                scope_id="scope-old-route",
+                task="both",
+                codes_json=json.dumps([OWN_CODE]),
+                date_from=datetime(2026, 8, 12),
+                date_to=datetime(2026, 8, 25),
+                time_basis="feed_posted_at",
+                with_baseline=True,
+                prompt_version="comment-product-v4",
+                taxonomy_version="product-feedback-v4",
+                schema_version="v3",
+                stats_json=json.dumps({"sourceVersion": {
+                    "comment_route_version": "content-cashtag-v1",
+                    "comment_route_pool_digest": "old-pool",
+                }}),
+                created_at=datetime(2026, 8, 26),
+            ))
+        provider._cache.clear()
+
+        assert provider._completed_codes("2026-08-19", "2026-08-25", "d7") == set()
+        assert provider.compliance_for(OWN_CODE, "d1") == {"status": "unavailable", "list": []}
+
     def test_scope_completion_refreshes_cached_unknown_state(self, provider):
         progress = {"anchor": "2026-08-25", "baselineFrom": "2026-08-12", "sourceVersion": {},
                     "products": {OWN_CODE: {"complete": False, "queue": {}}}}
@@ -398,8 +467,10 @@ class TestTopicsAndHot:
         assert summaries[PEER_CODE]["status"] == "unavailable"
         assert provider.themes_for(OWN_CODE, "d1") == {"positive": [], "negative": [], "stale": False}
         assert provider._completed_codes("2026-07-01", "2026-08-25") == set()
+        # A source sync must keep the last successful publication visible until
+        # the replacement analysis completes (ADR-0038).
         provider._meta["data_revision"] = "new-source"
-        assert provider._completed_codes("2026-08-25", "2026-08-25") == set()
+        assert provider._completed_codes("2026-08-25", "2026-08-25") == {OWN_CODE}
 
     def test_market_topic_counts_direction_not_attitude(self, provider):
         p = annotated(provider)

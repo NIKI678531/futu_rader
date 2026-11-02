@@ -1,6 +1,6 @@
 import { s, hover } from '../../lib/dc'
 
-/* 舆情——前端只展示严格白名单内的评论。 */
+/* 舆情——评论级五类高风险负面内容。 */
 export default function Risk({ v }) {
   return (
     <div data-testid="product-risk-section" style={s('background:#fff;border:1px solid var(--border-1);border-radius:var(--radius-card);box-shadow:0 1px 2px rgba(14,42,82,0.04),0 4px 12px rgba(14,42,82,0.06);margin-bottom:14px;overflow:hidden')}>
@@ -12,7 +12,7 @@ export default function Risk({ v }) {
         {v.riskHas && (
           <span data-testid="product-risk-total" style={s('font:600 18px/1.3 var(--font-mono);color:var(--negative-700)')}>{v.riskN}</span>
         )}
-        <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>辱骂攻击 · 监管举报 · 严重指控 · 合规质疑</span>
+        <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>辱骂攻击 · 监管举报 · 严重指控 · 未经证实的重大传闻 · 煽动扩散</span>
       </div>
       {v.riskHas && (
         <>
@@ -25,7 +25,6 @@ export default function Risk({ v }) {
                   ))}
                   <span style={s('margin-left:auto;font:500 12px/1.4 var(--font-mono);color:var(--ink-500)')}>{r.time}</span>
                 </div>
-                {r.postTitle && <div style={s('font:600 13px/1.6 var(--font-cjk);color:var(--ink-900);text-wrap:pretty;margin-bottom:5px')}>{r.postTitle}</div>}
                 <div style={s('font:400 14px/1.75 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>“{r.excerpt}”</div>
                 <div style={s('margin-top:7px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-500);text-wrap:pretty')}><span style={s('font-weight:600;color:var(--ink-600)')}>命中依据</span>　{r.rationale}</div>
                 <div style={s('margin-top:9px;display:flex;align-items:center;gap:8px;flex-wrap:wrap')}>
@@ -33,7 +32,6 @@ export default function Risk({ v }) {
                   <span style={s(`padding:0 7px;border-radius:3px;background:${r.tbg};font:600 11px/1.7 var(--font-cjk);color:${r.tfg}`)}>{r.type}</span>
                   <span style={s('padding:0 7px;border-radius:var(--radius-pill);background:var(--csop-blue-50);font:600 11px/1.7 var(--font-mono);color:var(--csop-blue-700)')}>{r.code}</span>
                   <span style={s('font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>来源：{r.source}</span>
-                  <span style={s('margin-left:auto;font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>{r.commentCount} 条相关评论</span>
                   <span style={s('font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600)')}>查看原文证据 →</span>
                 </div>
               </div>
@@ -43,7 +41,7 @@ export default function Risk({ v }) {
             {v.riskMoreVisible && (
               <button type="button" data-testid="product-risk-toggle" aria-expanded={v.riskExpanded} aria-controls="product-risk-list" onClick={v.riskToggle} style={s('flex:none;padding:0;border:0;background:transparent;font:500 13px/1.6 var(--font-cjk);color:var(--csop-blue-600);cursor:pointer;white-space:nowrap')}>{v.riskMoreLabel}</button>
             )}
-            <span style={s('font:400 12px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>按帖子线程展示父帖上下文与命中评论；普通涨跌讨论和无法确认的内容不纳入。</span>
+            <span style={s('font:400 12px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>仅展示与产品或南方东英相关、态度负面并命中五类风险信号的评论；父帖、普通产品抱怨和一般合规疑问不纳入。</span>
           </div>
         </>
       )}

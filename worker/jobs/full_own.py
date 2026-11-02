@@ -28,10 +28,28 @@ from radar_db.scope_jobs import scope_condition
 
 
 def save_progress(engine, progress):
+    """Persist live progress and publish a durable snapshot per completed range.
+
+    ``own_analysis_progress`` is the control-plane cursor and is intentionally
+    overwritten by the next request.  Business reads are range-scoped, though:
+    a later D0 run must not erase the fact that D7 completed successfully.
+    Keep the last successful snapshot for every covered range, and do not
+    replace it with a running/partial attempt (ADR-0038's publish-on-success
+    boundary).
+    """
     value = json.dumps(progress, ensure_ascii=False, default=str)
+    keys = ["own_analysis_progress"]
+    if progress.get("status") == "complete":
+        keys.extend(
+            f"own_analysis_progress_{range_key}"
+            for range_key in dict.fromkeys(progress.get("ranges") or ())
+        )
     with engine.begin() as conn:
-        if not conn.execute(update(meta_kv).where(meta_kv.c.k == "own_analysis_progress").values(v=value)).rowcount:
-            conn.execute(insert(meta_kv).values(k="own_analysis_progress", v=value))
+        for key in keys:
+            if not conn.execute(
+                update(meta_kv).where(meta_kv.c.k == key).values(v=value)
+            ).rowcount:
+                conn.execute(insert(meta_kv).values(k=key, v=value))
 
 
 def prepare(engine, cfg, anchor, codes, *, ranges=None, optimized=False, page_size=1000):

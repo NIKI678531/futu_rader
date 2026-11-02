@@ -43,7 +43,7 @@ def test_impact_top_level_shape(client):
     # 发帖记录表、类型筛选、抽屉、CSV 导出直接消费的字段。少一个页面就渲染不出来。
     ["id", "kol", "tags", "t", "day", "hour", "dateText", "time", "code", "name",
      "sector", "ownership", "issuer", "likes", "comments", "shares", "views",
-     "engagement", "url", "postType", "typeLabel", "confidence", "direction",
+     "engagement", "interactionUpdatedAt", "url", "postType", "typeLabel", "confidence", "direction",
      "directionLabel", "directionPending", "hasDir", "dir", "hasSummary", "summary",
      "fullText", "evidenceIdx", "typeEvidence", "mentioned", "mentionedEtfs", "camp", "campPrimary"],
 )
