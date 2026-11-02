@@ -10,6 +10,7 @@ import {
 import { kolProfile } from '../lib/profile'
 import { compareKolReach } from '../lib/kolMetrics'
 import { mentionedEtfsOf, primaryDisplayedEtf } from '../lib/kolEtfs'
+import { KOL_POST_CSV_HEADERS, kolCsvEtfFields } from '../lib/kolCsv'
 import { dataSourceBadge } from '../lib/dataSource'
 import { s, hover, focus } from '../lib/dc'
 import Shell from '../components/Shell'
@@ -84,21 +85,17 @@ class KolActivity extends React.Component {
     var self = this;
     var esc = function (v) { v = v == null ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.split('"').join('""') + '"' : v; };
     var ownershipLabel = function (p) { return !p.code ? (mentionedEtfsOf(p).length ? '其他公司产品' : '未提及') : (p.ownership === 'own' ? '自家' : (p.ownership === 'peer' ? '其他公司产品' : '数据暂不可用')); };
-    var head = ['重点KOL', 'KOL标签', '发帖时间', 'ETF代码', 'ETF名称', '发行商', '内容形式', '操作方向', '类型置信度', '是否待确认', 'AI摘要', 'ETF归属', '正文提及ETF(全部ticker)', '赞', '评论数', '转发', '浏览量', '原帖链接'];
     /* 导出的缺失格写「数据暂不可用」，不写空。CSV 里的空单元格在 Excel 里与
        「这里确实没有」长得一模一样，而这份文件会被拿去做判断、甚至再统计一遍。
        页面上分得开的两件事，落到文件里也得分得开。 */
     var na = '数据暂不可用';
     var cell = function (v) { return v == null ? na : v; };
-    var lines = [esc('# ' + summary), head.map(esc).join(',')].concat(list.map(function (p) {
-      var ann = self.annNa(p), pd = self.pending(p);
-      var etfs = mentionedEtfsOf(p), primary = primaryDisplayedEtf(p);
-      var mentioned = etfs.map(function (m) { return m.ticker; }).join(' ') || '未提及';
-      return [p.kol, p.tags.split(',').join(' / '), p.day + ' ' + p.time.slice(6), primary ? primary.ticker : '未提及', primary ? (primary.name || na) : '未提及', primary ? (primary.issuer || (primary.inPool ? na : '其他公司产品')) : '未提及',
+    var lines = [esc('# ' + summary), KOL_POST_CSV_HEADERS.map(esc).join(',')].concat(list.map(function (p) {
+      var ann = self.annNa(p), etfFields = kolCsvEtfFields(p);
+      return [p.kol, p.tags.split(',').join(' / '), p.day + ' ' + p.time.slice(6), etfFields.codes, etfFields.names, etfFields.issuers,
         cell(p.typeLabel), ann ? na : (p.directionPending ? '待确认' : (p.dir ? p.dir.label : '')),
-        conf2(p.confidence), pd == null ? na : (pd ? '是' : '否'),
         ann ? na : (p.hasSummary ? p.summary : '（图片帖，无摘要）'), ownershipLabel(p),
-        mentioned,
+        etfFields.mentionedTickers,
         cell(p.likes), cell(p.comments), cell(p.shares), cell(p.views), p.url].map(esc).join(',');
     }));
     this.downloadCsv(lines, filename);
@@ -371,16 +368,10 @@ class KolActivity extends React.Component {
       { label: '展示类型已识别', value: String(annOk), unit: '篇', pct: '', pfg: 'transparent', sub: typeSub, vfg: 'var(--ink-900)' }
     ];
 
-    /* 发帖记录：每个数据列共享一套升／降序规则；未知值两种方向都排最后。 */
+    /* 发帖记录：只给时间与可量化指标排序；未知值两种方向都排最后。 */
     var postTime = function (p) { return p.day && p.time ? p.day + ' ' + p.time.slice(-5) : null; };
     var postSortValue = function (p, key) {
-      var etfs = mentionedEtfsOf(p), shownType = displayedPostType(p), ownership = ownershipOf(p);
-      if (key === 'kol') return p.kol;
       if (key === 'time') return postTime(p);
-      if (key === 'etf') return etfs.length ? etfs.map(function (item) { return item.ticker; }).join(' / ') : null;
-      if (key === 'type') return shownType.filterKey == null ? null : shownType.label;
-      if (key === 'summary') return p.hasSummary ? p.summary : null;
-      if (key === 'ownership') return ownership.k === 'unknown' ? null : ownership.label;
       if (key === 'eng') return p.engagement;
       if (key === 'views') return p.views;
       return null;
@@ -392,7 +383,7 @@ class KolActivity extends React.Component {
     var list = stableSort(tbl, function (p) { return postSortValue(p, s.sort); }, s.sortDir, postTie);
     out.postSortKey = s.sort; out.postSortDir = s.sortDir;
     out.setPostSort = function (key, direction) { self.setState({ sort: key, sortDir: direction, shown: 50 }); };
-    var postSortLabels = { kol: '重点KOL', time: '发帖时间', etf: 'ETF', type: '类型', summary: 'AI摘要', ownership: 'ETF归属', eng: '互动合计', views: '浏览量' };
+    var postSortLabels = { time: '发帖时间', eng: '互动合计', views: '浏览量' };
     var postSortNote = (postSortLabels[s.sort] || s.sort) + (s.sortDir === 'asc' ? '升序' : '降序');
     /* 导出 CSV：与表格所见完全一致，首行为筛选摘要 */
     var campName = CAMPS.filter(function (x) { return x[0] === s.camp; })[0][1];
@@ -469,12 +460,10 @@ class KolActivity extends React.Component {
     out.lTypeNaNote = '';
     var lRows = lBase.filter(function (l) { return s.lType === 'ALL' || l.rosterTags.indexOf(s.lType) >= 0; });
     var leaderSortValue = function (leader, key) {
-      if (key === 'kol') return leader.kol;
       if (key === 'n') return leader.n;
       if (key === 'mix') return [leader.ownAny, leader.peerAny];
       if (key === 'views') return leader.views;
       if (key === 'comments') return leader.comments;
-      if (key === 'type') return leader.rosterTags.length ? leader.rosterTags.join(' / ') : null;
       return null;
     };
     lRows = stableSort(lRows, function (leader) { return leaderSortValue(leader, s.leaderSort); }, s.leaderSortDir, function (a, b) {
@@ -482,7 +471,7 @@ class KolActivity extends React.Component {
     });
     out.leaderSortKey = s.leaderSort; out.leaderSortDir = s.leaderSortDir;
     out.setLeaderSort = function (key, direction) { self.setState({ leaderSort: key, leaderSortDir: direction }); };
-    var leaderSortLabels = { kol: 'KOL', n: '篇数', mix: '自家/其他', views: '浏览量', comments: '评论量', type: 'KOL类型' };
+    var leaderSortLabels = { n: '篇数', mix: '自家/其他', views: '浏览量', comments: '评论量' };
     out.leaderSortNote = (leaderSortLabels[s.leaderSort] || s.leaderSort) + (s.leaderSortDir === 'asc' ? '升序' : '降序');
     out.lq = s.lq; out.lqBc = lqq ? 'var(--csop-blue-600)' : 'var(--border-2)';
     out.setLq = function (e) { self.setState({ lq: e.target.value }); };
@@ -776,19 +765,30 @@ class KolActivity extends React.Component {
                 )}
               </div>
             </div>
-            <div style={s('max-height:560px;overflow-y:auto')}>
-              <table>
+            <div style={s('max-height:560px;overflow:auto')}>
+              <table style={s('table-layout:fixed;min-width:1180px')}>
+                <colgroup>
+                  <col style={s('width:148px')} />
+                  <col style={s('width:112px')} />
+                  <col style={s('width:124px')} />
+                  <col style={s('width:112px')} />
+                  <col />
+                  <col style={s('width:98px')} />
+                  <col style={s('width:124px')} />
+                  <col style={s('width:82px')} />
+                  <col style={s('width:82px')} />
+                </colgroup>
                 <thead>
                   <tr style={s('background:var(--canvas-alt)')}>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 16px;width:150px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="重点KOL" sortKey="kol" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} /></th>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:110px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="发帖时间" sortKey="time" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} /></th>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:88px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="ETF" sortKey="etf" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} /></th>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:118px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="类型" sortKey="type" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} /></th>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 10px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="AI 摘要" sortKey="summary" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} /></th>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 6px;width:110px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="ETF 归属" sortKey="ownership" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} /></th>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 6px;width:145px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="赞 / 评 / 转" sortKey="eng" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} align="right" /></th>
-                    <th data-testid="kol-post-view-header" data-screen-diff-new="kol-view-column" style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 6px;width:96px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="浏览量" sortKey="views" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} align="right" /></th>
-                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 16px 10px 6px;width:84px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>原帖</th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 16px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>重点KOL</th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 12px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="发帖时间" sortKey="time" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} /></th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 12px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>ETF</th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 12px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>类型</th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 14px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>AI 摘要</th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:left;padding:10px 10px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>ETF 归属</th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 10px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="赞 / 评 / 转" sortKey="eng" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} align="right" /></th>
+                    <th data-testid="kol-post-view-header" data-screen-diff-new="kol-view-column" style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 10px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}><ColumnSort label="浏览量" sortKey="views" activeKey={v.postSortKey} direction={v.postSortDir} onSort={v.setPostSort} align="right" /></th>
+                    <th style={s('position:sticky;top:0;z-index:2;background:var(--canvas-alt);text-align:right;padding:10px 16px 10px 10px;font:600 14px/1.5 var(--font-cjk);color:var(--ink-800);border-bottom:1px solid var(--border-1)')}>原帖</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -798,28 +798,28 @@ class KolActivity extends React.Component {
                         <div style={s('font:500 14px/1.4 var(--font-cjk);color:var(--ink-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{r.kol}</div>
                         <div style={s('margin-top:3px;font:400 12px/1.3 var(--font-cjk);color:var(--ink-400);white-space:nowrap;overflow:hidden;text-overflow:ellipsis')}>{r.tags}</div>
                       </td>
-                      <td style={s('padding:11px 6px;vertical-align:top;font:500 13px/1.6 var(--font-mono);color:var(--ink-600);border-bottom:1px solid var(--ink-100);white-space:nowrap')}>{r.time}</td>
-                      <td style={s('padding:11px 6px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
+                      <td style={s('padding:11px 12px;vertical-align:top;font:500 13px/1.6 var(--font-mono);color:var(--ink-600);border-bottom:1px solid var(--ink-100);white-space:nowrap')}>{r.time}</td>
+                      <td style={s('padding:11px 12px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
                         <div style={s('display:flex;flex-direction:column;align-items:flex-start;gap:4px')}>
                           {r.etfs.length ? r.etfs.map((etf) => (
                             <span key={etf.ticker} title={etf.name || etf.ticker} style={s(`display:inline-block;padding:2px 7px;border-radius:var(--radius-pill);background:${etf.bg};font:600 12px/1.5 var(--font-mono);color:${etf.fg};white-space:nowrap`)}>{etf.ticker}</span>
                           )) : <span style={s('display:inline-block;padding:2px 7px;border-radius:var(--radius-pill);background:var(--ink-100);font:600 12px/1.5 var(--font-mono);color:var(--ink-500)')}>—</span>}
                         </div>
-                        <div style={s('margin-top:4px;font:400 11px/1.3 var(--font-cjk);color:var(--ink-400);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:80px')}>{r.issuer}</div>
+                        <div style={s('margin-top:4px;font:400 11px/1.3 var(--font-cjk);color:var(--ink-400);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100px')}>{r.issuer}</div>
                       </td>
-                      <td style={s('padding:11px 6px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
+                      <td style={s('padding:11px 12px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
                         <div style={s('display:flex;flex-direction:column;align-items:flex-start;gap:4px')}>
                           <span style={s(`padding:2px 8px;border-radius:var(--radius-small);background:${r.tbg};font:600 12px/1.6 var(--font-cjk);color:${r.tfg};white-space:nowrap`)}>{r.type}</span>
                           {/* 如实声明（ADR-0019 §2／§4）：标注过的帖子都挂一枚，文案由
                               `review_state` 决定，逐字取自 PRD §3.9。置信度不再跟在徽章
                               后面 —— 它是模型自报的数，不是「有没有人看过」的事实，两件事
-                              挂在一枚徽章上会被读成一件。数值仍在右侧抽屉与 CSV 里。 */}
+                              挂在一枚徽章上会被读成一件。数值仅在右侧抽屉里展示。 */}
                           {r.review && (
                             <span style={s('padding:0 6px;border-radius:var(--radius-pill);background:var(--ink-100);font:600 11px/1.6 var(--font-cjk);color:var(--ink-500);white-space:nowrap')}>{r.review}</span>
                           )}
                         </div>
                       </td>
-                      <td style={s('padding:11px 10px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
+                      <td style={s('padding:11px 14px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
                         <div title={r.summary} style={s(`display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:${v.clamp};max-height:${v.clampH}px;overflow:hidden;font:400 14px/22px var(--font-cjk);color:var(--ink-800);text-wrap:pretty`)}>{r.summary}</div>
                         {r.noSummary && (
                           <div style={s('font:400 13px/22px var(--font-cjk);color:var(--ink-400)')}>暂无摘要 · 图片帖，第一期不覆盖图片内容</div>
@@ -830,12 +830,12 @@ class KolActivity extends React.Component {
                           <div style={s('font:400 13px/22px var(--font-cjk);color:var(--ink-400)')}>摘要暂不可用 · AI 标注尚未生成</div>
                         )}
                       </td>
-                      <td style={s('padding:11px 6px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
+                      <td style={s('padding:11px 10px;vertical-align:top;border-bottom:1px solid var(--ink-100)')}>
                         <span style={s(`display:inline-block;padding:2px 8px;border-radius:var(--radius-pill);background:${r.ownership.bg};font:600 12px/1.5 var(--font-cjk);color:${r.ownership.fg};white-space:nowrap`)}>{r.ownership.label}</span>
                       </td>
-                      <td style={s('padding:11px 6px;vertical-align:top;text-align:right;font:500 13px/1.6 var(--font-mono);color:var(--ink-700);border-bottom:1px solid var(--ink-100);white-space:nowrap')}>{r.likes} / {r.comments} / {r.shares}</td>
-                      <td data-testid="kol-post-view-cell" data-screen-diff-new="kol-view-column" style={s('padding:11px 6px;vertical-align:top;text-align:right;font:500 13px/1.6 var(--font-mono);color:var(--ink-700);border-bottom:1px solid var(--ink-100);white-space:nowrap')}>{r.views}</td>
-                      <td style={s('padding:11px 16px 11px 6px;vertical-align:top;text-align:right;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
+                      <td style={s('padding:11px 10px;vertical-align:top;text-align:right;font:500 13px/1.6 var(--font-mono);color:var(--ink-700);border-bottom:1px solid var(--ink-100);white-space:nowrap')}>{r.likes} / {r.comments} / {r.shares}</td>
+                      <td data-testid="kol-post-view-cell" data-screen-diff-new="kol-view-column" style={s('padding:11px 10px;vertical-align:top;text-align:right;font:500 13px/1.6 var(--font-mono);color:var(--ink-700);border-bottom:1px solid var(--ink-100);white-space:nowrap')}>{r.views}</td>
+                      <td style={s('padding:11px 16px 11px 10px;vertical-align:top;text-align:right;border-bottom:1px solid var(--ink-100);white-space:nowrap')}>
                         {r.hasUrl
                           ? <a href={r.url} target="_blank" rel="noopener noreferrer" onClick={r.stop} style={s('display:inline-flex;align-items:center;padding:4px 11px;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 13px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>原帖 ↗</a>
                           : <span style={s('font:500 12px/1.4 var(--font-cjk);color:var(--ink-400)')}>链接暂不可用</span>}
@@ -900,28 +900,28 @@ class KolActivity extends React.Component {
                 )}
               </div>
             </div>
-            <div style={s('display:grid;grid-template-columns:repeat(auto-fit,minmax(620px,1fr));gap:0 26px;padding:6px 20px 4px')}>
+            <div style={s('display:grid;grid-template-columns:repeat(auto-fit,minmax(592px,1fr));gap:0 18px;padding:6px 20px 4px')}>
               {v.leaderCols.map((col) => (
                 <div key={col.key} style={s('min-width:0')}>
-                  <div style={s('display:flex;align-items:center;gap:8px;padding:7px 0 8px;border-bottom:1px solid var(--border-1)')}>
-                    <span style={s('flex:none;width:22px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>#</span>
-                    <span style={s('flex:1;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="KOL" sortKey="kol" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} /></span>
-                    <span style={s('flex:none;width:42px;text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="篇" sortKey="n" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} align="right" /></span>
-                    <span style={s('flex:none;width:124px;padding-left:8px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="自家/其他" sortKey="mix" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} /></span>
-                    <span data-screen-diff-new="kol-view-column" style={s('flex:none;width:78px;text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="浏览" sortKey="views" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} align="right" /></span>
-                    <span style={s('flex:none;width:66px;text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="评论" sortKey="comments" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} align="right" /></span>
-                    <span style={s('flex:none;width:116px;padding-left:6px;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="KOL类型" sortKey="type" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} /></span>
-                    <span style={s('flex:none;width:54px')}></span>
+                  <div style={s('display:grid;grid-template-columns:22px minmax(88px,130px) 40px 108px 68px 58px minmax(98px,1fr) 54px;column-gap:8px;align-items:center;padding:7px 0 8px;border-bottom:1px solid var(--border-1)')}>
+                    <span style={s('font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>#</span>
+                    <span style={s('min-width:0;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>KOL</span>
+                    <span style={s('text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="篇" sortKey="n" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} align="right" /></span>
+                    <span style={s('font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="自家/其他" sortKey="mix" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} /></span>
+                    <span data-screen-diff-new="kol-view-column" style={s('text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="浏览" sortKey="views" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} align="right" /></span>
+                    <span style={s('text-align:right;font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}><ColumnSort label="评论" sortKey="comments" activeKey={v.leaderSortKey} direction={v.leaderSortDir} onSort={v.setLeaderSort} align="right" /></span>
+                    <span style={s('font:600 14px/1.4 var(--font-cjk);color:var(--ink-700)')}>KOL类型</span>
+                    <span></span>
                   </div>
                   {col.rows.map((l) => (
-                    <div key={l.key} onClick={l.go} style={s(`display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--ink-100);background:${l.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
-                      <span style={s(`flex:none;width:22px;font:600 13px/1.4 var(--font-mono);color:${l.rankFg}`)}>{l.rank}</span>
-                      <div style={s('flex:1;min-width:0;display:flex;align-items:center;gap:6px')}>
+                    <div key={l.key} onClick={l.go} style={s(`display:grid;grid-template-columns:22px minmax(88px,130px) 40px 108px 68px 58px minmax(98px,1fr) 54px;column-gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--ink-100);background:${l.bg};cursor:pointer`)} className={hover('background:var(--csop-blue-50)')}>
+                      <span style={s(`font:600 13px/1.4 var(--font-mono);color:${l.rankFg}`)}>{l.rank}</span>
+                      <div style={s('min-width:0;display:flex;align-items:center;gap:6px')}>
                         <span style={s(`flex:none;width:7px;height:7px;border-radius:var(--radius-pill);background:${l.dot}`)}></span>
                         <span style={s(`font:${l.fw} 14px/1.4 var(--font-cjk);color:var(--ink-800);white-space:nowrap;overflow:hidden;text-overflow:ellipsis`)}>{l.kol}</span>
                       </div>
-                      <span style={s('flex:none;width:42px;text-align:right;font:500 13px/1.4 var(--font-mono);color:var(--ink-600)')}>{l.n}</span>
-                      <div style={s('flex:none;width:124px;display:flex;align-items:center;gap:6px;padding-left:8px')}>
+                      <span style={s('text-align:right;font:500 13px/1.4 var(--font-mono);color:var(--ink-600)')}>{l.n}</span>
+                      <div style={s('min-width:0;display:flex;align-items:center;gap:6px')}>
                         <div style={s('flex:1;height:8px;display:flex;background:var(--ink-100);border-radius:3px;overflow:hidden')}>
                           <div style={s(`width:${l.ownW}%;height:100%;background:var(--csop-blue-600)`)}></div>
                           <div style={s(`width:${l.bothW}%;height:100%;background:var(--csop-blue-300)`)}></div>
@@ -929,10 +929,10 @@ class KolActivity extends React.Component {
                         </div>
                         <span style={s('flex:none;width:44px;text-align:right;font:600 12px/1.4 var(--font-mono);color:var(--ink-700)')}>{l.ownAny}/{l.peerAny}</span>
                       </div>
-                      <span data-testid="kol-leader-views" data-screen-diff-new="kol-view-column" style={s('flex:none;width:78px;text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{l.views}</span>
-                      <span style={s('flex:none;width:66px;text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{l.eng}</span>
-                      <span style={s('flex:none;width:116px;padding-left:6px;box-sizing:border-box;display:flex;gap:3px;flex-wrap:wrap')}>{l.tags.map((tag) => <span key={tag} style={s('display:inline-block;padding:1px 6px;border-radius:var(--radius-small);background:var(--csop-blue-50);font:600 10px/1.5 var(--font-cjk);color:var(--csop-blue-700);white-space:nowrap')}>{tag}</span>)}</span>
-                      <DcLink href={l.href} onClick={l.stop} style={s('flex:none;width:54px;box-sizing:border-box;text-align:center;padding:3px 0;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>详情 →</DcLink>
+                      <span data-testid="kol-leader-views" data-screen-diff-new="kol-view-column" style={s('text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{l.views}</span>
+                      <span style={s('text-align:right;font:600 13px/1.4 var(--font-mono);color:var(--ink-800)')}>{l.eng}</span>
+                      <span style={s('min-width:0;display:flex;gap:3px;flex-wrap:wrap')}>{l.tags.map((tag) => <span key={tag} style={s('display:inline-block;padding:1px 6px;border-radius:var(--radius-small);background:var(--csop-blue-50);font:600 10px/1.5 var(--font-cjk);color:var(--csop-blue-700);white-space:nowrap')}>{tag}</span>)}</span>
+                      <DcLink href={l.href} onClick={l.stop} style={s('width:54px;box-sizing:border-box;text-align:center;padding:3px 0;border:1px solid var(--border-2);border-radius:var(--radius-control);background:#fff;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600);text-decoration:none;white-space:nowrap')} className={hover('background:var(--csop-blue-50);text-decoration:none')}>详情 →</DcLink>
                     </div>
                   ))}
                 </div>

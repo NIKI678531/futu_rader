@@ -25,12 +25,15 @@ test('table sorting handles Chinese text and compound displayed values determini
   assert.equal(compareSortValues(null, 0, 'desc'), 1)
 })
 
-test('KOL tables expose sorting for every data column and the interaction snapshot time', () => {
-  for (const key of ['kol', 'time', 'etf', 'type', 'summary', 'ownership', 'eng', 'views']) {
+test('KOL tables expose sorting only for temporal and quantitative columns', () => {
+  for (const key of ['time', 'eng', 'views']) {
     assert.match(screen, new RegExp(`sortKey="${key}"`))
   }
-  for (const key of ['kol', 'n', 'mix', 'views', 'comments', 'type']) {
+  for (const key of ['n', 'mix', 'views', 'comments']) {
     assert.match(screen, new RegExp(`sortKey="${key}"`))
+  }
+  for (const key of ['kol', 'etf', 'type', 'summary', 'ownership']) {
+    assert.doesNotMatch(screen, new RegExp(`sortKey="${key}"`))
   }
   assert.match(screen, /互动数据截至：/)
   assert.match(screen, /interactionUpdatedAt: stamp\(p0\.interactionUpdatedAt\)/)

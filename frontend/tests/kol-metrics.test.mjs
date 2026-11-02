@@ -85,6 +85,7 @@ test('KOL screens expose the new ownership and reach UI without the removed opin
   const activity = source('screens/KolActivity.jsx')
   const detail = source('screens/KolDetail.jsx')
   const radar = source('data/radar.js')
+  const kolCsv = source('lib/kolCsv.js')
 
   assert.match(activity, /leaderSort: 'views', leaderSortDir: 'desc'/)
   assert.match(activity, /lRows = stableSort\(lRows,[\s\S]*s\.leaderSortDir/)
@@ -92,8 +93,8 @@ test('KOL screens expose the new ownership and reach UI without the removed opin
   assert.match(activity, /views: num\(p\.views\)/)
   assert.match(activity, /data-testid="kol-post-view-header"/)
   assert.match(activity, /data-testid="kol-post-view-cell"/)
-  assert.match(activity, /'转发', '浏览量', '原帖链接'/)
-  assert.match(activity, /label="ETF 归属"/)
+  assert.match(kolCsv, /'转发', '浏览量', '原帖链接'/)
+  assert.match(activity, />ETF 归属<\/th>/)
   assert.match(activity, /ownership: ownershipOf\(p\)/)
   assert.match(activity, /正文未识别到 ETF/)
   assert.match(activity, /指数、股票及其他产品不计入/)
