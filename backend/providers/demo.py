@@ -154,6 +154,14 @@ def _short_name(name, n=10):
     return value if len(value) <= n else value[:n] + "…"
 
 
+def _compact_topic_text(topic, limit=48):
+    """Build a one-line projection from an existing topic without new analysis."""
+    title = re.sub(r"\s+", " ", str(topic.get("title") or "")).strip()
+    summary = re.sub(r"\s+", " ", str(topic.get("summary") or "")).strip()
+    text = f"{title}：{summary}" if title and summary else title or summary
+    return text if len(text) <= limit else text[: limit - 1].rstrip("，,；;。 ") + "…"
+
+
 def _demo_market_direction_topics(topics):
     """Copy only frozen topics that are valid P6 market-direction context."""
     if topics is None:
@@ -433,12 +441,42 @@ class DemoProvider:
         return {**data, "base": self._with_comment_funnel(data["base"])}
 
     def hot_summaries(self, range_key):
-        """整池一份 `{code: 热议总结}`，按区间查表。
-
-        按产品切端点，板块总览那张 120 行的榜单就是 120 次串行往返 ——
-        每行调一次 `hotSummaryFor`，而同步 Suspense 一次只能解决一个。
-        """
-        return self._range_lookup("hot_summaries", range_key)
+        """整池一份产品话题摘要，直接精简投影冻结的 ``topics`` 数据。"""
+        if range_key == "d0" or is_custom_key(range_key):
+            return None
+        out = {}
+        for product in self.master().get("products", []):
+            code = str(product["code"])
+            topics = self.topics_for(code, range_key)
+            if topics is MISSING or topics is None:
+                out[code] = {
+                    "status": "unavailable", "text": "数据暂不可用",
+                    "sample": None, "ok": False,
+                }
+                continue
+            if not topics:
+                out[code] = {
+                    "status": "empty", "text": "暂无相关内容",
+                    "sample": 0, "ok": False,
+                }
+                continue
+            topic = max(
+                topics,
+                key=lambda row: (int(row.get("mentions") or 0), str(row.get("id") or "")),
+            )
+            net = int(topic.get("positive") or 0) - int(topic.get("negative") or 0)
+            out[code] = {
+                "status": "ok",
+                "text": _compact_topic_text(topic),
+                "sample": int(topic.get("mentions") or 0),
+                "tone": "pos" if net > 0 else "neg" if net < 0 else "neu",
+                "ok": True,
+                "reviewState": topic.get("reviewState"),
+                "evidenceIds": topic.get("evidenceIds") or [],
+                "stale": bool(topic.get("stale")),
+                "source": "product_topic",
+            }
+        return out
 
     def summary_for(self, code, range_key):
         return self._product_range_lookup("summaries", code, range_key)

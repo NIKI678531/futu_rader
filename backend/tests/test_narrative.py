@@ -176,25 +176,15 @@ def test_hot_summaries_cover_the_whole_pool(client, codes):
 
 
 def test_hot_summary_text_comes_from_the_backend_in_every_state(client):
-    """非 ok 状态下 `text` **已经是那一态的文案**，前端直接渲染。
-
-    让前端按 status 拼文案，等于把 PRD §3.6 的措辞实现成第二份（铁律 1），而这份是
-    最容易写歪的一份：三态各一句话，混用任意两句都在说一件没发生的事。
-    """
-    want = {
-        "low_sample": "样本不足，暂无主流观点",
-        "unavailable": "数据暂不可用",
-    }
-    seen = set()
+    """榜单摘要是已有产品话题的精简投影，不再走态度样本阈值。"""
     for v in hot(client)["data"].values():
-        assert v["status"] in ("ok", "low_sample", "unavailable")
-        seen.add(v["status"])
+        assert v["status"] in ("ok", "empty", "unavailable")
         if v["status"] == "ok":
             assert v["ok"] is True and v["text"] and v["tone"] in ("pos", "neg", "neu")
+            assert v["source"] == "product_topic"
+            assert len(v["text"]) <= 48
         else:
             assert v["ok"] is False
-            assert v["text"] == want[v["status"]]
-    assert seen == {"ok", "low_sample", "unavailable"}, "演示数据不再覆盖三态"
 
 
 def test_unavailable_hot_summary_is_not_a_zero_sample_sentence(client):

@@ -423,8 +423,10 @@ def test_topic_opinion_includes_trading_intent_while_p9_themes_stay_strict(engin
 
     theme_facts, theme_evidence, _ids, keys = synthesize.build_theme_payload(mat, "theme_label")
     assert keys == ["negative|spread"]
-    assert set(theme_facts["buckets"][0]["evidence_ids"]) == {"c201", "c202"}
-    assert {item["id"] for item in theme_evidence} == {"c201", "c202"}
+    assert theme_facts["buckets"][0]["mentions"] == 1
+    assert theme_facts["buckets"][0]["comment_count"] == 2
+    assert set(theme_facts["buckets"][0]["evidence_ids"]) == {"f1", "c202"}
+    assert {item["id"] for item in theme_evidence} == {"f1", "c202"}
 
     summary_facts, _summary_evidence, _summary_ids = synthesize.build_summary_payload(
         mat,

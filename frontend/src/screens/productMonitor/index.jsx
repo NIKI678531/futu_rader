@@ -16,11 +16,10 @@
      - `{{ }}` holes became JSX; `style="…"` strings are parsed by `s()` and
        `style-hover` by `hover()`. */
 import React from 'react'
-import R, { invalidateMarketOutlook, prefetchScreen } from '../../data/radar'
+import R, { prefetchScreen } from '../../data/radar'
 import { rgba, num, numRaw, navGroups, stamp, naBox, heatLowerBoundNote, kolDisplayLabel } from '../../lib/view'
 import { commentFunnelView } from '../../lib/commentFunnel'
 import { DEFAULT_PRODUCT_CODE, productCodeOrDefault, productSelectionFromSearch } from '../../lib/productSelection'
-import { productMarketOutlookRows, productMarketOutlookView } from '../../lib/productMarketOutlook'
 import { productKolDisplay } from '../../lib/productKol'
 import { issuerOpinionView } from '../../lib/attitudeDisplay'
 import { priceSourceDisclosure, priceSourceLabel } from '../../lib/priceDisplay'
@@ -29,7 +28,6 @@ import DataUnavailable from '../../components/DataUnavailable'
 import Shell from '../../components/Shell'
 import FilterBar from './FilterBar'
 import ProductHeader from './ProductHeader'
-import Overview from './Overview'
 import KolList from './KolList'
 import Attitude from './Attitude'
 import Risk from './Risk'
@@ -182,7 +180,7 @@ export default class ProductMonitor extends React.Component {
         { k: '产品', v: code + ' ' + R.MASTER[code].name },
         { k: '时间范围', v: range.text + '（HKT）' },
         { k: '风险标签', v: tags },
-        { k: '识别状态', v: 'AI 识别 · 待人工确认 — 系统只标记风险信号并提供原文，不判定言论真伪或产品是否违规' }
+        { k: '说明', v: '系统只标记风险信号并提供原文，不判定言论真伪或产品是否违规' }
       ]
     };
   }
@@ -464,13 +462,11 @@ export default class ProductMonitor extends React.Component {
     var themeRow = function (t) {
       var meta = t.polarity === 'negative' ? themeMeta(t) : { hasMeta: false };
       return Object.assign(meta, themeSpan(t), {
-        title: t.title, summary: t.summary, mentions: String(t.mentions),
+        title: t.title, summary: t.summary, mentions: String(t.mentions) + ' 帖',
         keyPoints: t.keyPoints || [],
         share: t.share.toFixed(0) + '%',
-        confidenceText: t.confidence == null
-          ? (t.labelStatus === 'ok' ? 'AI 标签已生成' : '待 AI 具体归纳')
-          : 'AI 置信度 ' + t.confidence + '%',
-        delta: t.delta.short, dfg: self.dfg(t.delta), evidence: String(t.evidenceCount),
+        delta: t.delta.short, dfg: self.dfg(t.delta),
+        evidence: String(t.evidenceCount) + ' 帖' + (t.commentCount ? ' · ' + t.commentCount + ' 评论' : ''),
         cells: themeCells(t),
         go: () => self.openPanel({
           kind: 'theme', id: t.id, polarity: t.polarity,
@@ -543,15 +539,14 @@ export default class ProductMonitor extends React.Component {
           count: polarity === 'positive' ? c.evidencePos : c.evidenceNeg,
           evidenceCode: c.code,
           extra: [
-            { k: '关联关系', v: (c.relation === 'confirmed' ? '已确认' : 'AI 生成 · 待确认') + ' — ' + c.reason },
+            { k: '关联关系', v: (c.relation === 'confirmed' ? '固定关联' : '候选关联') + ' — ' + c.reason },
             { k: '主要观点', v: (themes.length ? themes.map(function (t) { return t.title + '（' + t.mentions + ' 条）'; }).join('；') : '暂无相关内容') }
           ]
         });
       };
       return {
         code: c.code, name: c.name, issuer: c.issuer, reason: c.reason,
-        relation: c.relation === 'confirmed' ? '已确认'
-          : (c.reasonStatus === 'product_opinions' ? '同结构候选 · 待确认' : 'AI 生成 · 待确认'),
+        relation: c.relation === 'confirmed' ? '固定关联' : '候选关联',
         rbg: c.relation === 'confirmed' ? 'var(--csop-blue-50)' : 'var(--warning-100)',
         rfg: c.relation === 'confirmed' ? 'var(--csop-blue-700)' : 'var(--warning-700)',
         /* `num()` 就是 `toLocaleString('en-US')` 加一道空值关口，逐字等价，多的是
@@ -600,7 +595,11 @@ export default class ProductMonitor extends React.Component {
       return {
         id: r.id,
         tags: r.riskLabels.map(function (l) { return { label: l }; }),
-        time: r.publishedAt, excerpt: r.excerpt, rationale: r.detectionRationale,
+        time: r.publishedAt,
+        postTitle: r.post?.title || r.postTitle || '',
+        excerpt: r.post?.excerpt || r.excerpt,
+        rationale: r.detectionRationale,
+        commentCount: String((r.threadComments || r.commentsList || []).length),
         author: r.authorName, type: kolDisplayLabel(r.authorType), source: r.sourceKind, code: code, status: r.reviewLabel,
         tbg: r.isKnownKol ? 'var(--csop-blue-50)' : 'var(--canvas-alt)',
         tfg: r.isKnownKol ? 'var(--csop-blue-700)' : 'var(--ink-700)',
@@ -638,11 +637,6 @@ export default class ProductMonitor extends React.Component {
       return o.code.toLowerCase().indexOf(pqQ) >= 0 || o.name.toLowerCase().indexOf(pqQ) >= 0;
     }).sort(function (a, b) { return b.mentions - a.mentions; }) : [];
 
-    /* 市场风向按当前产品一一对应；前端再过滤一次，避免旧缓存里的其他产品串入。 */
-    var marketOutlook = R.marketOutlook(code, s.rangeKey);
-    var marketOutlookNa = marketOutlook == null;
-    var marketOutlookSourceRows = productMarketOutlookRows(marketOutlook, code);
-    var marketOutlookRows = marketOutlookSourceRows.map(productMarketOutlookView);
     var trendLegend = [
       { key: 'comments', label: '筛后评论数', color: '#2361AD' },
       { key: 'active', label: '活跃账号数', color: '#C9A961' },
@@ -729,15 +723,6 @@ export default class ProductMonitor extends React.Component {
         ? '热度、互动与转发按已知项计算；当期' + (heatLowerBoundNote(o.heatUnknownPosts) || '转发数完整')
           + '；基准期' + (heatLowerBoundNote(bench.base.heatUnknownPosts) || '转发数完整') : '',
 
-      marketOutlookRows: marketOutlookRows,
-      marketOutlookNa: marketOutlookNa,
-      marketOutlookUnavailableText: '数据暂不可用 — 市场行情摘要尚未生成。',
-      marketOutlookEmpty: !marketOutlookNa && marketOutlookRows.length === 0,
-      marketOutlookTitle: '产品市场观点与总结',
-      marketOutlookEmptyText: '暂无相关内容 — 当前区间没有识别到该产品相关的市场方向讨论。',
-      marketOutlookRange: range.from + ' ～ ' + range.to,
-      refreshMarketOutlook: () => { invalidateMarketOutlook(code, s.rangeKey); self.forceUpdate(); },
-
       netText: attNa
         ? '数据暂不可用 · 不输出倾向结论'
         : (att.sampleSufficient
@@ -759,8 +744,8 @@ export default class ProductMonitor extends React.Component {
       validN: attNa ? '数据暂不可用' : String(valid),
       lowSample: !attNa && !att.sampleSufficient, attNa: attNa, threshold: String(R.LOW_SAMPLE),
 
-      posSummary: posAll.length ? posAll[0].summary : '',
-      negSummary: negAll.length ? negAll[0].summary : '',
+      posSummary: posAll.slice(0, 2).map(function (t) { return t.summary; }).filter(Boolean).join(' '),
+      negSummary: negAll.slice(0, 2).map(function (t) { return t.summary; }).filter(Boolean).join(' '),
       negActionable: negNa ? '数据暂不可用' : String(negAll.filter(function (t) { return 'hasMeta' in t ? t.hasMeta && t.severityLabel !== '低' : t.share >= 12; }).length),
       /* na 时导语留空，缺失态交给下面的 posUnavailable 框 —— 「区间内没有可归类的积极观点」
          是**空态**的话（已聚类、这一极没有），拿它盖 null 就是替没做过的事下结论。 */
@@ -822,7 +807,7 @@ export default class ProductMonitor extends React.Component {
       hasTopics: topics.length > 0, noTopics: !topicsNa && topics.length === 0, topicsUnavailable: topicsNa, topics: topics,
       hasComps: comps.length > 0, noComps: comps.length === 0, comps: comps,
       compCount: String(comps.length),
-      compScopeText: o.ownership === 'own' ? '自家产品 · 固定关联竞品与 AI 自动候选' : '竞品产品 · 反向展示对位自家产品与同类竞品',
+      compScopeText: o.ownership === 'own' ? '自家产品 · 固定关联与自动候选' : '竞品产品 · 反向展示对位自家产品与同类竞品',
       compsEmptyText: compsRes.status === 'unavailable'
         ? '数据暂不可用 — 该产品的竞品关系字段尚未核验，不展示推测关联。'
         : '暂无相关内容 — 映射表与自动识别在当前区间内都没有给出关联产品。',
@@ -909,7 +894,9 @@ export default class ProductMonitor extends React.Component {
       trendW: String(HG.W), heatGridW: String(hpw), axRX: String(HG.W - 127), axPX: String(HG.W - 72), trendBoxRef: self.trendBoxRef,
       stageOk: stageOk, stageUnavailable: stageUnavailable, stageEmpty: SG.status === 'empty',
       stageAggregate: stageAggregate,
-      stageUnavailableText: SG.statusDetail || null,
+      stageUnavailableText: stageAggregate
+        ? '当前区间已完成态度聚合，阶段观点尚未归纳；下方仅展示原始热度。'
+        : '阶段观点尚未生成；下方仅展示原始热度。',
       heatChartVisible: hsr.length > 0 && (stageOk || stageUnavailable),
       stageGranLabel: SG.granLabel, heatGranLabel: isHalf ? '60 分钟' : '自然日', stageRule: SG.rule || R.STAGE_RULE, heatFormulaText: R.HEAT_FORMULA,
       heatPath: heatPath,
@@ -924,7 +911,7 @@ export default class ProductMonitor extends React.Component {
       heatTipRows: hh ? [
         { k: '讨论热度', v: hh.heat.toLocaleString('en-US') },
         { k: '筛后评论量', v: hh.comments.toLocaleString('en-US') },
-        { k: '积极 ／ 消极', v: stageUnavailable && !stageAggregate ? 'AI 分析待完成' : hh.positive + ' ／ ' + hh.negative },
+        { k: '积极 ／ 消极', v: stageUnavailable && !stageAggregate ? '分析待完成' : hh.positive + ' ／ ' + hh.negative },
         { k: '所属阶段', v: stageUnavailable ? '阶段归纳待生成' : (hhStage ? numOf(hhStage.n) + ' ' + hhStage.categoryLabel : '—') }
       ] : [],
       heatAxis: hsr.filter(function (p, i) { return isHalf ? !!p.label : (i % every === 0); }).map(function (p) { return { x: hx(p.i).toFixed(1), label: p.label }; }),
@@ -967,7 +954,7 @@ export default class ProductMonitor extends React.Component {
                 { k: '阶段区间', v: st.from + ' ～ ' + st.to + (isHalf ? '（' + st.sub + '）' : '') + '（HKT）· 自动带入当前产品与该阶段日期区间' },
                 { k: '观点分类', v: st.categoryLabel + ' · ' + st.sentimentLabel },
                 { k: '阶段总结', v: st.summary },
-                { k: '口径', v: '阶段总结描述讨论区观点，不表述与价格的因果关系；AI 生成，每条可跳转 Futu 原文' }
+                { k: '口径', v: '阶段总结描述讨论区观点，不表述与价格的因果关系；每条可跳转 Futu 原文' }
               ]
             });
           }
@@ -1006,7 +993,9 @@ export default class ProductMonitor extends React.Component {
           id: e.id,
           time: e.publishedAt, author: e.authorName == null ? '数据暂不可用' : e.authorName,
           type: authorType, tbg: ts[0], tfg: ts[1],
-          excerpt: e.excerpt,
+          excerpt: e.post?.excerpt || e.excerpt,
+          postTitle: e.post?.title || e.postTitle || '',
+          threadComments: e.threadComments || e.commentsList || e.commentsDetail || [],
           codes: e.productCodes.map(function (c) { return { code: c }; }),
           comments: e.comments == null ? '暂不可用' : e.comments.toLocaleString('en-US'),
           inter: e.interactions == null ? '暂不可用' : e.interactions.toLocaleString('en-US'),
@@ -1028,8 +1017,7 @@ export default class ProductMonitor extends React.Component {
             { k: '相关 ETF', v: e.productCodes.join(' · ') },
             { k: '评论 ／ 互动', v: (e.comments == null ? '暂不可用' : e.comments) + ' ／ ' + (e.interactions == null ? '暂不可用' : e.interactions) }
           ].concat(e.riskLabels && e.riskLabels.length ? [
-            { k: '风险标签', v: e.riskLabels.join('、') },
-            { k: '识别状态', v: 'AI 识别 · 待人工确认' }
+            { k: '风险标签', v: e.riskLabels.join('、') }
           ] : []),
           go: () => self.setState({ post: open ? null : e.id })
         };
@@ -1066,13 +1054,12 @@ export default class ProductMonitor extends React.Component {
 
         <div style={s(`padding:12px 16px 72px;opacity:${v.bodyOpacity};transition:opacity 200ms cubic-bezier(.4,0,.2,1)`)}>
           <ProductHeader v={v} />
-          <Overview v={v} />
+          <Topics v={v} />
           <KolList v={v} />
           <Attitude v={v} />
           <Risk v={v} />
           <Trend v={v} />
           <Stages v={v} />
-          <Topics v={v} />
           <Competitors v={v} />
         </div>
 

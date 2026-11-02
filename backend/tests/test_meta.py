@@ -475,22 +475,16 @@ def test_post_type_rule_is_verbatim(client):
 
 
 HOT_SUMMARY_RULE = (
-    "热议总结由 AI 归纳当前日期范围内该 ETF 的具体观点，须为观点而非正负面判断；"
-    "有效态度样本低于 10 条时不输出整体倾向，但至少有一条相关评论时展示一条带原文证据的样本观察。"
+    "产品话题总结直接取当前日期范围内该 ETF 已有产品话题中提及最多的一项，并精简为单行展示；"
+    "不另行生成或改写产品话题情绪的内容。"
 )
 
 
 def test_hot_summary_rule_is_verbatim(client):
-    """这段字是板块总览「热议总结」表头的 title，也是这一列的验收口径。
-
-    「须为观点而非正负面判断」是要害：一旦有人把它实现成「整体偏正面」，这一列就变成了
-    态度分类的复述，而榜单里紧挨着的正面／负面两列已经在说那件事了。
-    低于阈值仍不输出整体倾向；ADR-0032 只允许展示可追溯的单条样本观察。
-    文案里的 10 与 thresholds.lowSample 是同一个阈值，不是巧合。
-    """
+    """这段字是板块总览「产品话题总结」表头的 title，也是这一列的验收口径。"""
     data = client.get("/api/v1/meta").get_json()["data"]
     assert data["rules"]["hotSummary"] == HOT_SUMMARY_RULE
-    assert str(data["thresholds"]["lowSample"]) in HOT_SUMMARY_RULE
+    assert "产品话题" in HOT_SUMMARY_RULE
 
 
 STAGE_RULE = (

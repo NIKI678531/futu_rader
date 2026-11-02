@@ -90,6 +90,7 @@ from radar_db.schema import (  # noqa: E402
     annotation_evidence,
     annotation_runs,
     comments,
+    feeds,
     meta_kv,
     synthesis_outputs,
 )
@@ -281,7 +282,7 @@ class Material:
             if asp_row:
                 self.ann_ids.add(asp_row["annotation_id"])
             candidate = {
-                "comment_id": unit[0], "attitude": a["value"],
+                "comment_id": unit[0], "feed_id": a.get("feed_id"), "attitude": a["value"],
                 "aspects": (asp_row or {}).get("value") or [],
                 "feedback_eligible": (feedback.get(unit) or {}).get("value"),
                 "posted_at": utc_naive_to_hkt(a["posted_at"]),
@@ -339,7 +340,7 @@ class Material:
                 if (b_rel.get(unit) or {}).get("value") != "relevant":
                     continue
                 candidate = {
-                    "attitude": a["value"],
+                    "feed_id": a.get("feed_id"), "attitude": a["value"],
                     "aspects": (b_asp.get(unit) or {}).get("value") or [],
                     "feedback_eligible": (b_feedback.get(unit) or {}).get("value"),
                     "posted_at": utc_naive_to_hkt(a["posted_at"]),
@@ -348,6 +349,7 @@ class Material:
                     self.base_units.append(candidate)
 
         self._texts = None
+        self._posts = None
         self._quotes = None
         self._engine = engine
 
@@ -367,6 +369,27 @@ class Material:
                         out[cid] = redact.scrub_text(content or "")
             self._texts = out
         return self._texts
+
+    def posts(self):
+        """`{feed_id: 父帖}`；主题生成把父帖作为主证据。"""
+        if self._posts is None:
+            ids = {u.get("feed_id") for u in self.units if u.get("feed_id") is not None}
+            out = {}
+            with self._engine.connect() as conn:
+                for chunk in _chunks(sorted(ids), 900):
+                    query = (
+                        select(feeds.c.feed_id, feeds.c.title, feeds.c.content, feeds.c.posted_at)
+                        .where(feeds.c.feed_id.in_(chunk))
+                    )
+                    for feed_id, title, content, posted_at in conn.execute(query):
+                        text = "\n".join(value for value in (title, content) if value)
+                        out[feed_id] = {
+                            "title": redact.scrub_text(title or ""),
+                            "text": redact.scrub_text(text),
+                            "posted_at": utc_naive_to_hkt(posted_at),
+                        }
+            self._posts = out
+        return self._posts
 
     def quotes(self):
         """`{annotation_id: 程序定位过的原文片段}`，有就优先当证据。"""
@@ -390,6 +413,20 @@ class Material:
         text = text[:EVIDENCE_MAX_CHARS]
         ts = u.get("posted_at")
         return {"id": f"c{u['comment_id']}", "text": text, "day": ts.strftime("%m-%d") if ts else None}
+
+    def parent_evidence_item(self, u):
+        feed_id = u.get("feed_id")
+        post = self.posts().get(feed_id) if feed_id is not None else None
+        if post and post.get("text"):
+            ts = post.get("posted_at") or u.get("posted_at")
+            return {
+                "id": f"f{feed_id}",
+                "text": _compact_topic_text(post["text"], TOPIC_EVIDENCE_MAX_CHARS),
+                "title": post.get("title") or None,
+                "day": ts.strftime("%m-%d") if ts else None,
+                "source": "parent_post",
+            }
+        return {**self.evidence_item(u), "source": "comment"}
 
 
 def _chunks(items, n):
@@ -505,13 +542,36 @@ def build_theme_payload(mat, kind):
                 for a in core_themes.product_aspects(u):
                     by_asp[a].append(u)
             for asp, us in by_asp.items():
-                if len(us) < MIN_BUCKET:
+                by_thread = defaultdict(list)
+                for unit in us:
+                    by_thread[core_themes.thread_key(unit)].append(unit)
+                # A parent with several relevant replies is still one valid thread: it may
+                # be summarised, but its replies never inflate the thread count/ranking.
+                if len(by_thread) < MIN_BUCKET and len(us) < MIN_BUCKET:
                     continue
                 key = f"{pol}|{asp}"
-                ev = [mat.evidence_item(u) for u in sample_evidence(us, EVIDENCE_PER_BUCKET, key)]
+                representatives = sample_evidence(
+                    [members[0] for members in by_thread.values()], EVIDENCE_PER_BUCKET, key
+                )
+                ev = []
+                for representative in representatives:
+                    parent = mat.parent_evidence_item(representative)
+                    ev.append(parent)
+                    members = by_thread[core_themes.thread_key(representative)]
+                    comment = sample_evidence(
+                        members, 1, key + str(representative.get("feed_id"))
+                    )[0]
+                    comment_item = {
+                        **mat.evidence_item(comment),
+                        "source": "supporting_comment",
+                        "parent_id": parent["id"],
+                    }
+                    if comment_item["id"] != parent["id"]:
+                        ev.append(comment_item)
                 buckets.append({"key": key, "polarity": pol, "aspect": asp,
                                 "aspect_label": core_themes.ASPECT_LABEL.get(asp, asp),
-                                "mentions": len(us), "evidence_ids": [e["id"] for e in ev]})
+                                "mentions": len(by_thread), "comment_count": len(us),
+                                "evidence_ids": [e["id"] for e in ev]})
                 evidence.extend(ev)
     else:
         neg = [u for u in mat.units if u["attitude"] == "negative"]

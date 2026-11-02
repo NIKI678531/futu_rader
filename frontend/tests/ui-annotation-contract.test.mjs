@@ -49,7 +49,7 @@ test('kol and official cards omit the requested explanatory copy', () => {
   assert.doesNotMatch(official, /提及 ETF 按出现次数统计，只含 ETF，不含个股/)
 })
 
-test('visible application surfaces omit the traceable-source badge only', () => {
+test('product monitor omits AI-generation and manual-confirmation labels', () => {
   const visibleSurfaces = [
     'lib/view.js',
     'screens/KolActivity.jsx',
@@ -68,9 +68,18 @@ test('visible application surfaces omit the traceable-source badge only', () => 
   assert.match(badges, /if \(state === 'needs_review'\) return 'AI 生成 · 待确认'/)
   assert.match(badges, /return hasEvidence \? null : 'AI 生成'/)
   const stages = source('screens/productMonitor/Stages.jsx')
-  assert.match(stages, /v\.stageUnavailable && <span/)
-  assert.match(stages, /AI 阶段观点 · 待分析/)
-  assert.match(stages, /AI 态度已聚合 · 阶段待归纳/)
+  const productSurfaces = [
+    'screens/productMonitor/Attitude.jsx',
+    'screens/productMonitor/EvidenceDrawer.jsx',
+    'screens/productMonitor/Overview.jsx',
+    'screens/productMonitor/Risk.jsx',
+    'screens/productMonitor/Stages.jsx',
+    'screens/productMonitor/index.jsx',
+  ]
+  for (const path of productSurfaces) {
+    assert.doesNotMatch(source(path), /AI 生成|待人工确认|AI 识别|AI 阶段观点|AI 态度/, path)
+  }
+  assert.doesNotMatch(stages, /v\.stageUnavailable && <span/)
 })
 
 test('visible application surfaces do not use the legacy freshness wording', () => {

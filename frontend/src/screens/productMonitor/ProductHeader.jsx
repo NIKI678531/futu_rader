@@ -1,5 +1,5 @@
 import { s, hover } from '../../lib/dc'
-import { KpiNote } from './Overview'
+import KpiNote from './KpiNote'
 
 function wholePercent(value) {
   const parsed = Number.parseFloat(value)

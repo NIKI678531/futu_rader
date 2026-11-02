@@ -118,12 +118,29 @@ def is_product_feedback(unit):
     return bool(product_aspects(unit))
 
 
+def thread_key(unit, fallback=None):
+    """Stable parent-thread identity; legacy fixtures without a feed stay distinct."""
+    feed_id = unit.get("feed_id")
+    if feed_id is not None:
+        return ("feed", feed_id)
+    comment_id = unit.get("comment_id")
+    if comment_id is not None:
+        return ("comment", comment_id)
+    return ("legacy", fallback if fallback is not None else id(unit))
+
+
 def bucket_counts(units, nb, bucket_index):
-    """`{aspect: {mentions, per_bucket[], first, last}}`，`bucket_index(unit)` 给桶号或 None。"""
+    """Count one parent thread once per aspect; comments remain a supporting count."""
     out = {}
-    for u in units:
+    for index, u in enumerate(units):
         for asp in product_aspects(u):
-            s = out.setdefault(asp, {"mentions": 0, "per_bucket": [0] * nb, "first": None, "last": None})
+            s = out.setdefault(asp, {"mentions": 0, "commentCount": 0, "per_bucket": [0] * nb,
+                                     "first": None, "last": None, "_threads": set()})
+            s["commentCount"] += 1
+            key = thread_key(u, index)
+            if key in s["_threads"]:
+                continue
+            s["_threads"].add(key)
             s["mentions"] += 1
             bi = bucket_index(u) if nb else None
             if bi is not None and 0 <= bi < nb:
@@ -132,6 +149,8 @@ def bucket_counts(units, nb, bucket_index):
             if ts is not None:
                 s["first"] = ts if s["first"] is None or ts < s["first"] else s["first"]
                 s["last"] = ts if s["last"] is None or ts > s["last"] else s["last"]
+    for stats in out.values():
+        stats.pop("_threads", None)
     return out
 
 
@@ -139,7 +158,7 @@ def _fallback_theme_copy(polarity, aspect, stats, base_n, buckets):
     """把已确认的计数、环比与峰值写成详细事实，不补造具体原因。"""
     label = ASPECT_LABEL.get(aspect, aspect)
     verb = "肯定" if polarity == "positive" else "质疑"
-    parts = [f"{stats['mentions']} 条{POLARITY_LABEL[polarity]}评论主要{verb}{label}"]
+    parts = [f"{stats['mentions']} 个帖子线程主要{verb}{label}"]
     if base_n is not None:
         change = stats["mentions"] - base_n
         if change > 0:
@@ -168,7 +187,7 @@ def themes(code, units_by_polarity, base_units_by_polarity, buckets, bucket_inde
     out = {}
     for pol in ("positive", "negative"):
         units = units_by_polarity.get(pol) or []
-        total = len(units)
+        total = len({thread_key(unit, index) for index, unit in enumerate(units)})
         counts = bucket_counts(units, nb, bucket_index)
         base_counts = None
         if base_units_by_polarity is not None:
@@ -193,6 +212,7 @@ def themes(code, units_by_polarity, base_units_by_polarity, buckets, bucket_inde
                     or _fallback_theme_copy(pol, asp, s, base_n, buckets),
                     "labelStatus": "ok" if label_is_specific else "unavailable",
                     "mentions": s["mentions"],
+                    "commentCount": s["commentCount"],
                     "share": share,
                     "hasMeta": pol == "negative" and asp in NEG_CATEGORY_ASPECTS,
                     "severityLabel": SEVERITY_LABEL.get(sev),
@@ -222,7 +242,7 @@ def neg_categories(code, neg_units, base_neg_units, buckets, bucket_index, label
     """
     labels = labels or {}
     stamp = stamp or (lambda ts: ts.strftime("%m-%d %H:00"))
-    neg_total = len(neg_units)
+    neg_total = len({thread_key(unit, index) for index, unit in enumerate(neg_units)})
     if neg_total == 0:
         return []
     nb = len(buckets)
@@ -248,6 +268,7 @@ def neg_categories(code, neg_units, base_neg_units, buckets, bucket_index, label
                 "lifecycle": life,
                 "lifecycleLabel": LIFE_LABEL.get(life) if life else None,
                 "mentions": s["mentions"],
+                "commentCount": s["commentCount"],
                 "shareOfNegative": share,
                 "delta": delta(s["mentions"], base_n),
                 "firstSeenAt": stamp(s["first"]) if s["first"] else None,

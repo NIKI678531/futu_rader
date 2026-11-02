@@ -41,10 +41,10 @@ from .range_spec import is_valid_range_key
 
 
 def hot_summaries(range_key):
-    """整池的热议总结：`{code: {status, text, sample, tone?, ok}}`。
+    """整池的产品话题精简总结：`{code: {status, text, sample, tone?, ok}}`。
 
-    `ok` 为 False 时 `text` 已经是该状态对应的文案（「数据暂不可用」「暂无相关内容」
-    「样本不足，暂无主流观点」），前端直接渲染，不在屏里按 status 拼一遍文案 ——
+    `ok` 为 False 时 `text` 已经是该状态对应的文案（「数据暂不可用」「暂无相关内容」），
+    前端直接渲染，不在屏里按 status 拼一遍文案 ——
     那就是把口径实现成了两份（铁律 1）。
     """
     if not is_valid_range_key(range_key):

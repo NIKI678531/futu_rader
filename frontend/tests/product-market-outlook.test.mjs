@@ -65,46 +65,28 @@ test('market outlook distinguishes low sample from unavailable purchase attitude
   assert.equal(productMarketOutlookView({ attitudeStatus: 'unavailable', status: 'unavailable' }).attitude, '暂不可用')
 })
 
-test('product monitor renders the product-scoped purchase attitude and summary', () => {
+test('product monitor removes market outlook and moves existing topics below the header', () => {
   const index = source('screens/productMonitor/index.jsx')
   const overview = source('screens/productMonitor/Overview.jsx')
   const radar = source('data/radar.js')
-  const marketOutlookBlock = index.slice(
-    index.indexOf('var marketOutlook ='),
-    index.indexOf('var trendLegend ='),
-  )
+  const productPrefetch = radar.slice(radar.indexOf("if (screen === 'product')"), radar.indexOf("if (screen === 'kol')"))
 
-  assert.match(index, /R\.marketOutlook\(code, s\.rangeKey\)/)
-  assert.match(index, /productMarketOutlookRows\(marketOutlook, code\)/)
-  assert.doesNotMatch(marketOutlookBlock, /7709|scope === 'product'/)
-  assert.match(index, /marketOutlookRows:/)
-  assert.match(index, /marketOutlookTitle: '产品市场观点与总结'/)
-  assert.match(index, /marketOutlookSourceRows\.map\(productMarketOutlookView\)/)
-  assert.doesNotMatch(index, /marketOutlookTitle:[^\n]*(code|name)/)
-  assert.match(overview, /data-market-outlook/)
-  assert.match(overview, /v\.marketOutlookTitle/)
-  assert.match(overview, /\['市场观点', '市场观点总结'\]/)
-  assert.match(overview, /row\.attitude/)
-  assert.doesNotMatch(overview, /row\.sentiment/)
-  assert.doesNotMatch(overview, /marketOutlookProductScoped|\['产品', '情绪', '总结'\]/)
-  assert.match(overview, /v\.marketOutlookRows\.map/)
-
-  assert.doesNotMatch(overview, /当前舆情总结|summaryPoints|openSummaryEvidence|查看原文证据/)
-  assert.doesNotMatch(overview, /🌐/)
-  assert.match(radar, /contract=purchase-opinion-v2/)
-  assert.match(radar, /invalidate\(marketOutlookProduct\(code, rangeKey\)\)/)
-  assert.match(radar, /read\(marketOutlookProduct\(code, rangeKey\)\)/)
+  assert.doesNotMatch(index, /R\.marketOutlook|productMarketOutlookRows|marketOutlookRows:/)
+  assert.doesNotMatch(index, /产品市场观点与总结/)
+  assert.ok(index.indexOf('<Topics v={v} />') < index.indexOf('<KolList v={v} />'))
+  assert.doesNotMatch(overview, /data-market-outlook|marketOutlook|AI 摘要/)
+  assert.doesNotMatch(productPrefetch, /marketOutlook/)
 })
 
 test('only discussion heat exposes a click-to-expand KPI annotation', () => {
   const index = source('screens/productMonitor/index.jsx')
-  const overview = source('screens/productMonitor/Overview.jsx')
+  const note = source('screens/productMonitor/KpiNote.jsx')
   const kpis = index.slice(index.indexOf('kpis: ['), index.indexOf('].map(function (k)', index.indexOf('kpis: [')))
 
   assert.equal(kpis.match(/\bnote:/g)?.length, 1)
   assert.match(kpis, /label: '讨论热度'[\s\S]*note: R\.HEAT_FORMULA/)
-  assert.match(overview, /\{k\.note && \(/)
-  assert.match(overview, /aria-label=\{`查看\$\{k\.label\}说明`\}/)
-  assert.match(overview, /aria-expanded=\{noteOpen\}/)
-  assert.match(overview, /role="note"/)
+  assert.match(note, /\{k\.note && \(/)
+  assert.match(note, /aria-label=\{`查看\$\{k\.label\}说明`\}/)
+  assert.match(note, /aria-expanded=\{noteOpen\}/)
+  assert.match(note, /role="note"/)
 })

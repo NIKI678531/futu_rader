@@ -86,8 +86,22 @@ class TestThemes:
         t = out["positive"][0]
         assert t["confidence"] is None
         assert t["title"] == "费率与持有成本获认可" and t["labelStatus"] == "unavailable"
-        assert "1 条积极评论" in t["summary"]
-        assert "1 条积极评论" in t["summary"]
+        assert "1 个帖子线程" in t["summary"]
+
+    def test_same_parent_comments_count_as_one_thread(self):
+        first = unit("positive", ["fee"], 19)
+        second = unit("positive", ["fee"], 20)
+        first.update({"feed_id": 7, "comment_id": 701})
+        second.update({"feed_id": 7, "comment_id": 702})
+
+        topic = themes.themes(
+            "3033", themes.group_by_polarity([first, second]), None,
+            self.rng["buckets"], self.bi,
+        )["positive"][0]
+
+        assert topic["mentions"] == 1
+        assert topic["commentCount"] == 2
+        assert topic["share"] == 100.0
 
     def test_model_labels_are_used_when_present(self):
         units = [unit("positive", ["fee"], 19)]

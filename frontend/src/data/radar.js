@@ -107,7 +107,6 @@ export function prefetchScreen(screen, { rangeKey = DEFAULT_RANGE, kol, code } =
       () => migrated.pool(rangeKey),
       () => migrated.ranks(rangeKey),
       () => migrated.benchmark(code, rangeKey),
-      () => migrated.marketOutlook(code, rangeKey),
       () => migrated.themesFor(code, rangeKey, 'positive'),
       () => migrated.issuerOpinions(code, rangeKey),
       () => migrated.negCatsFor(code, rangeKey),
@@ -226,7 +225,7 @@ const migrated = {
      `ok` 为 false 时 text 已经是该状态的文案，屏幕直接渲染，不按 status 再拼一遍。 */
   hotSummaryFor(code, rangeKey) {
     if (isLocalToday(rangeKey)) return null
-    /* 整池那份**自己**可能是 null（`DATA_PROVIDER=sql` 下热议总结要 AI 归纳，
+    /* 整池那份**自己**可能是 null（产品话题结果尚未生成时，
        `providers/sql.py::hot_summaries` 整块返回 None）。`null[code]` 是硬 TypeError，
        整个板块总览当场白屏、错误边界报「页面渲染失败」—— 而后端好好的，只是这一栏
        还没生成。容器不知道 ⇒ 里面每一个也不知道，所以这里发 null 而不是 `{}` 或

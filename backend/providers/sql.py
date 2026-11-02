@@ -1818,7 +1818,7 @@ class SqlProvider:
             if (rel.get(unit) or {}).get("value") != "relevant":
                 continue
             candidate = {
-                "comment_id": unit[0], "attitude": a["value"],
+                "comment_id": unit[0], "feed_id": a.get("feed_id"), "attitude": a["value"],
                 "aspects": (asp.get(unit) or {}).get("value") or [],
                 "feedback_eligible": (
                     (feedback.get(unit) or {}).get("value")
@@ -1866,7 +1866,7 @@ class SqlProvider:
             if (rel.get(unit) or {}).get("value") != "relevant":
                 continue
             candidate = {
-                "attitude": a["value"],
+                "feed_id": a.get("feed_id"), "attitude": a["value"],
                 "aspects": (asp.get(unit) or {}).get("value") or [],
                 "feedback_eligible": (
                     (feedback.get(unit) or {}).get("value")
@@ -1917,70 +1917,37 @@ class SqlProvider:
         return out
 
     def hot_summaries(self, range_key):
+        """ETF 榜单的产品话题摘要，直接精简投影现有话题结果。
+
+        这里不再生成另一套 ``hot_summary`` 文案，避免榜单与产品页的「产品话题
+        情绪」出现两种结论。话题的生成、计数、证据和正文均保持原样；榜单只选取
+        提及数最高的一条并压缩成单行展示。
+        """
         rng = self._filtered_range(range_key)
         if rng is None:
             return None
-        custom = parse_custom_key(range_key) is not None
-        scan = self._scan(rng["from"], rng["to"], rng)
         out = {}
         for code in self._by_code:
-            att = scan[code]["att"]
-            if att is None:
+            topics = self.topics_for(code, range_key)
+            if topics is None:
                 out[code] = {"status": "unavailable", "text": "数据暂不可用", "sample": None, "ok": False}
                 continue
-            valid = att["positive"] + att["negative"]
-            if valid == 0 and att["neutral"] == 0:
+            if not topics:
                 out[code] = {"status": "empty", "text": "暂无相关内容", "sample": 0, "ok": False}
                 continue
-            row = self._synth(code, range_key, "hot_summary").get(NO_SUBJECT)
-            if not sample_sufficient(att["positive"], att["negative"]):
-                if row is not None and isinstance(row["value"], dict) and row["value"].get("text"):
-                    out[code] = {
-                        "status": "low_sample",
-                        "text": f"样本不足：{row['value']['text']}",
-                        "sample": valid,
-                        "ok": False,
-                        "reviewState": row["reviewState"],
-                        "evidenceIds": row["evidenceIds"],
-                        "stale": self._stale(code, range_key, "hot_summary"),
-                    }
-                else:
-                    out[code] = {"status": "low_sample", "text": "样本不足，暂无主流观点", "sample": valid, "ok": False}
-                continue
-            if row is None or not isinstance(row["value"], dict) or "text" not in row["value"]:
-                if custom:
-                    net = att["positive"] - att["negative"]
-                    comparison = (
-                        "积极反馈占多数"
-                        if net > 0
-                        else "消极反馈占多数"
-                        if net < 0
-                        else "积极与消极反馈数量相当"
-                    )
-                    out[code] = {
-                        "status": "ok",
-                        "text": (
-                            f"AI 标注聚合：{comparison}"
-                            f"（积极 {att['positive']} 条、消极 {att['negative']} 条）"
-                        ),
-                        "sample": valid,
-                        "tone": "pos" if net > 0 else "neg" if net < 0 else "neu",
-                        "ok": True,
-                        "analysisMode": "annotation_aggregate",
-                        "reviewState": None,
-                        "evidenceIds": [],
-                        "stale": False,
-                    }
-                    continue
-                out[code] = {"status": "unavailable", "text": "数据暂不可用", "sample": valid, "ok": False}
-                continue
-            net = att["positive"] - att["negative"]
+            topic = max(
+                topics,
+                key=lambda row: (int(row.get("mentions") or 0), str(row.get("id") or "")),
+            )
+            net = int(topic.get("positive") or 0) - int(topic.get("negative") or 0)
             out[code] = {
-                "status": "ok", "text": row["value"]["text"], "sample": valid,
+                "status": "ok", "text": _compact_topic_text(topic),
+                "sample": int(topic.get("mentions") or 0),
                 "tone": "pos" if net > 0 else "neg" if net < 0 else "neu", "ok": True,
-                "reviewState": row["reviewState"], "evidenceIds": row["evidenceIds"],
-                # The counts are freshly scanned while the sentence may predate them.
-                "stale": self._stale(code, range_key, "hot_summary"),
+                "reviewState": topic.get("reviewState"),
+                "evidenceIds": topic.get("evidenceIds") or [],
+                "stale": bool(topic.get("stale")),
+                "source": "product_topic",
             }
         return out
 
@@ -2797,20 +2764,20 @@ class SqlProvider:
     # ── 市场域：标注驱动的证据与合规（ADR-0019 §1） ────────────────
 
     def evidence_for(self, code, ctx_key, polarity, n):
-        """某条结论的原文证据：被标成这个极性的那些评论本身，按发布时间倒序。
+        """某条结论的原文证据：按父帖线程聚合，相关评论作为辅助，按发布时间倒序。
 
         ctxKey ／ polarity ／ n 的合法性由 `core/evidence.py` 先验过了，这里只验产品。
         区间取 ctxKey 的头一段（它的形状就是 `<区间>|<面板 id>`）。
 
         ## v4 面板证据约束
 
-        摘要和观点主题优先使用 synthesis 写入的 evidence ID 精确定位原文；关键理由的
+        摘要和观点主题优先使用 synthesis 写入的父帖／评论 evidence ID 精确定位原文；关键理由的
         evidence ID 也会合并参与筛选。仅为兼容没有 evidence ID 的旧审计记录，才降级为
         同产品、同极性的实质产品反馈，绝不随机挑选或跨产品拼接证据。
 
         整块 None ＝ 这只产品在这个区间内尚无 relevance 结论且未完成分析
         （「暂不可用」）；空列表 ＝ 已判过相关性，但当前相关评论里这个极性一条都没有
-        （「暂无相关内容」）。两者不可互换。
+        （「暂无相关内容」）。同一父帖只返回一项，两者不可互换。
         """
         if code not in self._by_code:
             return MISSING
@@ -2868,34 +2835,71 @@ class SqlProvider:
                 value = (synth_row or {}).get("value") or {}
                 for point in value.get("key_points") or []:
                     referenced_ids.update(point.get("evidence_ids") or [])
-        if referenced_ids:
-            hits = [cid for cid in hits if f"c{cid}" in referenced_ids]
         has_relevance_result = bool(rel_by_code.get(code))
         has_completed_scope = self._scan(rng["from"], rng["to"], rng)[code]["att"] is not None
         if not has_relevance_result and not has_completed_scope:
             return None
         src = self._sources("comment", hits)
-        items = []
+        if referenced_ids:
+            hits = [
+                cid for cid in hits
+                if f"c{cid}" in referenced_ids
+                or (
+                    src.get(cid, {}).get("feedId") is not None
+                    and f"f{src[cid]['feedId']}" in referenced_ids
+                )
+            ]
+
+        # 证据按父帖线程返回：父帖是观点主体，相关评论仅作为辅助信息。同帖多条
+        # 评论不会再各占一张卡，也不会让一个热门父帖挤占全部结论。
+        threads = {}
         for cid in hits:
             r = src.get(cid)
             if r is None:  # 标注指向一条已经不在瘦库里的评论（ETL 重跑过）。
                 continue
-            # 同一条评论可能同时被标了别的产品，证据卡要把它们都带上（契约里
-            # `productCodes` 是数组，演示数据也会出现第二个代码）。
+            feed_id = r.get("feedId")
+            if feed_id is None:
+                continue
             others = sorted(s for s, _a in by_comment[cid] if s != code and s in self._by_code)
-            items.append(
+            item = threads.setdefault(
+                feed_id,
                 {
-                    "id": f"ev-{cid}-{code}",
-                    "publishedAt": _stamp(r["postedAt"]),
-                    "authorName": r["authorName"],
-                    "authorType": self._author_type(r["authorName"]),
-                    "excerpt": r["text"],
-                    "productCodes": [code] + others,
+                    "id": f"thread-{feed_id}-{code}",
+                    "publishedAt": _stamp(r.get("postPostedAt")),
+                    "authorName": r.get("postAuthorName"),
+                    "authorType": self._author_type(r.get("postAuthorName")),
+                    "excerpt": r.get("postBody") or r.get("postText") or r.get("postTitle") or "",
+                    "productCodes": [code],
                     "comments": r["comments"],
                     "interactions": r["interactions"],
                     "sourceUrl": r["url"],
-                }
+                    "sourceKind": "帖子线程",
+                    "post": {
+                        "id": feed_id,
+                        "title": r.get("postTitle"),
+                        "excerpt": r.get("postBody") or r.get("postText") or r.get("postTitle") or "",
+                        "authorName": r.get("postAuthorName"),
+                        "publishedAt": _stamp(r.get("postPostedAt")),
+                        "sourceUrl": r["url"],
+                    },
+                    "threadComments": [],
+                },
             )
+            item["productCodes"] = list(dict.fromkeys(item["productCodes"] + others))
+            # 相同正文只保留一次；同一线程最多展示 3 条辅助评论，避免评论反客为主。
+            comment_text = re.sub(r"\s+", " ", str(r.get("text") or "")).strip()
+            seen = {comment["excerpt"] for comment in item["threadComments"]}
+            if comment_text and comment_text not in seen and len(item["threadComments"]) < 3:
+                item["threadComments"].append({
+                    "id": f"c{cid}",
+                    "excerpt": comment_text,
+                    "authorName": r.get("authorName"),
+                    "publishedAt": _stamp(r.get("postedAt")),
+                    "sourceKind": "相关评论",
+                })
+        items = list(threads.values())
+        for item in items:
+            item["commentCount"] = len(item["threadComments"])
         # 与设计源同序：发布时间倒序。同刻的按 id 兜底，免得两次请求两个顺序。
         items.sort(key=lambda x: (x["publishedAt"] or "", x["id"]), reverse=True)
         return items[:n]
@@ -2923,7 +2927,7 @@ class SqlProvider:
         return {"status": "ok" if hits else "empty", "list": hits}
 
     def _compliance_counts(self, rng):
-        """`pool().complianceCount`：每只产品的命中条数。
+        """`pool().complianceCount`：每只产品命中的父帖线程数。
 
         与 `fixtures/generate.mjs` 逐字同口径 —— `ok` 给条数、`empty` 给 0、
         `na` 与 `unavailable` 都给 **None**。设计源那句 `|| 0` 把「没扫过」读成
@@ -2977,7 +2981,7 @@ class SqlProvider:
         ev = self._evidence_rows(
             [a["annotation_id"] for table in rows.values() for a in table.values()]
         )
-        by_code = defaultdict(list)
+        thread_hits = {}
         for target_type, source_kind in (("comment", "评论"), ("feed", "帖子")):
             src = self._sources(target_type, [tid for tid, _s in rows[target_type]])
             for (target_id, code), a in rows[target_type].items():
@@ -2998,26 +3002,64 @@ class SqlProvider:
                 if not tags:
                     continue
                 quotes = ev.get(a["annotation_id"], [])
-                author = r["authorName"]
+                feed_id = r.get("feedId") or target_id
+                author = r.get("postAuthorName") or r["authorName"]
                 author_type = self._author_type(author)
-                by_code[code].append({
-                    "id": f"cr-{a['annotation_id']}",
+                post_text = (
+                    r.get("postBody") or r.get("postText") or r.get("postTitle")
+                    or (quotes[0][2] if quotes else r["text"])
+                )
+                item = thread_hits.setdefault((code, feed_id), {
+                    "id": f"cr-thread-{feed_id}-{code}",
                     "productCodes": [code],
-                    "publishedAt": _stamp(r["postedAt"]),
+                    "publishedAt": _stamp(r.get("postPostedAt") or r["postedAt"]),
                     "authorName": author,
                     "authorType": author_type,
                     "isKnownKol": author_type == "合作 KOL",
-                    "excerpt": quotes[0][2] if quotes else r["text"],
-                    "riskTags": tags,
-                    "riskLabels": [_RISK_LABEL.get(tag, tag) for tag in tags],
-                    "detectionRationale": value.get("rationale"),
+                    "excerpt": post_text,
+                    "riskTags": [],
+                    "riskLabels": [],
+                    "detectionRationale": None,
                     "reviewState": "ai_pending",
                     "reviewLabel": "AI 识别 · 待人工确认",
-                    "sourceKind": source_kind,
+                    "sourceKind": "帖子线程",
                     "sourceUrl": r["url"],
                     "comments": r["comments"],
                     "interactions": r["interactions"],
+                    "post": {
+                        "id": feed_id,
+                        "title": r.get("postTitle"),
+                        "excerpt": post_text,
+                        "authorName": author,
+                        "publishedAt": _stamp(r.get("postPostedAt") or r["postedAt"]),
+                        "sourceUrl": r["url"],
+                    },
+                    "threadComments": [],
+                    "_rationales": [],
                 })
+                for tag in tags:
+                    if tag not in item["riskTags"]:
+                        item["riskTags"].append(tag)
+                        item["riskLabels"].append(_RISK_LABEL.get(tag, tag))
+                rationale = value.get("rationale")
+                if rationale and rationale not in item["_rationales"]:
+                    item["_rationales"].append(rationale)
+                if target_type == "comment":
+                    comment_text = re.sub(r"\s+", " ", str(r.get("text") or "")).strip()
+                    seen = {comment["excerpt"] for comment in item["threadComments"]}
+                    if comment_text and comment_text not in seen and len(item["threadComments"]) < 3:
+                        item["threadComments"].append({
+                            "id": f"c{target_id}",
+                            "excerpt": comment_text,
+                            "authorName": r.get("authorName"),
+                            "publishedAt": _stamp(r.get("postedAt")),
+                            "sourceKind": source_kind,
+                        })
+        by_code = defaultdict(list)
+        for (code, _feed_id), item in thread_hits.items():
+            item["commentCount"] = len(item["threadComments"])
+            item["detectionRationale"] = "；".join(item.pop("_rationales")) or None
+            by_code[code].append(item)
         for items in by_code.values():
             items.sort(key=lambda x: (x["publishedAt"] or "", x["id"]), reverse=True)
         out = {"scannedCodes": scanned_codes, "byCode": dict(by_code)}
@@ -3589,6 +3631,10 @@ class SqlProvider:
                             comments.c.author_name,
                             comments.c.posted_at.label("own_posted"),
                             feeds.c.feed_id,
+                            feeds.c.title.label("feed_title"),
+                            feeds.c.content.label("feed_content"),
+                            feeds.c.author_uid.label("feed_author_uid"),
+                            feeds.c.author_name.label("feed_author_name"),
                             feeds.c.posted_at.label("feed_posted"),
                             feeds.c.comment_count,
                             feeds.c.like_count,
@@ -3604,6 +3650,15 @@ class SqlProvider:
                             "text": r.content,
                             "authorUid": r.author_uid,
                             "authorName": r.author_name,
+                            "feedId": r.feed_id,
+                            "postTitle": r.feed_title,
+                            "postBody": r.feed_content,
+                            "postText": "\n".join(
+                                x for x in (r.feed_title, r.feed_content) if x
+                            ),
+                            "postAuthorUid": r.feed_author_uid,
+                            "postAuthorName": r.feed_author_name,
+                            "postPostedAt": utc_naive_to_hkt(r.feed_posted),
                             # 评论自己的时间在瘦库里大量为 NULL，退回所在帖子的发布
                             # 时间 —— 和 `_scan` 给评论归桶用的是同一个口径。
                             "postedAt": utc_naive_to_hkt(r.own_posted or r.feed_posted),
@@ -3628,6 +3683,13 @@ class SqlProvider:
                             "text": "\n".join(x for x in (r.title, r.content) if x),
                             "authorUid": r.author_uid,
                             "authorName": r.author_name,
+                            "feedId": r.feed_id,
+                            "postTitle": r.title,
+                            "postBody": r.content,
+                            "postText": "\n".join(x for x in (r.title, r.content) if x),
+                            "postAuthorUid": r.author_uid,
+                            "postAuthorName": r.author_name,
+                            "postPostedAt": utc_naive_to_hkt(r.posted_at),
                             "postedAt": utc_naive_to_hkt(r.posted_at),
                             "comments": r.comment_count,
                             "interactions": _add_all([r.like_count, r.share_count]),
@@ -4316,3 +4378,11 @@ def _short_name(name, n=10):
     if not s:
         s = str(name or "")
     return s if len(s) <= n else s[:n] + "…"
+
+
+def _compact_topic_text(topic, limit=48):
+    """Build a one-line projection from an existing topic without new analysis."""
+    title = re.sub(r"\s+", " ", str(topic.get("title") or "")).strip()
+    summary = re.sub(r"\s+", " ", str(topic.get("summary") or "")).strip()
+    text = f"{title}：{summary}" if title and summary else title or summary
+    return text if len(text) <= limit else text[: limit - 1].rstrip("，,；;。 ") + "…"

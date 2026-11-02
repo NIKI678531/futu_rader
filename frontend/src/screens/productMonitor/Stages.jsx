@@ -1,6 +1,5 @@
 import React from 'react'
 import { s, hover } from '../../lib/dc'
-import R from '../../data/radar'
 
 /* 热度变化与阶段观点 — 热度折线（SVG）＋ 阶段带 ＋ 可展开的阶段表 */
 export default function Stages({ v }) {
@@ -9,16 +8,15 @@ export default function Stages({ v }) {
       <div style={s('display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 20px;border-bottom:1px solid var(--border-1)')}>
         <div style={s('display:flex;align-items:baseline;gap:11px;min-width:0')}>
           <span style={s('flex:none;white-space:nowrap;font:600 18px/1.3 var(--font-cjk)')}>热度变化与阶段观点</span>
-          <span style={s('min-width:0;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500);text-wrap:pretty')}>讨论热度随时间变化 · AI 按时段归纳主流观点（{v.stageGranLabel}）· 与上方趋势面板同一时间轴</span>
+          <span style={s('min-width:0;font:400 13px/1.4 var(--font-cjk);color:var(--ink-500);text-wrap:pretty')}>讨论热度随时间变化 · 按时段归纳主流观点（{v.stageGranLabel}）· 与上方趋势面板同一时间轴</span>
         </div>
         <div style={s('flex:none;display:flex;align-items:center;gap:8px')}>
-          {v.stageUnavailable && <span style={s('padding:3px 10px;border-radius:var(--radius-pill);background:var(--warning-100);font:600 12px/1.6 var(--font-cjk);color:var(--warning-700);white-space:nowrap')}>{v.stageAggregate ? 'AI 态度已聚合 · 阶段待归纳' : 'AI 阶段观点 · 待分析'}</span>}
           <span style={s('padding:3px 10px;border-radius:var(--radius-pill);background:var(--csop-blue-50);font:500 12px/1.6 var(--font-cjk);color:var(--csop-blue-700);white-space:nowrap')}>折线粒度 {v.heatGranLabel}</span>
         </div>
       </div>
       {v.heatDisclosure && <div style={s('padding:10px 20px;font:400 12px/1.6 var(--font-cjk);color:var(--warning-700)')}>{v.heatDisclosure}</div>}
       {v.stageUnavailable && (
-        <div style={s('margin:16px 20px 0;padding:14px 16px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>{v.stageUnavailableText || 'AI 阶段观点待分析 — 下方仅展示数据库中的原始热度；积极／消极与分阶段观点暂不可用。'}</div>
+        <div style={s('margin:16px 20px 0;padding:14px 16px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>{v.stageUnavailableText || '阶段观点待分析 — 下方仅展示数据库中的原始热度；积极／消极与分阶段观点暂不可用。'}</div>
       )}
       {v.stageEmpty && (
         <div style={s('margin:16px 20px;padding:14px 16px;border:1px dashed var(--border-2);border-radius:var(--radius-control);background:var(--canvas);font:400 14px/1.7 var(--font-cjk);color:var(--ink-500)')}>暂无相关内容 — 当前日期范围内该 ETF 没有讨论，不输出阶段观点。</div>
@@ -130,7 +128,7 @@ export default function Stages({ v }) {
               </React.Fragment>
             ))}
           </div>}
-          {v.stageOk && <div style={s('padding:12px 20px 14px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>{v.stageRule} 热度口径与全站一致（{v.heatFormulaText}）；点阶段行展开逐时段摘要，「证据 →」打开该阶段区间的原文侧栏，每条可跳转 Futu 原文。{R.DATA_PROVIDER === 'sql' ? '阶段观点由 AI 生成，未经人工验证。' : '阶段观点为演示数据。'}</div>}
+          {v.stageOk && <div style={s('padding:12px 20px 14px;font:400 13px/1.6 var(--font-cjk);color:var(--ink-400);text-wrap:pretty')}>{v.stageRule} 热度口径与全站一致（{v.heatFormulaText}）；点阶段行展开逐时段摘要，「证据 →」打开该阶段区间的原文侧栏，每条可跳转 Futu 原文。</div>}
         </>
       )}
     </div>

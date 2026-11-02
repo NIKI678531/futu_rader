@@ -44,7 +44,6 @@ function ThemeCard({ t, accent, tint, shareLabel }) {
       </div>
       <div style={s('display:flex;align-items:center;gap:12px;font:400 12px/1.4 var(--font-cjk);color:var(--ink-500)')}>
         <span>{shareLabel} {t.share}</span>
-        <span>{t.confidenceText}</span>
         <span style={s('margin-left:auto;font:500 12px/1.4 var(--font-cjk);color:var(--csop-blue-600)')}>证据 {t.evidence} 条 →</span>
       </div>
     </div>
@@ -58,7 +57,7 @@ export default function Attitude({ v }) {
       <div style={s('display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 20px;border-bottom:1px solid var(--border-1)')}>
         <div style={s('display:flex;align-items:baseline;gap:11px')}>
           <span style={s('font:600 18px/1.3 var(--font-cjk)')}>积极 ／ 消极整体态度</span>
-          <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>积极／消极为 AI 对内容中产品态度的分类，不是 Futu 平台的互动行为</span>
+          <span style={s('font:400 13px/1.4 var(--font-cjk);color:var(--ink-500)')}>积极／消极表示内容中对产品的态度，不是 Futu 平台的互动行为</span>
         </div>
         <span style={s(`font:600 14px/1.4 var(--font-cjk);color:${v.netFg}`)}>{v.netText}</span>
       </div>
@@ -82,7 +81,7 @@ export default function Attitude({ v }) {
             </div>
             <div style={s('height:30px')}></div>
             <div style={s('padding:11px 13px;border:1px solid var(--border-1);border-radius:var(--radius-control);background:var(--positive-50)')}>
-              <div style={s('font:600 12px/1.4 var(--font-cjk);color:var(--positive-700);margin-bottom:6px')}>AI 观点总结</div>
+              <div style={s('font:600 12px/1.4 var(--font-cjk);color:var(--positive-700);margin-bottom:6px')}>观点总结</div>
               <div style={s('font:400 13px/1.8 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>{v.posLead}{v.posSummary}</div>
             </div>
           </div>
@@ -98,7 +97,7 @@ export default function Attitude({ v }) {
             </div>
             <div style={s('height:30px')}></div>
             <div style={s('padding:11px 13px;border:1px solid var(--border-1);border-radius:var(--radius-control);background:var(--negative-50)')}>
-              <div style={s('font:600 12px/1.4 var(--font-cjk);color:var(--negative-700);margin-bottom:6px')}>AI 观点总结</div>
+              <div style={s('font:600 12px/1.4 var(--font-cjk);color:var(--negative-700);margin-bottom:6px')}>观点总结</div>
               <div style={s('font:400 13px/1.8 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>{v.negLead}{v.negSummary}</div>
             </div>
           </div>

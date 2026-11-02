@@ -1370,7 +1370,7 @@ class TestEvidenceLocatesTheOriginalText:
         assert post["typeEvidence"] == ""
         assert post["fullText"], "原文照发 —— 缺的是「哪一句」，不是原文"
 
-    def test_evidence_for_returns_the_comments_behind_the_verdict(self, provider):
+    def test_evidence_for_returns_parent_threads_with_supporting_comments(self, provider):
         p = add_annotations(
             provider,
             [
@@ -1381,9 +1381,13 @@ class TestEvidenceLocatesTheOriginalText:
             ],
         )
         items = p.evidence_for(OWN_CODE, "d1|sum", "negative", 5)
-        assert [x["id"] for x in items] == [f"ev-11-{OWN_CODE}"]
-        assert items[0]["excerpt"] == COMMENT_TEXT[11]
-        assert items[0]["authorType"] == "普通散户"
+        assert [x["id"] for x in items] == [f"thread-1-{OWN_CODE}"]
+        assert items[0]["post"]["id"] == 1
+        assert items[0]["post"]["excerpt"] == items[0]["excerpt"]
+        assert items[0]["threadComments"][0]["id"] == "c11"
+        assert items[0]["threadComments"][0]["excerpt"] == COMMENT_TEXT[11]
+        assert items[0]["threadComments"][0]["sourceKind"] == "相关评论"
+        assert items[0]["authorType"] == "官方账号"
         assert items[0]["productCodes"] == [OWN_CODE]
         assert items[0]["sourceUrl"] == "https://q.futunn.com/feed/1?lang=zh-cn"
 
@@ -1495,9 +1499,10 @@ class TestComplianceFourStates:
         assert hit["riskTags"] == ["regulatory_complaint"]
         assert hit["riskLabels"] == ["监管举报"]
         assert hit["detectionRationale"] == "评论里提到要去投诉。"
-        assert hit["excerpt"] == "不太划算"
-        assert hit["excerpt"] in COMMENT_TEXT[11], "引文要能在原文里逐字找到"
-        assert hit["sourceKind"] == "评论"
+        assert hit["post"]["excerpt"] == hit["excerpt"]
+        assert hit["threadComments"][0]["excerpt"] == COMMENT_TEXT[11]
+        assert "不太划算" in hit["threadComments"][0]["excerpt"]
+        assert hit["sourceKind"] == "帖子线程"
         assert hit["sourceUrl"] == "https://q.futunn.com/feed/1?lang=zh-cn"
 
     def test_the_badge_is_constant_no_matter_what_the_review_state_says(self, provider):
@@ -1521,7 +1526,8 @@ class TestComplianceFourStates:
             ],
         )
         hit = p.compliance_for(OWN_CODE, "d1")["list"][0]
-        assert hit["sourceKind"] == "帖子"
+        assert hit["sourceKind"] == "帖子线程"
+        assert hit["threadComments"] == []
         assert hit["riskLabels"] == ["煽动扩散"]
 
     def test_comment_hits_require_current_relevance(self, provider):
@@ -1541,8 +1547,10 @@ class TestComplianceFourStates:
         result = p.compliance_for(OWN_CODE, "d1")
 
         assert result["status"] == "ok"
-        assert {item["id"] for item in result["list"]} == {"cr-11", "cr-15"}
-        assert {item["sourceKind"] for item in result["list"]} == {"评论", "帖子"}
+        assert {item["id"] for item in result["list"]} == {f"cr-thread-1-{OWN_CODE}"}
+        assert result["list"][0]["sourceKind"] == "帖子线程"
+        assert result["list"][0]["commentCount"] == 1
+        assert set(result["list"][0]["riskTags"]) == {"regulatory_complaint", "mobilization"}
 
     def test_irrelevant_comment_is_scanned_but_its_risk_hit_is_hidden(self, provider):
         p = add_annotations(provider, [

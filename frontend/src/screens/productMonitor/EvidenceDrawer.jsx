@@ -57,12 +57,17 @@ export default function EvidenceDrawer({ v }) {
                       {e.riskTags.map((g) => (
                         <span key={g.label} style={s('padding:1px 8px;border-radius:var(--radius-pill);background:var(--negative-50);border:1px solid var(--negative-100);font:600 11px/1.7 var(--font-cjk);color:var(--negative-700)')}>{g.label}</span>
                       ))}
-                      <span style={s('margin-left:auto;padding:1px 8px;border-radius:var(--radius-pill);background:var(--warning-100);font:600 11px/1.7 var(--font-cjk);color:var(--warning-700)')}>AI 识别 · 待人工确认</span>
                     </div>
                   )}
+                  {e.postTitle && <div style={s('font:600 13px/1.6 var(--font-cjk);color:var(--ink-900);text-wrap:pretty;margin-bottom:5px')}>{e.postTitle}</div>}
                   <div style={s('font:400 14px/1.75 var(--font-cjk);color:var(--ink-800);text-wrap:pretty')}>{e.excerpt}</div>
                   {e.hasRisk && (
-                    <div style={s('margin-top:6px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-500);text-wrap:pretty')}>AI 命中依据：{e.rationale}</div>
+                    <div style={s('margin-top:6px;font:400 12px/1.6 var(--font-cjk);color:var(--ink-500);text-wrap:pretty')}>命中依据：{e.rationale}</div>
+                  )}
+                  {e.threadComments?.length > 0 && (
+                    <div style={s('margin-top:10px;padding:9px 11px;border-left:2px solid var(--csop-blue-200);background:var(--canvas)')}>
+                      {e.threadComments.map((comment) => <div key={comment.id} style={s('padding:4px 0;font:400 12px/1.65 var(--font-cjk);color:var(--ink-700);text-wrap:pretty')}><strong style={s('font-weight:600;color:var(--ink-800)')}>{comment.authorName || '评论'}：</strong>{comment.excerpt}</div>)}
+                    </div>
                   )}
                   <div style={s('margin-top:9px;display:flex;align-items:center;gap:14px;flex-wrap:wrap')}>
                     {e.codes.map((p) => (

@@ -388,10 +388,10 @@ class SectorOverview extends React.Component {
         negW: attitudeBar.negativeWidth,
         /* 舆情列沿用原重点舆情计数；筛选、排序与热力图红点共用 complianceCount。 */
         alert: negN > 0, alertN: numRaw(negN), alertNa: negN == null,
-        /* 热议总结：AI 一句话归纳区间内该 ETF 的主流具体观点；样本不足／不可用按统一状态文案灰字显示 */
+        /* 产品话题总结：直接显示产品页既有话题的精简版，不另生成一套结论。 */
         hot: hsText, hotFg: hsOk ? 'var(--ink-800)' : 'var(--ink-400)',
         hotTitle: hsOk
-          ? hs.text + '（AI 生成 · 基于 ' + hs.sample + ' 条有效态度样本）'
+          ? hs.text + '（基于 ' + hs.sample + ' 条话题内容）'
           : hsText,
         bg: on ? 'var(--csop-blue-50)' : (i % 2 ? 'var(--canvas)' : '#fff'),
         codeFg: on ? 'var(--csop-blue-700)' : 'var(--ink-900)',
