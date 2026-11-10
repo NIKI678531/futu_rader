@@ -1,0 +1,495 @@
+name: CD Security Scan Release Pipeline
+
+run-name: CD Security Scan Release | target=${{ inputs.target_environment }} | service=${{ inputs.service_name }} | audit=${{ inputs.audit_tag || 'manual' }} | run=${{ github.run_number }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: UAT deploys and scans UAT. PRD completes UAT first, then waits for PRD approval.
+        required: true
+        type: choice
+        default: UAT
+        options: [UAT, PRD]
+      service_name:
+        description: Service image(s) to build and deploy
+        required: true
+        type: choice
+        default: all
+        options: [all, srvapp, webapp]
+      release_tag:
+        description: Optional Docker tag; defaults to 0.1.<workflow run number>
+        required: false
+        type: string
+      audit_tag:
+        description: Optional correlation value used by scheduled workflows
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-security-release-${{ inputs.target_environment }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'ap-east-1' }}
+
+jobs:
+  ci_security:
+    name: CI tests and static security gate
+    uses: ./.github/workflows/ci-security-build.yml
+    permissions:
+      contents: read
+      security-events: write
+
+  prepare_release:
+    name: Prepare release metadata
+    runs-on: ubuntu-latest
+    needs: ci_security
+    outputs:
+      image_tag: ${{ steps.metadata.outputs.image_tag }}
+      service_matrix: ${{ steps.metadata.outputs.service_matrix }}
+    steps:
+      - name: Resolve tag and service matrix
+        id: metadata
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          TARGET_SERVICE: ${{ inputs.service_name }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+
+          tag = (os.environ.get("RELEASE_TAG") or "").strip()
+          if not tag:
+              tag = f"0.1.{os.environ['GITHUB_RUN_NUMBER']}"
+          if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", tag):
+              raise SystemExit(f"Invalid Docker image tag: {tag!r}")
+
+          service = (os.environ.get("TARGET_SERVICE") or "all").strip().lower()
+          definitions = {
+              "srvapp": {"service": "srvapp", "dockerfile": "backend/Dockerfile"},
+              "webapp": {"service": "webapp", "dockerfile": "frontend/Dockerfile"},
+          }
+          if service == "all":
+              selected = list(definitions.values())
+          elif service in definitions:
+              selected = [definitions[service]]
+          else:
+              raise SystemExit(f"Unsupported service: {service}")
+
+          matrix = json.dumps({"include": selected}, separators=(",", ":"))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"image_tag={tag}\n")
+              output.write(f"service_matrix={matrix}\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## Release metadata\n")
+              summary.write(f"- target: {os.environ.get('TARGET_ENVIRONMENT', '') or '${{ inputs.target_environment }}'}\n")
+              summary.write(f"- services: {', '.join(item['service'] for item in selected)}\n")
+              summary.write(f"- image tag: `{tag}`\n")
+          PY
+
+  build_uat:
+    name: Build and push UAT (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: prepare_release
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare_release.outputs.service_matrix) }}
+    env:
+      ECR_REPOSITORY: ${{ matrix.service == 'srvapp' && (vars.UAT_ECR_SRVAPP_REPOSITORY || 'ih-uat-remote-opinion-radar-srvapp') || (vars.UAT_ECR_WEBAPP_REPOSITORY || 'ih-uat-remote-opinion-radar-webapp') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Configure UAT AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate and log in to UAT ECR
+        id: registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null
+          aws ecr get-login-password --region "$AWS_REGION" | \
+            docker login --username AWS --password-stdin "$registry"
+          echo "registry=$registry" >> "$GITHUB_OUTPUT"
+
+      - name: Install Trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="0.69.3"
+          curl --fail --location --silent --show-error \
+            --retry 2 --output "$RUNNER_TEMP/trivy.tar.gz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${version}/trivy_${version}_Linux-64bit.tar.gz"
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
+          sudo install -m 0755 "$RUNNER_TEMP/trivy" /usr/local/bin/trivy
+
+      - name: Build and scan UAT image
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ needs.prepare_release.outputs.image_tag }}
+          REGISTRY: ${{ steps.registry.outputs.registry }}
+        run: |
+          set -euo pipefail
+          image="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          docker build --file "${{ matrix.dockerfile }}" --tag "$image" .
+          trivy image \
+            --format sarif \
+            --output "trivy-image-${{ matrix.service }}.sarif" \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            "$image"
+          docker push "$image"
+          docker tag "$image" "${REGISTRY}/${ECR_REPOSITORY}:sha-${GITHUB_SHA::7}"
+          docker push "${REGISTRY}/${ECR_REPOSITORY}:sha-${GITHUB_SHA::7}"
+
+      - name: Upload UAT image security report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: uat-${{ matrix.service }}-image-security-report
+          if-no-files-found: warn
+          retention-days: 30
+          path: trivy-image-${{ matrix.service }}.sarif
+
+  deploy_uat:
+    name: Deploy and verify UAT
+    runs-on: ubuntu-latest
+    needs: [prepare_release, build_uat]
+    environment: uat
+    env:
+      EKS_CLUSTER_NAME: ${{ vars.UAT_EKS_CLUSTER_NAME }}
+      K8S_NAMESPACE: ${{ vars.UAT_K8S_NAMESPACE || 'ih' }}
+      SRVAPP_DEPLOYMENT: ${{ vars.UAT_SRVAPP_DEPLOYMENT || 'ih-uat-remote-opinion-radar-srvapp' }}
+      WORKER_DEPLOYMENT: ${{ vars.UAT_WORKER_DEPLOYMENT || 'ih-uat-remote-opinion-radar-worker' }}
+      WEBAPP_DEPLOYMENT: ${{ vars.UAT_WEBAPP_DEPLOYMENT || 'ih-uat-remote-opinion-radar-webapp' }}
+      SRVAPP_REPOSITORY: ${{ vars.UAT_ECR_SRVAPP_REPOSITORY || 'ih-uat-remote-opinion-radar-srvapp' }}
+      WEBAPP_REPOSITORY: ${{ vars.UAT_ECR_WEBAPP_REPOSITORY || 'ih-uat-remote-opinion-radar-webapp' }}
+    steps:
+      - name: Configure UAT AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure UAT Kubernetes access
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$EKS_CLUSTER_NAME" ]; then
+            echo "::error::Set UAT_EKS_CLUSTER_NAME in the uat GitHub environment."
+            exit 1
+          fi
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
+          kubectl auth can-i patch deployments -n "$K8S_NAMESPACE" | grep -qx yes
+
+      - name: Update selected UAT deployments
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ needs.prepare_release.outputs.image_tag }}
+          TARGET_SERVICE: ${{ inputs.service_name }}
+        run: |
+          set -euo pipefail
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+          if [ "$TARGET_SERVICE" = "all" ] || [ "$TARGET_SERVICE" = "srvapp" ]; then
+            srvapp_image="${registry}/${SRVAPP_REPOSITORY}:${IMAGE_TAG}"
+            kubectl -n "$K8S_NAMESPACE" set image "deployment/${SRVAPP_DEPLOYMENT}" "srvapp=${srvapp_image}"
+            kubectl -n "$K8S_NAMESPACE" set image "deployment/${WORKER_DEPLOYMENT}" \
+              "migrate=${srvapp_image}" "bootstrap-data=${srvapp_image}" "worker=${srvapp_image}"
+            kubectl -n "$K8S_NAMESPACE" rollout status "deployment/${WORKER_DEPLOYMENT}" --timeout=20m
+            kubectl -n "$K8S_NAMESPACE" rollout status "deployment/${SRVAPP_DEPLOYMENT}" --timeout=5m
+          fi
+
+          if [ "$TARGET_SERVICE" = "all" ] || [ "$TARGET_SERVICE" = "webapp" ]; then
+            webapp_image="${registry}/${WEBAPP_REPOSITORY}:${IMAGE_TAG}"
+            kubectl -n "$K8S_NAMESPACE" set image "deployment/${WEBAPP_DEPLOYMENT}" "webapp=${webapp_image}"
+            kubectl -n "$K8S_NAMESPACE" rollout status "deployment/${WEBAPP_DEPLOYMENT}" --timeout=5m
+          fi
+
+  uat_dast:
+    name: UAT dynamic security baseline
+    runs-on: [self-hosted, AWS+UAT_GR_01]
+    timeout-minutes: 30
+    needs: [prepare_release, deploy_uat]
+    environment: uat
+    env:
+      UAT_BASE_URL: ${{ vars.UAT_BASE_URL }}
+    steps:
+      - name: Validate UAT target
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$UAT_BASE_URL" ]; then
+            echo "::error::Set UAT_BASE_URL in the uat GitHub environment."
+            exit 1
+          fi
+          curl --fail --silent --show-error --location --max-time 30 "$UAT_BASE_URL" >/dev/null
+
+      - name: Run OWASP ZAP baseline
+        id: zap
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/futu-radar-zap"
+          mkdir -p "$work"
+          chmod 777 "$work"
+          set +e
+          docker run --rm \
+            -v "$work:/zap/wrk" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+              -t "$UAT_BASE_URL" \
+              -J futu-radar-uat-dast-report.json \
+              -r futu-radar-uat-dast-report.html \
+              -m 5
+          status=$?
+          set -e
+          cp "$work"/futu-radar-uat-dast-report.* .
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          if [ "$status" -eq 1 ] || [ "$status" -ge 3 ]; then
+            echo "::error::ZAP baseline failed with exit code $status."
+            exit "$status"
+          fi
+          if [ "$status" -eq 2 ]; then
+            echo "::warning::ZAP completed with warnings; review the report."
+          fi
+
+      - name: Upload dynamic security report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dynamic-security-report
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            futu-radar-uat-dast-report.json
+            futu-radar-uat-dast-report.html
+
+  prd_approval:
+    name: Approve production release
+    runs-on: ubuntu-latest
+    needs: [prepare_release, uat_dast]
+    if: inputs.target_environment == 'PRD'
+    environment: prd
+    steps:
+      - name: Record approval context
+        shell: bash
+        run: |
+          {
+            echo "## PRD approval"
+            echo "- commit: $GITHUB_SHA"
+            echo "- image tag: ${{ needs.prepare_release.outputs.image_tag }}"
+            echo "- UAT deployment and DAST: passed"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build_prd:
+    name: Build and push PRD (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: [prepare_release, prd_approval]
+    if: inputs.target_environment == 'PRD'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare_release.outputs.service_matrix) }}
+    env:
+      ECR_REPOSITORY: ${{ matrix.service == 'srvapp' && (vars.PRD_ECR_SRVAPP_REPOSITORY || 'ih-prd-remote-opinion-radar-srvapp') || (vars.PRD_ECR_WEBAPP_REPOSITORY || 'ih-prd-remote-opinion-radar-webapp') }}
+      PRD_AWS_ACCOUNT_ID: ${{ vars.PRD_AWS_ACCOUNT_ID || '449732370091' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Configure PRD AWS profiles
+        shell: bash
+        env:
+          AWS_CREDENTIALS_CONTENT: ${{ secrets.AWS_CREDENTIALS }}
+          AWS_CONFIG_CONTENT: ${{ secrets.AWS_CONFIG }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AWS_CREDENTIALS_CONTENT" ] || [ -z "$AWS_CONFIG_CONTENT" ]; then
+            echo "::error::AWS_CREDENTIALS and AWS_CONFIG secrets are required."
+            exit 1
+          fi
+          install -d -m 700 "$HOME/.aws"
+          printf '%s\n' "$AWS_CREDENTIALS_CONTENT" > "$HOME/.aws/credentials"
+          printf '%s\n' "$AWS_CONFIG_CONTENT" > "$HOME/.aws/config"
+          chmod 600 "$HOME/.aws/credentials" "$HOME/.aws/config"
+          account=$(AWS_PROFILE=ecr_prd aws sts get-caller-identity --query Account --output text)
+          if [ "$account" != "$PRD_AWS_ACCOUNT_ID" ]; then
+            echo "::error::ecr_prd resolved account $account; expected $PRD_AWS_ACCOUNT_ID."
+            exit 1
+          fi
+
+      - name: Log in to PRD ECR
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry="${PRD_AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          AWS_PROFILE=ecr_prd aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null
+          AWS_PROFILE=ecr_prd aws ecr get-login-password --region "$AWS_REGION" | \
+            docker login --username AWS --password-stdin "$registry"
+
+      - name: Install Trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="0.69.3"
+          curl --fail --location --silent --show-error \
+            --retry 2 --output "$RUNNER_TEMP/trivy.tar.gz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${version}/trivy_${version}_Linux-64bit.tar.gz"
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
+          sudo install -m 0755 "$RUNNER_TEMP/trivy" /usr/local/bin/trivy
+
+      - name: Build, scan, and push PRD image
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ needs.prepare_release.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          registry="${PRD_AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          image="${registry}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          docker build --file "${{ matrix.dockerfile }}" --tag "$image" .
+          trivy image \
+            --format sarif \
+            --output "trivy-prd-image-${{ matrix.service }}.sarif" \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            "$image"
+          docker push "$image"
+          docker tag "$image" "${registry}/${ECR_REPOSITORY}:sha-${GITHUB_SHA::7}"
+          docker push "${registry}/${ECR_REPOSITORY}:sha-${GITHUB_SHA::7}"
+
+      - name: Upload PRD image security report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: prd-${{ matrix.service }}-image-security-report
+          if-no-files-found: warn
+          retention-days: 90
+          path: trivy-prd-image-${{ matrix.service }}.sarif
+
+  deploy_prd:
+    name: Deploy and verify PRD
+    runs-on: ubuntu-latest
+    needs: [prepare_release, build_prd]
+    if: inputs.target_environment == 'PRD'
+    env:
+      PRD_AWS_ACCOUNT_ID: ${{ vars.PRD_AWS_ACCOUNT_ID || '449732370091' }}
+      EKS_CLUSTER_NAME: ${{ vars.PRD_EKS_CLUSTER_NAME }}
+      K8S_NAMESPACE: ${{ vars.PRD_K8S_NAMESPACE || 'ih' }}
+      SRVAPP_DEPLOYMENT: ${{ vars.PRD_SRVAPP_DEPLOYMENT || 'ih-prd-remote-opinion-radar-srvapp' }}
+      WORKER_DEPLOYMENT: ${{ vars.PRD_WORKER_DEPLOYMENT || 'ih-prd-remote-opinion-radar-worker' }}
+      WEBAPP_DEPLOYMENT: ${{ vars.PRD_WEBAPP_DEPLOYMENT || 'ih-prd-remote-opinion-radar-webapp' }}
+      SRVAPP_REPOSITORY: ${{ vars.PRD_ECR_SRVAPP_REPOSITORY || 'ih-prd-remote-opinion-radar-srvapp' }}
+      WEBAPP_REPOSITORY: ${{ vars.PRD_ECR_WEBAPP_REPOSITORY || 'ih-prd-remote-opinion-radar-webapp' }}
+    steps:
+      - name: Configure PRD AWS profiles
+        shell: bash
+        env:
+          AWS_CREDENTIALS_CONTENT: ${{ secrets.AWS_CREDENTIALS }}
+          AWS_CONFIG_CONTENT: ${{ secrets.AWS_CONFIG }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.aws"
+          printf '%s\n' "$AWS_CREDENTIALS_CONTENT" > "$HOME/.aws/credentials"
+          printf '%s\n' "$AWS_CONFIG_CONTENT" > "$HOME/.aws/config"
+          chmod 600 "$HOME/.aws/credentials" "$HOME/.aws/config"
+          AWS_PROFILE=eks_prd aws sts get-caller-identity >/dev/null
+
+      - name: Configure PRD Kubernetes access
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$EKS_CLUSTER_NAME" ]; then
+            echo "::error::Set PRD_EKS_CLUSTER_NAME as a repository variable."
+            exit 1
+          fi
+          AWS_PROFILE=eks_prd aws eks update-kubeconfig \
+            --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
+          kubectl auth can-i patch deployments -n "$K8S_NAMESPACE" | grep -qx yes
+
+      - name: Update selected PRD deployments
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ needs.prepare_release.outputs.image_tag }}
+          TARGET_SERVICE: ${{ inputs.service_name }}
+        run: |
+          set -euo pipefail
+          registry="${PRD_AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+          if [ "$TARGET_SERVICE" = "all" ] || [ "$TARGET_SERVICE" = "srvapp" ]; then
+            srvapp_image="${registry}/${SRVAPP_REPOSITORY}:${IMAGE_TAG}"
+            kubectl -n "$K8S_NAMESPACE" set image "deployment/${SRVAPP_DEPLOYMENT}" "srvapp=${srvapp_image}"
+            kubectl -n "$K8S_NAMESPACE" set image "deployment/${WORKER_DEPLOYMENT}" \
+              "migrate=${srvapp_image}" "bootstrap-data=${srvapp_image}" "worker=${srvapp_image}"
+            kubectl -n "$K8S_NAMESPACE" rollout status "deployment/${WORKER_DEPLOYMENT}" --timeout=20m
+            kubectl -n "$K8S_NAMESPACE" rollout status "deployment/${SRVAPP_DEPLOYMENT}" --timeout=5m
+          fi
+
+          if [ "$TARGET_SERVICE" = "all" ] || [ "$TARGET_SERVICE" = "webapp" ]; then
+            webapp_image="${registry}/${WEBAPP_REPOSITORY}:${IMAGE_TAG}"
+            kubectl -n "$K8S_NAMESPACE" set image "deployment/${WEBAPP_DEPLOYMENT}" "webapp=${webapp_image}"
+            kubectl -n "$K8S_NAMESPACE" rollout status "deployment/${WEBAPP_DEPLOYMENT}" --timeout=5m
+          fi
+
+  release_summary:
+    name: Release result summary
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - ci_security
+      - prepare_release
+      - build_uat
+      - deploy_uat
+      - uat_dast
+      - prd_approval
+      - build_prd
+      - deploy_prd
+    steps:
+      - name: Publish and enforce result
+        shell: bash
+        run: |
+          {
+            echo "## Futu Radar release"
+            echo "- target: ${{ inputs.target_environment }}"
+            echo "- service: ${{ inputs.service_name }}"
+            echo "- image tag: ${{ needs.prepare_release.outputs.image_tag || 'n/a' }}"
+            echo "- CI security: ${{ needs.ci_security.result }}"
+            echo "- UAT build: ${{ needs.build_uat.result }}"
+            echo "- UAT deploy: ${{ needs.deploy_uat.result }}"
+            echo "- UAT DAST: ${{ needs.uat_dast.result }}"
+            echo "- PRD approval: ${{ needs.prd_approval.result }}"
+            echo "- PRD build: ${{ needs.build_prd.result }}"
+            echo "- PRD deploy: ${{ needs.deploy_prd.result }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${{ needs.ci_security.result }}" != "success" ] || \
+             [ "${{ needs.deploy_uat.result }}" != "success" ] || \
+             [ "${{ needs.uat_dast.result }}" != "success" ]; then
+            echo "::error::CI, UAT deployment, or UAT DAST did not succeed."
+            exit 1
+          fi
+
+          if [ "${{ inputs.target_environment }}" = "PRD" ] && \
+             [ "${{ needs.deploy_prd.result }}" != "success" ]; then
+            echo "::error::PRD deployment did not succeed."
+            exit 1
+          fi

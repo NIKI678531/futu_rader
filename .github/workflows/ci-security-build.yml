@@ -1,0 +1,324 @@
+name: CI Security Build Pipeline
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      static_report_artifact:
+        description: Static security report artifact name
+        value: ${{ jobs.code_scan.outputs.artifact_name }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-security-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python_tests:
+    name: Python tests (${{ matrix.component }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [backend, worker]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: ${{ matrix.component }}/requirements.lock
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.component }}
+        run: python -m pip install --disable-pip-version-check --require-hashes -r requirements.lock
+
+      - name: Run tests
+        working-directory: ${{ matrix.component }}
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q
+
+  frontend_tests:
+    name: Frontend tests and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.22.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Run deterministic frontend checks
+        working-directory: frontend
+        run: |
+          npm run unit
+          npm run guards
+          npm run build
+
+  code_scan:
+    name: Code scan (SAST, secrets, dependencies)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    outputs:
+      artifact_name: ci-static-security-reports
+      blocking_findings: ${{ steps.summary.outputs.blocking_findings }}
+      finding_counts: ${{ steps.summary.outputs.finding_counts }}
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        id: gitleaks
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="8.24.2"
+          timeout 90s gh release download "v${version}" --repo gitleaks/gitleaks \
+            --pattern "gitleaks_${version}_linux_x64.tar.gz" \
+            --output "$RUNNER_TEMP/gitleaks.tar.gz"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          chmod +x "$RUNNER_TEMP/gitleaks"
+          "$RUNNER_TEMP/gitleaks" detect \
+            --source . \
+            --redact \
+            --report-format sarif \
+            --report-path gitleaks-results.sarif
+
+      - name: Set up Python for scanners
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Semgrep
+        run: python -m pip install --disable-pip-version-check semgrep
+
+      - name: Run Semgrep
+        id: semgrep
+        continue-on-error: true
+        shell: bash
+        run: |
+          semgrep scan \
+            --config auto \
+            --error \
+            --sarif \
+            --output semgrep-results.sarif \
+            .
+
+      - name: Install Trivy
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="0.69.3"
+          curl --fail --location --silent --show-error \
+            --retry 2 --retry-delay 2 --connect-timeout 10 --max-time 90 \
+            --output "$RUNNER_TEMP/trivy.tar.gz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${version}/trivy_${version}_Linux-64bit.tar.gz"
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
+          sudo install -m 0755 "$RUNNER_TEMP/trivy" /usr/local/bin/trivy
+
+      - name: Run Trivy filesystem scan
+        id: trivy
+        continue-on-error: true
+        shell: bash
+        run: |
+          trivy fs \
+            --format sarif \
+            --output trivy-results.sarif \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            .
+
+      - name: Upload Trivy SARIF when GHAS is enabled
+        if: ${{ vars.ENABLE_GHAS_CODE_SCANNING == 'true' && hashFiles('trivy-results.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-fs
+
+      - name: Generate static security summary
+        id: summary
+        if: always()
+        shell: bash
+        env:
+          GITLEAKS_OUTCOME: ${{ steps.gitleaks.outcome }}
+          SEMGREP_OUTCOME: ${{ steps.semgrep.outcome }}
+          TRIVY_OUTCOME: ${{ steps.trivy.outcome }}
+        run: |
+          python - <<'PY'
+          import html
+          import json
+          import os
+          from pathlib import Path
+
+          reports = [
+              ("Gitleaks", Path("gitleaks-results.sarif")),
+              ("Semgrep", Path("semgrep-results.sarif")),
+              ("Trivy", Path("trivy-results.sarif")),
+          ]
+          counts = {"high": 0, "medium": 0, "low": 0, "info": 0}
+          rows = []
+
+          for scanner, path in reports:
+              scanner_total = 0
+              if path.exists():
+                  try:
+                      document = json.loads(path.read_text(encoding="utf-8"))
+                  except (OSError, json.JSONDecodeError):
+                      document = {}
+                  for run in document.get("runs", []):
+                      rules = {
+                          rule.get("id"): rule
+                          for rule in run.get("tool", {}).get("driver", {}).get("rules", [])
+                      }
+                      for result in run.get("results", []):
+                          if result.get("suppressions"):
+                              continue
+                          scanner_total += 1
+                          rule = rules.get(result.get("ruleId"), {})
+                          properties = rule.get("properties", {})
+                          level = str(result.get("level", "note")).lower()
+                          severity = str(properties.get("security-severity", "")).lower()
+                          if level == "error" or severity in {"critical", "high"}:
+                              counts["high"] += 1
+                          elif level == "warning" or severity == "medium":
+                              counts["medium"] += 1
+                          elif severity == "low":
+                              counts["low"] += 1
+                          else:
+                              counts["info"] += 1
+              rows.append((scanner, scanner_total, "present" if path.exists() else "missing"))
+
+          outcomes = {
+              "Gitleaks": os.environ.get("GITLEAKS_OUTCOME", "unknown"),
+              "Semgrep": os.environ.get("SEMGREP_OUTCOME", "unknown"),
+              "Trivy": os.environ.get("TRIVY_OUTCOME", "unknown"),
+          }
+          scan_error = any(value not in {"success", "failure"} for value in outcomes.values())
+          blocking = counts["high"] + (1 if scan_error else 0)
+          total = sum(counts.values())
+
+          body = [
+              "<!doctype html><html><head><meta charset='utf-8'>",
+              "<title>Futu Radar static security summary</title></head><body>",
+              "<h1>Futu Radar static security summary</h1>",
+              f"<p>Total: {total}; high/critical: {counts['high']}; medium: {counts['medium']}; low: {counts['low']}; info: {counts['info']}</p>",
+              "<table border='1'><tr><th>Scanner</th><th>Findings</th><th>Report</th><th>Outcome</th></tr>",
+          ]
+          for scanner, scanner_total, report_status in rows:
+              body.append(
+                  f"<tr><td>{html.escape(scanner)}</td><td>{scanner_total}</td>"
+                  f"<td>{report_status}</td><td>{html.escape(outcomes[scanner])}</td></tr>"
+              )
+          body.append("</table></body></html>")
+          Path("static-security-summary.html").write_text("".join(body), encoding="utf-8")
+
+          finding_counts = (
+              f"total={total},high={counts['high']},medium={counts['medium']},"
+              f"low={counts['low']},info={counts['info']}"
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"blocking_findings={blocking}\n")
+              output.write(f"finding_counts={finding_counts}\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## Static security scan\n")
+              summary.write(f"- {finding_counts}\n")
+              summary.write(f"- blocking findings or scanner errors: {blocking}\n")
+          PY
+
+      - name: Package static security reports
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-static-security-reports
+          for report in \
+            gitleaks-results.sarif \
+            semgrep-results.sarif \
+            trivy-results.sarif \
+            static-security-summary.html; do
+            if [ -f "$report" ]; then
+              cp "$report" ci-static-security-reports/
+            fi
+          done
+          {
+            echo "Futu Radar CI static security reports"
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > ci-static-security-reports/manifest.txt
+
+      - name: Upload static security reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ci-static-security-reports
+          if-no-files-found: error
+          retention-days: 30
+          path: ci-static-security-reports/
+
+      - name: Enforce static security gate
+        if: always()
+        shell: bash
+        env:
+          BLOCKING_FINDINGS: ${{ steps.summary.outputs.blocking_findings }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BLOCKING_FINDINGS" ] || [ "$BLOCKING_FINDINGS" != "0" ]; then
+            echo "::error::Static security gate failed. Review ci-static-security-reports."
+            exit 1
+          fi
+
+  container_build:
+    name: Container build (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: [python_tests, frontend_tests]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: srvapp
+            dockerfile: backend/Dockerfile
+          - service: webapp
+            dockerfile: frontend/Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build production image
+        shell: bash
+        run: |
+          docker build \
+            --file "${{ matrix.dockerfile }}" \
+            --tag "futu-radar/${{ matrix.service }}:ci-${GITHUB_SHA}" \
+            .

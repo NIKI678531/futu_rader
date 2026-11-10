@@ -1,0 +1,206 @@
+name: Daily UAT Security Scan
+
+run-name: Daily UAT Security Scan | HK 00:00 | run=${{ github.run_number }}
+
+on:
+  schedule:
+    # Hong Kong is UTC+8 year-round. 16:00 UTC is 00:00 the next day in Hong Kong.
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: daily-uat-security-scan
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  check_recent_prd_release:
+    name: Check for a successful PRD release in the previous 24 hours
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      release_run_url: ${{ steps.check.outputs.release_run_url }}
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Find recent successful PRD release
+        id: check
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const workflowId = "cd-security-scan-release.yml";
+            const now = Date.now();
+            const cutoff = now - (24 * 60 * 60 * 1000);
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: workflowId,
+              event: "workflow_dispatch",
+              status: "success",
+              per_page: 100
+            });
+
+            const release = runs.find((run) => {
+              const title = `${run.name || ""} ${run.display_title || ""}`;
+              const completedAt = Date.parse(run.updated_at || run.created_at);
+              return title.includes("target=PRD") && completedAt >= cutoff && completedAt <= now;
+            });
+
+            core.setOutput("should_run", release ? "true" : "false");
+            core.setOutput("release_run_url", release?.html_url || "");
+            if (release) {
+              core.info(`Found qualifying PRD release: ${release.html_url}`);
+              await core.summary
+                .addHeading("Daily UAT security scan enabled")
+                .addRaw("A successful PRD release completed in the previous 24 hours.\n")
+                .addLink("Open qualifying PRD release", release.html_url)
+                .write();
+            } else {
+              core.info("No successful PRD release completed in the previous 24 hours.");
+              await core.summary
+                .addHeading("Daily UAT security scan skipped")
+                .addRaw("No successful PRD release completed in the previous 24 hours.\n")
+                .write();
+            }
+
+  run_uat_security_pipeline:
+    name: Run UAT build, deployment, and security scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: check_recent_prd_release
+    if: needs.check_recent_prd_release.outputs.should_run == 'true'
+    outputs:
+      downstream_run_id: ${{ steps.dispatch.outputs.downstream_run_id }}
+      downstream_run_url: ${{ steps.dispatch.outputs.downstream_run_url }}
+    steps:
+      - name: Dispatch and wait for CD security release
+        id: dispatch
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const workflowId = "cd-security-scan-release.yml";
+            const ref = context.payload.repository.default_branch;
+            const auditTag = `DAILY-${context.runId}`;
+            const startedAt = Date.now();
+
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: workflowId,
+              ref,
+              inputs: {
+                target_environment: "UAT",
+                service_name: "all",
+                release_tag: "",
+                audit_tag: auditTag
+              }
+            });
+
+            let run;
+            for (let attempt = 0; attempt < 60; attempt += 1) {
+              const response = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: workflowId,
+                event: "workflow_dispatch",
+                branch: ref,
+                per_page: 30
+              });
+              run = response.data.workflow_runs.find((candidate) => {
+                const createdAt = Date.parse(candidate.created_at);
+                return createdAt >= startedAt - 5000
+                  && candidate.head_branch === ref
+                  && String(candidate.display_title || "").includes(auditTag);
+              });
+              if (run) break;
+              await new Promise((resolve) => setTimeout(resolve, 10000));
+            }
+
+            if (!run) {
+              core.setFailed("The dispatched UAT security workflow run could not be located.");
+              return;
+            }
+
+            core.setOutput("downstream_run_id", String(run.id));
+            core.setOutput("downstream_run_url", run.html_url);
+            core.info(`Dispatched UAT security run: ${run.html_url}`);
+
+            for (let attempt = 0; attempt < 300; attempt += 1) {
+              const response = await github.rest.actions.getWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id
+              });
+              run = response.data;
+              if (run.status === "completed") break;
+              await new Promise((resolve) => setTimeout(resolve, 15000));
+            }
+
+            if (run.status !== "completed") {
+              core.setFailed(`Timed out waiting for UAT security run: ${run.html_url}`);
+              return;
+            }
+            if (run.conclusion !== "success") {
+              core.setFailed(`UAT security run concluded with ${run.conclusion}: ${run.html_url}`);
+              return;
+            }
+
+            await core.summary
+              .addHeading("Daily UAT security baseline")
+              .addRaw("CI, UAT deployment, rollout verification, image scanning, and ZAP completed successfully.\n")
+              .addLink("Open CD security release run", run.html_url)
+              .write();
+
+  publish_scan_reports:
+    name: Publish daily security reports
+    runs-on: ubuntu-latest
+    needs: run_uat_security_pipeline
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Download static security reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ci-static-security-reports
+          path: daily-reports/static
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.run_uat_security_pipeline.outputs.downstream_run_id }}
+
+      - name: Upload daily UAT static security report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: daily-uat-static-security-report
+          if-no-files-found: error
+          retention-days: 90
+          path: daily-reports/static/
+
+      - name: Download dynamic security reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dynamic-security-report
+          path: daily-reports/dynamic
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.run_uat_security_pipeline.outputs.downstream_run_id }}
+
+      - name: Upload daily UAT dynamic security report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: daily-uat-dynamic-security-report
+          if-no-files-found: error
+          retention-days: 90
+          path: daily-reports/dynamic/
+
+      - name: Publish report links
+        shell: bash
+        run: |
+          {
+            echo "## Daily UAT reports"
+            echo "- Static artifact: \`daily-uat-static-security-report\`"
+            echo "- Dynamic artifact: \`daily-uat-dynamic-security-report\`"
+            echo "- Source run: ${{ needs.run_uat_security_pipeline.outputs.downstream_run_url }}"
+          } >> "$GITHUB_STEP_SUMMARY"
