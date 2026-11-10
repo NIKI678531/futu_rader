@@ -30,6 +30,7 @@ ENV PATH=/opt/srvapp/bin:$PATH \
 
 RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends tini tzdata ca-certificates libstdc++6 \
+    && python -m pip uninstall -y pip setuptools wheel jaraco.context \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 10001 app && useradd -r -u 10001 -g app -d /home/app app \
     && mkdir -p /home/app /app/.scratch && chmod 1777 /home/app /app/.scratch /tmp
