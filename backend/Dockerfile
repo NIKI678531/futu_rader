@@ -1,5 +1,6 @@
 FROM python:3.11.14-slim-bookworm AS dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends gcc g++ \
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends gcc g++ \
     && rm -rf /var/lib/apt/lists/*
 RUN python -m venv /opt/srvapp /opt/worker
 WORKDIR /build/srvapp
@@ -11,7 +12,9 @@ WORKDIR /build/worker
 COPY worker/requirements.txt worker/requirements.lock ./
 RUN /opt/worker/bin/pip install --no-cache-dir --require-hashes -r requirements.lock \
     && /opt/worker/bin/pip install --no-cache-dir --no-index --no-deps -r requirements.txt \
-    && /opt/worker/bin/pip check
+    && /opt/worker/bin/pip check \
+    && /opt/srvapp/bin/pip uninstall -y pip setuptools wheel jaraco.context \
+    && /opt/worker/bin/pip uninstall -y pip setuptools wheel jaraco.context
 
 FROM python:3.11.14-slim-bookworm
 ENV PATH=/opt/srvapp/bin:$PATH \
@@ -25,7 +28,8 @@ ENV PATH=/opt/srvapp/bin:$PATH \
     XDG_CACHE_HOME=/home/app/.cache \
     WORKER_HEALTH_FILE=/tmp/worker-heartbeat
 
-RUN apt-get update && apt-get install -y --no-install-recommends tini tzdata ca-certificates libstdc++6 \
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends tini tzdata ca-certificates libstdc++6 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 10001 app && useradd -r -u 10001 -g app -d /home/app app \
     && mkdir -p /home/app /app/.scratch && chmod 1777 /home/app /app/.scratch /tmp

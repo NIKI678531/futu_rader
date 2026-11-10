@@ -17,7 +17,8 @@ FROM nginxinc/nginx-unprivileged:1.30.0-alpine
 ENV NGINX_ENVSUBST_FILTER=^API_UPSTREAM$ \
     TZ=Asia/Hong_Kong
 USER root
-RUN apk add --no-cache tzdata \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache tzdata \
     && rm -f /etc/nginx/conf.d/default.conf \
     && chmod 1777 /etc/nginx/conf.d /tmp
 COPY frontend/nginx/default.conf.template /etc/nginx/templates/default.conf.template
