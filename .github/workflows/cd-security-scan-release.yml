@@ -398,6 +398,15 @@ jobs:
       SRVAPP_DEPLOYMENT: ${{ vars.PRD_SRVAPP_DEPLOYMENT || 'ih-prd-remote-opinion-radar-srvapp' }}
       WORKER_DEPLOYMENT: ${{ vars.PRD_WORKER_DEPLOYMENT || 'ih-prd-remote-opinion-radar-worker' }}
       WEBAPP_DEPLOYMENT: ${{ vars.PRD_WEBAPP_DEPLOYMENT || 'ih-prd-remote-opinion-radar-webapp' }}
+      SRVAPP_SERVICE: ${{ vars.PRD_SRVAPP_SERVICE || 'ih-prd-remote-opinion-radar-srvapp' }}
+      WEBAPP_SERVICE: ${{ vars.PRD_WEBAPP_SERVICE || 'ih-prd-remote-opinion-radar-webapp' }}
+      SRVAPP_CONFIGMAP: ${{ vars.PRD_SRVAPP_CONFIGMAP || 'ih-prd-remote-opinion-radar-srvapp-config' }}
+      WORKER_CONFIGMAP: ${{ vars.PRD_WORKER_CONFIGMAP || 'ih-prd-remote-opinion-radar-worker-config' }}
+      SRVAPP_SECRET: ${{ vars.PRD_SRVAPP_SECRET || 'ih-prd-remote-opinion-radar-srvapp-secret' }}
+      WORKER_SECRET: ${{ vars.PRD_WORKER_SECRET || 'ih-prd-remote-opinion-radar-worker-secret' }}
+      INGRESS_NAME: ${{ vars.PRD_INGRESS_NAME || 'hkg-csop-prd-lb16-ih' }}
+      INGRESS_API_PATH: ${{ vars.PRD_INGRESS_API_PATH || '/remote/opinion-radar/api' }}
+      INGRESS_WEB_PATH: ${{ vars.PRD_INGRESS_WEB_PATH || '/remote/opinion-radar' }}
       SRVAPP_REPOSITORY: ${{ vars.PRD_ECR_SRVAPP_REPOSITORY || 'ih-prd-remote-opinion-radar-srvapp' }}
       WEBAPP_REPOSITORY: ${{ vars.PRD_ECR_WEBAPP_REPOSITORY || 'ih-prd-remote-opinion-radar-webapp' }}
     steps:
@@ -425,6 +434,54 @@ jobs:
           AWS_PROFILE=eks_prd aws eks update-kubeconfig \
             --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
           kubectl auth can-i patch deployments -n "$K8S_NAMESPACE" | grep -qx yes
+
+      - name: Validate existing PRD runtime configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for resource in \
+            "configmap/${SRVAPP_CONFIGMAP}" \
+            "configmap/${WORKER_CONFIGMAP}" \
+            "secret/${SRVAPP_SECRET}" \
+            "secret/${WORKER_SECRET}" \
+            "service/${SRVAPP_SERVICE}" \
+            "service/${WEBAPP_SERVICE}" \
+            "ingress/${INGRESS_NAME}"; do
+            kubectl -n "$K8S_NAMESPACE" get "$resource" >/dev/null
+          done
+
+          ingress_json="$RUNNER_TEMP/opinion-radar-ingress.json"
+          kubectl -n "$K8S_NAMESPACE" get "ingress/${INGRESS_NAME}" -o json > "$ingress_json"
+          INGRESS_JSON="$ingress_json" python3 - <<'PY'
+          import json
+          import os
+
+          with open(os.environ["INGRESS_JSON"], encoding="utf-8") as source:
+              ingress = json.load(source)
+
+          actual = set()
+          for rule in ingress.get("spec", {}).get("rules", []):
+              for item in rule.get("http", {}).get("paths", []):
+                  service = item.get("backend", {}).get("service", {})
+                  actual.add((
+                      item.get("path"),
+                      service.get("name"),
+                      service.get("port", {}).get("number"),
+                  ))
+
+          service = os.environ["WEBAPP_SERVICE"]
+          expected = {
+              (os.environ["INGRESS_API_PATH"], service, 3026),
+              (os.environ["INGRESS_WEB_PATH"], service, 3026),
+          }
+          missing = expected - actual
+          if missing:
+              for path, name, port in sorted(missing):
+                  print(f"::error::Missing PRD Ingress route: {path} -> {name}:{port}")
+              raise SystemExit(1)
+          print("PRD ConfigMaps, Secrets, Services, and shared Ingress routes are present.")
+          PY
 
       - name: Update selected PRD deployments
         shell: bash

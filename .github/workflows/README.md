@@ -55,8 +55,25 @@ The following variables override project defaults when platform naming differs:
 | `PRD_SRVAPP_DEPLOYMENT` | `ih-prd-remote-opinion-radar-srvapp` |
 | `PRD_WORKER_DEPLOYMENT` | `ih-prd-remote-opinion-radar-worker` |
 | `PRD_WEBAPP_DEPLOYMENT` | `ih-prd-remote-opinion-radar-webapp` |
+| `PRD_SRVAPP_SERVICE` | `ih-prd-remote-opinion-radar-srvapp` |
+| `PRD_WEBAPP_SERVICE` | `ih-prd-remote-opinion-radar-webapp` |
+| `PRD_SRVAPP_CONFIGMAP` | `ih-prd-remote-opinion-radar-srvapp-config` |
+| `PRD_WORKER_CONFIGMAP` | `ih-prd-remote-opinion-radar-worker-config` |
+| `PRD_SRVAPP_SECRET` | `ih-prd-remote-opinion-radar-srvapp-secret` |
+| `PRD_WORKER_SECRET` | `ih-prd-remote-opinion-radar-worker-secret` |
+| `PRD_INGRESS_NAME` | `hkg-csop-prd-lb16-ih` |
+| `PRD_INGRESS_API_PATH` | `/remote/opinion-radar/api` |
+| `PRD_INGRESS_WEB_PATH` | `/remote/opinion-radar` |
 
 All ECR repositories and Kubernetes Deployments must exist before the first release. The CD workflow updates existing Deployments; it does not create clusters, repositories, namespaces, ConfigMaps, or Secrets.
+
+The PRD job validates the two ConfigMaps, two Kubernetes Secrets, two Services,
+and both routes in the existing shared Ingress before changing an image. It never
+applies `k8s/prd/ingress.yaml`, because that manifest owns routes shared by other
+applications. The application keys currently expected in Kubernetes are
+`RADAR_DB_URL`, `MARKET_INSIGHT_DATABASE_URL`, `AI_PRIMARY_API_KEY`,
+`AI_SYNTH_API_KEY`, and `FMP_API_KEY`; their values do not belong in GitHub
+workflow files.
 
 ## First activation
 
