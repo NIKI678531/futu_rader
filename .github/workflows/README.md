@@ -13,7 +13,9 @@ Create these environments:
 - `uat` for UAT deployment and DAST jobs.
 - `prd` for the production approval job. Configure required reviewers here so a PRD dispatch cannot deploy without approval.
 
-The `AWS+UAT_GR_01` self-hosted runner must be available to this repository. It needs Docker, `curl`, and network access to `UAT_BASE_URL`.
+All jobs use GitHub-hosted runners. The UAT DAST job creates a temporary ZAP Job
+inside the UAT cluster, so the runner does not need direct network access to an
+internal UAT Service.
 
 ## Required secrets
 
@@ -21,10 +23,8 @@ Configure these as repository or organization secrets:
 
 | Secret | Purpose |
 | --- | --- |
-| `AWS_ACCESS_KEY_ID` | UAT ECR and EKS access |
-| `AWS_SECRET_ACCESS_KEY` | UAT ECR and EKS access |
-| `AWS_CREDENTIALS` | AWS shared credentials file containing the `ecr_prd` and `eks_prd` profiles |
-| `AWS_CONFIG` | AWS shared config file for the same PRD profiles |
+| `AWS_CREDENTIALS` | AWS shared credentials file containing `ecr_uat`, `eks_uat`, `ecr_prd`, and `eks_prd` |
+| `AWS_CONFIG` | AWS shared config file for those four profiles |
 
 Do not place application credentials, database URLs, or API keys in workflow files or tracked Kubernetes Secret manifests.
 
@@ -32,11 +32,12 @@ Do not place application credentials, database URLs, or API keys in workflow fil
 
 | Variable | Required | Default / purpose |
 | --- | --- | --- |
-| `UAT_EKS_CLUSTER_NAME` | yes | EKS cluster updated by the UAT deployment job |
-| `UAT_BASE_URL` | yes | URL reachable from the UAT DAST runner |
+| `UAT_EKS_CLUSTER_NAME` | yes | `hkg-csop-aws-uat-vpc02-eks004-ahmiao` |
 | `PRD_EKS_CLUSTER_NAME` | yes for PRD | EKS cluster updated after PRD approval |
 | `AWS_REGION` | no | `ap-east-1` |
+| `UAT_AWS_ACCOUNT_ID` | no | `978533598453` |
 | `PRD_AWS_ACCOUNT_ID` | no | `449732370091` |
+| `UAT_DAST_TARGET` | no | Defaults to the UAT webapp ClusterIP Service URL |
 | `ENABLE_GHAS_CODE_SCANNING` | no | Set to `true` only when GitHub Advanced Security code scanning is enabled |
 
 The following variables override project defaults when platform naming differs:
@@ -49,6 +50,8 @@ The following variables override project defaults when platform naming differs:
 | `UAT_SRVAPP_DEPLOYMENT` | `ih-uat-remote-opinion-radar-srvapp` |
 | `UAT_WORKER_DEPLOYMENT` | `ih-uat-remote-opinion-radar-worker` |
 | `UAT_WEBAPP_DEPLOYMENT` | `ih-uat-remote-opinion-radar-webapp` |
+| `UAT_WEBAPP_SERVICE` | `ih-uat-remote-opinion-radar-webapp` |
+| `UAT_WEBAPP_SERVICE_PORT` | `3026` |
 | `PRD_K8S_NAMESPACE` | `ih` |
 | `PRD_ECR_SRVAPP_REPOSITORY` | `ih-prd-remote-opinion-radar-srvapp` |
 | `PRD_ECR_WEBAPP_REPOSITORY` | `ih-prd-remote-opinion-radar-webapp` |
@@ -65,7 +68,12 @@ The following variables override project defaults when platform naming differs:
 | `PRD_INGRESS_API_PATH` | `/remote/opinion-radar/api` |
 | `PRD_INGRESS_WEB_PATH` | `/remote/opinion-radar` |
 
-All ECR repositories and Kubernetes Deployments must exist before the first release. The CD workflow updates existing Deployments; it does not create clusters, repositories, namespaces, ConfigMaps, or Secrets.
+All ECR repositories and Kubernetes runtime resources must exist before the first
+release. The CD workflow updates existing Deployments; it does not create
+clusters, repositories, namespaces, ConfigMaps, Secrets, Services, or Ingresses.
+The intended UAT namespace is `ih` (the cluster name ends in `ahmiao`; that is not
+the application namespace). The prior Argo UAT definition used
+`CreateNamespace=true`, so platform automation must recreate `ih` when absent.
 
 The PRD job validates the two ConfigMaps, two Kubernetes Secrets, two Services,
 and both routes in the existing shared Ingress before changing an image. It never
@@ -78,7 +86,8 @@ workflow files.
 ## First activation
 
 1. Remove plaintext secrets from Git tracking and rotate any credential that has ever been committed.
-2. Configure the secrets, variables, environments, and self-hosted runner above.
+2. Configure the secrets, variables, environments, Kubernetes resources, and
+   environment-specific application credentials above.
 3. Run `CI Security Build Pipeline` manually and resolve all static-security findings.
 4. Run `CD Security Scan Release Pipeline` with target `UAT` and verify the two images, three Deployments, and ZAP report.
 5. Protect the `prd` environment with required reviewers, then test a `PRD` dispatch.
