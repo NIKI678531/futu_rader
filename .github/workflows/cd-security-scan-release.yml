@@ -105,26 +105,40 @@ jobs:
       matrix: ${{ fromJSON(needs.prepare_release.outputs.service_matrix) }}
     env:
       ECR_REPOSITORY: ${{ matrix.service == 'srvapp' && (vars.UAT_ECR_SRVAPP_REPOSITORY || 'ih-uat-remote-opinion-radar-srvapp') || (vars.UAT_ECR_WEBAPP_REPOSITORY || 'ih-uat-remote-opinion-radar-webapp') }}
+      UAT_AWS_ACCOUNT_ID: ${{ vars.UAT_AWS_ACCOUNT_ID || '978533598453' }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Configure UAT AWS credentials
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+      - name: Configure UAT AWS profiles
+        shell: bash
+        env:
+          AWS_CREDENTIALS_CONTENT: ${{ secrets.AWS_CREDENTIALS }}
+          AWS_CONFIG_CONTENT: ${{ secrets.AWS_CONFIG }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AWS_CREDENTIALS_CONTENT" ] || [ -z "$AWS_CONFIG_CONTENT" ]; then
+            echo "::error::AWS_CREDENTIALS and AWS_CONFIG secrets are required."
+            exit 1
+          fi
+          install -d -m 700 "$HOME/.aws"
+          printf '%s\n' "$AWS_CREDENTIALS_CONTENT" > "$HOME/.aws/credentials"
+          printf '%s\n' "$AWS_CONFIG_CONTENT" > "$HOME/.aws/config"
+          chmod 600 "$HOME/.aws/credentials" "$HOME/.aws/config"
+          account=$(AWS_PROFILE=ecr_uat aws sts get-caller-identity --query Account --output text)
+          if [ "$account" != "$UAT_AWS_ACCOUNT_ID" ]; then
+            echo "::error::ecr_uat resolved account $account; expected $UAT_AWS_ACCOUNT_ID."
+            exit 1
+          fi
 
       - name: Validate and log in to UAT ECR
         id: registry
         shell: bash
         run: |
           set -euo pipefail
-          account_id=$(aws sts get-caller-identity --query Account --output text)
-          registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null
-          aws ecr get-login-password --region "$AWS_REGION" | \
+          registry="${UAT_AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          AWS_PROFILE=ecr_uat aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null
+          AWS_PROFILE=ecr_uat aws ecr get-login-password --region "$AWS_REGION" | \
             docker login --username AWS --password-stdin "$registry"
           echo "registry=$registry" >> "$GITHUB_OUTPUT"
 
@@ -174,6 +188,7 @@ jobs:
     needs: [prepare_release, build_uat]
     environment: uat
     env:
+      UAT_AWS_ACCOUNT_ID: ${{ vars.UAT_AWS_ACCOUNT_ID || '978533598453' }}
       EKS_CLUSTER_NAME: ${{ vars.UAT_EKS_CLUSTER_NAME }}
       K8S_NAMESPACE: ${{ vars.UAT_K8S_NAMESPACE || 'ih' }}
       SRVAPP_DEPLOYMENT: ${{ vars.UAT_SRVAPP_DEPLOYMENT || 'ih-uat-remote-opinion-radar-srvapp' }}
@@ -182,12 +197,22 @@ jobs:
       SRVAPP_REPOSITORY: ${{ vars.UAT_ECR_SRVAPP_REPOSITORY || 'ih-uat-remote-opinion-radar-srvapp' }}
       WEBAPP_REPOSITORY: ${{ vars.UAT_ECR_WEBAPP_REPOSITORY || 'ih-uat-remote-opinion-radar-webapp' }}
     steps:
-      - name: Configure UAT AWS credentials
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+      - name: Configure UAT AWS profiles
+        shell: bash
+        env:
+          AWS_CREDENTIALS_CONTENT: ${{ secrets.AWS_CREDENTIALS }}
+          AWS_CONFIG_CONTENT: ${{ secrets.AWS_CONFIG }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AWS_CREDENTIALS_CONTENT" ] || [ -z "$AWS_CONFIG_CONTENT" ]; then
+            echo "::error::AWS_CREDENTIALS and AWS_CONFIG secrets are required."
+            exit 1
+          fi
+          install -d -m 700 "$HOME/.aws"
+          printf '%s\n' "$AWS_CREDENTIALS_CONTENT" > "$HOME/.aws/credentials"
+          printf '%s\n' "$AWS_CONFIG_CONTENT" > "$HOME/.aws/config"
+          chmod 600 "$HOME/.aws/credentials" "$HOME/.aws/config"
+          AWS_PROFILE=eks_uat aws sts get-caller-identity >/dev/null
 
       - name: Configure UAT Kubernetes access
         shell: bash
@@ -197,7 +222,7 @@ jobs:
             echo "::error::Set UAT_EKS_CLUSTER_NAME in the uat GitHub environment."
             exit 1
           fi
-          aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
+          AWS_PROFILE=eks_uat aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
           kubectl auth can-i patch deployments -n "$K8S_NAMESPACE" | grep -qx yes
 
       - name: Update selected UAT deployments
@@ -207,8 +232,7 @@ jobs:
           TARGET_SERVICE: ${{ inputs.service_name }}
         run: |
           set -euo pipefail
-          account_id=$(aws sts get-caller-identity --query Account --output text)
-          registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          registry="${UAT_AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
           if [ "$TARGET_SERVICE" = "all" ] || [ "$TARGET_SERVICE" = "srvapp" ]; then
             srvapp_image="${registry}/${SRVAPP_REPOSITORY}:${IMAGE_TAG}"
@@ -227,44 +251,79 @@ jobs:
 
   uat_dast:
     name: UAT dynamic security baseline
-    runs-on: [self-hosted, AWS+UAT_GR_01]
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [prepare_release, deploy_uat]
     environment: uat
     env:
-      UAT_BASE_URL: ${{ vars.UAT_BASE_URL }}
+      EKS_CLUSTER_NAME: ${{ vars.UAT_EKS_CLUSTER_NAME }}
+      K8S_NAMESPACE: ${{ vars.UAT_K8S_NAMESPACE || 'ih' }}
+      UAT_DAST_TARGET: ${{ vars.UAT_DAST_TARGET }}
+      UAT_WEBAPP_SERVICE: ${{ vars.UAT_WEBAPP_SERVICE || 'ih-uat-remote-opinion-radar-webapp' }}
+      UAT_WEBAPP_SERVICE_PORT: ${{ vars.UAT_WEBAPP_SERVICE_PORT || '3026' }}
     steps:
-      - name: Validate UAT target
+      - name: Configure UAT AWS profiles
         shell: bash
+        env:
+          AWS_CREDENTIALS_CONTENT: ${{ secrets.AWS_CREDENTIALS }}
+          AWS_CONFIG_CONTENT: ${{ secrets.AWS_CONFIG }}
         run: |
           set -euo pipefail
-          if [ -z "$UAT_BASE_URL" ]; then
-            echo "::error::Set UAT_BASE_URL in the uat GitHub environment."
+          if [ -z "$AWS_CREDENTIALS_CONTENT" ] || [ -z "$AWS_CONFIG_CONTENT" ]; then
+            echo "::error::AWS_CREDENTIALS and AWS_CONFIG secrets are required."
             exit 1
           fi
-          curl --fail --silent --show-error --location --max-time 30 "$UAT_BASE_URL" >/dev/null
+          install -d -m 700 "$HOME/.aws"
+          printf '%s\n' "$AWS_CREDENTIALS_CONTENT" > "$HOME/.aws/credentials"
+          printf '%s\n' "$AWS_CONFIG_CONTENT" > "$HOME/.aws/config"
+          chmod 600 "$HOME/.aws/credentials" "$HOME/.aws/config"
+          AWS_PROFILE=eks_uat aws eks update-kubeconfig \
+            --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
+          kubectl auth can-i create jobs.batch -n "$K8S_NAMESPACE" | grep -qx yes
+          kubectl auth can-i create pods/exec -n "$K8S_NAMESPACE" | grep -qx yes
 
-      - name: Run OWASP ZAP baseline
+      - name: Run OWASP ZAP baseline inside UAT
         id: zap
         shell: bash
         run: |
           set -euo pipefail
-          work="$RUNNER_TEMP/futu-radar-zap"
-          mkdir -p "$work"
-          chmod 777 "$work"
-          set +e
-          docker run --rm \
-            -v "$work:/zap/wrk" \
-            ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py \
-              -t "$UAT_BASE_URL" \
-              -J futu-radar-uat-dast-report.json \
-              -r futu-radar-uat-dast-report.html \
-              -m 5
-          status=$?
-          set -e
-          cp "$work"/futu-radar-uat-dast-report.* .
+          target="${UAT_DAST_TARGET:-http://${UAT_WEBAPP_SERVICE}.${K8S_NAMESPACE}.svc.cluster.local:${UAT_WEBAPP_SERVICE_PORT}/remote/opinion-radar}"
+          if ! printf '%s' "$target" | grep -Eq '^https?://[A-Za-z0-9._:/-]+$'; then
+            echo "::error::UAT_DAST_TARGET contains unsupported characters."
+            exit 1
+          fi
+
+          job_name="futu-radar-zap-${GITHUB_RUN_ID}"
+          job_json="$RUNNER_TEMP/${job_name}.json"
+          trap 'kubectl -n "$K8S_NAMESPACE" delete job "$job_name" --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT
+
+          kubectl -n "$K8S_NAMESPACE" create job "$job_name" \
+            --image=ghcr.io/zaproxy/zaproxy:stable \
+            --dry-run=client -o json -- \
+            /bin/sh -c 'set +e; cd /zap/wrk; zap-baseline.py -t "$TARGET_URL" -J futu-radar-uat-dast-report.json -r futu-radar-uat-dast-report.html -m 5; status=$?; printf "%s\n" "$status" > futu-radar-uat-dast-exit-code.txt; exit 0' \
+            > "$job_json"
+          kubectl set env --local -f "$job_json" TARGET_URL="$target" -o yaml | kubectl apply -f -
+          kubectl -n "$K8S_NAMESPACE" wait \
+            --for=condition=complete "job/${job_name}" --timeout=15m
+
+          pod_name="$(kubectl -n "$K8S_NAMESPACE" get pods \
+            -l "job-name=${job_name}" -o jsonpath='{.items[0].metadata.name}')"
+          kubectl -n "$K8S_NAMESPACE" cp \
+            "${pod_name}:/zap/wrk/futu-radar-uat-dast-report.json" \
+            futu-radar-uat-dast-report.json
+          kubectl -n "$K8S_NAMESPACE" cp \
+            "${pod_name}:/zap/wrk/futu-radar-uat-dast-report.html" \
+            futu-radar-uat-dast-report.html
+          kubectl -n "$K8S_NAMESPACE" cp \
+            "${pod_name}:/zap/wrk/futu-radar-uat-dast-exit-code.txt" \
+            futu-radar-uat-dast-exit-code.txt
+
+          status="$(tr -d '\r\n' < futu-radar-uat-dast-exit-code.txt)"
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          if ! printf '%s' "$status" | grep -Eq '^[0-9]+$'; then
+            echo "::error::ZAP did not return a numeric exit code."
+            exit 1
+          fi
           if [ "$status" -eq 1 ] || [ "$status" -ge 3 ]; then
             echo "::error::ZAP baseline failed with exit code $status."
             exit "$status"
