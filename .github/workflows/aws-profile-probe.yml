@@ -66,6 +66,14 @@ jobs:
             echo "uat_kubernetes=get-authorized"
             kubectl --request-timeout=15s -n ih get deployments -o name | \
               grep -E 'opinion|radar' || echo "uat_matching_deployments=none"
+            for kind in configmap secret service ingress; do
+              matches="$(kubectl --request-timeout=15s -n ih get "$kind" -o name | grep -E 'opinion|radar' || true)"
+              if [ -n "$matches" ]; then
+                printf '%s\n' "$matches"
+              else
+                echo "uat_matching_${kind}=none"
+              fi
+            done
           else
             echo "uat_kubernetes=get-unavailable-or-unauthorized"
           fi
