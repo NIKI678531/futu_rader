@@ -55,6 +55,24 @@ jobs:
             --region "$AWS_REGION" --name "$PRD_CLUSTER" \
             --query 'cluster.status' --output text || true
 
+          AWS_PROFILE=eks_uat aws eks update-kubeconfig \
+            --region "$AWS_REGION" --name "$UAT_CLUSTER" >/dev/null
+          if kubectl --request-timeout=15s auth can-i patch deployments -n ih | grep -qx yes; then
+            echo "uat_kubernetes=patch-authorized"
+          else
+            echo "uat_kubernetes=unavailable-or-unauthorized"
+          fi
+          for deployment in \
+            ih-uat-remote-opinion-radar-srvapp \
+            ih-uat-remote-opinion-radar-worker \
+            ih-uat-remote-opinion-radar-webapp; do
+            if kubectl --request-timeout=15s -n ih get "deployment/$deployment" >/dev/null 2>&1; then
+              echo "deployment:$deployment=present"
+            else
+              echo "deployment:$deployment=unavailable"
+            fi
+          done
+
           for profile in ecr_uat eks_uat; do
             if printf '%s\n' "$profiles" | grep -qx "$profile"; then
               for repository in \
