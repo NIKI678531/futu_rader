@@ -25,6 +25,28 @@ on:
         description: Optional correlation value used by scheduled workflows
         required: false
         type: string
+  workflow_call:
+    inputs:
+      target_environment:
+        description: UAT deploys and scans UAT. PRD completes UAT first, then waits for PRD approval.
+        required: false
+        type: string
+        default: UAT
+      service_name:
+        description: Service image(s) to build and deploy
+        required: false
+        type: string
+        default: all
+      release_tag:
+        description: Optional Docker tag; defaults to 0.1.<workflow run number>
+        required: false
+        type: string
+        default: ""
+      audit_tag:
+        description: Optional correlation value used by scheduled workflows
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read

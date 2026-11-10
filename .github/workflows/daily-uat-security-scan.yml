@@ -13,7 +13,6 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  actions: write
   contents: read
 
 jobs:
@@ -69,91 +68,18 @@ jobs:
 
   run_uat_security_pipeline:
     name: Run UAT build, deployment, and security scan
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
     needs: check_recent_prd_release
     if: needs.check_recent_prd_release.outputs.should_run == 'true'
-    outputs:
-      downstream_run_id: ${{ steps.dispatch.outputs.downstream_run_id }}
-      downstream_run_url: ${{ steps.dispatch.outputs.downstream_run_url }}
-    steps:
-      - name: Dispatch and wait for CD security release
-        id: dispatch
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        with:
-          script: |
-            const workflowId = "cd-security-scan-release.yml";
-            const ref = context.payload.repository.default_branch;
-            const auditTag = `DAILY-${context.runId}`;
-            const startedAt = Date.now();
-
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: workflowId,
-              ref,
-              inputs: {
-                target_environment: "UAT",
-                service_name: "all",
-                release_tag: "",
-                audit_tag: auditTag
-              }
-            });
-
-            let run;
-            for (let attempt = 0; attempt < 60; attempt += 1) {
-              const response = await github.rest.actions.listWorkflowRuns({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: workflowId,
-                event: "workflow_dispatch",
-                branch: ref,
-                per_page: 30
-              });
-              run = response.data.workflow_runs.find((candidate) => {
-                const createdAt = Date.parse(candidate.created_at);
-                return createdAt >= startedAt - 5000
-                  && candidate.head_branch === ref
-                  && String(candidate.display_title || "").includes(auditTag);
-              });
-              if (run) break;
-              await new Promise((resolve) => setTimeout(resolve, 10000));
-            }
-
-            if (!run) {
-              core.setFailed("The dispatched UAT security workflow run could not be located.");
-              return;
-            }
-
-            core.setOutput("downstream_run_id", String(run.id));
-            core.setOutput("downstream_run_url", run.html_url);
-            core.info(`Dispatched UAT security run: ${run.html_url}`);
-
-            for (let attempt = 0; attempt < 300; attempt += 1) {
-              const response = await github.rest.actions.getWorkflowRun({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: run.id
-              });
-              run = response.data;
-              if (run.status === "completed") break;
-              await new Promise((resolve) => setTimeout(resolve, 15000));
-            }
-
-            if (run.status !== "completed") {
-              core.setFailed(`Timed out waiting for UAT security run: ${run.html_url}`);
-              return;
-            }
-            if (run.conclusion !== "success") {
-              core.setFailed(`UAT security run concluded with ${run.conclusion}: ${run.html_url}`);
-              return;
-            }
-
-            await core.summary
-              .addHeading("Daily UAT security baseline")
-              .addRaw("CI, UAT deployment, rollout verification, image scanning, and ZAP completed successfully.\n")
-              .addLink("Open CD security release run", run.html_url)
-              .write();
+    permissions:
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/cd-security-scan-release.yml
+    with:
+      target_environment: UAT
+      service_name: all
+      release_tag: ""
+      audit_tag: DAILY-${{ github.run_id }}
+    secrets: inherit
 
   publish_scan_reports:
     name: Publish daily security reports
@@ -168,8 +94,6 @@ jobs:
         with:
           name: ci-static-security-reports
           path: daily-reports/static
-          github-token: ${{ github.token }}
-          run-id: ${{ needs.run_uat_security_pipeline.outputs.downstream_run_id }}
 
       - name: Upload daily UAT static security report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -184,8 +108,6 @@ jobs:
         with:
           name: dynamic-security-report
           path: daily-reports/dynamic
-          github-token: ${{ github.token }}
-          run-id: ${{ needs.run_uat_security_pipeline.outputs.downstream_run_id }}
 
       - name: Upload daily UAT dynamic security report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -202,5 +124,5 @@ jobs:
             echo "## Daily UAT reports"
             echo "- Static artifact: \`daily-uat-static-security-report\`"
             echo "- Dynamic artifact: \`daily-uat-dynamic-security-report\`"
-            echo "- Source run: ${{ needs.run_uat_security_pipeline.outputs.downstream_run_url }}"
+            echo "- Source run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           } >> "$GITHUB_STEP_SUMMARY"
