@@ -51,7 +51,7 @@ jobs:
           for item in data.get("items", []):
               name = item.get("metadata", {}).get("name", "")
               hosts = sorted({rule.get("host") or "<all>" for rule in item.get("spec", {}).get("rules", [])})
-              print(f"uat_ingress={name};hosts={\",\".join(hosts)}")
+              print("uat_ingress={};hosts={}".format(name, ",".join(hosts)))
           '
 
       - name: Probe PRD runtime inventory
