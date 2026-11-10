@@ -548,10 +548,18 @@ def test_expired_request_is_recovered_and_can_continue():
 
 def test_terminal_request_allows_a_new_run_for_the_same_range():
     engine = _engine()
-    first, _ = enqueue(engine, "d7")
-    running = claim_next(engine, owner="worker-1")
-    finish(engine, running["id"], "worker-1", "failed", error="provider unavailable")
-    second, created = enqueue(engine, "d7")
+    submitted = datetime(2026, 10, 5, 8, 0)
+    first, _ = enqueue(engine, "d7", now=submitted)
+    running = claim_next(engine, owner="worker-1", now=submitted)
+    finish(
+        engine,
+        running["id"],
+        "worker-1",
+        "failed",
+        error="provider unavailable",
+        now=submitted + timedelta(seconds=1),
+    )
+    second, created = enqueue(engine, "d7", now=submitted + timedelta(seconds=2))
 
     assert created is True
     assert second["id"] != first["id"]

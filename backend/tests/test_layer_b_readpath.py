@@ -278,7 +278,7 @@ class TestThemesAndNegCats:
             {"annotation_id": 905, "target_id": 11, "kind": "aspect", "value": ["performance"]},
         ])
         pool = provider.pool("d1")
-        assert pool["negMentions"][OWN_CODE] == 4
+        assert pool["negMentions"][OWN_CODE] == 1
         assert pool["alerts"][OWN_CODE] == 1
         assert pool["negMentions"][PEER_CODE] is None
         assert pool["own"]["neg"] is None
@@ -288,8 +288,8 @@ class TestThemesAndNegCats:
         })
         provider._cache.clear()
         pool = provider.pool("d1")
-        assert pool["own"]["neg"] == 4
-        assert pool["own"]["dNeg"]["abs"] == 3
+        assert pool["own"]["neg"] == 1
+        assert pool["own"]["dNeg"]["abs"] == 0
         assert pool["own"]["risk"] == 0
         assert pool["complianceCount"][PEER_CODE] is None
 
@@ -306,10 +306,12 @@ class TestThemesAndNegCats:
         p = annotated(provider)
         th = p.themes_for(OWN_CODE, "d1")
         assert [t["aspect"] for t in th["positive"]] == ["fee"]
-        assert th["positive"][0]["mentions"] == 8 and th["positive"][0]["labelStatus"] == "unavailable"
+        assert th["positive"][0]["mentions"] == 1 and th["positive"][0]["commentCount"] == 8
+        assert th["positive"][0]["labelStatus"] == "unavailable"
         assert th["positive"][0]["title"] == "费率与持有成本获认可"  # 具体结论兜底
         assert th["positive"][0]["confidence"] is None
-        assert th["negative"][0]["aspect"] == "spread" and th["negative"][0]["mentions"] == 4
+        assert th["negative"][0]["aspect"] == "spread" and th["negative"][0]["mentions"] == 1
+        assert th["negative"][0]["commentCount"] == 4
         assert th["negative"][0]["hasMeta"] is True
         assert th["negative"][0]["lifecycleLabel"] is None
         assert th["positive"][0]["hasMeta"] is False
@@ -322,7 +324,7 @@ class TestThemesAndNegCats:
         th = p.themes_for(OWN_CODE, "d1")
         t = th["positive"][0]
         assert t["title"] == "费率同类最低" and t["labelStatus"] == "ok" and t["evidenceIds"] == ["c100"]
-        assert t["mentions"] == 8, "名字换了，数不变"
+        assert t["mentions"] == 1 and t["commentCount"] == 8, "名字换了，父帖线程数与辅助评论数不变"
 
     def test_dirty_pair_keeps_theme_and_category_labels_and_marks_every_view_stale(self, provider):
         p = annotated(provider)
@@ -362,7 +364,7 @@ class TestThemesAndNegCats:
             {"annotation_id": 902, "target_id": 14, "kind": "aspect", "value": ["spread"]},
         ])
         nc = p.neg_cats_for(OWN_CODE, "d1")[0]
-        assert nc["lifecycle"] == "continuing" and nc["delta"]["abs"] == 3
+        assert nc["lifecycle"] == "continuing" and nc["delta"]["abs"] == 0
         th = p.themes_for(OWN_CODE, "d1")
         assert th["positive"][0]["delta"]["short"] == "新增"   # 基准期 0 条积极
 
@@ -661,31 +663,31 @@ class TestTopicsAndHot:
         assert row["sentiment"] == "bullish"
         assert row["summary"] == "评论认为指数存在反弹机会。"
 
-    def test_hot_summary_three_states(self, provider):
+    def test_hot_summary_projects_product_topic_and_ignores_legacy_generation(self, provider):
         p = annotated(provider)
         hs = p.hot_summaries("d1")[OWN_CODE]
-        assert hs["status"] == "unavailable" and hs["sample"] == 12   # 标了 12 条、模型没写
+        assert hs["status"] == "ok" and hs["source"] == "product_topic" and hs["sample"] == 1
+        original = hs["text"]
         add_synth(p, [{"kind": "hot_summary", "value": {"text": "费率获认可，倾向长期持有", "needs_review": False}}])
         hs = p.hot_summaries("d1")[OWN_CODE]
-        assert hs["status"] == "ok" and hs["tone"] == "pos" and hs["text"].startswith("费率")
-        assert hs["reviewState"] == "pending"
-        # 同业 3032：只有一条中性标注都没有 ⇒ unavailable；给它标一条中性 ⇒ low_sample
+        assert hs["text"] == original and hs["source"] == "product_topic"
+        # 同业 3032 没有市场方向话题，产品态度不能冒充产品话题摘要。
         add_annotations(p, [{"annotation_id": 800, "target_id": 13, "subject_code": PEER_CODE,
                              "kind": "attitude", "value": "neutral"},
                             {"annotation_id": 801, "target_id": 13, "subject_code": PEER_CODE,
                              "kind": "relevance", "value": "relevant"}])
         peer = p.hot_summaries("d1")[PEER_CODE]
-        assert peer["status"] == "low_sample" and peer["text"] == "样本不足，暂无主流观点"
+        assert peer["status"] == "empty" and peer["text"] == "暂无相关内容"
 
-    def test_hot_summary_low_sample_row_does_not_override_counts(self, provider):
+    def test_legacy_hot_summary_does_not_override_product_topic(self, provider):
         p = annotated(provider, n_pos=3, n_neg=2)
         add_synth(p, [{"kind": "hot_summary", "value": {
             "text": "有评论提到费率较低", "evidence_ids": ["c100"], "needs_review": False,
         }}])
         hs = p.hot_summaries("d1")[OWN_CODE]
-        assert hs["status"] == "low_sample" and hs["sample"] == 5
-        assert hs["text"] == "样本不足：有评论提到费率较低"
-        assert hs["evidenceIds"] == ["c100"]
+        assert hs["status"] == "ok" and hs["sample"] == 1
+        assert hs["source"] == "product_topic" and "有评论提到费率较低" not in hs["text"]
+        assert hs["evidenceIds"] == []
 
 
 class TestSummary:
@@ -707,8 +709,8 @@ class TestSummary:
         outlook = p.market_outlook(OWN_CODE, custom)["list"][0]
         stages = p.stages_for(OWN_CODE, custom)
 
-        assert hot["status"] == "ok" and hot["analysisMode"] == "annotation_aggregate"
-        assert "积极 8 条、消极 4 条" in hot["text"]
+        assert hot["status"] == "ok" and hot["source"] == "product_topic"
+        assert hot["sample"] == 1
         assert "d1 热议文案" not in hot["text"]
         assert summary["aiStatus"] == "aggregate"
         assert summary["summaryMode"] == "annotation_aggregate"
@@ -752,7 +754,8 @@ class TestSummary:
         hot = p.hot_summaries("d1")[OWN_CODE]
 
         assert summary["aiStatus"] == "ok" and summary["stale"] is True
-        assert hot["status"] == "ok" and hot["text"] == "费率获认可" and hot["stale"] is True
+        assert hot["status"] == "ok" and hot["source"] == "product_topic"
+        assert hot["text"] != "费率获认可" and hot["stale"] is False
 
     def test_generation_newer_than_the_anchor_is_ignored(self, provider):
         p = annotated(provider)
