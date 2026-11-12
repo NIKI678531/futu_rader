@@ -19,6 +19,7 @@ from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
 
 from radar_db import make_engine
+from radar_db.anchor_clock import publish_system_anchor
 from radar_db.analysis_requests import record_worker_heartbeat
 
 _ENV = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -51,6 +52,7 @@ def heartbeat(*, engine=None, now=None):
     if health_file:
         Path(health_file).touch()
     engine = engine or make_engine()
+    publish_system_anchor(engine, at=now if hasattr(now, "tzinfo") else None)
     readiness = runtime_readiness()
     record_worker_heartbeat(engine, now=now, readiness=readiness)
     if readiness["ready"]:

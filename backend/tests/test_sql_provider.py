@@ -81,6 +81,19 @@ class TestAnchor:
         assert p.kol_impact("d7") is None
         assert p.daily_for(OWN_CODE) is None
 
+    def test_system_mode_uses_the_current_hkt_day(self, monkeypatch):
+        monkeypatch.setenv("RADAR_ANCHOR_MODE", "system")
+        monkeypatch.setattr(
+            "radar_db.anchor_clock.clock.now",
+            lambda tz=None: datetime(2026, 11, 12, 21, 30, tzinfo=tz),
+        )
+        p = make_sql_provider()
+
+        assert p.refresh() is True
+        assert p.build_range("d1")["to"] == "2026-11-12"
+        assert p.build_range("d0")["to"] == "2026-11-12"
+        assert p.custom_date_bounds()[1].isoformat() == "2026-11-12"
+
     def test_unknown_range_key_is_none(self, provider):
         assert provider.build_range("d999") is None
 

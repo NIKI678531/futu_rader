@@ -93,6 +93,7 @@ from core.delta import delta  # noqa: E402
 from core.futu_links import futu_feed_url, futu_profile_url  # noqa: E402
 from core.heat import heat_of  # noqa: E402
 from radar_db import make_engine  # noqa: E402
+from radar_db.anchor_clock import current_hkt_date, system_anchor_enabled  # noqa: E402
 from radar_db.annotations_read import (  # noqa: E402
     COMMENT_PRODUCT_PROMPT_VERSIONS,
     PRODUCT_FEEDBACK_PROMPT_VERSIONS,
@@ -196,7 +197,7 @@ class SqlProvider:
         }
         self._kol_names = set(self._kol_name_by_source)
         self._meta = self._read_meta()
-        self._anchor = parse_anchor(self._meta.get("anchor"))
+        self._anchor = self._resolve_anchor(self._meta)
         # The config loader is deliberately strict: an invalid deployment must
         # fail at startup instead of silently widening the public data set.
         self._comment_filter_config = load_comment_filter_config()
@@ -250,6 +251,12 @@ class SqlProvider:
             return {}
         self._last_meta_error = None
         return meta
+
+    @staticmethod
+    def _resolve_anchor(meta):
+        if system_anchor_enabled():
+            return current_hkt_date()
+        return parse_anchor(meta.get("anchor"))
 
     def _database_target(self):
         """Return a useful DB location without logging credentials or URL query secrets."""
@@ -324,7 +331,8 @@ class SqlProvider:
         唯一的性能来源（一次全池扫描按秒计），不能因为一次探测就白白丢掉。
         """
         meta = self._read_meta()
-        if meta == self._meta:
+        resolved_anchor = self._resolve_anchor(meta)
+        if meta == self._meta and resolved_anchor == self._anchor:
             return False
         def completion_key(source):
             progress = json.loads(source.get("own_analysis_progress", "null")) or {}
@@ -351,6 +359,7 @@ class SqlProvider:
             or meta.get("price_revision") != old_meta.get("price_revision")
             or meta.get("product_feedback_taxonomy")
             != old_meta.get("product_feedback_taxonomy")
+            or resolved_anchor != self._anchor
         )
         completed_product_changed = (
             not analysis_running and completion_key(meta) != completion_key(old_meta)
@@ -372,7 +381,7 @@ class SqlProvider:
             or analysis_finished
         )
         self._meta = meta
-        self._anchor = parse_anchor(meta.get("anchor"))
+        self._anchor = resolved_anchor
         if catalog_changed:
             self._products = load_products(engine=self._engine)
             self._by_code = {product["code"]: product for product in self._products}
@@ -732,7 +741,11 @@ class SqlProvider:
         data_day = (
             data_through.date()
             if data_through is not None
-            else self._anchor + timedelta(days=1)
+            else (
+                self._anchor
+                if system_anchor_enabled()
+                else self._anchor + timedelta(days=1)
+            )
         )
         return build("d0", data_day, data_through=data_through)
 
@@ -781,7 +794,11 @@ class SqlProvider:
                 latest
                 if latest is not None
                 and self._anchor is not None
-                and latest.date() > self._anchor
+                and (
+                    latest.date() >= self._anchor
+                    if system_anchor_enabled()
+                    else latest.date() > self._anchor
+                )
                 else None
             )
         return self._cache[key]
