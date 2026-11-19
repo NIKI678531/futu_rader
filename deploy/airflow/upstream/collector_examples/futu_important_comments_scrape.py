@@ -16,7 +16,12 @@ from airflow.operators.python import PythonOperator
 
 from common.callbacks import on_failure_power_automate
 from common.constants import DEFAULT_ARGS
-from common.futu_collection_receipts import fail_receipt, finish_receipt, start_receipt
+from common.futu_collection_receipts import (
+    fail_receipt,
+    finish_receipt,
+    start_receipt,
+    write_manifest_symbols,
+)
 
 REPO_DIR = "/opt/airflow/dags/repo/dags/pull_data/futu_comments"
 WORK_DIR = "/tmp/futu_comments_important_work"
@@ -90,6 +95,11 @@ with DAG(
     copy_repo = PythonOperator(
         task_id="copy_repo", python_callable=_copy_repo_to_workdir
     )
+    prepare_manifest_symbols = PythonOperator(
+        task_id="prepare_manifest_symbols",
+        python_callable=write_manifest_symbols,
+        op_kwargs={"work_dir": WORK_DIR, "symbol_scope": "important"},
+    )
     start_collection_receipt = PythonOperator(
         task_id="start_collection_receipt",
         python_callable=start_receipt,
@@ -116,6 +126,7 @@ with DAG(
             "python -u -m futu_scraper.cli scrape"
             " --db \"$MARKET_INSIGHT_DATABASE_URL\""
             " --workers 3 --symbol-scope important"
+            " --symbols collection_symbols.json"
             "{% set since_date = var.value.get('futu_comments_since_date', '"
             f"{DEFAULT_SINCE_DATE}"
             "') | trim %}"
@@ -137,6 +148,7 @@ with DAG(
 
     chain(
         copy_repo,
+        prepare_manifest_symbols,
         start_collection_receipt,
         write_cookies,
         scrape,

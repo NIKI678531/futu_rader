@@ -477,13 +477,25 @@ def desired_manifest(engine):
 
     seed_catalog(engine)
     with engine.connect() as conn:
-        codes = sorted(row[0] for row in conn.execute(
-            select(product_catalog_entries.c.code).where(
+        products = sorted(conn.execute(
+            select(
+                product_catalog_entries.c.code,
+                product_catalog_entries.c.ownership,
+            ).where(
                 product_catalog_entries.c.status.in_((ACTIVE_STATUS, PENDING_SOURCE_STATUS))
             )
-        ))
+        ), key=lambda row: row.code)
+    codes = [row.code for row in products]
     return {"codes": codes, "count": len(codes),
-            "fingerprint": configured_symbols_fingerprint(codes)}
+            "fingerprint": configured_symbols_fingerprint(codes),
+            "symbols": [
+                {
+                    "ticker": f"{row.code.zfill(5)}.HK",
+                    "type": "etf",
+                    "important": row.ownership == "own",
+                }
+                for row in products
+            ]}
 
 
 def main(argv=None):

@@ -102,6 +102,23 @@ def test_every_listed_etp_enters_the_active_pool_without_manual_mapping(tmp_path
     assert products["3458"]["ownership"] == "peer"
 
 
+def test_manifest_describes_all_active_symbols_and_the_important_subset(tmp_path):
+    engine = make_engine("sqlite:///" + (tmp_path / "manifest.db").as_posix())
+    create_all(engine)
+    hkex_catalog.sync(engine, payload={"data": [
+        row("03033", "CSOP Hang Seng TECH ETF", issuer="CSOP Asset Management"),
+        row("03458", "Peer Leveraged", issuer="Peer", subtype="Leveraged"),
+    ]}, now=datetime(2026, 10, 5, 7))
+
+    manifest = hkex_catalog.desired_manifest(engine)
+
+    assert manifest["codes"] == ["3033", "3458"]
+    assert manifest["symbols"] == [
+        {"ticker": "03033.HK", "type": "etf", "important": True},
+        {"ticker": "03458.HK", "type": "etf", "important": False},
+    ]
+
+
 def test_sync_is_idempotent_and_source_failure_preserves_active_catalog(tmp_path):
     engine = make_engine("sqlite:///" + (tmp_path / "catalog.db").as_posix())
     create_all(engine)

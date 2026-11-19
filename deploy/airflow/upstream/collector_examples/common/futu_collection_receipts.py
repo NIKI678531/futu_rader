@@ -12,6 +12,7 @@ import json
 import logging
 import re
 from datetime import date, datetime
+from pathlib import Path
 
 from airflow.exceptions import AirflowException, AirflowSkipException
 from airflow.models import Variable
@@ -66,6 +67,77 @@ def load_all_codes() -> tuple[str, ...]:
     if not codes:
         raise AirflowException(f"Airflow Variable {ALL_CODES_VARIABLE} has no codes")
     return codes
+
+
+def write_manifest_symbols(
+    *,
+    work_dir: str,
+    symbol_scope: str,
+    variable_name: str = ALL_CODES_VARIABLE,
+) -> int:
+    """Write the accepted Radar manifest as the collector's run-local input."""
+
+    raw = Variable.get(variable_name).strip()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise AirflowException(f"Airflow Variable {variable_name} must be JSON") from exc
+    manifest_symbols = payload.get("symbols") if isinstance(payload, dict) else None
+    raw_codes = payload.get("codes") if isinstance(payload, dict) else payload
+    if not isinstance(raw_codes, list) or not raw_codes:
+        raise AirflowException(
+            f"Airflow Variable {variable_name} must contain a non-empty codes list"
+        )
+
+    expected = {f"0{_code(value)}.HK" for value in raw_codes}
+    source_path = Path(work_dir) / "symbols.json"
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    by_ticker = {str(item["ticker"]).upper(): item for item in source}
+    if manifest_symbols is not None:
+        if not isinstance(manifest_symbols, list):
+            raise AirflowException(
+                f"Airflow Variable {variable_name} symbols must be a list"
+            )
+        by_ticker = {}
+        for item in manifest_symbols:
+            if not isinstance(item, dict):
+                raise AirflowException(
+                    f"Airflow Variable {variable_name} has an invalid symbol entry"
+                )
+            ticker = f"0{_code(item.get('ticker'))}.HK"
+            if item.get("type") != "etf" or not isinstance(item.get("important"), bool):
+                raise AirflowException(
+                    f"Airflow Variable {variable_name} has invalid metadata for {ticker}"
+                )
+            by_ticker[ticker] = {
+                "ticker": ticker,
+                "type": "etf",
+                "important": item["important"],
+            }
+        if set(by_ticker) != expected:
+            raise AirflowException(
+                f"Airflow Variable {variable_name} symbols must exactly match codes"
+            )
+    else:
+        for ticker in expected - set(by_ticker):
+            by_ticker[ticker] = {
+                "ticker": ticker,
+                "type": "etf",
+                "important": False,
+            }
+
+    selected = [by_ticker[ticker] for ticker in sorted(expected)]
+    if symbol_scope == "important":
+        selected = [item for item in selected if item.get("important") is True]
+    elif symbol_scope != "all":
+        raise AirflowException(f"Unsupported symbol scope: {symbol_scope!r}")
+    if not selected:
+        raise AirflowException(f"Radar manifest has no symbols for {symbol_scope} scope")
+    (Path(work_dir) / "collection_symbols.json").write_text(
+        json.dumps(selected, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return len(selected)
 
 
 def symbols_fingerprint(codes: tuple[str, ...]) -> str:

@@ -43,19 +43,28 @@ ALTER TABLE futu_comments_users
 ## Required Airflow Variable
 
 Create `futu_comments_all_codes` under **Admin -> Variables**. Its value must be
-the complete `codes` list printed by:
+the complete manifest object printed by:
 
 ```text
 python -m jobs.hkex_catalog manifest
 ```
 
-JSON example:
+Abbreviated JSON example:
 
 ```json
-["2802", "2843", "3031", "3033", "3408", "3418", "3444", "3455", "3579"]
+{
+  "codes": ["2802", "3033"],
+  "symbols": [
+    {"ticker": "02802.HK", "type": "etf", "important": true},
+    {"ticker": "03033.HK", "type": "etf", "important": true}
+  ]
+}
 ```
 
-The example above is not the complete production list. Do not copy it as-is.
+The example above is not the complete production manifest. Do not copy it
+as-is. A codes-only list remains a rollout fallback, but the full object is
+required to classify future CSOP listings into the important subset without
+manual edits.
 
 The scraper's internal `all` scope must contain the exact same complete list and
 must update `futu_comments_stocks.last_scraped_at` after each successful symbol.

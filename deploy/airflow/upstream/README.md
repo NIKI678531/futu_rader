@@ -37,9 +37,12 @@ For every run:
 
 The collector's configured list must come from Radar's desired catalog
 manifest (`python -m jobs.hkex_catalog manifest`). The manifest includes active
-products from the latest complete HKEX snapshot and returns the same count/
-fingerprint format used by the receipt. Keep collecting the previous accepted
-manifest until the next manifest is accepted.
+products from the latest complete HKEX snapshot, a normalized `symbols` list
+with the CSOP `important` subset, and the same count/fingerprint format used by
+the receipt. Store the full manifest object in Airflow so both the all-products
+and important collectors add new listings and drop inactive products without
+repository edits. Keep collecting the previous accepted manifest until the
+next manifest is accepted.
 
 Partial and `comments_important` runs may have receipts, but must leave
 `complete_through` null. Radar independently verifies every completion-proof
