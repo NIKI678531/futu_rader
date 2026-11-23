@@ -14,7 +14,6 @@ data:
   ROOT_PATH: ""
   DATA_PROVIDER: sql
   RADAR_FACT_SOURCE: radar
-  RADAR_ANCHOR_MODE: system
   TZ: Asia/Hong_Kong
   RADAR_LOG_LEVEL: INFO
 ---
@@ -32,7 +31,6 @@ data:
   TZ: Asia/Hong_Kong
   RADAR_LOG_LEVEL: INFO
   RADAR_FACT_SOURCE: radar
-  RADAR_ANCHOR_MODE: system
   WORKER_HEALTH_FILE: /tmp/worker-heartbeat
   WORKER_HEARTBEAT_INTERVAL_SECONDS: "60"
   LOOKBACK_DAYS: "60"

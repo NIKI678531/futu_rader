@@ -125,6 +125,39 @@ def test_startup_recovery_includes_today_when_current_day_facts_exist(monkeypatc
     assert {row["range"] for row in list_requests(engine)} == {"d0"}
 
 
+def test_anchor_repair_recovery_enqueues_every_preset_once(monkeypatch):
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(insert(meta_kv), [
+            {"k": "data_max_ts", "v": "2026-08-26 12:00:00"},
+            {"k": "anchor_repair_required", "v": "1"},
+        ])
+    monkeypatch.setattr(
+        daily,
+        "analysis_products",
+        lambda _engine, _range, own_limit=None: [{"code": "3033"}],
+    )
+
+    def missing(_engine, _codes, range_key, anchor):
+        assert anchor == ("2026-08-26" if range_key == "d0" else "2026-08-25")
+        return [{"code": "3033", "kinds": ["hot_summary"]}]
+
+    monkeypatch.setattr("jobs.synthesize.missing_generations", missing)
+
+    report = daily.recover_missing_analysis(engine)
+
+    assert [row["range"] for row in report["queued"]] == [
+        "d0", "d7", "d1", "d2", "d14", "d30", "mtd",
+    ]
+    assert {row["range"] for row in list_requests(engine)} == {
+        "d0", "d1", "d2", "d7", "d14", "d30", "mtd",
+    }
+    with engine.connect() as conn:
+        assert conn.execute(select(meta_kv.c.v).where(
+            meta_kv.c.k == "anchor_repair_required"
+        )).scalar_one_or_none() is None
+
+
 def test_startup_price_recovery_fetches_only_products_without_current_receipts(monkeypatch):
     from jobs import sync_prices
     from radar_db.schema import price_syncs

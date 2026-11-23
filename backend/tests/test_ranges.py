@@ -4,7 +4,7 @@
 少一样前端就得自己补，铁律 1 就破了。
 """
 
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -95,6 +95,26 @@ def test_demo_today_uses_the_frozen_current_data_time_not_the_complete_day(clien
     assert data["benchTo"] == "2026-09-01"
     assert data["partial"] is True
     assert data["dataThrough"] == "2026-09-02T09:00:00 HKT"
+
+
+def test_sql_today_never_reuses_the_latest_complete_day(sql_client, monkeypatch):
+    """当天没有新事实时必须不可用，不能把昨日数据再展示一遍。"""
+    monkeypatch.setenv("RADAR_ANCHOR_MODE", "system")
+    monkeypatch.setattr(
+        "radar_db.clock.now",
+        lambda tz=None: datetime(2026, 8, 25, 16, 31, tzinfo=tz),
+    )
+
+    today_range = sql_client.get("/api/v1/ranges/d0").get_json()["data"]
+    yesterday_range = sql_client.get("/api/v1/ranges/d1").get_json()["data"]
+    today_pool = sql_client.get("/api/v1/pool?range=d0").get_json()
+    yesterday_pool = sql_client.get("/api/v1/pool?range=d1").get_json()
+
+    assert today_range["to"] == "2026-08-26"
+    assert yesterday_range["to"] == "2026-08-25"
+    assert today_range["to"] != yesterday_range["to"]
+    assert today_pool == {"status": "unavailable", "data": None}
+    assert yesterday_pool["status"] == "ok"
 
 
 def test_custom_range_uses_inclusive_hkt_days_and_an_equal_adjacent_benchmark(client):

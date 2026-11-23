@@ -1,5 +1,7 @@
 import os
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.pool import StaticPool
@@ -196,6 +198,30 @@ def test_heartbeat_is_persisted_for_admin_queue_health(monkeypatch):
     assert values["ai_analysis_worker_readiness"] == (
         '{"ready": false, "error": "质量报告未配置"}'
     )
+
+
+def test_heartbeat_never_rewrites_the_data_backed_anchor(monkeypatch):
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(meta_kv.insert(), [
+            {"k": "anchor", "v": "2026-11-11"},
+            {"k": "anchor_ts", "v": "2026-11-11 23:59:59"},
+        ])
+    monkeypatch.setenv("RADAR_ANCHOR_MODE", "system")
+    monkeypatch.setattr(
+        "scheduler.runtime_readiness",
+        lambda: {"ready": True, "error": None},
+    )
+
+    heartbeat(
+        engine=engine,
+        now=datetime(2026, 11, 12, 21, 45, tzinfo=ZoneInfo("Asia/Hong_Kong")),
+    )
+
+    with engine.connect() as conn:
+        values = dict(conn.execute(select(meta_kv.c.k, meta_kv.c.v)).all())
+    assert values["anchor"] == "2026-11-11"
+    assert values["anchor_ts"] == "2026-11-11 23:59:59"
 
 
 def test_local_heartbeat_precedes_database_access(monkeypatch, tmp_path):

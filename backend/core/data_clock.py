@@ -17,7 +17,6 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from radar_db.schema import feeds, meta_kv
-from radar_db.anchor_clock import system_anchor_enabled
 from radar_db.time_windows import HKT, utc_naive_to_hkt
 
 from .calendar import parse_anchor
@@ -116,6 +115,4 @@ def analysis_range_anchor(
     latest = latest_hkt_data_date(engine, source)
     if latest is None:
         return None
-    if system_anchor_enabled():
-        return latest if latest >= anchor else None
     return latest if latest > anchor else None
