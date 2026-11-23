@@ -41,7 +41,7 @@ for folder in (ROOT, ROOT / "worker", ROOT / "backend"):
     if str(folder) not in sys.path:
         sys.path.insert(0, str(folder))
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 
 import clock
 from core.data_clock import analysis_range_anchor
@@ -61,6 +61,10 @@ log = logging.getLogger("worker.daily")
 HKT = ZoneInfo("Asia/Hong_Kong")
 DAILY_RANGES = ("d7", "d1", "d2")
 RECOVERY_RANGES = ("d0", *DAILY_RANGES)
+FULL_RECOVERY_RANGES = tuple(
+    sorted(RANGE_PRIORITY, key=RANGE_PRIORITY.get, reverse=True)
+)
+ANCHOR_REPAIR_REQUIRED_KEY = "anchor_repair_required"
 LAST_RUN_KEY = "ai_daily_last_run"
 INTRADAY_LAST_RUN_KEY = "ai_intraday_last_run"
 INTRADAY_LAST_SYNC_KEY = "ai_intraday_last_sync"
@@ -211,11 +215,13 @@ def intraday_price_step(engine, today: date) -> dict:
 
 
 def recover_missing_analysis(engine=None, *, ranges=RECOVERY_RANGES) -> dict:
-    """Recreate short-range requests after bootstrap/restart when outputs are absent.
+    """Recreate requests after bootstrap/restart when outputs are absent.
 
     Published-generation markers cover generated text, low-sample results and
     intentional empty results. ``enqueue`` makes this safe when a request for
-    the same range is already queued or running.
+    the same range is already queued or running.  Normal restarts inspect only
+    the short ranges; the one-time anchor repair marker expands recovery to all
+    presets, then is removed after their durable requests have been created.
     """
 
     from jobs import synthesize
@@ -229,11 +235,20 @@ def recover_missing_analysis(engine=None, *, ranges=RECOVERY_RANGES) -> dict:
             "queued": [],
         }
 
+    selected_ranges = tuple(ranges)
+    with engine.connect() as conn:
+        repair_required = conn.execute(
+            select(meta_kv.c.v).where(meta_kv.c.k == ANCHOR_REPAIR_REQUIRED_KEY)
+        ).scalar_one_or_none() == "1"
+    full_repair_recovery = repair_required and selected_ranges == RECOVERY_RANGES
+    if full_repair_recovery:
+        selected_ranges = FULL_RECOVERY_RANGES
+
     own_limit = parse_own_limit(os.getenv("AI_OWN_TOP_LIMIT"))
     queued = []
     complete = []
     unavailable = []
-    for range_key in ranges:
+    for range_key in selected_ranges:
         effective_anchor = analysis_range_anchor(engine, range_key, complete_anchor)
         if effective_anchor is None:
             unavailable.append(range_key)
@@ -258,6 +273,11 @@ def recover_missing_analysis(engine=None, *, ranges=RECOVERY_RANGES) -> dict:
             "created": created,
             "missingProducts": len(missing),
         })
+    if full_repair_recovery:
+        with engine.begin() as conn:
+            conn.execute(
+                delete(meta_kv).where(meta_kv.c.k == ANCHOR_REPAIR_REQUIRED_KEY)
+            )
     return {
         "status": "queued" if queued else "complete",
         "anchor": complete_anchor.isoformat(),

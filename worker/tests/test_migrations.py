@@ -233,3 +233,58 @@ def test_collection_migration_preserves_feeds_and_backfills_unknown(tmp_path, mo
     }
     with eng.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM feeds")).scalar_one() == 1
+
+
+def test_anchor_repair_restores_the_verified_source_complete_day(tmp_path, monkeypatch):
+    url = "sqlite:///" + (tmp_path / "anchor-repair.db").as_posix()
+    monkeypatch.setenv("RADAR_DB_URL", url)
+    cfg = alembic_cfg(url)
+    command.upgrade(cfg, "0019")
+    eng = make_engine(url)
+    with eng.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO meta_kv (k, v) VALUES "
+            "('anchor', '2026-11-23'), "
+            "('anchor_ts', '2026-11-23 23:59:59'), "
+            "('source_complete_through', '2026-11-22'), "
+            "('source_observed_anchor', '2026-11-22')"
+        ))
+
+    command.upgrade(cfg, "head")
+
+    with eng.connect() as conn:
+        values = dict(conn.execute(text(
+            "SELECT k, v FROM meta_kv WHERE k IN "
+            "('anchor', 'anchor_ts', 'anchor_repair_required')"
+        )).all())
+    assert values == {
+        "anchor": "2026-11-22",
+        "anchor_ts": "2026-11-22 23:59:59",
+        "anchor_repair_required": "1",
+    }
+
+
+def test_anchor_repair_falls_back_to_the_observed_ended_day(tmp_path, monkeypatch):
+    url = "sqlite:///" + (tmp_path / "observed-anchor-repair.db").as_posix()
+    monkeypatch.setenv("RADAR_DB_URL", url)
+    cfg = alembic_cfg(url)
+    command.upgrade(cfg, "0019")
+    eng = make_engine(url)
+    with eng.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO meta_kv (k, v) VALUES "
+            "('anchor', '2026-11-23'), "
+            "('anchor_ts', '2026-11-23 23:59:59'), "
+            "('source_observed_anchor', '2026-11-22')"
+        ))
+
+    command.upgrade(cfg, "head")
+
+    with eng.connect() as conn:
+        values = dict(conn.execute(text(
+            "SELECT k, v FROM meta_kv WHERE k IN ('anchor', 'anchor_ts')"
+        )).all())
+    assert values == {
+        "anchor": "2026-11-22",
+        "anchor_ts": "2026-11-22 23:59:59",
+    }

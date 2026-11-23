@@ -93,7 +93,6 @@ from core.delta import delta  # noqa: E402
 from core.futu_links import futu_feed_url, futu_profile_url  # noqa: E402
 from core.heat import heat_of  # noqa: E402
 from radar_db import make_engine  # noqa: E402
-from radar_db.anchor_clock import current_hkt_date, system_anchor_enabled  # noqa: E402
 from radar_db.annotations_read import (  # noqa: E402
     COMMENT_PRODUCT_PROMPT_VERSIONS,
     PRODUCT_FEEDBACK_PROMPT_VERSIONS,
@@ -254,8 +253,6 @@ class SqlProvider:
 
     @staticmethod
     def _resolve_anchor(meta):
-        if system_anchor_enabled():
-            return current_hkt_date()
         return parse_anchor(meta.get("anchor"))
 
     def _database_target(self):
@@ -741,11 +738,7 @@ class SqlProvider:
         data_day = (
             data_through.date()
             if data_through is not None
-            else (
-                self._anchor
-                if system_anchor_enabled()
-                else self._anchor + timedelta(days=1)
-            )
+            else self._anchor + timedelta(days=1)
         )
         return build("d0", data_day, data_through=data_through)
 
@@ -794,11 +787,7 @@ class SqlProvider:
                 latest
                 if latest is not None
                 and self._anchor is not None
-                and (
-                    latest.date() >= self._anchor
-                    if system_anchor_enabled()
-                    else latest.date() > self._anchor
-                )
+                and latest.date() > self._anchor
                 else None
             )
         return self._cache[key]
